@@ -14,7 +14,8 @@
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use std::path::Path;
+use glob::glob;
+use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tracing_subscriber::EnvFilter;
@@ -24,7 +25,7 @@ use bssh::{
     config::Config,
     executor::ParallelExecutor,
     node::Node,
-    ssh::known_hosts::StrictHostKeyChecking,
+    ssh::{known_hosts::StrictHostKeyChecking, SshClient},
 };
 
 struct ExecuteCommandParams<'a> {
@@ -440,22 +441,29 @@ async fn upload_file(
     strict_mode: StrictHostKeyChecking,
     use_agent: bool,
 ) -> Result<()> {
-    // Check if source file exists
-    if !source.exists() {
-        anyhow::bail!("Source file does not exist: {:?}\nPlease check the file path and ensure the file exists.", source);
+    // Collect all files matching the pattern
+    let files = resolve_source_files(source)?;
+
+    if files.is_empty() {
+        anyhow::bail!("No files found matching pattern: {:?}", source);
     }
 
-    let file_size = std::fs::metadata(source)
-        .with_context(|| format!("Failed to get metadata for {source:?}"))?
-        .len();
+    // Determine destination handling based on file count
+    let is_dir_destination = destination.ends_with('/') || files.len() > 1;
 
+    // Display upload summary
     println!(
-        "Uploading {:?} ({} bytes) to {} nodes: {} (SFTP)\n",
-        source,
-        file_size,
-        nodes.len(),
-        destination
+        "Uploading {} file(s) to {} nodes (SFTP)",
+        files.len(),
+        nodes.len()
     );
+    for file in &files {
+        let size = std::fs::metadata(file)
+            .map(|m| format_bytes(m.len()))
+            .unwrap_or_else(|_| "unknown".to_string());
+        println!("  - {file:?} ({size})");
+    }
+    println!("Destination: {destination}\n");
 
     let key_path = key_path.map(|p| p.to_string_lossy().to_string());
     let executor = ParallelExecutor::new_with_strict_mode_and_agent(
@@ -466,24 +474,113 @@ async fn upload_file(
         use_agent,
     );
 
-    let results = executor.upload_file(source, destination).await?;
+    let mut total_success = 0;
+    let mut total_failed = 0;
 
-    // Print results
-    for result in &results {
-        result.print_summary();
+    // Upload each file
+    for file in files {
+        let remote_path = if is_dir_destination {
+            // If destination is a directory or multiple files, append filename
+            let filename = file
+                .file_name()
+                .ok_or_else(|| anyhow::anyhow!("Failed to get filename from {:?}", file))?
+                .to_string_lossy();
+            if destination.ends_with('/') {
+                format!("{destination}{filename}")
+            } else {
+                format!("{destination}/{filename}")
+            }
+        } else {
+            // Single file to specific destination
+            destination.to_string()
+        };
+
+        println!("\nUploading {file:?} -> {remote_path}");
+        let results = executor.upload_file(&file, &remote_path).await?;
+
+        // Print results for this file
+        for result in &results {
+            result.print_summary();
+        }
+
+        let success_count = results.iter().filter(|r| r.is_success()).count();
+        let failed_count = results.len() - success_count;
+
+        total_success += success_count;
+        total_failed += failed_count;
     }
 
-    // Print summary
-    let success_count = results.iter().filter(|r| r.is_success()).count();
-    let failed_count = results.len() - success_count;
+    println!(
+        "\nTotal upload summary: {total_success} successful, {total_failed} failed"
+    );
 
-    println!("\nUpload complete: {success_count} successful, {failed_count} failed");
-
-    if failed_count > 0 {
+    if total_failed > 0 {
         std::process::exit(1);
     }
 
     Ok(())
+}
+
+// Helper function to resolve source files from glob pattern
+fn resolve_source_files(source: &Path) -> Result<Vec<PathBuf>> {
+    let source_str = source.to_string_lossy();
+
+    // Check if it's a glob pattern (contains *, ?, [, ])
+    if source_str.contains('*') || source_str.contains('?') || source_str.contains('[') {
+        // Use glob to find matching files
+        let mut files = Vec::new();
+        for entry in
+            glob(&source_str).with_context(|| format!("Invalid glob pattern: {source_str}"))?
+        {
+            match entry {
+                Ok(path) if path.is_file() => files.push(path),
+                Ok(_) => {} // Skip directories
+                Err(e) => tracing::warn!("Failed to read glob entry: {}", e),
+            }
+        }
+        Ok(files)
+    } else if source.is_file() {
+        // Single file
+        Ok(vec![source.to_path_buf()])
+    } else if source.exists() && source.is_dir() {
+        anyhow::bail!(
+            "Source is a directory. Use a glob pattern like '{}/*' to upload files",
+            source_str
+        );
+    } else {
+        // Try as glob pattern even without special characters (might be escaped)
+        let mut files = Vec::new();
+        for entry in glob(&source_str).unwrap_or_else(|_| glob::glob("").unwrap()) {
+            if let Ok(path) = entry {
+                if path.is_file() {
+                    files.push(path);
+                }
+            }
+        }
+
+        if files.is_empty() {
+            anyhow::bail!("Source file does not exist: {:?}", source);
+        }
+        Ok(files)
+    }
+}
+
+// Helper function to format bytes in human-readable format
+fn format_bytes(bytes: u64) -> String {
+    const UNITS: &[&str] = &["B", "KB", "MB", "GB", "TB"];
+    let mut size = bytes as f64;
+    let mut unit_idx = 0;
+
+    while size >= 1024.0 && unit_idx < UNITS.len() - 1 {
+        size /= 1024.0;
+        unit_idx += 1;
+    }
+
+    if unit_idx == 0 {
+        format!("{} {}", size as u64, UNITS[unit_idx])
+    } else {
+        format!("{:.2} {}", size, UNITS[unit_idx])
+    }
 }
 
 async fn download_file(
@@ -502,37 +599,112 @@ async fn download_file(
             .with_context(|| format!("Failed to create destination directory: {destination:?}"))?;
     }
 
-    println!(
-        "Downloading {} from {} nodes to {:?} (SFTP)\n",
-        source,
-        nodes.len(),
-        destination
-    );
-
-    let key_path = key_path.map(|p| p.to_string_lossy().to_string());
+    let key_path_str = key_path.map(|p| p.to_string_lossy().to_string());
     let executor = ParallelExecutor::new_with_strict_mode_and_agent(
-        nodes,
+        nodes.clone(),
         max_parallel,
-        key_path,
+        key_path_str.clone(),
         strict_mode,
         use_agent,
     );
 
-    let results = executor.download_file(source, destination).await?;
+    // Check if source contains glob pattern
+    let has_glob = source.contains('*') || source.contains('?') || source.contains('[');
 
-    // Print results
-    for result in &results {
-        result.print_summary();
-    }
+    if has_glob {
+        println!(
+            "Resolving glob pattern '{}' on {} nodes...",
+            source,
+            nodes.len()
+        );
 
-    // Print summary
-    let success_count = results.iter().filter(|r| r.is_success()).count();
-    let failed_count = results.len() - success_count;
+        // First, execute ls command with glob to find matching files on first node
+        let test_node = nodes
+            .first()
+            .ok_or_else(|| anyhow::anyhow!("No nodes available"))?;
+        let glob_command = format!("ls -1 {source} 2>/dev/null || true");
 
-    println!("\nDownload complete: {success_count} successful, {failed_count} failed");
+        let mut test_client = SshClient::new(
+            test_node.host.clone(),
+            test_node.port,
+            test_node.username.clone(),
+        );
 
-    if failed_count > 0 {
-        std::process::exit(1);
+        let glob_result = test_client
+            .connect_and_execute_with_host_check(
+                &glob_command,
+                key_path,
+                Some(strict_mode),
+                use_agent,
+            )
+            .await?;
+
+        let remote_files: Vec<String> = String::from_utf8_lossy(&glob_result.output)
+            .lines()
+            .filter(|line| !line.is_empty())
+            .map(|s| s.to_string())
+            .collect();
+
+        if remote_files.is_empty() {
+            anyhow::bail!("No files found matching pattern: {}", source);
+        }
+
+        println!("Found {} file(s) matching pattern:", remote_files.len());
+        for file in &remote_files {
+            println!("  - {file}");
+        }
+        println!("Destination: {destination:?}\n");
+
+        // Download each file
+        let results = executor
+            .download_files(remote_files.clone(), destination)
+            .await?;
+
+        // Print results
+        let mut total_success = 0;
+        let mut total_failed = 0;
+
+        for result in &results {
+            result.print_summary();
+            if result.is_success() {
+                total_success += 1;
+            } else {
+                total_failed += 1;
+            }
+        }
+
+        println!(
+            "\nTotal download summary: {total_success} successful, {total_failed} failed"
+        );
+
+        if total_failed > 0 {
+            std::process::exit(1);
+        }
+    } else {
+        // Single file download
+        println!(
+            "Downloading {} from {} nodes to {:?} (SFTP)\n",
+            source,
+            nodes.len(),
+            destination
+        );
+
+        let results = executor.download_file(source, destination).await?;
+
+        // Print results
+        for result in &results {
+            result.print_summary();
+        }
+
+        // Print summary
+        let success_count = results.iter().filter(|r| r.is_success()).count();
+        let failed_count = results.len() - success_count;
+
+        println!("\nDownload complete: {success_count} successful, {failed_count} failed");
+
+        if failed_count > 0 {
+            std::process::exit(1);
+        }
     }
 
     Ok(())

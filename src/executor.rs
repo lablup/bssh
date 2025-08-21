@@ -311,6 +311,98 @@ impl ParallelExecutor {
 
         Ok(download_results)
     }
+
+    pub async fn download_files(
+        &self,
+        remote_paths: Vec<String>,
+        local_dir: &Path,
+    ) -> Result<Vec<DownloadResult>> {
+        let semaphore = Arc::new(Semaphore::new(self.max_parallel));
+        let multi_progress = MultiProgress::new();
+
+        let style = ProgressStyle::default_bar()
+            .template("{prefix:.bold.dim} {spinner:.green} {msg}")
+            .unwrap()
+            .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ");
+
+        let mut all_results = Vec::new();
+
+        for remote_path in remote_paths {
+            let tasks: Vec<_> = self
+                .nodes
+                .iter()
+                .map(|node| {
+                    let node = node.clone();
+                    let remote_path = remote_path.clone();
+                    let local_dir = local_dir.to_path_buf();
+                    let key_path = self.key_path.clone();
+                    let strict_mode = self.strict_mode;
+                    let use_agent = self.use_agent;
+                    let semaphore = Arc::clone(&semaphore);
+                    let pb = multi_progress.add(ProgressBar::new_spinner());
+                    pb.set_style(style.clone());
+                    pb.set_prefix(format!("[{node}]"));
+                    pb.set_message(format!("Downloading {remote_path}"));
+                    pb.enable_steady_tick(std::time::Duration::from_millis(100));
+
+                    tokio::spawn(async move {
+                        let _permit = semaphore.acquire().await.unwrap();
+
+                        // Generate unique filename for each node and file
+                        let filename = if let Some(file_name) = Path::new(&remote_path).file_name()
+                        {
+                            format!(
+                                "{}_{}",
+                                node.host.replace(':', "_"),
+                                file_name.to_string_lossy()
+                            )
+                        } else {
+                            format!("{}_download", node.host.replace(':', "_"))
+                        };
+                        let local_path = local_dir.join(filename);
+
+                        let result = download_from_node(
+                            node.clone(),
+                            &remote_path,
+                            &local_path,
+                            key_path.as_deref(),
+                            strict_mode,
+                            use_agent,
+                        )
+                        .await;
+
+                        match &result {
+                            Ok(path) => {
+                                pb.finish_with_message(format!("✓ Downloaded {}", path.display()));
+                            }
+                            Err(e) => {
+                                pb.finish_with_message(format!("✗ Failed: {e}"));
+                            }
+                        }
+
+                        DownloadResult {
+                            node,
+                            result: result.map(|_| local_path),
+                        }
+                    })
+                })
+                .collect();
+
+            let results = join_all(tasks).await;
+
+            // Collect results for this file
+            for result in results {
+                match result {
+                    Ok(download_result) => all_results.push(download_result),
+                    Err(e) => {
+                        tracing::error!("Task failed: {}", e);
+                    }
+                }
+            }
+        }
+
+        Ok(all_results)
+    }
 }
 
 async fn execute_on_node(

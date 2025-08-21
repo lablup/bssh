@@ -86,21 +86,24 @@ Test connectivity to hosts
 
 .TP
 .B upload
-Upload files to remote hosts using SFTP
+Upload files to remote hosts using SFTP (supports glob patterns)
 .RS
 Usage: bssh upload \fISOURCE\fR \fIDESTINATION\fR
 .br
-Uploads the local file SOURCE to DESTINATION path on all specified remote hosts.
+Uploads the local file(s) matching SOURCE pattern to DESTINATION path on all specified remote hosts.
+SOURCE can be a single file path or a glob pattern (e.g., *.txt, logs/*.log).
+When uploading multiple files, DESTINATION should be a directory (end with /).
 Uses SFTP protocol for secure file transfer with progress indicators.
 .RE
 
 .TP
 .B download
-Download files from remote hosts using SFTP
+Download files from remote hosts using SFTP (supports glob patterns)
 .RS
 Usage: bssh download \fISOURCE\fR \fIDESTINATION\fR
 .br
-Downloads the remote file SOURCE from all specified hosts to the local DESTINATION directory.
+Downloads the remote file(s) matching SOURCE pattern from all specified hosts to the local DESTINATION directory.
+SOURCE can be a single file path or a glob pattern (e.g., /var/log/*.log, /etc/*.conf).
 Each downloaded file is saved with a unique name prefixed by the hostname.
 Uses SFTP protocol for secure file transfer with progress indicators.
 .RE
@@ -231,6 +234,20 @@ Each file is saved as hostname_access.log in the ./logs/ directory
 .TP
 Upload with custom SSH key and increased parallelism:
 .B bssh -i ~/.ssh/deploy_key -p 20 -c production upload deploy.tar.gz /tmp/
+
+.TP
+Upload multiple files with glob pattern:
+.B bssh -c production upload "*.log" /var/backups/logs/
+.RS
+Uploads all .log files from current directory to /var/backups/logs/ on all nodes
+.RE
+
+.TP
+Download logs with wildcard pattern:
+.B bssh -c production download "/var/log/app*.log" ./collected_logs/
+.RS
+Downloads all files matching app*.log from /var/log/ on each node
+.RE
 
 .SH EXIT STATUS
 .TP

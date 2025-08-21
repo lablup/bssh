@@ -23,6 +23,7 @@ rpassword = "7"
 directories = "5"
 dirs = "6.0"
 chrono = "0.4"
+glob = "0.3"
 
 [dev-dependencies]
 tempfile = "3"
