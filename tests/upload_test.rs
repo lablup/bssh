@@ -33,13 +33,15 @@ fn test_upload_command_parsing() {
         cli.command,
         Some(Commands::Upload {
             source: _,
-            destination: _
+            destination: _,
+            recursive: _
         })
     ));
 
     if let Some(Commands::Upload {
         source,
         destination,
+        recursive: _,
     }) = cli.command
     {
         assert_eq!(source, PathBuf::from("/tmp/test.txt"));
@@ -65,7 +67,8 @@ fn test_upload_command_with_cluster() {
         cli.command,
         Some(Commands::Upload {
             source: _,
-            destination: _
+            destination: _,
+            recursive: _
         })
     ));
 }
@@ -94,6 +97,7 @@ fn test_upload_command_with_options() {
     if let Some(Commands::Upload {
         source,
         destination,
+        recursive: _,
     }) = cli.command
     {
         assert_eq!(source, PathBuf::from("data.csv"));

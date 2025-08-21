@@ -33,13 +33,15 @@ fn test_download_command_parsing() {
         cli.command,
         Some(Commands::Download {
             source: _,
-            destination: _
+            destination: _,
+            recursive: _
         })
     ));
 
     if let Some(Commands::Download {
         source,
         destination,
+        recursive: _,
     }) = cli.command
     {
         assert_eq!(source, "/remote/file.txt");
@@ -65,7 +67,8 @@ fn test_download_command_with_cluster() {
         cli.command,
         Some(Commands::Download {
             source: _,
-            destination: _
+            destination: _,
+            recursive: _
         })
     ));
 }
@@ -86,6 +89,7 @@ fn test_download_command_with_glob() {
     if let Some(Commands::Download {
         source,
         destination,
+        recursive: _,
     }) = cli.command
     {
         assert_eq!(source, "/var/log/*.log");
@@ -122,6 +126,7 @@ fn test_download_command_with_options() {
     if let Some(Commands::Download {
         source,
         destination,
+        recursive: _,
     }) = cli.command
     {
         assert_eq!(source, "/etc/config.conf");
