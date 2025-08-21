@@ -510,9 +510,7 @@ async fn upload_file(
         total_failed += failed_count;
     }
 
-    println!(
-        "\nTotal upload summary: {total_success} successful, {total_failed} failed"
-    );
+    println!("\nTotal upload summary: {total_success} successful, {total_failed} failed");
 
     if total_failed > 0 {
         std::process::exit(1);
@@ -673,9 +671,7 @@ async fn download_file(
             }
         }
 
-        println!(
-            "\nTotal download summary: {total_success} successful, {total_failed} failed"
-        );
+        println!("\nTotal download summary: {total_success} successful, {total_failed} failed");
 
         if total_failed > 0 {
             std::process::exit(1);

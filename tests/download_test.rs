@@ -111,7 +111,10 @@ fn test_download_command_with_options() {
 
     let cli = Cli::parse_from(args);
 
-    assert_eq!(cli.hosts, Some(vec!["node1".to_string(), "node2".to_string()]));
+    assert_eq!(
+        cli.hosts,
+        Some(vec!["node1".to_string(), "node2".to_string()])
+    );
     assert_eq!(cli.identity, Some(PathBuf::from("~/.ssh/id_ed25519")));
     assert_eq!(cli.parallel, 20);
     assert!(cli.use_agent);
