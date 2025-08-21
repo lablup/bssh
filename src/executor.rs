@@ -27,6 +27,7 @@ pub struct ParallelExecutor {
     max_parallel: usize,
     key_path: Option<String>,
     strict_mode: StrictHostKeyChecking,
+    use_agent: bool,
 }
 
 impl ParallelExecutor {
@@ -50,6 +51,23 @@ impl ParallelExecutor {
             max_parallel,
             key_path,
             strict_mode,
+            use_agent: false,
+        }
+    }
+
+    pub fn new_with_strict_mode_and_agent(
+        nodes: Vec<Node>,
+        max_parallel: usize,
+        key_path: Option<String>,
+        strict_mode: StrictHostKeyChecking,
+        use_agent: bool,
+    ) -> Self {
+        Self {
+            nodes,
+            max_parallel,
+            key_path,
+            strict_mode,
+            use_agent,
         }
     }
 
@@ -70,6 +88,7 @@ impl ParallelExecutor {
                 let command = command.to_string();
                 let key_path = self.key_path.clone();
                 let strict_mode = self.strict_mode;
+                let use_agent = self.use_agent;
                 let semaphore = Arc::clone(&semaphore);
                 let pb = multi_progress.add(ProgressBar::new_spinner());
                 pb.set_style(style.clone());
@@ -82,9 +101,14 @@ impl ParallelExecutor {
 
                     pb.set_message("Executing command...");
 
-                    let result =
-                        execute_on_node(node.clone(), &command, key_path.as_deref(), strict_mode)
-                            .await;
+                    let result = execute_on_node(
+                        node.clone(),
+                        &command,
+                        key_path.as_deref(),
+                        strict_mode,
+                        use_agent,
+                    )
+                    .await;
 
                     match &result {
                         Ok(cmd_result) => {
@@ -141,6 +165,7 @@ impl ParallelExecutor {
                 let remote_path = remote_path.to_string();
                 let key_path = self.key_path.clone();
                 let strict_mode = self.strict_mode;
+                let use_agent = self.use_agent;
                 let semaphore = Arc::clone(&semaphore);
                 let pb = multi_progress.add(ProgressBar::new_spinner());
                 pb.set_style(style.clone());
@@ -159,6 +184,7 @@ impl ParallelExecutor {
                         &remote_path,
                         key_path.as_deref(),
                         strict_mode,
+                        use_agent,
                     )
                     .await;
 
@@ -198,13 +224,14 @@ async fn execute_on_node(
     command: &str,
     key_path: Option<&str>,
     strict_mode: StrictHostKeyChecking,
+    use_agent: bool,
 ) -> Result<CommandResult> {
     let mut client = SshClient::new(node.host.clone(), node.port, node.username.clone());
 
     let key_path = key_path.map(Path::new);
 
     client
-        .connect_and_execute_with_host_check(command, key_path, Some(strict_mode))
+        .connect_and_execute_with_host_check(command, key_path, Some(strict_mode), use_agent)
         .await
 }
 
@@ -214,13 +241,20 @@ async fn copy_to_node(
     remote_path: &str,
     key_path: Option<&str>,
     strict_mode: StrictHostKeyChecking,
+    use_agent: bool,
 ) -> Result<()> {
     let mut client = SshClient::new(node.host.clone(), node.port, node.username.clone());
 
     let key_path = key_path.map(Path::new);
 
     client
-        .copy_file(local_path, remote_path, key_path, Some(strict_mode))
+        .copy_file(
+            local_path,
+            remote_path,
+            key_path,
+            Some(strict_mode),
+            use_agent,
+        )
         .await
 }
 

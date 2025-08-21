@@ -63,7 +63,14 @@ async fn main() -> Result<()> {
     // Handle remaining commands
     match cli.command {
         Some(Commands::Ping) => {
-            ping_nodes(nodes, cli.parallel, cli.identity.as_deref(), strict_mode).await?;
+            ping_nodes(
+                nodes,
+                cli.parallel,
+                cli.identity.as_deref(),
+                strict_mode,
+                cli.use_agent,
+            )
+            .await?;
         }
         Some(Commands::Copy {
             source,
@@ -76,6 +83,7 @@ async fn main() -> Result<()> {
                 cli.parallel,
                 cli.identity.as_deref(),
                 strict_mode,
+                cli.use_agent,
             )
             .await?;
         }
@@ -88,6 +96,7 @@ async fn main() -> Result<()> {
                 cli.identity.as_deref(),
                 cli.verbose > 0,
                 strict_mode,
+                cli.use_agent,
             )
             .await?;
         }
@@ -154,12 +163,18 @@ async fn ping_nodes(
     max_parallel: usize,
     key_path: Option<&Path>,
     strict_mode: StrictHostKeyChecking,
+    use_agent: bool,
 ) -> Result<()> {
     println!("Pinging {} nodes...\n", nodes.len());
 
     let key_path = key_path.map(|p| p.to_string_lossy().to_string());
-    let executor =
-        ParallelExecutor::new_with_strict_mode(nodes.clone(), max_parallel, key_path, strict_mode);
+    let executor = ParallelExecutor::new_with_strict_mode_and_agent(
+        nodes.clone(),
+        max_parallel,
+        key_path,
+        strict_mode,
+        use_agent,
+    );
 
     let results = executor.execute("echo 'pong'").await?;
 
@@ -191,12 +206,18 @@ async fn execute_command(
     key_path: Option<&Path>,
     verbose: bool,
     strict_mode: StrictHostKeyChecking,
+    use_agent: bool,
 ) -> Result<()> {
     println!("Executing command on {} nodes: {}\n", nodes.len(), command);
 
     let key_path = key_path.map(|p| p.to_string_lossy().to_string());
-    let executor =
-        ParallelExecutor::new_with_strict_mode(nodes, max_parallel, key_path, strict_mode);
+    let executor = ParallelExecutor::new_with_strict_mode_and_agent(
+        nodes,
+        max_parallel,
+        key_path,
+        strict_mode,
+        use_agent,
+    );
 
     let results = executor.execute(command).await?;
 
@@ -225,6 +246,7 @@ async fn copy_file(
     max_parallel: usize,
     key_path: Option<&Path>,
     strict_mode: StrictHostKeyChecking,
+    use_agent: bool,
 ) -> Result<()> {
     // Check if source file exists
     if !source.exists() {
@@ -244,8 +266,13 @@ async fn copy_file(
     );
 
     let key_path = key_path.map(|p| p.to_string_lossy().to_string());
-    let executor =
-        ParallelExecutor::new_with_strict_mode(nodes, max_parallel, key_path, strict_mode);
+    let executor = ParallelExecutor::new_with_strict_mode_and_agent(
+        nodes,
+        max_parallel,
+        key_path,
+        strict_mode,
+        use_agent,
+    );
 
     let results = executor.copy_file(source, destination).await?;
 

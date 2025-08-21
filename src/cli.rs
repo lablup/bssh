@@ -51,6 +51,13 @@ pub struct Cli {
     pub identity: Option<PathBuf>,
 
     #[arg(
+        short = 'A',
+        long,
+        help = "Use SSH agent for authentication (Unix/Linux/macOS only)"
+    )]
+    pub use_agent: bool,
+
+    #[arg(
         short = 'p',
         long,
         default_value = "10",

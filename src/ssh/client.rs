@@ -38,8 +38,9 @@ impl SshClient {
         &mut self,
         command: &str,
         key_path: Option<&Path>,
+        use_agent: bool,
     ) -> Result<CommandResult> {
-        self.connect_and_execute_with_host_check(command, key_path, None)
+        self.connect_and_execute_with_host_check(command, key_path, None, use_agent)
             .await
     }
 
@@ -48,26 +49,13 @@ impl SshClient {
         command: &str,
         key_path: Option<&Path>,
         strict_mode: Option<StrictHostKeyChecking>,
+        use_agent: bool,
     ) -> Result<CommandResult> {
         let addr = (self.host.as_str(), self.port);
         tracing::debug!("Connecting to {}:{}", self.host, self.port);
 
-        // Determine authentication method
-        let auth_method = if let Some(key_path) = key_path {
-            tracing::debug!("Authenticating with key: {:?}", key_path);
-            AuthMethod::with_key_file(key_path, None)
-        } else {
-            // Try default key location
-            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-            let default_key = Path::new(&home).join(".ssh").join("id_rsa");
-
-            if default_key.exists() {
-                tracing::debug!("Using default key: {:?}", default_key);
-                AuthMethod::with_key_file(default_key, None)
-            } else {
-                anyhow::bail!("SSH authentication failed: No SSH key specified and no default key found at ~/.ssh/id_rsa. Please specify a key with -i or ensure a default key exists.");
-            }
-        };
+        // Determine authentication method based on parameters
+        let auth_method = self.determine_auth_method(key_path, use_agent)?;
 
         // Set up host key checking
         let check_method = if let Some(mode) = strict_mode {
@@ -119,26 +107,13 @@ impl SshClient {
         remote_path: &str,
         key_path: Option<&Path>,
         strict_mode: Option<StrictHostKeyChecking>,
+        use_agent: bool,
     ) -> Result<()> {
         let addr = (self.host.as_str(), self.port);
         tracing::debug!("Connecting to {}:{} for file copy", self.host, self.port);
 
-        // Determine authentication method
-        let auth_method = if let Some(key_path) = key_path {
-            tracing::debug!("Authenticating with key: {:?}", key_path);
-            AuthMethod::with_key_file(key_path, None)
-        } else {
-            // Try default key location
-            let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-            let default_key = Path::new(&home).join(".ssh").join("id_rsa");
-
-            if default_key.exists() {
-                tracing::debug!("Using default key: {:?}", default_key);
-                AuthMethod::with_key_file(default_key, None)
-            } else {
-                anyhow::bail!("SSH authentication failed: No SSH key specified and no default key found at ~/.ssh/id_rsa. Please specify a key with -i or ensure a default key exists.");
-            }
-        };
+        // Determine authentication method based on parameters
+        let auth_method = self.determine_auth_method(key_path, use_agent)?;
 
         // Set up host key checking
         let check_method = if let Some(mode) = strict_mode {
@@ -200,6 +175,67 @@ impl SshClient {
         tracing::debug!("File copy completed successfully");
 
         Ok(())
+    }
+
+    fn determine_auth_method(
+        &self,
+        key_path: Option<&Path>,
+        use_agent: bool,
+    ) -> Result<AuthMethod> {
+        // If SSH agent is explicitly requested, try that first
+        if use_agent {
+            #[cfg(not(target_os = "windows"))]
+            {
+                // Check if SSH_AUTH_SOCK is available
+                if std::env::var("SSH_AUTH_SOCK").is_ok() {
+                    tracing::debug!("Using SSH agent for authentication");
+                    return Ok(AuthMethod::Agent);
+                } else {
+                    tracing::warn!(
+                        "SSH agent requested but SSH_AUTH_SOCK environment variable not set"
+                    );
+                    // Fall through to key file authentication
+                }
+            }
+            #[cfg(target_os = "windows")]
+            {
+                anyhow::bail!("SSH agent authentication is not supported on Windows");
+            }
+        }
+
+        // Try key file authentication
+        if let Some(key_path) = key_path {
+            tracing::debug!("Authenticating with key: {:?}", key_path);
+            return Ok(AuthMethod::with_key_file(key_path, None));
+        }
+
+        // If no explicit key path, try SSH agent if available (auto-detect)
+        #[cfg(not(target_os = "windows"))]
+        if !use_agent && std::env::var("SSH_AUTH_SOCK").is_ok() {
+            tracing::debug!("SSH agent detected, attempting agent authentication");
+            return Ok(AuthMethod::Agent);
+        }
+
+        // Fallback to default key location
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        let default_key = Path::new(&home).join(".ssh").join("id_rsa");
+
+        if default_key.exists() {
+            tracing::debug!("Using default key: {:?}", default_key);
+            Ok(AuthMethod::with_key_file(default_key, None))
+        } else {
+            anyhow::bail!(
+                "SSH authentication failed: No authentication method available.\n\
+                 Tried:\n\
+                 - SSH agent (SSH_AUTH_SOCK not set or agent not available)\n\
+                 - Default key file (~/.ssh/id_rsa not found)\n\
+                 \n\
+                 Solutions:\n\
+                 - Start SSH agent and add keys with 'ssh-add'\n\
+                 - Specify a key file with -i/--identity\n\
+                 - Create a default key at ~/.ssh/id_rsa"
+            );
+        }
     }
 }
 

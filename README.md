@@ -8,6 +8,7 @@ A high-performance parallel SSH command execution tool for cluster management, b
 - **Cluster Management**: Define and manage node clusters via configuration files
 - **Progress Tracking**: Real-time progress indicators for each node
 - **Flexible Authentication**: Support for SSH keys and SSH agent
+- **Host Key Verification**: Secure host key checking with known_hosts support
 - **Cross-Platform**: Works on Linux and macOS
 
 ## Installation
@@ -29,6 +30,9 @@ bssh -c production "df -h"
 
 # With custom SSH key
 bssh -c staging -i ~/.ssh/custom_key "systemctl status nginx"
+
+# Use SSH agent for authentication
+bssh --use-agent -c production "systemctl status nginx"
 
 # Limit parallel connections
 bssh -c production --parallel 5 "apt update"
@@ -110,16 +114,18 @@ clusters:
 
 ```
 Options:
-  -H, --hosts <HOSTS>           Comma-separated list of hosts
-  -c, --cluster <CLUSTER>       Cluster name from configuration
-  --config <CONFIG>             Config file path [default: ~/.bssh/config.yaml]
-  -u, --user <USER>             Default username for SSH
-  -i, --identity <IDENTITY>     SSH private key file
-  -p, --parallel <PARALLEL>     Max parallel connections [default: 10]
-  --output-dir <OUTPUT_DIR>     Output directory for results
-  -v, --verbose                 Increase verbosity (-v, -vv, -vvv)
-  -h, --help                    Print help
-  -V, --version                 Print version
+  -H, --hosts <HOSTS>                     Comma-separated list of hosts
+  -c, --cluster <CLUSTER>                 Cluster name from configuration
+  --config <CONFIG>                       Config file path [default: ~/.bssh/config.yaml]
+  -u, --user <USER>                       Default username for SSH
+  -i, --identity <IDENTITY>               SSH private key file
+  -A, --use-agent                         Use SSH agent for authentication
+  --strict-host-key-checking <MODE>       Host key checking mode [yes|no|accept-new] [default: accept-new]
+  -p, --parallel <PARALLEL>               Max parallel connections [default: 10]
+  --output-dir <OUTPUT_DIR>               Output directory for results
+  -v, --verbose                           Increase verbosity (-v, -vv, -vvv)
+  -h, --help                              Print help
+  -V, --version                           Print version
 ```
 
 ## Examples
@@ -178,5 +184,12 @@ Licensed under the Apache License, Version 2.0
 ## Changelog
 
 ### Recent Updates
-- **v0.2.0 (2025/08/21):** Backend.AI multi-node session support with automatic cluster detection and SSH port 2200
+- **v0.2.0 (2025/08/21):** 
+  - Backend.AI multi-node session support with automatic cluster detection
+  - SSH agent authentication support with auto-detection
+  - Host key verification with StrictHostKeyChecking modes
+  - Environment variable expansion in configuration (${VAR})
+  - Connection and execution timeouts
+  - Fixed list command to work without host specification
+  - Basic SCP file copy support
 - **v0.1.0 (2025/08/21):** Initial release with parallel SSH execution using async-ssh2-tokio 
