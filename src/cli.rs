@@ -108,6 +108,9 @@ pub enum Commands {
 
         #[arg(help = "Remote destination path")]
         destination: String,
+
+        #[arg(short = 'r', long, help = "Recursively upload directories")]
+        recursive: bool,
     },
 
     #[command(about = "Download files from remote hosts")]
@@ -117,6 +120,9 @@ pub enum Commands {
 
         #[arg(help = "Local destination directory")]
         destination: PathBuf,
+
+        #[arg(short = 'r', long, help = "Recursively download directories")]
+        recursive: bool,
     },
 }
 

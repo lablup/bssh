@@ -89,6 +89,7 @@ async fn main() -> Result<()> {
         Some(Commands::Upload {
             source,
             destination,
+            recursive,
         }) => {
             upload_file(
                 nodes,
@@ -98,12 +99,14 @@ async fn main() -> Result<()> {
                 cli.identity.as_deref(),
                 strict_mode,
                 cli.use_agent,
+                recursive,
             )
             .await?;
         }
         Some(Commands::Download {
             source,
             destination,
+            recursive,
         }) => {
             download_file(
                 nodes,
@@ -113,6 +116,7 @@ async fn main() -> Result<()> {
                 cli.identity.as_deref(),
                 strict_mode,
                 cli.use_agent,
+                recursive,
             )
             .await?;
         }
@@ -440,9 +444,10 @@ async fn upload_file(
     key_path: Option<&Path>,
     strict_mode: StrictHostKeyChecking,
     use_agent: bool,
+    recursive: bool,
 ) -> Result<()> {
     // Collect all files matching the pattern
-    let files = resolve_source_files(source)?;
+    let files = resolve_source_files(source, recursive)?;
 
     if files.is_empty() {
         anyhow::bail!("No files found matching pattern: {:?}", source);
@@ -477,18 +482,56 @@ async fn upload_file(
     let mut total_success = 0;
     let mut total_failed = 0;
 
+    // For recursive uploads, determine the base directory to preserve structure
+    let base_dir = if recursive && source.is_dir() {
+        Some(source)
+    } else if recursive && !files.is_empty() {
+        // For glob patterns with recursive, find common parent
+        files.first().and_then(|f| f.parent())
+    } else {
+        None
+    };
+
     // Upload each file
-    for file in files {
+    for file in &files {
         let remote_path = if is_dir_destination {
-            // If destination is a directory or multiple files, append filename
-            let filename = file
-                .file_name()
-                .ok_or_else(|| anyhow::anyhow!("Failed to get filename from {:?}", file))?
-                .to_string_lossy();
-            if destination.ends_with('/') {
-                format!("{destination}{filename}")
+            // If destination is a directory or multiple files
+            if recursive && base_dir.is_some() {
+                // Preserve directory structure for recursive uploads
+                let relative_path = file.strip_prefix(base_dir.unwrap())
+                    .unwrap_or(&file);
+                let remote_relative = relative_path.to_string_lossy();
+                
+                // Create remote directory structure if needed
+                if let Some(parent) = relative_path.parent() {
+                    if !parent.as_os_str().is_empty() {
+                        let remote_dir = if destination.ends_with('/') {
+                            format!("{destination}{}", parent.display())
+                        } else {
+                            format!("{destination}/{}", parent.display())
+                        };
+                        // Create remote directory using SSH command
+                        let mkdir_cmd = format!("mkdir -p '{}'", remote_dir);
+                        let _ = executor.execute(&mkdir_cmd).await;
+                    }
+                }
+                
+                if destination.ends_with('/') {
+                    format!("{destination}{remote_relative}")
+                } else {
+                    format!("{destination}/{remote_relative}")
+                }
             } else {
-                format!("{destination}/{filename}")
+                // Non-recursive: just append filename
+                let filename = file
+                    .file_name()
+                    .ok_or_else(|| anyhow::anyhow!("Failed to get filename from {:?}", file))?
+                    .to_string_lossy();
+                if destination.ends_with('/') {
+                    format!("{destination}{filename}")
+                } else {
+                    format!("{destination}/{filename}")
+                }
             }
         } else {
             // Single file to specific destination
@@ -520,7 +563,7 @@ async fn upload_file(
 }
 
 // Helper function to resolve source files from glob pattern
-fn resolve_source_files(source: &Path) -> Result<Vec<PathBuf>> {
+fn resolve_source_files(source: &Path, recursive: bool) -> Result<Vec<PathBuf>> {
     let source_str = source.to_string_lossy();
 
     // Check if it's a glob pattern (contains *, ?, [, ])
@@ -532,7 +575,11 @@ fn resolve_source_files(source: &Path) -> Result<Vec<PathBuf>> {
         {
             match entry {
                 Ok(path) if path.is_file() => files.push(path),
-                Ok(_) => {} // Skip directories
+                Ok(path) if path.is_dir() && recursive => {
+                    // Recursively add files from directories when using glob with --recursive
+                    files.extend(walk_directory(&path)?);
+                }
+                Ok(_) => {} // Skip directories if not recursive
                 Err(e) => tracing::warn!("Failed to read glob entry: {}", e),
             }
         }
@@ -541,10 +588,15 @@ fn resolve_source_files(source: &Path) -> Result<Vec<PathBuf>> {
         // Single file
         Ok(vec![source.to_path_buf()])
     } else if source.exists() && source.is_dir() {
-        anyhow::bail!(
-            "Source is a directory. Use a glob pattern like '{}/*' to upload files",
-            source_str
-        );
+        if recursive {
+            // Recursively walk the directory
+            walk_directory(source)
+        } else {
+            anyhow::bail!(
+                "Source is a directory. Use --recursive flag or a glob pattern like '{}/*' to upload files",
+                source_str
+            );
+        }
     } else {
         // Try as glob pattern even without special characters (might be escaped)
         let mut files = Vec::new();
@@ -554,6 +606,8 @@ fn resolve_source_files(source: &Path) -> Result<Vec<PathBuf>> {
         {
             if path.is_file() {
                 files.push(path);
+            } else if path.is_dir() && recursive {
+                files.extend(walk_directory(&path)?);
             }
         }
 
@@ -562,6 +616,27 @@ fn resolve_source_files(source: &Path) -> Result<Vec<PathBuf>> {
         }
         Ok(files)
     }
+}
+
+// Helper function to recursively walk a directory and collect all files
+fn walk_directory(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let metadata = entry.metadata()?;
+        
+        if metadata.is_file() {
+            files.push(path);
+        } else if metadata.is_dir() {
+            // Recursively walk subdirectories
+            files.extend(walk_directory(&path)?);
+        }
+        // Skip symlinks and other special files
+    }
+    
+    Ok(files)
 }
 
 // Helper function to format bytes in human-readable format
@@ -590,6 +665,7 @@ async fn download_file(
     key_path: Option<&Path>,
     strict_mode: StrictHostKeyChecking,
     use_agent: bool,
+    recursive: bool,
 ) -> Result<()> {
     // Create destination directory if it doesn't exist
     if !destination.exists() {
@@ -609,8 +685,91 @@ async fn download_file(
 
     // Check if source contains glob pattern
     let has_glob = source.contains('*') || source.contains('?') || source.contains('[');
+    
+    // Check if source is a directory (for recursive download)
+    let is_directory = if recursive && !has_glob {
+        // Use a test command to check if source is a directory
+        let test_cmd = format!("test -d '{}' && echo 'dir' || echo 'file'", source);
+        let test_results = executor.execute(&test_cmd).await?;
+        test_results.iter().any(|r| {
+            r.result.as_ref().map_or(false, |res| {
+                String::from_utf8_lossy(&res.output).trim() == "dir"
+            })
+        })
+    } else {
+        false
+    };
 
-    if has_glob {
+    if is_directory {
+        // Recursive directory download
+        println!("Recursively downloading directory {source} from {} nodes", nodes.len());
+        
+        // Find all files in the directory recursively
+        let find_cmd = format!("find '{}' -type f 2>/dev/null || find '{}' -type f", source, source);
+        let find_results = executor.execute(&find_cmd).await?;
+        
+        let mut total_success = 0;
+        let mut total_failed = 0;
+        
+        for (node_idx, result) in find_results.iter().enumerate() {
+            if let Ok(cmd_result) = &result.result {
+                let stdout = String::from_utf8_lossy(&cmd_result.output);
+                let files: Vec<String> = stdout
+                    .lines()
+                    .filter(|line| !line.is_empty())
+                    .map(|s| s.to_string())
+                    .collect();
+                    
+                if files.is_empty() {
+                    println!("No files found in directory on {}", nodes[node_idx]);
+                    continue;
+                }
+                
+                println!("\nDownloading {} files from {}", files.len(), nodes[node_idx]);
+                
+                for remote_file in files {
+                    // Calculate relative path from source directory
+                    let relative_path = remote_file.strip_prefix(source)
+                        .unwrap_or(&remote_file)
+                        .trim_start_matches('/');
+                    
+                    // Create local file path preserving directory structure
+                    let local_file = destination.join(&nodes[node_idx].to_string()).join(relative_path);
+                    
+                    // Create parent directory if needed
+                    if let Some(parent) = local_file.parent() {
+                        fs::create_dir_all(parent).await?;
+                    }
+                    
+                    // Download the file using the executor's download method
+                    let single_node = vec![nodes[node_idx].clone()];
+                    let single_executor = ParallelExecutor::new_with_strict_mode_and_agent(
+                        single_node,
+                        1,
+                        key_path_str.clone(),
+                        strict_mode,
+                        use_agent,
+                    );
+                    
+                    let download_results = single_executor.download_file(&remote_file, &local_file).await?;
+                    
+                    if download_results.iter().any(|r| r.is_success()) {
+                        println!("  ✓ Downloaded: {} -> {:?}", remote_file, local_file);
+                        total_success += 1;
+                    } else {
+                        println!("  ✗ Failed: {}", remote_file);
+                        total_failed += 1;
+                    }
+                }
+            }
+        }
+        
+        println!("\nTotal recursive download summary: {total_success} successful, {total_failed} failed");
+        
+        if total_failed > 0 {
+            std::process::exit(1);
+        }
+    } else if has_glob {
         println!(
             "Resolving glob pattern '{}' on {} nodes...",
             source,
