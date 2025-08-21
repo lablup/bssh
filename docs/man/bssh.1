@@ -1,0 +1,240 @@
+.\" Manpage for bssh
+.\" Contact the maintainers to correct errors or typos.
+.TH BSSH 1 "August 21, 2025" "v0.2.0" "bssh Manual"
+
+.SH NAME
+bssh \- Backend.AI SSH - Parallel command execution across cluster nodes
+
+.SH SYNOPSIS
+.B bssh
+[\fIOPTIONS\fR] [\fICOMMAND_ARGS\fR...] [\fICOMMAND\fR]
+
+.SH DESCRIPTION
+.B bssh
+is a high-performance parallel SSH command execution tool for cluster management, built with Rust.
+It enables efficient execution of commands across multiple nodes simultaneously with real-time output streaming.
+The tool automatically detects Backend.AI multi-node session environments and supports various configuration methods.
+
+.SH OPTIONS
+.TP
+.BR \-H ", " \-\-hosts " " \fIHOSTS\fR
+Comma-separated list of hosts in [user@]hostname[:port] format.
+Example: user1@host1:2222,user2@host2
+
+.TP
+.BR \-c ", " \-\-cluster " " \fICLUSTER\fR
+Cluster name from configuration file
+
+.TP
+.BR \-\-config " " \fICONFIG\fR
+Configuration file path (default: ~/.bssh/config.yaml)
+
+.TP
+.BR \-u ", " \-\-user " " \fIUSER\fR
+Default username for SSH connections
+
+.TP
+.BR \-i ", " \-\-identity " " \fIIDENTITY\fR
+SSH private key file path
+
+.TP
+.BR \-p ", " \-\-parallel " " \fIPARALLEL\fR
+Maximum parallel connections (default: 10)
+
+.TP
+.BR \-\-output\-dir " " \fIOUTPUT_DIR\fR
+Output directory for command results
+
+.TP
+.BR \-v ", " \-\-verbose
+Increase verbosity (can be used multiple times: -v, -vv, -vvv)
+
+.TP
+.BR \-\-strict\-host\-key\-checking " " \fIMODE\fR
+Host key checking mode: yes, no, or accept-new (default: accept-new)
+
+.TP
+.BR \-h ", " \-\-help
+Print help information
+
+.TP
+.BR \-V ", " \-\-version
+Print version information
+
+.SH COMMANDS
+.TP
+.B exec
+Execute a command on specified hosts
+
+.TP
+.B list
+List available clusters from configuration
+
+.TP
+.B ping
+Test connectivity to hosts
+
+.TP
+.B copy
+Copy files to remote hosts
+.RS
+Usage: bssh copy \fISOURCE\fR \fIDESTINATION\fR
+.RE
+
+.SH CONFIGURATION
+.B bssh
+loads configuration from the following sources in priority order:
+
+.IP 1. 4
+Backend.AI environment variables (automatic detection)
+.IP 2. 4
+Current directory (./config.yaml)
+.IP 3. 4
+User config directory (~/.config/bssh/config.yaml)
+.IP 4. 4
+Default location (~/.bssh/config.yaml)
+
+.SS Configuration File Format
+.nf
+defaults:
+  user: admin
+  port: 22
+  ssh_key: ~/.ssh/id_rsa
+  parallel: 10
+
+clusters:
+  production:
+    nodes:
+      - web1.example.com
+      - web2.example.com
+      - user@web3.example.com:2222
+    ssh_key: ~/.ssh/prod_key
+  
+  staging:
+    nodes:
+      - host: staging1.example.com
+        port: 2200
+        user: deploy
+      - staging2.example.com
+    user: staging_user
+.fi
+
+.SH BACKEND.AI INTEGRATION
+When running inside a Backend.AI multi-node session, bssh automatically detects cluster configuration
+from environment variables:
+
+.TP
+.B BACKENDAI_CLUSTER_HOSTS
+Comma-separated list of all node hostnames
+
+.TP
+.B BACKENDAI_CLUSTER_HOST
+Current node's hostname
+
+.TP
+.B BACKENDAI_CLUSTER_ROLE
+Current node's role (main or sub)
+
+Note: Backend.AI multi-node clusters use SSH port 2200 by default, which is automatically configured.
+
+.SH EXAMPLES
+.TP
+Execute command on multiple hosts:
+.B bssh -H "user1@host1,user2@host2" "uptime"
+
+.TP
+Use cluster from configuration:
+.B bssh -c production "df -h"
+
+.TP
+Test connectivity:
+.B bssh -c production ping
+
+.TP
+Copy file to remote hosts:
+.B bssh -c production copy local_file.txt /tmp/remote_file.txt
+
+.TP
+Backend.AI multi-node session (automatic):
+.B bssh "nvidia-smi"
+
+.TP
+Increase verbosity for debugging:
+.B bssh -vv -H localhost "echo test"
+
+.TP
+Use custom SSH key:
+.B bssh -i ~/.ssh/custom_key -c staging "systemctl status"
+
+.TP
+Save output to files:
+.B bssh --output-dir ./results -c production "ps aux"
+
+.SH EXIT STATUS
+.TP
+.B 0
+Success - all commands executed successfully on all nodes
+
+.TP
+.B 1
+Failure - one or more commands failed or connection errors occurred
+
+.SH FILES
+.TP
+.I ~/.bssh/config.yaml
+Default configuration file
+
+.TP
+.I ~/.config/bssh/config.yaml
+User configuration directory location
+
+.TP
+.I ~/.ssh/known_hosts
+SSH known hosts file for host key verification
+
+.TP
+.I ~/.ssh/id_rsa
+Default SSH private key
+
+.SH ENVIRONMENT
+.TP
+.B USER
+Used as default username when not specified
+
+.TP
+.B HOME
+Used for expanding tilde (~) in paths
+
+.TP
+.B BACKENDAI_CLUSTER_HOSTS
+Backend.AI cluster node list
+
+.TP
+.B BACKENDAI_CLUSTER_HOST
+Backend.AI current node hostname
+
+.TP
+.B BACKENDAI_CLUSTER_ROLE
+Backend.AI node role (main/sub)
+
+.SH AUTHOR
+Written by Jeongkyu Shin and the Lablup team.
+
+.SH REPORTING BUGS
+Report bugs to: https://github.com/lablup/bssh/issues
+
+.SH COPYRIGHT
+Copyright © 2025 Lablup Inc. and Jeongkyu Shin
+.br
+Licensed under the Apache License, Version 2.0
+
+.SH SEE ALSO
+.BR ssh (1),
+.BR scp (1),
+.BR ssh-agent (1),
+.BR ssh-keygen (1)
+
+.SH NOTES
+For more information and documentation, visit:
+.br
+https://github.com/lablup/bssh
