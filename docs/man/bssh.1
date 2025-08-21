@@ -1,6 +1,6 @@
 .\" Manpage for bssh
 .\" Contact the maintainers to correct errors or typos.
-.TH BSSH 1 "August 21, 2025" "v0.3.0" "bssh Manual"
+.TH BSSH 1 "August 21, 2025" "v0.3.1" "bssh Manual"
 
 .SH NAME
 bssh \- Backend.AI SSH - Parallel command execution across cluster nodes
@@ -13,7 +13,9 @@ bssh \- Backend.AI SSH - Parallel command execution across cluster nodes
 .B bssh
 is a high-performance parallel SSH command execution tool for cluster management, built with Rust.
 It enables efficient execution of commands across multiple nodes simultaneously with real-time output streaming.
-The tool automatically detects Backend.AI multi-node session environments and supports various configuration methods.
+The tool provides secure file transfer capabilities using SFTP protocol for both uploading and downloading files
+to/from multiple remote hosts in parallel. It automatically detects Backend.AI multi-node session environments 
+and supports various configuration methods.
 
 .SH OPTIONS
 .TP
@@ -83,10 +85,27 @@ List available clusters from configuration
 Test connectivity to hosts
 
 .TP
-.B copy
-Copy files to remote hosts
+.B upload
+Upload files to remote hosts using SFTP (supports glob patterns)
 .RS
-Usage: bssh copy \fISOURCE\fR \fIDESTINATION\fR
+Usage: bssh upload \fISOURCE\fR \fIDESTINATION\fR
+.br
+Uploads the local file(s) matching SOURCE pattern to DESTINATION path on all specified remote hosts.
+SOURCE can be a single file path or a glob pattern (e.g., *.txt, logs/*.log).
+When uploading multiple files, DESTINATION should be a directory (end with /).
+Uses SFTP protocol for secure file transfer with progress indicators.
+.RE
+
+.TP
+.B download
+Download files from remote hosts using SFTP (supports glob patterns)
+.RS
+Usage: bssh download \fISOURCE\fR \fIDESTINATION\fR
+.br
+Downloads the remote file(s) matching SOURCE pattern from all specified hosts to the local DESTINATION directory.
+SOURCE can be a single file path or a glob pattern (e.g., /var/log/*.log, /etc/*.conf).
+Each downloaded file is saved with a unique name prefixed by the hostname.
+Uses SFTP protocol for secure file transfer with progress indicators.
 .RE
 
 .SH CONFIGURATION
@@ -159,8 +178,16 @@ Test connectivity:
 .B bssh -c production ping
 
 .TP
-Copy file to remote hosts:
-.B bssh -c production copy local_file.txt /tmp/remote_file.txt
+Upload file to remote hosts (SFTP):
+.B bssh -c production upload local_file.txt /tmp/remote_file.txt
+
+.TP
+Download file from remote hosts (SFTP):
+.B bssh -c production download /etc/passwd ./downloads/
+.RS
+Downloads /etc/passwd from each host to ./downloads/ directory.
+Files are saved as hostname_passwd (e.g., web1_passwd, web2_passwd)
+.RE
 
 .TP
 Backend.AI multi-node session (automatic):
@@ -191,6 +218,35 @@ Creates timestamped files per node:
 - hostname_TIMESTAMP.error (connection errors)
 .br
 - summary_TIMESTAMP.txt (execution summary)
+.RE
+
+.TP
+Upload configuration file to all nodes:
+.B bssh -H "node1,node2,node3" upload /etc/myapp.conf /etc/myapp.conf
+
+.TP
+Download logs from all web servers:
+.B bssh -c webservers download /var/log/nginx/access.log ./logs/
+.RS
+Each file is saved as hostname_access.log in the ./logs/ directory
+.RE
+
+.TP
+Upload with custom SSH key and increased parallelism:
+.B bssh -i ~/.ssh/deploy_key -p 20 -c production upload deploy.tar.gz /tmp/
+
+.TP
+Upload multiple files with glob pattern:
+.B bssh -c production upload "*.log" /var/backups/logs/
+.RS
+Uploads all .log files from current directory to /var/backups/logs/ on all nodes
+.RE
+
+.TP
+Download logs with wildcard pattern:
+.B bssh -c production download "/var/log/app*.log" ./collected_logs/
+.RS
+Downloads all files matching app*.log from /var/log/ on each node
 .RE
 
 .SH EXIT STATUS
@@ -290,10 +346,26 @@ Licensed under the Apache License, Version 2.0
 .SH SEE ALSO
 .BR ssh (1),
 .BR scp (1),
+.BR sftp (1),
 .BR ssh-agent (1),
 .BR ssh-keygen (1)
 
 .SH NOTES
+.SS SFTP Requirements
+The upload and download commands require SFTP subsystem to be enabled on the remote SSH servers.
+Most SSH servers have SFTP enabled by default with a configuration line like:
+.br
+.I Subsystem sftp /usr/lib/openssh/sftp-server
+.br
+or
+.br
+.I Subsystem sftp internal-sftp
+
+.SS Performance
+File transfers use SFTP protocol which provides secure and reliable transfers.
+The parallel transfer capability allows simultaneous uploads/downloads to multiple nodes,
+significantly reducing total transfer time for cluster-wide file distribution or collection.
+
 For more information and documentation, visit:
 .br
 https://github.com/lablup/bssh

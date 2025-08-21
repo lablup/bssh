@@ -101,13 +101,22 @@ pub enum Commands {
     #[command(about = "Test connectivity to hosts")]
     Ping,
 
-    #[command(about = "Copy files to remote hosts")]
-    Copy {
-        #[arg(help = "Source file path")]
+    #[command(about = "Upload files to remote hosts")]
+    Upload {
+        #[arg(help = "Local file path")]
         source: PathBuf,
 
-        #[arg(help = "Destination path on remote hosts")]
+        #[arg(help = "Remote destination path")]
         destination: String,
+    },
+
+    #[command(about = "Download files from remote hosts")]
+    Download {
+        #[arg(help = "Remote file path")]
+        source: String,
+
+        #[arg(help = "Local destination directory")]
+        destination: PathBuf,
     },
 }
 

@@ -101,7 +101,7 @@ impl SshClient {
         })
     }
 
-    pub async fn copy_file(
+    pub async fn upload_file(
         &mut self,
         local_path: &Path,
         remote_path: &str,
@@ -145,14 +145,14 @@ impl SshClient {
         let file_size = metadata.len();
 
         tracing::debug!(
-            "Copying file {:?} ({} bytes) to {}:{}",
+            "Uploading file {:?} ({} bytes) to {}:{} using SFTP",
             local_path,
             file_size,
             self.host,
             remote_path
         );
 
-        // Use the built-in upload_file method with timeout
+        // Use the built-in upload_file method with timeout (SFTP-based)
         let upload_timeout = Duration::from_secs(300); // 5 minutes for file upload
         tokio::time::timeout(
             upload_timeout,
@@ -172,7 +172,83 @@ impl SshClient {
             )
         })?;
 
-        tracing::debug!("File copy completed successfully");
+        tracing::debug!("File upload completed successfully");
+
+        Ok(())
+    }
+
+    pub async fn download_file(
+        &mut self,
+        remote_path: &str,
+        local_path: &Path,
+        key_path: Option<&Path>,
+        strict_mode: Option<StrictHostKeyChecking>,
+        use_agent: bool,
+    ) -> Result<()> {
+        let addr = (self.host.as_str(), self.port);
+        tracing::debug!(
+            "Connecting to {}:{} for file download",
+            self.host,
+            self.port
+        );
+
+        // Determine authentication method based on parameters
+        let auth_method = self.determine_auth_method(key_path, use_agent)?;
+
+        // Set up host key checking
+        let check_method = if let Some(mode) = strict_mode {
+            super::known_hosts::get_check_method(mode)
+        } else {
+            super::known_hosts::get_check_method(StrictHostKeyChecking::AcceptNew)
+        };
+
+        // Connect and authenticate with timeout
+        let connect_timeout = Duration::from_secs(30);
+        let client = tokio::time::timeout(
+            connect_timeout,
+            Client::connect(addr, &self.username, auth_method, check_method)
+        )
+        .await
+        .with_context(|| format!("Connection timeout: Failed to connect to {}:{} after 30 seconds. Please check if the host is reachable and SSH service is running.", self.host, self.port))?
+        .with_context(|| format!("SSH connection failed to {}:{}. Please verify the hostname, port, and authentication credentials.", self.host, self.port))?;
+
+        tracing::debug!("Connected and authenticated successfully");
+
+        // Create parent directory if it doesn't exist
+        if let Some(parent) = local_path.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .with_context(|| format!("Failed to create parent directory for {local_path:?}"))?;
+        }
+
+        tracing::debug!(
+            "Downloading file from {}:{} to {:?} using SFTP",
+            self.host,
+            remote_path,
+            local_path
+        );
+
+        // Use the built-in download_file method with timeout (SFTP-based)
+        let download_timeout = Duration::from_secs(300); // 5 minutes for file download
+        tokio::time::timeout(
+            download_timeout,
+            client.download_file(remote_path.to_string(), local_path),
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "File download timeout: Transfer from {}:{} to {:?} did not complete within 5 minutes",
+                self.host, remote_path, local_path
+            )
+        })?
+        .with_context(|| {
+            format!(
+                "Failed to download file from {}:{} to {:?}",
+                self.host, remote_path, local_path
+            )
+        })?;
+
+        tracing::debug!("File download completed successfully");
 
         Ok(())
     }

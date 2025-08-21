@@ -20,9 +20,10 @@ futures = "0.3"
 async-trait = "0.1"
 indicatif = "0.18"
 rpassword = "7"
-directories = "5"
+directories = "6"
 dirs = "6.0"
 chrono = "0.4"
+glob = "0.3"
 
 [dev-dependencies]
 tempfile = "3"
