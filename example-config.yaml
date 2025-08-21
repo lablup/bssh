@@ -1,0 +1,32 @@
+# Example configuration for bssh
+defaults:
+  user: ubuntu
+  port: 22
+  ssh_key: ~/.ssh/id_rsa
+  parallel: 10
+
+clusters:
+  local:
+    nodes:
+      - localhost
+    user: ${USER}
+  
+  dev:
+    nodes:
+      - dev1.example.com
+      - dev2.example.com
+      - dev3.example.com
+    user: developer
+    ssh_key: ~/.ssh/dev_key
+  
+  production:
+    nodes:
+      - host: prod1.example.com
+        port: 2222
+        user: admin
+      - host: prod2.example.com
+        port: 2222
+        user: admin
+      - host: prod3.example.com
+      - host: prod4.example.com
+    ssh_key: ~/.ssh/prod_key
