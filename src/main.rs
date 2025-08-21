@@ -27,6 +27,17 @@ use bssh::{
     ssh::known_hosts::StrictHostKeyChecking,
 };
 
+struct ExecuteCommandParams<'a> {
+    nodes: Vec<Node>,
+    command: &'a str,
+    max_parallel: usize,
+    key_path: Option<&'a Path>,
+    verbose: bool,
+    strict_mode: StrictHostKeyChecking,
+    use_agent: bool,
+    output_dir: Option<&'a Path>,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -91,17 +102,17 @@ async fn main() -> Result<()> {
         }
         _ => {
             // Execute command
-            execute_command(
+            let params = ExecuteCommandParams {
                 nodes,
-                &command,
-                cli.parallel,
-                cli.identity.as_deref(),
-                cli.verbose > 0,
+                command: &command,
+                max_parallel: cli.parallel,
+                key_path: cli.identity.as_deref(),
+                verbose: cli.verbose > 0,
                 strict_mode,
-                cli.use_agent,
-                cli.output_dir.as_deref(),
-            )
-            .await?;
+                use_agent: cli.use_agent,
+                output_dir: cli.output_dir.as_deref(),
+            };
+            execute_command(params).await?;
         }
     }
 
@@ -202,37 +213,32 @@ async fn ping_nodes(
     Ok(())
 }
 
-async fn execute_command(
-    nodes: Vec<Node>,
-    command: &str,
-    max_parallel: usize,
-    key_path: Option<&Path>,
-    verbose: bool,
-    strict_mode: StrictHostKeyChecking,
-    use_agent: bool,
-    output_dir: Option<&Path>,
-) -> Result<()> {
-    println!("Executing command on {} nodes: {}\n", nodes.len(), command);
-
-    let key_path = key_path.map(|p| p.to_string_lossy().to_string());
-    let executor = ParallelExecutor::new_with_strict_mode_and_agent(
-        nodes,
-        max_parallel,
-        key_path,
-        strict_mode,
-        use_agent,
+async fn execute_command(params: ExecuteCommandParams<'_>) -> Result<()> {
+    println!(
+        "Executing command on {} nodes: {}\n",
+        params.nodes.len(),
+        params.command
     );
 
-    let results = executor.execute(command).await?;
+    let key_path = params.key_path.map(|p| p.to_string_lossy().to_string());
+    let executor = ParallelExecutor::new_with_strict_mode_and_agent(
+        params.nodes,
+        params.max_parallel,
+        key_path,
+        params.strict_mode,
+        params.use_agent,
+    );
+
+    let results = executor.execute(params.command).await?;
 
     // Save outputs to files if output_dir is specified
-    if let Some(dir) = output_dir {
-        save_outputs_to_files(&results, dir, command).await?;
+    if let Some(dir) = params.output_dir {
+        save_outputs_to_files(&results, dir, params.command).await?;
     }
 
     // Print results
     for result in &results {
-        result.print_output(verbose);
+        result.print_output(params.verbose);
     }
 
     // Print summary
