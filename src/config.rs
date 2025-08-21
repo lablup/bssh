@@ -328,8 +328,10 @@ mod tests {
 
     #[test]
     fn test_expand_env_vars() {
-        std::env::set_var("TEST_VAR", "test_value");
-        std::env::set_var("TEST_USER", "testuser");
+        unsafe {
+            std::env::set_var("TEST_VAR", "test_value");
+            std::env::set_var("TEST_USER", "testuser");
+        }
 
         // Test ${VAR} syntax
         assert_eq!(expand_env_vars("Hello ${TEST_VAR}!"), "Hello test_value!");
@@ -355,7 +357,9 @@ mod tests {
 
     #[test]
     fn test_expand_tilde() {
-        std::env::set_var("HOME", "/home/user");
+        unsafe {
+            std::env::set_var("HOME", "/home/user");
+        }
         let path = Path::new("~/.ssh/config");
         let expanded = expand_tilde(path);
         assert_eq!(expanded, PathBuf::from("/home/user/.ssh/config"));
@@ -401,10 +405,12 @@ clusters:
     #[test]
     fn test_backendai_env_parsing() {
         // Set up Backend.AI environment variables
-        std::env::set_var("BACKENDAI_CLUSTER_HOSTS", "sub1,main1");
-        std::env::set_var("BACKENDAI_CLUSTER_HOST", "main1");
-        std::env::set_var("BACKENDAI_CLUSTER_ROLE", "main");
-        std::env::set_var("USER", "testuser");
+        unsafe {
+            std::env::set_var("BACKENDAI_CLUSTER_HOSTS", "sub1,main1");
+            std::env::set_var("BACKENDAI_CLUSTER_HOST", "main1");
+            std::env::set_var("BACKENDAI_CLUSTER_ROLE", "main");
+            std::env::set_var("USER", "testuser");
+        }
 
         let cluster = Config::from_backendai_env().unwrap();
 
@@ -420,7 +426,9 @@ clusters:
         }
 
         // Test with sub role - should skip the first (main) node
-        std::env::set_var("BACKENDAI_CLUSTER_ROLE", "sub");
+        unsafe {
+            std::env::set_var("BACKENDAI_CLUSTER_ROLE", "sub");
+        }
         let cluster = Config::from_backendai_env().unwrap();
         assert_eq!(cluster.nodes.len(), 1);
 
@@ -432,8 +440,10 @@ clusters:
         }
 
         // Clean up
-        std::env::remove_var("BACKENDAI_CLUSTER_HOSTS");
-        std::env::remove_var("BACKENDAI_CLUSTER_HOST");
-        std::env::remove_var("BACKENDAI_CLUSTER_ROLE");
+        unsafe {
+            std::env::remove_var("BACKENDAI_CLUSTER_HOSTS");
+            std::env::remove_var("BACKENDAI_CLUSTER_HOST");
+            std::env::remove_var("BACKENDAI_CLUSTER_ROLE");
+        }
     }
 }

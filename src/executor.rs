@@ -20,7 +20,7 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 
 use crate::node::Node;
-use crate::ssh::{client::CommandResult, known_hosts::StrictHostKeyChecking, SshClient};
+use crate::ssh::{SshClient, client::CommandResult, known_hosts::StrictHostKeyChecking};
 
 pub struct ParallelExecutor {
     nodes: Vec<Node>,

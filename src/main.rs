@@ -25,7 +25,7 @@ use bssh::{
     config::Config,
     executor::ParallelExecutor,
     node::Node,
-    ssh::{known_hosts::StrictHostKeyChecking, SshClient},
+    ssh::{SshClient, known_hosts::StrictHostKeyChecking},
 };
 
 struct ExecuteCommandParams<'a> {
@@ -59,7 +59,9 @@ async fn main() -> Result<()> {
     let nodes = resolve_nodes(&cli, &config).await?;
 
     if nodes.is_empty() {
-        anyhow::bail!("No hosts specified. Please use one of the following options:\n  -H <hosts>    Specify comma-separated hosts (e.g., -H user@host1,user@host2)\n  -c <cluster>  Use a cluster from your configuration file");
+        anyhow::bail!(
+            "No hosts specified. Please use one of the following options:\n  -H <hosts>    Specify comma-separated hosts (e.g., -H user@host1,user@host2)\n  -c <cluster>  Use a cluster from your configuration file"
+        );
     }
 
     // Parse strict host key checking mode
@@ -71,7 +73,9 @@ async fn main() -> Result<()> {
     // Check if command is required (not for subcommands like ping, copy)
     let needs_command = matches!(cli.command, None | Some(Commands::Exec { .. }));
     if command.is_empty() && needs_command {
-        anyhow::bail!("No command specified. Please provide a command to execute.\nExample: bssh -H host1,host2 'ls -la'");
+        anyhow::bail!(
+            "No command specified. Please provide a command to execute.\nExample: bssh -H host1,host2 'ls -la'"
+        );
     }
 
     // Handle remaining commands
@@ -498,10 +502,9 @@ async fn upload_file(
             // If destination is a directory or multiple files
             if recursive && base_dir.is_some() {
                 // Preserve directory structure for recursive uploads
-                let relative_path = file.strip_prefix(base_dir.unwrap())
-                    .unwrap_or(&file);
+                let relative_path = file.strip_prefix(base_dir.unwrap()).unwrap_or(&file);
                 let remote_relative = relative_path.to_string_lossy();
-                
+
                 // Create remote directory structure if needed
                 if let Some(parent) = relative_path.parent() {
                     if !parent.as_os_str().is_empty() {
@@ -515,7 +518,7 @@ async fn upload_file(
                         let _ = executor.execute(&mkdir_cmd).await;
                     }
                 }
-                
+
                 if destination.ends_with('/') {
                     format!("{destination}{remote_relative}")
                 } else {
@@ -621,12 +624,12 @@ fn resolve_source_files(source: &Path, recursive: bool) -> Result<Vec<PathBuf>> 
 // Helper function to recursively walk a directory and collect all files
 fn walk_directory(dir: &Path) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
-    
+
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
         let metadata = entry.metadata()?;
-        
+
         if metadata.is_file() {
             files.push(path);
         } else if metadata.is_dir() {
@@ -635,7 +638,7 @@ fn walk_directory(dir: &Path) -> Result<Vec<PathBuf>> {
         }
         // Skip symlinks and other special files
     }
-    
+
     Ok(files)
 }
 
@@ -685,7 +688,7 @@ async fn download_file(
 
     // Check if source contains glob pattern
     let has_glob = source.contains('*') || source.contains('?') || source.contains('[');
-    
+
     // Check if source is a directory (for recursive download)
     let is_directory = if recursive && !has_glob {
         // Use a test command to check if source is a directory
@@ -702,15 +705,21 @@ async fn download_file(
 
     if is_directory {
         // Recursive directory download
-        println!("Recursively downloading directory {source} from {} nodes", nodes.len());
-        
+        println!(
+            "Recursively downloading directory {source} from {} nodes",
+            nodes.len()
+        );
+
         // Find all files in the directory recursively
-        let find_cmd = format!("find '{}' -type f 2>/dev/null || find '{}' -type f", source, source);
+        let find_cmd = format!(
+            "find '{}' -type f 2>/dev/null || find '{}' -type f",
+            source, source
+        );
         let find_results = executor.execute(&find_cmd).await?;
-        
+
         let mut total_success = 0;
         let mut total_failed = 0;
-        
+
         for (node_idx, result) in find_results.iter().enumerate() {
             if let Ok(cmd_result) = &result.result {
                 let stdout = String::from_utf8_lossy(&cmd_result.output);
@@ -719,28 +728,35 @@ async fn download_file(
                     .filter(|line| !line.is_empty())
                     .map(|s| s.to_string())
                     .collect();
-                    
+
                 if files.is_empty() {
                     println!("No files found in directory on {}", nodes[node_idx]);
                     continue;
                 }
-                
-                println!("\nDownloading {} files from {}", files.len(), nodes[node_idx]);
-                
+
+                println!(
+                    "\nDownloading {} files from {}",
+                    files.len(),
+                    nodes[node_idx]
+                );
+
                 for remote_file in files {
                     // Calculate relative path from source directory
-                    let relative_path = remote_file.strip_prefix(source)
+                    let relative_path = remote_file
+                        .strip_prefix(source)
                         .unwrap_or(&remote_file)
                         .trim_start_matches('/');
-                    
+
                     // Create local file path preserving directory structure
-                    let local_file = destination.join(&nodes[node_idx].to_string()).join(relative_path);
-                    
+                    let local_file = destination
+                        .join(&nodes[node_idx].to_string())
+                        .join(relative_path);
+
                     // Create parent directory if needed
                     if let Some(parent) = local_file.parent() {
                         fs::create_dir_all(parent).await?;
                     }
-                    
+
                     // Download the file using the executor's download method
                     let single_node = vec![nodes[node_idx].clone()];
                     let single_executor = ParallelExecutor::new_with_strict_mode_and_agent(
@@ -750,9 +766,11 @@ async fn download_file(
                         strict_mode,
                         use_agent,
                     );
-                    
-                    let download_results = single_executor.download_file(&remote_file, &local_file).await?;
-                    
+
+                    let download_results = single_executor
+                        .download_file(&remote_file, &local_file)
+                        .await?;
+
                     if download_results.iter().any(|r| r.is_success()) {
                         println!("  ✓ Downloaded: {} -> {:?}", remote_file, local_file);
                         total_success += 1;
@@ -763,9 +781,11 @@ async fn download_file(
                 }
             }
         }
-        
-        println!("\nTotal recursive download summary: {total_success} successful, {total_failed} failed");
-        
+
+        println!(
+            "\nTotal recursive download summary: {total_success} successful, {total_failed} failed"
+        );
+
         if total_failed > 0 {
             std::process::exit(1);
         }
