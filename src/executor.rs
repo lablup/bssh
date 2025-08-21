@@ -147,7 +147,11 @@ impl ParallelExecutor {
         Ok(execution_results)
     }
 
-    pub async fn copy_file(&self, local_path: &Path, remote_path: &str) -> Result<Vec<CopyResult>> {
+    pub async fn upload_file(
+        &self,
+        local_path: &Path,
+        remote_path: &str,
+    ) -> Result<Vec<UploadResult>> {
         let semaphore = Arc::new(Semaphore::new(self.max_parallel));
         let multi_progress = MultiProgress::new();
 
@@ -176,9 +180,9 @@ impl ParallelExecutor {
                 tokio::spawn(async move {
                     let _permit = semaphore.acquire().await.unwrap();
 
-                    pb.set_message("Copying file...");
+                    pb.set_message("Uploading file (SFTP)...");
 
-                    let result = copy_to_node(
+                    let result = upload_to_node(
                         node.clone(),
                         &local_path,
                         &remote_path,
@@ -190,14 +194,14 @@ impl ParallelExecutor {
 
                     match &result {
                         Ok(()) => {
-                            pb.finish_with_message("✓ File copied");
+                            pb.finish_with_message("✓ File uploaded");
                         }
                         Err(e) => {
                             pb.finish_with_message(format!("✗ Error: {e}"));
                         }
                     }
 
-                    CopyResult { node, result }
+                    UploadResult { node, result }
                 })
             })
             .collect();
@@ -205,17 +209,107 @@ impl ParallelExecutor {
         let results = join_all(tasks).await;
 
         // Collect results, handling any task panics
-        let mut copy_results = Vec::new();
+        let mut upload_results = Vec::new();
         for result in results {
             match result {
-                Ok(copy_result) => copy_results.push(copy_result),
+                Ok(upload_result) => upload_results.push(upload_result),
                 Err(e) => {
                     tracing::error!("Task failed: {}", e);
                 }
             }
         }
 
-        Ok(copy_results)
+        Ok(upload_results)
+    }
+
+    pub async fn download_file(
+        &self,
+        remote_path: &str,
+        local_dir: &Path,
+    ) -> Result<Vec<DownloadResult>> {
+        let semaphore = Arc::new(Semaphore::new(self.max_parallel));
+        let multi_progress = MultiProgress::new();
+
+        let style = ProgressStyle::default_bar()
+            .template("{prefix:.bold.dim} {spinner:.green} {msg}")
+            .unwrap()
+            .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ");
+
+        let tasks: Vec<_> = self
+            .nodes
+            .iter()
+            .map(|node| {
+                let node = node.clone();
+                let remote_path = remote_path.to_string();
+                let local_dir = local_dir.to_path_buf();
+                let key_path = self.key_path.clone();
+                let strict_mode = self.strict_mode;
+                let use_agent = self.use_agent;
+                let semaphore = Arc::clone(&semaphore);
+                let pb = multi_progress.add(ProgressBar::new_spinner());
+                pb.set_style(style.clone());
+                pb.set_prefix(format!("[{node}]"));
+                pb.set_message("Connecting...");
+                pb.enable_steady_tick(std::time::Duration::from_millis(100));
+
+                tokio::spawn(async move {
+                    let _permit = semaphore.acquire().await.unwrap();
+
+                    pb.set_message("Downloading file (SFTP)...");
+
+                    // Generate unique filename for each node
+                    let filename = if let Some(file_name) = Path::new(&remote_path).file_name() {
+                        format!(
+                            "{}_{}",
+                            node.host.replace(':', "_"),
+                            file_name.to_string_lossy()
+                        )
+                    } else {
+                        format!("{}_download", node.host.replace(':', "_"))
+                    };
+                    let local_path = local_dir.join(filename);
+
+                    let result = download_from_node(
+                        node.clone(),
+                        &remote_path,
+                        &local_path,
+                        key_path.as_deref(),
+                        strict_mode,
+                        use_agent,
+                    )
+                    .await;
+
+                    match &result {
+                        Ok(path) => {
+                            pb.finish_with_message(format!("✓ Downloaded to {}", path.display()));
+                        }
+                        Err(e) => {
+                            pb.finish_with_message(format!("✗ Error: {e}"));
+                        }
+                    }
+
+                    DownloadResult {
+                        node,
+                        result: result.map(|_| local_path),
+                    }
+                })
+            })
+            .collect();
+
+        let results = join_all(tasks).await;
+
+        // Collect results, handling any task panics
+        let mut download_results = Vec::new();
+        for result in results {
+            match result {
+                Ok(download_result) => download_results.push(download_result),
+                Err(e) => {
+                    tracing::error!("Task failed: {}", e);
+                }
+            }
+        }
+
+        Ok(download_results)
     }
 }
 
@@ -235,7 +329,7 @@ async fn execute_on_node(
         .await
 }
 
-async fn copy_to_node(
+async fn upload_to_node(
     node: Node,
     local_path: &Path,
     remote_path: &str,
@@ -248,7 +342,7 @@ async fn copy_to_node(
     let key_path = key_path.map(Path::new);
 
     client
-        .copy_file(
+        .upload_file(
             local_path,
             remote_path,
             key_path,
@@ -256,6 +350,31 @@ async fn copy_to_node(
             use_agent,
         )
         .await
+}
+
+async fn download_from_node(
+    node: Node,
+    remote_path: &str,
+    local_path: &Path,
+    key_path: Option<&str>,
+    strict_mode: StrictHostKeyChecking,
+    use_agent: bool,
+) -> Result<std::path::PathBuf> {
+    let mut client = SshClient::new(node.host.clone(), node.port, node.username.clone());
+
+    let key_path = key_path.map(Path::new);
+
+    client
+        .download_file(
+            remote_path,
+            local_path,
+            key_path,
+            Some(strict_mode),
+            use_agent,
+        )
+        .await?;
+
+    Ok(local_path.to_path_buf())
 }
 
 #[derive(Debug)]
@@ -296,12 +415,12 @@ impl ExecutionResult {
 }
 
 #[derive(Debug)]
-pub struct CopyResult {
+pub struct UploadResult {
     pub node: Node,
     pub result: Result<()>,
 }
 
-impl CopyResult {
+impl UploadResult {
     pub fn is_success(&self) -> bool {
         self.result.is_ok()
     }
@@ -309,10 +428,33 @@ impl CopyResult {
     pub fn print_summary(&self) {
         match &self.result {
             Ok(()) => {
-                println!("✓ {}: File copied successfully", self.node);
+                println!("✓ {}: File uploaded successfully", self.node);
             }
             Err(e) => {
-                println!("✗ {}: Failed to copy file - {}", self.node, e);
+                println!("✗ {}: Failed to upload file - {}", self.node, e);
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct DownloadResult {
+    pub node: Node,
+    pub result: Result<std::path::PathBuf>,
+}
+
+impl DownloadResult {
+    pub fn is_success(&self) -> bool {
+        self.result.is_ok()
+    }
+
+    pub fn print_summary(&self) {
+        match &self.result {
+            Ok(path) => {
+                println!("✓ {}: File downloaded to {:?}", self.node, path);
+            }
+            Err(e) => {
+                println!("✗ {}: Failed to download file - {}", self.node, e);
             }
         }
     }

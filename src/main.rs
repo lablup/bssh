@@ -85,11 +85,26 @@ async fn main() -> Result<()> {
             )
             .await?;
         }
-        Some(Commands::Copy {
+        Some(Commands::Upload {
             source,
             destination,
         }) => {
-            copy_file(
+            upload_file(
+                nodes,
+                &source,
+                &destination,
+                cli.parallel,
+                cli.identity.as_deref(),
+                strict_mode,
+                cli.use_agent,
+            )
+            .await?;
+        }
+        Some(Commands::Download {
+            source,
+            destination,
+        }) => {
+            download_file(
                 nodes,
                 &source,
                 &destination,
@@ -416,7 +431,7 @@ async fn save_outputs_to_files(
     Ok(())
 }
 
-async fn copy_file(
+async fn upload_file(
     nodes: Vec<Node>,
     source: &Path,
     destination: &str,
@@ -435,7 +450,7 @@ async fn copy_file(
         .len();
 
     println!(
-        "Copying {:?} ({} bytes) to {} nodes: {}\n",
+        "Uploading {:?} ({} bytes) to {} nodes: {} (SFTP)\n",
         source,
         file_size,
         nodes.len(),
@@ -451,7 +466,7 @@ async fn copy_file(
         use_agent,
     );
 
-    let results = executor.copy_file(source, destination).await?;
+    let results = executor.upload_file(source, destination).await?;
 
     // Print results
     for result in &results {
@@ -462,7 +477,59 @@ async fn copy_file(
     let success_count = results.iter().filter(|r| r.is_success()).count();
     let failed_count = results.len() - success_count;
 
-    println!("\nCopy complete: {success_count} successful, {failed_count} failed");
+    println!("\nUpload complete: {success_count} successful, {failed_count} failed");
+
+    if failed_count > 0 {
+        std::process::exit(1);
+    }
+
+    Ok(())
+}
+
+async fn download_file(
+    nodes: Vec<Node>,
+    source: &str,
+    destination: &Path,
+    max_parallel: usize,
+    key_path: Option<&Path>,
+    strict_mode: StrictHostKeyChecking,
+    use_agent: bool,
+) -> Result<()> {
+    // Create destination directory if it doesn't exist
+    if !destination.exists() {
+        fs::create_dir_all(destination).await.with_context(|| {
+            format!("Failed to create destination directory: {destination:?}")
+        })?;
+    }
+
+    println!(
+        "Downloading {} from {} nodes to {:?} (SFTP)\n",
+        source,
+        nodes.len(),
+        destination
+    );
+
+    let key_path = key_path.map(|p| p.to_string_lossy().to_string());
+    let executor = ParallelExecutor::new_with_strict_mode_and_agent(
+        nodes,
+        max_parallel,
+        key_path,
+        strict_mode,
+        use_agent,
+    );
+
+    let results = executor.download_file(source, destination).await?;
+
+    // Print results
+    for result in &results {
+        result.print_summary();
+    }
+
+    // Print summary
+    let success_count = results.iter().filter(|r| r.is_success()).count();
+    let failed_count = results.len() - success_count;
+
+    println!("\nDownload complete: {success_count} successful, {failed_count} failed");
 
     if failed_count > 0 {
         std::process::exit(1);

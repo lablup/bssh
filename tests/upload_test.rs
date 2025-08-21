@@ -17,12 +17,12 @@ use clap::Parser;
 use std::path::PathBuf;
 
 #[test]
-fn test_copy_command_parsing() {
+fn test_upload_command_parsing() {
     let args = vec![
         "bssh",
         "-H",
         "host1,host2",
-        "copy",
+        "upload",
         "/tmp/test.txt",
         "/remote/path/test.txt",
     ];
@@ -31,13 +31,13 @@ fn test_copy_command_parsing() {
 
     assert!(matches!(
         cli.command,
-        Some(Commands::Copy {
+        Some(Commands::Upload {
             source: _,
             destination: _
         })
     ));
 
-    if let Some(Commands::Copy {
+    if let Some(Commands::Upload {
         source,
         destination,
     }) = cli.command
@@ -48,12 +48,12 @@ fn test_copy_command_parsing() {
 }
 
 #[test]
-fn test_copy_command_with_cluster() {
+fn test_upload_command_with_cluster() {
     let args = vec![
         "bssh",
         "-c",
         "production",
-        "copy",
+        "upload",
         "./local.conf",
         "/etc/app.conf",
     ];
@@ -63,7 +63,7 @@ fn test_copy_command_with_cluster() {
     assert_eq!(cli.cluster, Some("production".to_string()));
     assert!(matches!(
         cli.command,
-        Some(Commands::Copy {
+        Some(Commands::Upload {
             source: _,
             destination: _
         })
@@ -71,7 +71,7 @@ fn test_copy_command_with_cluster() {
 }
 
 #[test]
-fn test_copy_command_with_options() {
+fn test_upload_command_with_options() {
     let args = vec![
         "bssh",
         "-H",
@@ -80,7 +80,7 @@ fn test_copy_command_with_options() {
         "~/.ssh/custom_key",
         "-p",
         "5",
-        "copy",
+        "upload",
         "data.csv",
         "/data/uploads/",
     ];
@@ -91,7 +91,7 @@ fn test_copy_command_with_options() {
     assert_eq!(cli.identity, Some(PathBuf::from("~/.ssh/custom_key")));
     assert_eq!(cli.parallel, 5);
 
-    if let Some(Commands::Copy {
+    if let Some(Commands::Upload {
         source,
         destination,
     }) = cli.command
