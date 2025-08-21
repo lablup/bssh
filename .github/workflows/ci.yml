@@ -59,4 +59,4 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Build binary
-        run: cargo build --release --bin all-smi
+        run: cargo build --release
