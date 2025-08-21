@@ -7,6 +7,7 @@ use tokio::fs;
 use crate::node::Node;
 
 #[derive(Debug, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct Config {
     #[serde(default)]
     pub defaults: Defaults,
@@ -141,14 +142,6 @@ impl Config {
     }
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            defaults: Defaults::default(),
-            clusters: HashMap::new(),
-        }
-    }
-}
 
 fn expand_tilde(path: &Path) -> PathBuf {
     if let Some(path_str) = path.to_str() {

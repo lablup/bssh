@@ -85,7 +85,7 @@ async fn resolve_nodes(cli: &Cli, config: &Config) -> Result<Vec<Node>> {
     if let Some(hosts) = &cli.hosts {
         for host_str in hosts {
             let node = Node::parse(host_str, cli.user.as_deref())
-                .with_context(|| format!("Failed to parse host: {}", host_str))?;
+                .with_context(|| format!("Failed to parse host: {host_str}"))?;
             nodes.push(node);
         }
     } else if let Some(cluster_name) = &cli.cluster {
@@ -109,7 +109,7 @@ fn list_clusters(config: &Config) {
                 bssh::config::NodeConfig::Simple(s) => s.clone(),
                 bssh::config::NodeConfig::Detailed { host, .. } => host.clone(),
             };
-            println!("    - {}", node_str);
+            println!("    - {node_str}");
         }
     }
 }
@@ -133,14 +133,13 @@ async fn ping_nodes(nodes: Vec<Node>, max_parallel: usize, key_path: Option<&Pat
             failed_count += 1;
             println!("✗ {} - Failed", result.node);
             if let Err(e) = &result.result {
-                println!("  Error: {}", e);
+                println!("  Error: {e}");
             }
         }
     }
 
     println!(
-        "\nSummary: {} successful, {} failed",
-        success_count, failed_count
+        "\nSummary: {success_count} successful, {failed_count} failed"
     );
 
     Ok(())
@@ -170,8 +169,7 @@ async fn execute_command(
     let failed_count = results.len() - success_count;
 
     println!(
-        "\nExecution complete: {} successful, {} failed",
-        success_count, failed_count
+        "\nExecution complete: {success_count} successful, {failed_count} failed"
     );
 
     if failed_count > 0 {

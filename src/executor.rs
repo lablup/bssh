@@ -42,7 +42,7 @@ impl ParallelExecutor {
                 let semaphore = Arc::clone(&semaphore);
                 let pb = multi_progress.add(ProgressBar::new_spinner());
                 pb.set_style(style.clone());
-                pb.set_prefix(format!("[{}]", node));
+                pb.set_prefix(format!("[{node}]"));
                 pb.set_message("Connecting...");
                 pb.enable_steady_tick(std::time::Duration::from_millis(100));
 
@@ -65,7 +65,7 @@ impl ParallelExecutor {
                             }
                         }
                         Err(e) => {
-                            pb.finish_with_message(format!("✗ Error: {}", e));
+                            pb.finish_with_message(format!("✗ Error: {e}"));
                         }
                     }
 
@@ -134,7 +134,7 @@ impl ExecutionResult {
                 }
             }
             Err(e) => {
-                eprintln!("Error: {}", e);
+                eprintln!("Error: {e}");
             }
         }
     }
