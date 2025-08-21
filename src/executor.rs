@@ -26,7 +26,7 @@ impl ParallelExecutor {
     pub async fn execute(&self, command: &str) -> Result<Vec<ExecutionResult>> {
         let semaphore = Arc::new(Semaphore::new(self.max_parallel));
         let multi_progress = MultiProgress::new();
-        
+
         let style = ProgressStyle::default_bar()
             .template("{prefix:.bold.dim} {spinner:.green} {msg}")
             .unwrap()
@@ -48,34 +48,34 @@ impl ParallelExecutor {
 
                 tokio::spawn(async move {
                     let _permit = semaphore.acquire().await.unwrap();
-                    
+
                     pb.set_message("Executing command...");
-                    
+
                     let result = execute_on_node(node.clone(), &command, key_path.as_deref()).await;
-                    
+
                     match &result {
                         Ok(cmd_result) => {
                             if cmd_result.is_success() {
                                 pb.finish_with_message("✓ Success");
                             } else {
-                                pb.finish_with_message(format!("✗ Exit code: {}", cmd_result.exit_status));
+                                pb.finish_with_message(format!(
+                                    "✗ Exit code: {}",
+                                    cmd_result.exit_status
+                                ));
                             }
                         }
                         Err(e) => {
                             pb.finish_with_message(format!("✗ Error: {}", e));
                         }
                     }
-                    
-                    ExecutionResult {
-                        node,
-                        result,
-                    }
+
+                    ExecutionResult { node, result }
                 })
             })
             .collect();
 
         let results = join_all(tasks).await;
-        
+
         // Collect results, handling any task panics
         let mut execution_results = Vec::new();
         for result in results {
@@ -97,9 +97,9 @@ async fn execute_on_node(
     key_path: Option<&str>,
 ) -> Result<CommandResult> {
     let mut client = SshClient::new(node.host.clone(), node.port, node.username.clone());
-    
+
     let key_path = key_path.map(Path::new);
-    
+
     client.connect_and_execute(command, key_path).await
 }
 
@@ -124,11 +124,11 @@ impl ExecutionResult {
                 if !cmd_result.output.is_empty() {
                     println!("{}", cmd_result.stdout_string());
                 }
-                
+
                 if !cmd_result.stderr.is_empty() && (verbose || !cmd_result.is_success()) {
                     eprintln!("STDERR:\n{}", cmd_result.stderr_string());
                 }
-                
+
                 if !cmd_result.is_success() {
                     eprintln!("Exit code: {}", cmd_result.exit_status);
                 }

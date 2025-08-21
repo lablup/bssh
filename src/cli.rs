@@ -20,11 +20,7 @@ pub struct Cli {
     )]
     pub hosts: Option<Vec<String>>,
 
-    #[arg(
-        short = 'c',
-        long,
-        help = "Cluster name from configuration file"
-    )]
+    #[arg(short = 'c', long, help = "Cluster name from configuration file")]
     pub cluster: Option<String>,
 
     #[arg(
@@ -34,18 +30,10 @@ pub struct Cli {
     )]
     pub config: PathBuf,
 
-    #[arg(
-        short = 'u',
-        long,
-        help = "Default username for SSH connections"
-    )]
+    #[arg(short = 'u', long, help = "Default username for SSH connections")]
     pub user: Option<String>,
 
-    #[arg(
-        short = 'i',
-        long,
-        help = "SSH private key file path"
-    )]
+    #[arg(short = 'i', long, help = "SSH private key file path")]
     pub identity: Option<PathBuf>,
 
     #[arg(
@@ -56,10 +44,7 @@ pub struct Cli {
     )]
     pub parallel: usize,
 
-    #[arg(
-        long,
-        help = "Output directory for command results"
-    )]
+    #[arg(long, help = "Output directory for command results")]
     pub output_dir: Option<PathBuf>,
 
     #[arg(
@@ -70,10 +55,7 @@ pub struct Cli {
     )]
     pub verbose: u8,
 
-    #[arg(
-        trailing_var_arg = true,
-        help = "Command to execute on remote hosts"
-    )]
+    #[arg(trailing_var_arg = true, help = "Command to execute on remote hosts")]
     pub command_args: Vec<String>,
 }
 
@@ -84,18 +66,18 @@ pub enum Commands {
         #[arg(trailing_var_arg = true)]
         command: Vec<String>,
     },
-    
+
     #[command(about = "List available clusters")]
     List,
-    
+
     #[command(about = "Test connectivity to hosts")]
     Ping,
-    
+
     #[command(about = "Copy files to remote hosts")]
     Copy {
         #[arg(help = "Source file path")]
         source: PathBuf,
-        
+
         #[arg(help = "Destination path on remote hosts")]
         destination: String,
     },

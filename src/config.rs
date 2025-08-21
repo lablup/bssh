@@ -10,7 +10,7 @@ use crate::node::Node;
 pub struct Config {
     #[serde(default)]
     pub defaults: Defaults,
-    
+
     #[serde(default)]
     pub clusters: HashMap<String, Cluster>,
 }
@@ -26,7 +26,7 @@ pub struct Defaults {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Cluster {
     pub nodes: Vec<NodeConfig>,
-    
+
     #[serde(flatten)]
     pub defaults: ClusterDefaults,
 }
@@ -55,19 +55,22 @@ impl Config {
     pub async fn load(path: &Path) -> Result<Self> {
         // Expand tilde in path
         let expanded_path = expand_tilde(path);
-        
+
         if !expanded_path.exists() {
-            tracing::debug!("Config file not found at {:?}, using defaults", expanded_path);
+            tracing::debug!(
+                "Config file not found at {:?}, using defaults",
+                expanded_path
+            );
             return Ok(Self::default());
         }
 
         let content = fs::read_to_string(&expanded_path)
             .await
             .context("Failed to read config file")?;
-        
-        let config: Config = serde_yaml::from_str(&content)
-            .context("Failed to parse config file")?;
-        
+
+        let config: Config =
+            serde_yaml::from_str(&content).context("Failed to parse config file")?;
+
         Ok(config)
     }
 
@@ -81,7 +84,7 @@ impl Config {
             .ok_or_else(|| anyhow::anyhow!("Cluster '{}' not found", cluster_name))?;
 
         let mut nodes = Vec::new();
-        
+
         for node_config in &cluster.nodes {
             let node = match node_config {
                 NodeConfig::Simple(host) => {
@@ -90,20 +93,15 @@ impl Config {
                         .user
                         .as_deref()
                         .or(self.defaults.user.as_deref());
-                    
-                    let default_port = cluster
-                        .defaults
-                        .port
-                        .or(self.defaults.port)
-                        .unwrap_or(22);
-                    
-                    Node::parse(host, default_user)
-                        .map(|mut n| {
-                            if !host.contains(':') {
-                                n.port = default_port;
-                            }
-                            n
-                        })?
+
+                    let default_port = cluster.defaults.port.or(self.defaults.port).unwrap_or(22);
+
+                    Node::parse(host, default_user).map(|mut n| {
+                        if !host.contains(':') {
+                            n.port = default_port;
+                        }
+                        n
+                    })?
                 }
                 NodeConfig::Detailed { host, port, user } => {
                     let username = user
@@ -112,22 +110,21 @@ impl Config {
                         .or(self.defaults.user.as_deref())
                         .map(|s| s.to_string())
                         .unwrap_or_else(|| {
-                            std::env::var("USER")
-                                .unwrap_or_else(|_| "root".to_string())
+                            std::env::var("USER").unwrap_or_else(|_| "root".to_string())
                         });
-                    
+
                     let port = port
                         .or(cluster.defaults.port)
                         .or(self.defaults.port)
                         .unwrap_or(22);
-                    
+
                     Node::new(host.clone(), port, username)
                 }
             };
-            
+
             nodes.push(node);
         }
-        
+
         Ok(nodes)
     }
 
@@ -139,7 +136,7 @@ impl Config {
                 }
             }
         }
-        
+
         self.defaults.ssh_key.clone()
     }
 }
@@ -204,9 +201,12 @@ clusters:
         let config: Config = serde_yaml::from_str(yaml).unwrap();
         assert_eq!(config.defaults.user, Some("admin".to_string()));
         assert_eq!(config.clusters.len(), 2);
-        
+
         let prod_cluster = config.get_cluster("production").unwrap();
         assert_eq!(prod_cluster.nodes.len(), 3);
-        assert_eq!(prod_cluster.defaults.ssh_key, Some("~/.ssh/prod_key".to_string()));
+        assert_eq!(
+            prod_cluster.defaults.ssh_key,
+            Some("~/.ssh/prod_key".to_string())
+        );
     }
 }

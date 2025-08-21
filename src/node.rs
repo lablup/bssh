@@ -23,7 +23,7 @@ impl Node {
         // - host:port
         // - user@host
         // - user@host:port
-        
+
         let (user_part, host_part) = if let Some(at_pos) = node_str.find('@') {
             let user = &node_str[..at_pos];
             let rest = &node_str[at_pos + 1..];
@@ -35,9 +35,7 @@ impl Node {
         let (host, port) = if let Some(colon_pos) = host_part.rfind(':') {
             let host = &host_part[..colon_pos];
             let port_str = &host_part[colon_pos + 1..];
-            let port = port_str
-                .parse::<u16>()
-                .context("Invalid port number")?;
+            let port = port_str.parse::<u16>().context("Invalid port number")?;
             (host, port)
         } else {
             (host_part, 22)

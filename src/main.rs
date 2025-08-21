@@ -8,27 +8,32 @@ use bssh::{Cli, Config, Node, ParallelExecutor};
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    
+
     // Initialize logging
     init_logging(cli.verbose);
-    
+
     // Load configuration
     let config = Config::load(&cli.config).await?;
-    
+
     // Determine nodes to execute on
     let nodes = resolve_nodes(&cli, &config).await?;
-    
+
     if nodes.is_empty() {
         anyhow::bail!("No hosts specified. Use -H or -c option.");
     }
-    
+
     // Get command to execute
     let command = cli.get_command();
-    
-    if command.is_empty() && !matches!(cli.command, Some(bssh::cli::Commands::List | bssh::cli::Commands::Ping)) {
+
+    if command.is_empty()
+        && !matches!(
+            cli.command,
+            Some(bssh::cli::Commands::List | bssh::cli::Commands::Ping)
+        )
+    {
         anyhow::bail!("No command specified");
     }
-    
+
     // Handle different commands
     match cli.command {
         Some(bssh::cli::Commands::List) => {
@@ -37,7 +42,10 @@ async fn main() -> Result<()> {
         Some(bssh::cli::Commands::Ping) => {
             ping_nodes(nodes, cli.parallel, cli.identity.as_deref()).await?;
         }
-        Some(bssh::cli::Commands::Copy { source: _, destination: _ }) => {
+        Some(bssh::cli::Commands::Copy {
+            source: _,
+            destination: _,
+        }) => {
             anyhow::bail!("Copy command not yet implemented");
         }
         _ => {
@@ -52,7 +60,7 @@ async fn main() -> Result<()> {
             .await?;
         }
     }
-    
+
     Ok(())
 }
 
@@ -63,7 +71,7 @@ fn init_logging(verbosity: u8) {
         2 => EnvFilter::new("bssh=debug"),
         _ => EnvFilter::new("bssh=trace"),
     };
-    
+
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(false)
@@ -72,7 +80,7 @@ fn init_logging(verbosity: u8) {
 
 async fn resolve_nodes(cli: &Cli, config: &Config) -> Result<Vec<Node>> {
     let mut nodes = Vec::new();
-    
+
     // Priority: command line hosts > cluster from config
     if let Some(hosts) = &cli.hosts {
         for host_str in hosts {
@@ -83,7 +91,7 @@ async fn resolve_nodes(cli: &Cli, config: &Config) -> Result<Vec<Node>> {
     } else if let Some(cluster_name) = &cli.cluster {
         nodes = config.resolve_nodes(cluster_name)?;
     }
-    
+
     Ok(nodes)
 }
 
@@ -92,7 +100,7 @@ fn list_clusters(config: &Config) {
         println!("No clusters configured");
         return;
     }
-    
+
     println!("Available clusters:");
     for (name, cluster) in &config.clusters {
         println!("  {} ({} nodes)", name, cluster.nodes.len());
@@ -106,21 +114,17 @@ fn list_clusters(config: &Config) {
     }
 }
 
-async fn ping_nodes(
-    nodes: Vec<Node>,
-    max_parallel: usize,
-    key_path: Option<&Path>,
-) -> Result<()> {
+async fn ping_nodes(nodes: Vec<Node>, max_parallel: usize, key_path: Option<&Path>) -> Result<()> {
     println!("Pinging {} nodes...\n", nodes.len());
-    
+
     let key_path = key_path.map(|p| p.to_string_lossy().to_string());
     let executor = ParallelExecutor::new(nodes.clone(), max_parallel, key_path);
-    
+
     let results = executor.execute("echo 'pong'").await?;
-    
+
     let mut success_count = 0;
     let mut failed_count = 0;
-    
+
     for result in &results {
         if result.is_success() {
             success_count += 1;
@@ -133,12 +137,12 @@ async fn ping_nodes(
             }
         }
     }
-    
+
     println!(
         "\nSummary: {} successful, {} failed",
         success_count, failed_count
     );
-    
+
     Ok(())
 }
 
@@ -150,29 +154,29 @@ async fn execute_command(
     verbose: bool,
 ) -> Result<()> {
     println!("Executing command on {} nodes: {}\n", nodes.len(), command);
-    
+
     let key_path = key_path.map(|p| p.to_string_lossy().to_string());
     let executor = ParallelExecutor::new(nodes, max_parallel, key_path);
-    
+
     let results = executor.execute(command).await?;
-    
+
     // Print results
     for result in &results {
         result.print_output(verbose);
     }
-    
+
     // Print summary
     let success_count = results.iter().filter(|r| r.is_success()).count();
     let failed_count = results.len() - success_count;
-    
+
     println!(
         "\nExecution complete: {} successful, {} failed",
         success_count, failed_count
     );
-    
+
     if failed_count > 0 {
         std::process::exit(1);
     }
-    
+
     Ok(())
 }
