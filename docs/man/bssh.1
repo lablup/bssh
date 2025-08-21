@@ -38,6 +38,13 @@ Default username for SSH connections
 SSH private key file path
 
 .TP
+.BR \-A ", " \-\-use\-agent
+Use SSH agent for authentication (Unix/Linux/macOS only).
+When this option is specified, bssh will attempt to use the SSH agent
+for authentication. Falls back to key file authentication if the agent
+is not available or authentication fails.
+
+.TP
 .BR \-p ", " \-\-parallel " " \fIPARALLEL\fR
 Maximum parallel connections (default: 10)
 
@@ -167,6 +174,10 @@ Use custom SSH key:
 .B bssh -i ~/.ssh/custom_key -c staging "systemctl status"
 
 .TP
+Use SSH agent for authentication:
+.B bssh -A -c production "systemctl status"
+
+.TP
 Save output to files:
 .B bssh --output-dir ./results -c production "ps aux"
 
@@ -196,6 +207,10 @@ SSH known hosts file for host key verification
 .I ~/.ssh/id_rsa
 Default SSH private key
 
+.TP
+.I $SSH_AUTH_SOCK
+SSH agent socket for agent-based authentication
+
 .SH ENVIRONMENT
 .TP
 .B USER
@@ -217,6 +232,11 @@ Backend.AI current node hostname
 .B BACKENDAI_CLUSTER_ROLE
 Backend.AI node role (main/sub)
 
+.TP
+.B SSH_AUTH_SOCK
+SSH agent socket path. When set, bssh can automatically detect and use
+the SSH agent for authentication without specifying the -A flag
+
 .SH AUTHOR
 Written by Jeongkyu Shin and the Lablup team.
 
@@ -224,7 +244,7 @@ Written by Jeongkyu Shin and the Lablup team.
 Report bugs to: https://github.com/lablup/bssh/issues
 
 .SH COPYRIGHT
-Copyright © 2025 Lablup Inc. and Jeongkyu Shin
+Copyright ï¿½ 2025 Lablup Inc. and Jeongkyu Shin
 .br
 Licensed under the Apache License, Version 2.0
 
