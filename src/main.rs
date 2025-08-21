@@ -49,7 +49,7 @@ async fn main() -> Result<()> {
     }
 
     // Parse strict host key checking mode
-    let strict_mode = StrictHostKeyChecking::from_str(&cli.strict_host_key_checking);
+    let strict_mode = cli.strict_host_key_checking.parse().unwrap_or_default();
 
     // Get command to execute
     let command = cli.get_command();

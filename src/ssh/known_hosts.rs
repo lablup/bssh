@@ -15,6 +15,7 @@
 use async_ssh2_tokio::ServerCheckMethod;
 use directories::BaseDirs;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 /// Get the default known_hosts file path
 pub fn get_default_known_hosts_path() -> Option<PathBuf> {
@@ -102,13 +103,23 @@ impl StrictHostKeyChecking {
     pub fn to_bool(&self) -> bool {
         matches!(self, Self::Yes)
     }
+}
 
-    pub fn from_str(s: &str) -> Self {
-        match s.to_lowercase().as_str() {
+impl Default for StrictHostKeyChecking {
+    fn default() -> Self {
+        Self::AcceptNew
+    }
+}
+
+impl FromStr for StrictHostKeyChecking {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s.to_lowercase().as_str() {
             "yes" | "true" => Self::Yes,
             "no" | "false" => Self::No,
             "accept-new" | "tofu" => Self::AcceptNew,
             _ => Self::AcceptNew, // Default
-        }
+        })
     }
 }
