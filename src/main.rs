@@ -497,9 +497,9 @@ async fn download_file(
 ) -> Result<()> {
     // Create destination directory if it doesn't exist
     if !destination.exists() {
-        fs::create_dir_all(destination).await.with_context(|| {
-            format!("Failed to create destination directory: {destination:?}")
-        })?;
+        fs::create_dir_all(destination)
+            .await
+            .with_context(|| format!("Failed to create destination directory: {destination:?}"))?;
     }
 
     println!(
