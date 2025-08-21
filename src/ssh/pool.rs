@@ -37,20 +37,23 @@ struct ConnectionKey {
 }
 
 /// Connection pool for SSH connections.
-/// 
+///
 /// Currently a placeholder implementation due to async-ssh2-tokio limitations.
 /// Always creates new connections regardless of the `enabled` flag.
 pub struct ConnectionPool {
     /// Placeholder for future connection storage
     _connections: Arc<RwLock<Vec<ConnectionKey>>>,
+    #[allow(dead_code)]
     ttl: Duration,
+    #[allow(dead_code)]
     enabled: bool,
+    #[allow(dead_code)]
     max_connections: usize,
 }
 
 impl ConnectionPool {
     /// Create a new connection pool.
-    /// 
+    ///
     /// Note: Pooling is not actually implemented due to library limitations.
     pub fn new(ttl: Duration, max_connections: usize, enabled: bool) -> Self {
         Self {
@@ -60,11 +63,11 @@ impl ConnectionPool {
             max_connections,
         }
     }
-    
+
     pub fn disabled() -> Self {
         Self::new(Duration::from_secs(0), 0, false)
     }
-    
+
     pub fn with_defaults() -> Self {
         Self::new(
             Duration::from_secs(300), // 5 minutes TTL
@@ -72,9 +75,9 @@ impl ConnectionPool {
             false,                    // disabled by default
         )
     }
-    
+
     /// Get or create a connection.
-    /// 
+    ///
     /// Currently always creates a new connection due to async-ssh2-tokio limitations.
     /// The Client type doesn't support cloning or connection reuse.
     pub async fn get_or_create<F>(
@@ -92,7 +95,7 @@ impl ConnectionPool {
             port,
             user: user.to_string(),
         };
-        
+
         if self.enabled {
             trace!("Connection pooling enabled (placeholder mode)");
             // In the future, we would check for existing connections here
@@ -100,62 +103,56 @@ impl ConnectionPool {
         } else {
             trace!("Connection pooling disabled");
         }
-        
+
         // Always create new connection (pooling not possible with current library)
         debug!("Creating new SSH connection to {}@{}:{}", user, host, port);
         create_fn().await
     }
-    
+
     /// Return a connection to the pool.
-    /// 
+    ///
     /// Currently a no-op due to connection reuse limitations.
-    pub async fn return_connection(
-        &self,
-        _host: &str,
-        _port: u16,
-        _user: &str,
-        _client: Client,
-    ) {
+    pub async fn return_connection(&self, _host: &str, _port: u16, _user: &str, _client: Client) {
         // No-op: Client cannot be reused
         if self.enabled {
             trace!("Connection return requested (no-op in placeholder mode)");
         }
     }
-    
+
     /// Clean up expired connections.
-    /// 
+    ///
     /// Currently a no-op.
     pub async fn cleanup_expired(&self) {
         if self.enabled {
             trace!("Cleanup requested (no-op in placeholder mode)");
         }
     }
-    
+
     /// Clear all connections from the pool.
-    /// 
+    ///
     /// Currently a no-op.
     pub async fn clear(&self) {
         if self.enabled {
             trace!("Clear requested (no-op in placeholder mode)");
         }
     }
-    
+
     /// Get the number of pooled connections.
-    /// 
+    ///
     /// Always returns 0 in the current implementation.
     pub async fn size(&self) -> usize {
         0 // No actual pooling
     }
-    
+
     pub fn is_enabled(&self) -> bool {
         self.enabled
     }
-    
+
     pub fn enable(&mut self) {
         self.enabled = true;
         debug!("Connection pooling enabled");
     }
-    
+
     pub fn disable(&mut self) {
         self.enabled = false;
         debug!("Connection pooling disabled");
@@ -171,30 +168,30 @@ impl Default for ConnectionPool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    
+
     #[tokio::test]
     async fn test_pool_disabled_by_default() {
         let pool = ConnectionPool::with_defaults();
         assert!(!pool.is_enabled());
         assert_eq!(pool.size().await, 0);
     }
-    
+
     #[tokio::test]
     async fn test_pool_cleanup() {
         let pool = ConnectionPool::new(Duration::from_millis(100), 10, true);
-        
+
         // Pool starts empty
         assert_eq!(pool.size().await, 0);
-        
+
         // Cleanup should work even on empty pool
         pool.cleanup_expired().await;
         assert_eq!(pool.size().await, 0);
     }
-    
+
     #[tokio::test]
     async fn test_pool_clear() {
         let pool = ConnectionPool::new(Duration::from_secs(60), 10, true);
-        
+
         pool.clear().await;
         assert_eq!(pool.size().await, 0);
     }

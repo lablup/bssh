@@ -15,6 +15,8 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::path::Path;
+use tokio::fs;
+use tokio::io::AsyncWriteExt;
 use tracing_subscriber::EnvFilter;
 
 use bssh::{
@@ -24,6 +26,17 @@ use bssh::{
     node::Node,
     ssh::known_hosts::StrictHostKeyChecking,
 };
+
+struct ExecuteCommandParams<'a> {
+    nodes: Vec<Node>,
+    command: &'a str,
+    max_parallel: usize,
+    key_path: Option<&'a Path>,
+    verbose: bool,
+    strict_mode: StrictHostKeyChecking,
+    use_agent: bool,
+    output_dir: Option<&'a Path>,
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -89,16 +102,17 @@ async fn main() -> Result<()> {
         }
         _ => {
             // Execute command
-            execute_command(
+            let params = ExecuteCommandParams {
                 nodes,
-                &command,
-                cli.parallel,
-                cli.identity.as_deref(),
-                cli.verbose > 0,
+                command: &command,
+                max_parallel: cli.parallel,
+                key_path: cli.identity.as_deref(),
+                verbose: cli.verbose > 0,
                 strict_mode,
-                cli.use_agent,
-            )
-            .await?;
+                use_agent: cli.use_agent,
+                output_dir: cli.output_dir.as_deref(),
+            };
+            execute_command(params).await?;
         }
     }
 
@@ -199,31 +213,32 @@ async fn ping_nodes(
     Ok(())
 }
 
-async fn execute_command(
-    nodes: Vec<Node>,
-    command: &str,
-    max_parallel: usize,
-    key_path: Option<&Path>,
-    verbose: bool,
-    strict_mode: StrictHostKeyChecking,
-    use_agent: bool,
-) -> Result<()> {
-    println!("Executing command on {} nodes: {}\n", nodes.len(), command);
-
-    let key_path = key_path.map(|p| p.to_string_lossy().to_string());
-    let executor = ParallelExecutor::new_with_strict_mode_and_agent(
-        nodes,
-        max_parallel,
-        key_path,
-        strict_mode,
-        use_agent,
+async fn execute_command(params: ExecuteCommandParams<'_>) -> Result<()> {
+    println!(
+        "Executing command on {} nodes: {}\n",
+        params.nodes.len(),
+        params.command
     );
 
-    let results = executor.execute(command).await?;
+    let key_path = params.key_path.map(|p| p.to_string_lossy().to_string());
+    let executor = ParallelExecutor::new_with_strict_mode_and_agent(
+        params.nodes,
+        params.max_parallel,
+        key_path,
+        params.strict_mode,
+        params.use_agent,
+    );
+
+    let results = executor.execute(params.command).await?;
+
+    // Save outputs to files if output_dir is specified
+    if let Some(dir) = params.output_dir {
+        save_outputs_to_files(&results, dir, params.command).await?;
+    }
 
     // Print results
     for result in &results {
-        result.print_output(verbose);
+        result.print_output(params.verbose);
     }
 
     // Print summary
@@ -235,6 +250,168 @@ async fn execute_command(
     if failed_count > 0 {
         std::process::exit(1);
     }
+
+    Ok(())
+}
+
+async fn save_outputs_to_files(
+    results: &[bssh::executor::ExecutionResult],
+    output_dir: &Path,
+    command: &str,
+) -> Result<()> {
+    // Create output directory if it doesn't exist
+    fs::create_dir_all(output_dir)
+        .await
+        .with_context(|| format!("Failed to create output directory: {output_dir:?}"))?;
+
+    // Get timestamp for unique file naming
+    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+
+    println!("\nSaving outputs to directory: {output_dir:?}");
+
+    for result in results {
+        let node_name = result.node.host.replace([':', '/'], "_");
+
+        match &result.result {
+            Ok(cmd_result) => {
+                // Save stdout if not empty
+                if !cmd_result.output.is_empty() {
+                    let stdout_file = output_dir.join(format!("{node_name}_{timestamp}.stdout"));
+                    let mut file = fs::File::create(&stdout_file).await.with_context(|| {
+                        format!("Failed to create stdout file: {stdout_file:?}")
+                    })?;
+
+                    // Write metadata header
+                    let header = format!(
+                        "# Command: {}\n# Host: {}\n# User: {}\n# Exit Status: {}\n# Timestamp: {}\n\n",
+                        command,
+                        result.node.host,
+                        result.node.username,
+                        cmd_result.exit_status,
+                        timestamp
+                    );
+                    file.write_all(header.as_bytes()).await?;
+                    file.write_all(&cmd_result.output).await?;
+                    file.flush().await?;
+
+                    println!("  ✓ Saved stdout for {} to {:?}", result.node, stdout_file);
+                }
+
+                // Save stderr if not empty
+                if !cmd_result.stderr.is_empty() {
+                    let stderr_file = output_dir.join(format!("{node_name}_{timestamp}.stderr"));
+                    let mut file = fs::File::create(&stderr_file).await.with_context(|| {
+                        format!("Failed to create stderr file: {stderr_file:?}")
+                    })?;
+
+                    // Write metadata header
+                    let header = format!(
+                        "# Command: {}\n# Host: {}\n# User: {}\n# Exit Status: {}\n# Timestamp: {}\n\n",
+                        command,
+                        result.node.host,
+                        result.node.username,
+                        cmd_result.exit_status,
+                        timestamp
+                    );
+                    file.write_all(header.as_bytes()).await?;
+                    file.write_all(&cmd_result.stderr).await?;
+                    file.flush().await?;
+
+                    println!("  ✓ Saved stderr for {} to {:?}", result.node, stderr_file);
+                }
+
+                // If both stdout and stderr are empty, create a marker file
+                if cmd_result.output.is_empty() && cmd_result.stderr.is_empty() {
+                    let empty_file = output_dir.join(format!("{node_name}_{timestamp}.empty"));
+                    let mut file = fs::File::create(&empty_file).await.with_context(|| {
+                        format!("Failed to create empty marker file: {empty_file:?}")
+                    })?;
+
+                    let content = format!(
+                        "# Command: {}\n# Host: {}\n# User: {}\n# Exit Status: {}\n# Timestamp: {}\n\nCommand produced no output.\n",
+                        command,
+                        result.node.host,
+                        result.node.username,
+                        cmd_result.exit_status,
+                        timestamp
+                    );
+                    file.write_all(content.as_bytes()).await?;
+                    file.flush().await?;
+
+                    println!(
+                        "  ✓ Command produced no output for {} (created marker file)",
+                        result.node
+                    );
+                }
+            }
+            Err(e) => {
+                // Save error to a file
+                let error_file = output_dir.join(format!("{node_name}_{timestamp}.error"));
+                let mut file = fs::File::create(&error_file)
+                    .await
+                    .with_context(|| format!("Failed to create error file: {error_file:?}"))?;
+
+                let content = format!(
+                    "# Command: {}\n# Host: {}\n# User: {}\n# Timestamp: {}\n\nError: {}\n",
+                    command, result.node.host, result.node.username, timestamp, e
+                );
+                file.write_all(content.as_bytes()).await?;
+                file.flush().await?;
+
+                println!("  ✗ Saved error for {} to {:?}", result.node, error_file);
+            }
+        }
+    }
+
+    // Create a summary file
+    let summary_file = output_dir.join(format!("summary_{timestamp}.txt"));
+    let mut file = fs::File::create(&summary_file)
+        .await
+        .with_context(|| format!("Failed to create summary file: {summary_file:?}"))?;
+
+    let mut summary = format!(
+        "Command Execution Summary\n{}\n\nCommand: {}\nTimestamp: {}\nTotal Nodes: {}\n\n",
+        "=".repeat(60),
+        command,
+        timestamp,
+        results.len()
+    );
+
+    summary.push_str("Node Results:\n");
+    summary.push_str("-".repeat(40).as_str());
+    summary.push('\n');
+
+    for result in results {
+        match &result.result {
+            Ok(cmd_result) => {
+                summary.push_str(&format!(
+                    "  {} - Exit Status: {} {}\n",
+                    result.node,
+                    cmd_result.exit_status,
+                    if cmd_result.is_success() {
+                        "✓"
+                    } else {
+                        "✗"
+                    }
+                ));
+            }
+            Err(e) => {
+                summary.push_str(&format!("  {} - Error: {}\n", result.node, e));
+            }
+        }
+    }
+
+    let success_count = results.iter().filter(|r| r.is_success()).count();
+    let failed_count = results.len() - success_count;
+
+    summary.push_str(&format!(
+        "\nSummary: {success_count} successful, {failed_count} failed\n"
+    ));
+
+    file.write_all(summary.as_bytes()).await?;
+    file.flush().await?;
+
+    println!("  ✓ Saved execution summary to {summary_file:?}");
 
     Ok(())
 }

@@ -1,6 +1,6 @@
 .\" Manpage for bssh
 .\" Contact the maintainers to correct errors or typos.
-.TH BSSH 1 "August 21, 2025" "v0.2.0" "bssh Manual"
+.TH BSSH 1 "August 21, 2025" "v0.3.0" "bssh Manual"
 
 .SH NAME
 bssh \- Backend.AI SSH - Parallel command execution across cluster nodes
@@ -50,7 +50,8 @@ Maximum parallel connections (default: 10)
 
 .TP
 .BR \-\-output\-dir " " \fIOUTPUT_DIR\fR
-Output directory for command results
+Output directory for command results. When specified, saves command outputs
+to separate files for each node with stdout, stderr, and execution summary
 
 .TP
 .BR \-v ", " \-\-verbose
@@ -180,6 +181,17 @@ Use SSH agent for authentication:
 .TP
 Save output to files:
 .B bssh --output-dir ./results -c production "ps aux"
+.RS
+Creates timestamped files per node:
+.br
+- hostname_TIMESTAMP.stdout (standard output)
+.br
+- hostname_TIMESTAMP.stderr (error output)
+.br  
+- hostname_TIMESTAMP.error (connection errors)
+.br
+- summary_TIMESTAMP.txt (execution summary)
+.RE
 
 .SH EXIT STATUS
 .TP
@@ -189,6 +201,33 @@ Success - all commands executed successfully on all nodes
 .TP
 .B 1
 Failure - one or more commands failed or connection errors occurred
+
+.SH OUTPUT FILES
+When using the
+.B --output-dir
+option, bssh creates the following files:
+
+.TP
+.I hostname_YYYYMMDD_HHMMSS.stdout
+Standard output from successful command execution
+
+.TP
+.I hostname_YYYYMMDD_HHMMSS.stderr
+Standard error output (created only if stderr is not empty)
+
+.TP
+.I hostname_YYYYMMDD_HHMMSS.error
+Error messages for failed connections or command execution
+
+.TP
+.I hostname_YYYYMMDD_HHMMSS.empty
+Marker file when command produces no output
+
+.TP
+.I summary_YYYYMMDD_HHMMSS.txt
+Overall execution summary with success/failure counts for all nodes
+
+Each output file includes metadata headers with command, host, user, exit status, and timestamp information.
 
 .SH FILES
 .TP
