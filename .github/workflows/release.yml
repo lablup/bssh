@@ -1,0 +1,168 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      update_homebrew:
+        description: 'Update Homebrew formula after build'
+        required: false
+        default: 'false'
+        type: choice
+        options: ['true','false']
+      release_tag:
+        description: 'Release tag to upload artifacts to (e.g. v1.2.3)'
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    environment: packaging
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux x86_64 (glibc)
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-22.04
+            artifact_name: bssh
+            asset_name: bssh-linux-x86_64
+            archive_ext: ".tar.gz"
+            protoc_platform: linux-x86_64
+
+          # Linux x86_64 (musl - static)
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            artifact_name: bssh
+            asset_name: bssh-linux-x86_64-musl
+            archive_ext: ".tar.gz"
+            protoc_platform: linux-x86_64
+
+          # Linux ARM64 (glibc)
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-22.04-arm
+            artifact_name: bssh
+            asset_name: bssh-linux-aarch64
+            archive_ext: ".tar.gz"
+            protoc_platform: linux-aarch_64
+
+          # Linux ARM64 (musl - static)
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-24.04-arm
+            artifact_name: bssh
+            asset_name: bssh-linux-aarch64-musl
+            archive_ext: ".tar.gz"
+            protoc_platform: linux-aarch_64
+
+          # macOS ARM64
+          - target: aarch64-apple-darwin
+            os: macos-14
+            artifact_name: bssh
+            asset_name: bssh-macos-aarch64
+            archive_ext: ".zip"
+            protoc_platform: osx-aarch_64
+
+    env:
+      BIN_NAME: bssh
+      BUNDLE_ID: ${{ vars.BUNDLE_ID }}
+
+    steps:
+      # 1) Checkout repository
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 2) Cache Cargo build artifacts
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ matrix.target }}-
+
+      # 3) Install Rust toolchain
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          override: true
+
+      # 4) Add target architecture
+      - name: Add target architecture
+        run: rustup target add ${{ matrix.target }}
+
+      # 5) Install musl tools only for aarch64 musl builds
+      - name: Install ARM64 musl tools (Linux aarch64 musl only)
+        if: matrix.target == 'aarch64-unknown-linux-musl'
+        run: |
+          sudo apt update
+          sudo apt install -y musl-tools
+
+      # 6) Build the release binary
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }} --locked
+
+      # 7) macOS code signing
+      - name: Import Developer ID certificate
+        if: runner.os == 'macOS'
+        uses: apple-actions/import-codesign-certs@v3
+        with:
+          p12-file-base64: ${{ secrets.DEV_ID_CERT_P12 }}
+          p12-password: ${{ secrets.DEV_ID_CERT_PASSWORD }}
+
+      - name: Code sign macOS binary
+        if: runner.os == 'macOS'
+        run: |
+          BIN=target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
+          codesign --force --timestamp --options runtime \
+                   --sign "Developer ID Application" "$BIN"
+
+      # 8) Package binaries
+      - name: Package Linux binary (tar.gz)
+        if: runner.os == 'Linux'
+        run: |
+          BIN_DIR=target/${{ matrix.target }}/release
+          mkdir -p package
+          cp "$BIN_DIR/${{ matrix.artifact_name }}" package/
+          cp docs/man/bssh.1 package/
+          tar -C package -czf ${{ matrix.asset_name }}.tar.gz .
+
+      - name: Package macOS binary (zip)
+        if: runner.os == 'macOS'
+        run: |
+          BIN="target/${{ matrix.target }}/release/${{ matrix.artifact_name }}"
+          ASSET="${{ matrix.asset_name }}.zip"
+          mkdir -p package
+          cp "$BIN" package/
+          cp docs/man/bssh.1 package/
+          ditto -c -k --sequesterRsrc package "$ASSET"
+
+      # 9) Generate checksum
+      - name: Generate checksum
+        run: |
+          FILE="${{ matrix.asset_name }}${{ matrix.archive_ext }}"
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            sha256sum "$FILE" > "$FILE.sha256"
+          else
+            shasum -a 256 "$FILE" > "$FILE.sha256"
+          fi
+
+      # 11) Upload release artifacts and checksum
+      - name: Upload release artifacts
+        if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name || github.event.inputs.release_tag }}
+          files: |
+            ${{ matrix.asset_name }}${{ matrix.archive_ext }}
+            ${{ matrix.asset_name }}${{ matrix.archive_ext }}.sha256

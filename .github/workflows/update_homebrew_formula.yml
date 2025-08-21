@@ -1,0 +1,97 @@
+name: Update Homebrew Formula
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag (e.g. v0.6.3)'
+        required: false
+
+  workflow_run:
+    workflows: ["Release"]
+    types:
+      - completed
+
+permissions:
+  contents: write
+
+jobs:
+  update-homebrew:
+    name: Update Homebrew Formula
+    runs-on: macos-latest
+    environment: packaging
+
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+
+    steps:
+      - name: Checkout this repository
+        uses: actions/checkout@v4
+
+      - name: Install gnu-sed
+        run: brew install gnu-sed
+
+      - name: Determine version tag
+        id: get_version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.release_tag }}" ]; then
+            echo "VERSION=${{ github.event.inputs.release_tag }}" >> $GITHUB_ENV
+          else
+            TAG=$(gh api repos/${{ github.repository }}/releases/latest --jq .tag_name)
+            echo "VERSION=$TAG" >> $GITHUB_ENV
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Clone Homebrew tap repository
+        run: |
+          git clone https://x-access-token:${{ secrets.HOMEBREW_TAP_TOKEN }}@github.com/lablup/homebrew-tap.git
+          cd homebrew-tap
+          git config user.name "GitHub Action"
+          git config user.email "actions@github.com"
+
+      - name: Download release artifacts and calculate SHA256
+        run: |
+          cd homebrew-tap
+          RAW_VERSION="${{ env.VERSION }}"
+          VERSION="${RAW_VERSION#v}"  # Remove leading 'v'
+          echo "VERSION_NO_V=$VERSION" >> $GITHUB_ENV  # Export version without 'v' to GitHub env
+
+          MAC_URL="https://github.com/lablup/bssh/releases/download/v${VERSION}/bssh-macos-aarch64.zip"
+          LINUX_ARM_URL="https://github.com/lablup/bssh/releases/download/v${VERSION}/bssh-linux-aarch64.tar.gz"
+          LINUX_X86_URL="https://github.com/lablup/bssh/releases/download/v${VERSION}/bssh-linux-x86_64.tar.gz"
+
+          mkdir -p tmp
+          curl -Ls "$MAC_URL" -o tmp/mac.zip
+          curl -Ls "$LINUX_ARM_URL" -o tmp/linux-arm.tar.gz
+          curl -Ls "$LINUX_X86_URL" -o tmp/linux-x86.tar.gz
+
+          echo "mac_url=$MAC_URL" >> $GITHUB_ENV
+          echo "linux_arm_url=$LINUX_ARM_URL" >> $GITHUB_ENV
+          echo "linux_x86_url=$LINUX_X86_URL" >> $GITHUB_ENV
+
+          echo "mac_sha=$(shasum -a 256 tmp/mac.zip | awk '{print $1}')" >> $GITHUB_ENV
+          echo "linux_arm_sha=$(shasum -a 256 tmp/linux-arm.tar.gz | awk '{print $1}')" >> $GITHUB_ENV
+          echo "linux_x86_sha=$(shasum -a 256 tmp/linux-x86.tar.gz | awk '{print $1}')" >> $GITHUB_ENV
+
+      - name: Update formula
+        run: |
+          cd homebrew-tap
+          VERSION="${{ env.VERSION_NO_V }}"  # Use version without 'v'
+
+          gsed -i "s/^  version .*/  version \"${VERSION}\"/" Formula/bssh.rb
+
+          gsed -i "s|https://github.com/.*/bssh-macos-aarch64.zip|${mac_url}|" Formula/bssh.rb
+          gsed -i "/macos-aarch64.zip\"/!b;n;c\      sha256 \"${mac_sha}\"" Formula/bssh.rb
+
+          gsed -i "s|https://github.com/.*/bssh-linux-aarch64.tar.gz|${linux_arm_url}|" Formula/bssh.rb
+          gsed -i "/linux-aarch64.tar.gz\"/!b;n;c\      sha256 \"${linux_arm_sha}\"" Formula/bssh.rb
+
+          gsed -i "s|https://github.com/.*/bssh-linux-x86_64.tar.gz|${linux_x86_url}|" Formula/bssh.rb
+          gsed -i "/linux-x86_64.tar.gz\"/!b;n;c\      sha256 \"${linux_x86_sha}\"" Formula/bssh.rb
+
+      - name: Commit and push changes to tap
+        run: |
+          cd homebrew-tap
+          git add Formula/bssh.rb
+          git commit -m "bump: bssh to v${{ env.VERSION_NO_V }}"
+          git push origin main
