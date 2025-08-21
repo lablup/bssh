@@ -1,3 +1,17 @@
+// Copyright 2025 Lablup Inc. and Jeongkyu Shin
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 use anyhow::{Context, Result};
 use clap::Parser;
 use std::path::Path;
@@ -31,7 +45,7 @@ async fn main() -> Result<()> {
     let nodes = resolve_nodes(&cli, &config).await?;
 
     if nodes.is_empty() {
-        anyhow::bail!("No hosts specified. Use -H or -c option.");
+        anyhow::bail!("No hosts specified. Please use one of the following options:\n  -H <hosts>    Specify comma-separated hosts (e.g., -H user@host1,user@host2)\n  -c <cluster>  Use a cluster from your configuration file");
     }
 
     // Parse strict host key checking mode
@@ -40,8 +54,10 @@ async fn main() -> Result<()> {
     // Get command to execute
     let command = cli.get_command();
 
-    if command.is_empty() && !matches!(cli.command, Some(Commands::Ping)) {
-        anyhow::bail!("No command specified");
+    // Check if command is required (not for subcommands like ping, copy)
+    let needs_command = matches!(cli.command, None | Some(Commands::Exec { .. }));
+    if command.is_empty() && needs_command {
+        anyhow::bail!("No command specified. Please provide a command to execute.\nExample: bssh -H host1,host2 'ls -la'");
     }
 
     // Handle remaining commands
@@ -50,10 +66,18 @@ async fn main() -> Result<()> {
             ping_nodes(nodes, cli.parallel, cli.identity.as_deref(), strict_mode).await?;
         }
         Some(Commands::Copy {
-            source: _,
-            destination: _,
+            source,
+            destination,
         }) => {
-            anyhow::bail!("Copy command not yet implemented");
+            copy_file(
+                nodes,
+                &source,
+                &destination,
+                cli.parallel,
+                cli.identity.as_deref(),
+                strict_mode,
+            )
+            .await?;
         }
         _ => {
             // Execute command
@@ -93,7 +117,7 @@ async fn resolve_nodes(cli: &Cli, config: &Config) -> Result<Vec<Node>> {
     if let Some(hosts) = &cli.hosts {
         for host_str in hosts {
             let node = Node::parse(host_str, cli.user.as_deref())
-                .with_context(|| format!("Failed to parse host: {host_str}"))?;
+                .with_context(|| format!("Invalid host format: '{host_str}'. Expected format: [user@]hostname[:port]\nExamples:\n  - hostname\n  - user@hostname\n  - hostname:2222\n  - user@hostname:2222"))?;
             nodes.push(node);
         }
     } else if let Some(cluster_name) = &cli.cluster {
@@ -183,6 +207,55 @@ async fn execute_command(
     let failed_count = results.len() - success_count;
 
     println!("\nExecution complete: {success_count} successful, {failed_count} failed");
+
+    if failed_count > 0 {
+        std::process::exit(1);
+    }
+
+    Ok(())
+}
+
+async fn copy_file(
+    nodes: Vec<Node>,
+    source: &Path,
+    destination: &str,
+    max_parallel: usize,
+    key_path: Option<&Path>,
+    strict_mode: StrictHostKeyChecking,
+) -> Result<()> {
+    // Check if source file exists
+    if !source.exists() {
+        anyhow::bail!("Source file does not exist: {:?}\nPlease check the file path and ensure the file exists.", source);
+    }
+
+    let file_size = std::fs::metadata(source)
+        .with_context(|| format!("Failed to get metadata for {source:?}"))?
+        .len();
+
+    println!(
+        "Copying {:?} ({} bytes) to {} nodes: {}\n",
+        source,
+        file_size,
+        nodes.len(),
+        destination
+    );
+
+    let key_path = key_path.map(|p| p.to_string_lossy().to_string());
+    let executor =
+        ParallelExecutor::new_with_strict_mode(nodes, max_parallel, key_path, strict_mode);
+
+    let results = executor.copy_file(source, destination).await?;
+
+    // Print results
+    for result in &results {
+        result.print_summary();
+    }
+
+    // Print summary
+    let success_count = results.iter().filter(|r| r.is_success()).count();
+    let failed_count = results.len() - success_count;
+
+    println!("\nCopy complete: {success_count} successful, {failed_count} failed");
 
     if failed_count > 0 {
         std::process::exit(1);

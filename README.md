@@ -132,3 +132,8 @@ cargo run -- -H localhost "echo hello"
 Copyright 2024 Jeongkyu Shin
 
 Licensed under the Apache License, Version 2.0
+
+## Changelog
+
+### Recent Updates
+- **v0.1.0 (2025/08/21):** Basic features such as multi-node execution 

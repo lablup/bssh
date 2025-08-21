@@ -1,3 +1,17 @@
+// Copyright 2025 Lablup Inc. and Jeongkyu Shin
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 use anyhow::Result;
 use futures::future::join_all;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
@@ -108,6 +122,75 @@ impl ParallelExecutor {
 
         Ok(execution_results)
     }
+
+    pub async fn copy_file(&self, local_path: &Path, remote_path: &str) -> Result<Vec<CopyResult>> {
+        let semaphore = Arc::new(Semaphore::new(self.max_parallel));
+        let multi_progress = MultiProgress::new();
+
+        let style = ProgressStyle::default_bar()
+            .template("{prefix:.bold.dim} {spinner:.green} {msg}")
+            .unwrap()
+            .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ");
+
+        let tasks: Vec<_> = self
+            .nodes
+            .iter()
+            .map(|node| {
+                let node = node.clone();
+                let local_path = local_path.to_path_buf();
+                let remote_path = remote_path.to_string();
+                let key_path = self.key_path.clone();
+                let strict_mode = self.strict_mode;
+                let semaphore = Arc::clone(&semaphore);
+                let pb = multi_progress.add(ProgressBar::new_spinner());
+                pb.set_style(style.clone());
+                pb.set_prefix(format!("[{node}]"));
+                pb.set_message("Connecting...");
+                pb.enable_steady_tick(std::time::Duration::from_millis(100));
+
+                tokio::spawn(async move {
+                    let _permit = semaphore.acquire().await.unwrap();
+
+                    pb.set_message("Copying file...");
+
+                    let result = copy_to_node(
+                        node.clone(),
+                        &local_path,
+                        &remote_path,
+                        key_path.as_deref(),
+                        strict_mode,
+                    )
+                    .await;
+
+                    match &result {
+                        Ok(()) => {
+                            pb.finish_with_message("✓ File copied");
+                        }
+                        Err(e) => {
+                            pb.finish_with_message(format!("✗ Error: {e}"));
+                        }
+                    }
+
+                    CopyResult { node, result }
+                })
+            })
+            .collect();
+
+        let results = join_all(tasks).await;
+
+        // Collect results, handling any task panics
+        let mut copy_results = Vec::new();
+        for result in results {
+            match result {
+                Ok(copy_result) => copy_results.push(copy_result),
+                Err(e) => {
+                    tracing::error!("Task failed: {}", e);
+                }
+            }
+        }
+
+        Ok(copy_results)
+    }
 }
 
 async fn execute_on_node(
@@ -122,6 +205,22 @@ async fn execute_on_node(
 
     client
         .connect_and_execute_with_host_check(command, key_path, Some(strict_mode))
+        .await
+}
+
+async fn copy_to_node(
+    node: Node,
+    local_path: &Path,
+    remote_path: &str,
+    key_path: Option<&str>,
+    strict_mode: StrictHostKeyChecking,
+) -> Result<()> {
+    let mut client = SshClient::new(node.host.clone(), node.port, node.username.clone());
+
+    let key_path = key_path.map(Path::new);
+
+    client
+        .copy_file(local_path, remote_path, key_path, Some(strict_mode))
         .await
 }
 
@@ -157,6 +256,29 @@ impl ExecutionResult {
             }
             Err(e) => {
                 eprintln!("Error: {e}");
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct CopyResult {
+    pub node: Node,
+    pub result: Result<()>,
+}
+
+impl CopyResult {
+    pub fn is_success(&self) -> bool {
+        self.result.is_ok()
+    }
+
+    pub fn print_summary(&self) {
+        match &self.result {
+            Ok(()) => {
+                println!("✓ {}: File copied successfully", self.node);
+            }
+            Err(e) => {
+                println!("✗ {}: Failed to copy file - {}", self.node, e);
             }
         }
     }

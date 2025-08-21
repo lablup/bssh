@@ -1,3 +1,17 @@
+// Copyright 2025 Lablup Inc. and Jeongkyu Shin
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -66,10 +80,10 @@ impl Config {
 
         let content = fs::read_to_string(&expanded_path)
             .await
-            .context("Failed to read config file")?;
+            .with_context(|| format!("Failed to read configuration file at {expanded_path:?}. Please check file permissions and ensure the file is accessible."))?;
 
         let config: Config =
-            serde_yaml::from_str(&content).context("Failed to parse config file")?;
+            serde_yaml::from_str(&content).with_context(|| format!("Failed to parse YAML configuration file at {expanded_path:?}. Please check the YAML syntax is valid.\nCommon issues:\n  - Incorrect indentation (use spaces, not tabs)\n  - Missing colons after keys\n  - Unquoted special characters"))?;
 
         Ok(config)
     }
@@ -81,7 +95,7 @@ impl Config {
     pub fn resolve_nodes(&self, cluster_name: &str) -> Result<Vec<Node>> {
         let cluster = self
             .get_cluster(cluster_name)
-            .ok_or_else(|| anyhow::anyhow!("Cluster '{}' not found", cluster_name))?;
+            .ok_or_else(|| anyhow::anyhow!("Cluster '{}' not found in configuration.\nAvailable clusters: {}\nPlease check your configuration file or use 'bssh list' to see available clusters.", cluster_name, self.clusters.keys().cloned().collect::<Vec<_>>().join(", ")))?;
 
         let mut nodes = Vec::new();
 
@@ -175,7 +189,7 @@ fn expand_env_vars(input: &str) -> String {
                 {
                     let replacement = std::env::var(var_name).unwrap_or_else(|_| {
                         tracing::debug!("Environment variable {} not found", var_name);
-                        format!("${{{}}}", var_name)
+                        format!("${{{var_name}}}")
                     });
                     result.replace_range(abs_start..abs_start + end + 1, &replacement);
                     processed = abs_start + replacement.len();
