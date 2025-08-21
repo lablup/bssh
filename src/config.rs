@@ -105,7 +105,8 @@ impl Config {
                     .or_else(|_| env::var("USERNAME"))
                     .unwrap_or_else(|_| "root".to_string());
 
-                nodes.push(NodeConfig::Simple(format!("{default_user}@{host}")));
+                // Backend.AI multi-node clusters use port 2200 by default
+                nodes.push(NodeConfig::Simple(format!("{default_user}@{host}:2200")));
             }
         }
 
@@ -410,10 +411,10 @@ clusters:
         // Should have 2 nodes when role is "main"
         assert_eq!(cluster.nodes.len(), 2);
 
-        // Check first node
+        // Check first node (should include port 2200)
         match &cluster.nodes[0] {
             NodeConfig::Simple(host) => {
-                assert_eq!(host, "testuser@sub1");
+                assert_eq!(host, "testuser@sub1:2200");
             }
             _ => panic!("Expected Simple node config"),
         }
@@ -425,7 +426,7 @@ clusters:
 
         match &cluster.nodes[0] {
             NodeConfig::Simple(host) => {
-                assert_eq!(host, "testuser@main1");
+                assert_eq!(host, "testuser@main1:2200");
             }
             _ => panic!("Expected Simple node config"),
         }

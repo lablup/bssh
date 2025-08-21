@@ -64,6 +64,8 @@ Backend.AI environment variables used:
 - `BACKENDAI_CLUSTER_HOST`: Current node's hostname
 - `BACKENDAI_CLUSTER_ROLE`: Current node's role (main or sub)
 
+Note: Backend.AI multi-node clusters use SSH port 2200 by default, which is automatically configured.
+
 Example:
 ```bash
 # Inside Backend.AI multi-node session, just run:
