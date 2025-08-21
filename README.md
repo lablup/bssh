@@ -10,6 +10,7 @@ A high-performance parallel SSH command execution tool for cluster management, b
 - **Flexible Authentication**: Support for SSH keys and SSH agent
 - **Host Key Verification**: Secure host key checking with known_hosts support
 - **Cross-Platform**: Works on Linux and macOS
+- **Output Management**: Save command outputs to files per node with detailed logging
 
 ## Installation
 
@@ -156,6 +157,52 @@ bssh -c webservers "sudo systemctl restart nginx"
 ### Collect logs
 ```bash
 bssh -c production --output-dir ./logs "tail -n 100 /var/log/syslog"
+```
+
+## Output File Management
+
+When using the `--output-dir` option, bssh saves command outputs to structured files:
+
+### File Structure
+```
+output-dir/
+├── hostname1_20250821_143022.stdout   # Standard output
+├── hostname1_20250821_143022.stderr   # Standard error (if any)
+├── hostname2_20250821_143022.stdout   # Per-node outputs
+├── hostname2_20250821_143022.error    # Connection/execution errors
+├── hostname3_20250821_143022.empty    # Marker for no output
+└── summary_20250821_143022.txt        # Overall execution summary
+```
+
+### File Types
+- **`.stdout`**: Contains standard output from successful commands
+- **`.stderr`**: Contains standard error output (created only if stderr is not empty)
+- **`.error`**: Contains error messages for failed connections or executions
+- **`.empty`**: Marker file when command produces no output
+- **`summary_*.txt`**: Overall execution summary with success/failure counts
+
+### File Headers
+Each output file includes metadata headers:
+```
+# Command: df -h
+# Host: server1.example.com
+# User: admin
+# Exit Status: 0
+# Timestamp: 20250821_143022
+
+[actual command output follows]
+```
+
+### Example Usage
+```bash
+# Save outputs to timestamped directory
+bssh -c production --output-dir ./results/$(date +%Y%m%d) "ps aux | head -10"
+
+# Collect system information
+bssh -c all-servers --output-dir ./system-info "uname -a; df -h; free -m"
+
+# Debug failed services
+bssh -c webservers --output-dir ./debug "systemctl status nginx"
 ```
 
 ## Development
