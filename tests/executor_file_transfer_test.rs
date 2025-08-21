@@ -62,7 +62,6 @@ async fn test_parallel_executor_creation() {
 
     // The executor should be created successfully
     // We can't test actual SSH operations without a mock SSH server
-    assert!(true);
 }
 
 #[tokio::test]

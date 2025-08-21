@@ -23,7 +23,7 @@ use tempfile::TempDir;
 fn can_ssh_to_localhost() -> bool {
     // Check if SSH server is running and we can connect to localhost
     let output = Command::new("ssh")
-        .args(&[
+        .args([
             "-o",
             "ConnectTimeout=2",
             "-o",
@@ -69,15 +69,14 @@ async fn test_localhost_upload_download_roundtrip() {
         std::env::var("USER").unwrap_or_else(|_| "root".to_string()),
     )];
     // Try to find an SSH key - use None if not found (will try SSH agent)
-    let ssh_key = dirs::home_dir()
-        .and_then(|h| {
-            let key_path = h.join(".ssh/id_rsa");
-            if key_path.exists() {
-                Some(key_path.to_string_lossy().to_string())
-            } else {
-                None
-            }
-        });
+    let ssh_key = dirs::home_dir().and_then(|h| {
+        let key_path = h.join(".ssh/id_rsa");
+        if key_path.exists() {
+            Some(key_path.to_string_lossy().to_string())
+        } else {
+            None
+        }
+    });
     let executor = ParallelExecutor::new(nodes, 1, ssh_key);
 
     // Test upload
@@ -145,15 +144,14 @@ async fn test_localhost_multiple_file_upload() {
         std::env::var("USER").unwrap_or_else(|_| "root".to_string()),
     )];
     // Try to find an SSH key - use None if not found (will try SSH agent)
-    let ssh_key = dirs::home_dir()
-        .and_then(|h| {
-            let key_path = h.join(".ssh/id_rsa");
-            if key_path.exists() {
-                Some(key_path.to_string_lossy().to_string())
-            } else {
-                None
-            }
-        });
+    let ssh_key = dirs::home_dir().and_then(|h| {
+        let key_path = h.join(".ssh/id_rsa");
+        if key_path.exists() {
+            Some(key_path.to_string_lossy().to_string())
+        } else {
+            None
+        }
+    });
     let executor = ParallelExecutor::new(nodes, 1, ssh_key);
 
     // Upload each file
@@ -190,15 +188,14 @@ async fn test_parallel_execution_with_multiple_nodes() {
     ];
 
     // Try to find an SSH key - use None if not found (will try SSH agent)
-    let ssh_key = dirs::home_dir()
-        .and_then(|h| {
-            let key_path = h.join(".ssh/id_rsa");
-            if key_path.exists() {
-                Some(key_path.to_string_lossy().to_string())
-            } else {
-                None
-            }
-        });
+    let ssh_key = dirs::home_dir().and_then(|h| {
+        let key_path = h.join(".ssh/id_rsa");
+        if key_path.exists() {
+            Some(key_path.to_string_lossy().to_string())
+        } else {
+            None
+        }
+    });
     let executor = ParallelExecutor::new(nodes, 2, ssh_key);
 
     // Execute a simple command
@@ -233,15 +230,14 @@ async fn test_download_with_unique_filenames() {
     ];
 
     // Try to find an SSH key - use None if not found (will try SSH agent)
-    let ssh_key = dirs::home_dir()
-        .and_then(|h| {
-            let key_path = h.join(".ssh/id_rsa");
-            if key_path.exists() {
-                Some(key_path.to_string_lossy().to_string())
-            } else {
-                None
-            }
-        });
+    let ssh_key = dirs::home_dir().and_then(|h| {
+        let key_path = h.join(".ssh/id_rsa");
+        if key_path.exists() {
+            Some(key_path.to_string_lossy().to_string())
+        } else {
+            None
+        }
+    });
     let executor = ParallelExecutor::new(nodes, 2, ssh_key);
 
     // Download from both nodes

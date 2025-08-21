@@ -170,12 +170,10 @@ async fn test_download_nonexistent_remote_file() {
     let results = results.unwrap();
     assert_eq!(results.len(), 1);
     // Should fail since file doesn't exist
-    if results[0].is_success() {
-        // If it somehow succeeds (unlikely), just verify it doesn't panic
-        assert!(true);
-    } else {
+    if !results[0].is_success() {
         assert!(!results[0].is_success());
     }
+    // If it somehow succeeds (unlikely), we just let it pass
 }
 
 #[tokio::test]

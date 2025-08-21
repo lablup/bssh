@@ -548,11 +548,12 @@ fn resolve_source_files(source: &Path) -> Result<Vec<PathBuf>> {
     } else {
         // Try as glob pattern even without special characters (might be escaped)
         let mut files = Vec::new();
-        for entry in glob(&source_str).unwrap_or_else(|_| glob::glob("").unwrap()) {
-            if let Ok(path) = entry {
-                if path.is_file() {
-                    files.push(path);
-                }
+        for path in glob(&source_str)
+            .unwrap_or_else(|_| glob::glob("").unwrap())
+            .flatten()
+        {
+            if path.is_file() {
+                files.push(path);
             }
         }
 
