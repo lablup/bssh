@@ -178,8 +178,5 @@ Licensed under the Apache License, Version 2.0
 ## Changelog
 
 ### Recent Updates
-- **v0.2.0 (2025/08/21):** Backend.AI multi-node session support with automatic cluster detection
-  - Automatic detection of Backend.AI environment variables
-  - Configuration priority order: Backend.AI env > ./config.yaml > ~/.config/bssh/config.yaml > ~/.bssh/config.yaml
-  - Smart node filtering based on BACKENDAI_CLUSTER_ROLE
-- **v0.1.0 (2025/08/21):** Basic features such as multi-node execution 
+- **v0.2.0 (2025/08/21):** Backend.AI multi-node session support with automatic cluster detection and SSH port 2200
+- **v0.1.0 (2025/08/21):** Initial release with parallel SSH execution using async-ssh2-tokio 
