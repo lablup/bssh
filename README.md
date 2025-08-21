@@ -46,7 +46,39 @@ bssh list
 
 ## Configuration
 
-Create a configuration file at `~/.bssh/config.yaml`:
+### Configuration Priority Order
+
+bssh loads configuration from the following sources in priority order:
+
+1. **Backend.AI Environment Variables** (automatic detection)
+2. **Current directory** (`./config.yaml`)
+3. **User config directory** (`~/.config/bssh/config.yaml`)
+4. **Default location** (`~/.bssh/config.yaml`)
+
+### Backend.AI Multi-node Session Support
+
+When running inside a Backend.AI multi-node session, bssh automatically detects cluster configuration from environment variables. No manual configuration needed!
+
+Backend.AI environment variables used:
+- `BACKENDAI_CLUSTER_HOSTS`: Comma-separated list of all node hostnames
+- `BACKENDAI_CLUSTER_HOST`: Current node's hostname
+- `BACKENDAI_CLUSTER_ROLE`: Current node's role (main or sub)
+
+Example:
+```bash
+# Inside Backend.AI multi-node session, just run:
+bssh "uptime"  # Automatically executes on all cluster nodes
+
+# Or specify a command explicitly:
+bssh "nvidia-smi" # Check GPU status on all nodes
+```
+
+### Manual Configuration File
+
+Create a configuration file at any of these locations:
+- `./config.yaml` (current directory)
+- `~/.config/bssh/config.yaml` (user config directory)
+- `~/.bssh/config.yaml` (default location)
 
 ```yaml
 defaults:
@@ -89,6 +121,14 @@ Options:
 ```
 
 ## Examples
+
+### Backend.AI Multi-node Session
+```bash
+# Inside Backend.AI session - automatic cluster detection
+bssh "hostname"  # Shows hostnames of all nodes
+bssh "nvidia-smi --query-gpu=name,memory.total --format=csv"  # GPU info
+bssh "python train.py --distributed"  # Run distributed training
+```
 
 ### Run system updates
 ```bash
@@ -136,4 +176,8 @@ Licensed under the Apache License, Version 2.0
 ## Changelog
 
 ### Recent Updates
+- **v0.2.0 (2025/08/21):** Backend.AI multi-node session support with automatic cluster detection
+  - Automatic detection of Backend.AI environment variables
+  - Configuration priority order: Backend.AI env > ./config.yaml > ~/.config/bssh/config.yaml > ~/.bssh/config.yaml
+  - Smart node filtering based on BACKENDAI_CLUSTER_ROLE
 - **v0.1.0 (2025/08/21):** Basic features such as multi-node execution 

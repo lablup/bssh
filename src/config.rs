@@ -15,6 +15,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::env;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 
@@ -86,6 +87,88 @@ impl Config {
             serde_yaml::from_str(&content).with_context(|| format!("Failed to parse YAML configuration file at {expanded_path:?}. Please check the YAML syntax is valid.\nCommon issues:\n  - Incorrect indentation (use spaces, not tabs)\n  - Missing colons after keys\n  - Unquoted special characters"))?;
 
         Ok(config)
+    }
+
+    /// Create a cluster configuration from Backend.AI environment variables
+    pub fn from_backendai_env() -> Option<Cluster> {
+        let cluster_hosts = env::var("BACKENDAI_CLUSTER_HOSTS").ok()?;
+        let _current_host = env::var("BACKENDAI_CLUSTER_HOST").ok()?;
+        let cluster_role = env::var("BACKENDAI_CLUSTER_ROLE").ok();
+
+        // Parse the hosts into nodes
+        let mut nodes = Vec::new();
+        for host in cluster_hosts.split(',') {
+            let host = host.trim();
+            if !host.is_empty() {
+                // Get current user as default
+                let default_user = env::var("USER")
+                    .or_else(|_| env::var("USERNAME"))
+                    .unwrap_or_else(|_| "root".to_string());
+
+                nodes.push(NodeConfig::Simple(format!("{default_user}@{host}")));
+            }
+        }
+
+        if nodes.is_empty() {
+            return None;
+        }
+
+        // Check if we should filter nodes based on role
+        let filtered_nodes = if let Some(role) = &cluster_role {
+            if role == "main" {
+                // If current node is main, execute on all nodes
+                nodes
+            } else {
+                // If current node is sub, only execute on sub nodes
+                // We need to identify which nodes are sub nodes
+                // For now, we'll execute on all nodes except the main (first) node
+                nodes.into_iter().skip(1).collect()
+            }
+        } else {
+            nodes
+        };
+
+        Some(Cluster {
+            nodes: filtered_nodes,
+            defaults: ClusterDefaults::default(),
+        })
+    }
+
+    /// Load configuration with priority order:
+    /// 1. Backend.AI environment variables
+    /// 2. Current directory config.yaml
+    /// 3. User home directory ~/.config/bssh/config.yaml
+    /// 4. Default path (usually ~/.bssh/config.yaml)
+    pub async fn load_with_priority(default_path: &Path) -> Result<Self> {
+        // Try Backend.AI environment first
+        if let Some(backendai_cluster) = Self::from_backendai_env() {
+            let mut config = Self::default();
+            config
+                .clusters
+                .insert("backendai".to_string(), backendai_cluster);
+            return Ok(config);
+        }
+
+        // Try current directory config.yaml
+        let current_dir_config = PathBuf::from("config.yaml");
+        if current_dir_config.exists() {
+            if let Ok(config) = Self::load(&current_dir_config).await {
+                return Ok(config);
+            }
+        }
+
+        // Try ~/.config/bssh/config.yaml
+        if let Some(home_dir) = dirs::home_dir() {
+            let home_config = home_dir.join(".config").join("bssh").join("config.yaml");
+            if home_config.exists() {
+                if let Ok(config) = Self::load(&home_config).await {
+                    return Ok(config);
+                }
+            }
+        }
+
+        // Finally, try the default path
+        Self::load(default_path).await
     }
 
     pub fn get_cluster(&self, name: &str) -> Option<&Cluster> {
@@ -312,5 +395,44 @@ clusters:
             prod_cluster.defaults.ssh_key,
             Some("~/.ssh/prod_key".to_string())
         );
+    }
+
+    #[test]
+    fn test_backendai_env_parsing() {
+        // Set up Backend.AI environment variables
+        std::env::set_var("BACKENDAI_CLUSTER_HOSTS", "sub1,main1");
+        std::env::set_var("BACKENDAI_CLUSTER_HOST", "main1");
+        std::env::set_var("BACKENDAI_CLUSTER_ROLE", "main");
+        std::env::set_var("USER", "testuser");
+
+        let cluster = Config::from_backendai_env().unwrap();
+
+        // Should have 2 nodes when role is "main"
+        assert_eq!(cluster.nodes.len(), 2);
+
+        // Check first node
+        match &cluster.nodes[0] {
+            NodeConfig::Simple(host) => {
+                assert_eq!(host, "testuser@sub1");
+            }
+            _ => panic!("Expected Simple node config"),
+        }
+
+        // Test with sub role - should skip the first (main) node
+        std::env::set_var("BACKENDAI_CLUSTER_ROLE", "sub");
+        let cluster = Config::from_backendai_env().unwrap();
+        assert_eq!(cluster.nodes.len(), 1);
+
+        match &cluster.nodes[0] {
+            NodeConfig::Simple(host) => {
+                assert_eq!(host, "testuser@main1");
+            }
+            _ => panic!("Expected Simple node config"),
+        }
+
+        // Clean up
+        std::env::remove_var("BACKENDAI_CLUSTER_HOSTS");
+        std::env::remove_var("BACKENDAI_CLUSTER_HOST");
+        std::env::remove_var("BACKENDAI_CLUSTER_ROLE");
     }
 }

@@ -32,8 +32,8 @@ async fn main() -> Result<()> {
     // Initialize logging
     init_logging(cli.verbose);
 
-    // Load configuration
-    let config = Config::load(&cli.config).await?;
+    // Load configuration with priority
+    let config = Config::load_with_priority(&cli.config).await?;
 
     // Handle list command first (doesn't need nodes)
     if matches!(cli.command, Some(Commands::List)) {
@@ -113,7 +113,7 @@ fn init_logging(verbosity: u8) {
 async fn resolve_nodes(cli: &Cli, config: &Config) -> Result<Vec<Node>> {
     let mut nodes = Vec::new();
 
-    // Priority: command line hosts > cluster from config
+    // Priority: command line hosts > explicit cluster > Backend.AI cluster (if no other option)
     if let Some(hosts) = &cli.hosts {
         for host_str in hosts {
             let node = Node::parse(host_str, cli.user.as_deref())
@@ -122,6 +122,9 @@ async fn resolve_nodes(cli: &Cli, config: &Config) -> Result<Vec<Node>> {
         }
     } else if let Some(cluster_name) = &cli.cluster {
         nodes = config.resolve_nodes(cluster_name)?;
+    } else if config.clusters.contains_key("backendai") {
+        // Automatically use Backend.AI cluster if no hosts or cluster specified
+        nodes = config.resolve_nodes("backendai")?;
     }
 
     Ok(nodes)
