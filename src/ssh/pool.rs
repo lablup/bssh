@@ -43,8 +43,11 @@ struct ConnectionKey {
 pub struct ConnectionPool {
     /// Placeholder for future connection storage
     _connections: Arc<RwLock<Vec<ConnectionKey>>>,
+    #[allow(dead_code)]
     ttl: Duration,
+    #[allow(dead_code)]
     enabled: bool,
+    #[allow(dead_code)]
     max_connections: usize,
 }
 
