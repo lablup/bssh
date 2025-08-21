@@ -6,20 +6,36 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 
 use crate::node::Node;
-use crate::ssh::{client::CommandResult, SshClient};
+use crate::ssh::{client::CommandResult, known_hosts::StrictHostKeyChecking, SshClient};
 
 pub struct ParallelExecutor {
     nodes: Vec<Node>,
     max_parallel: usize,
     key_path: Option<String>,
+    strict_mode: StrictHostKeyChecking,
 }
 
 impl ParallelExecutor {
     pub fn new(nodes: Vec<Node>, max_parallel: usize, key_path: Option<String>) -> Self {
+        Self::new_with_strict_mode(
+            nodes,
+            max_parallel,
+            key_path,
+            StrictHostKeyChecking::AcceptNew,
+        )
+    }
+
+    pub fn new_with_strict_mode(
+        nodes: Vec<Node>,
+        max_parallel: usize,
+        key_path: Option<String>,
+        strict_mode: StrictHostKeyChecking,
+    ) -> Self {
         Self {
             nodes,
             max_parallel,
             key_path,
+            strict_mode,
         }
     }
 
@@ -39,6 +55,7 @@ impl ParallelExecutor {
                 let node = node.clone();
                 let command = command.to_string();
                 let key_path = self.key_path.clone();
+                let strict_mode = self.strict_mode;
                 let semaphore = Arc::clone(&semaphore);
                 let pb = multi_progress.add(ProgressBar::new_spinner());
                 pb.set_style(style.clone());
@@ -51,7 +68,9 @@ impl ParallelExecutor {
 
                     pb.set_message("Executing command...");
 
-                    let result = execute_on_node(node.clone(), &command, key_path.as_deref()).await;
+                    let result =
+                        execute_on_node(node.clone(), &command, key_path.as_deref(), strict_mode)
+                            .await;
 
                     match &result {
                         Ok(cmd_result) => {
@@ -95,12 +114,15 @@ async fn execute_on_node(
     node: Node,
     command: &str,
     key_path: Option<&str>,
+    strict_mode: StrictHostKeyChecking,
 ) -> Result<CommandResult> {
     let mut client = SshClient::new(node.host.clone(), node.port, node.username.clone());
 
     let key_path = key_path.map(Path::new);
 
-    client.connect_and_execute(command, key_path).await
+    client
+        .connect_and_execute_with_host_check(command, key_path, Some(strict_mode))
+        .await
 }
 
 #[derive(Debug)]

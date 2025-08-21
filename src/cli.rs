@@ -55,6 +55,13 @@ pub struct Cli {
     )]
     pub verbose: u8,
 
+    #[arg(
+        long,
+        default_value = "accept-new",
+        help = "Host key checking mode (yes/no/accept-new)"
+    )]
+    pub strict_host_key_checking: String,
+
     #[arg(trailing_var_arg = true, help = "Command to execute on remote hosts")]
     pub command_args: Vec<String>,
 }

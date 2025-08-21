@@ -6,8 +6,7 @@ use tokio::fs;
 
 use crate::node::Node;
 
-#[derive(Debug, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Serialize, Deserialize, Default)]
 pub struct Config {
     #[serde(default)]
     pub defaults: Defaults,
@@ -89,27 +88,34 @@ impl Config {
         for node_config in &cluster.nodes {
             let node = match node_config {
                 NodeConfig::Simple(host) => {
+                    // Expand environment variables in host
+                    let expanded_host = expand_env_vars(host);
+
                     let default_user = cluster
                         .defaults
                         .user
-                        .as_deref()
-                        .or(self.defaults.user.as_deref());
+                        .as_ref()
+                        .or(self.defaults.user.as_ref())
+                        .map(|u| expand_env_vars(u));
 
                     let default_port = cluster.defaults.port.or(self.defaults.port).unwrap_or(22);
 
-                    Node::parse(host, default_user).map(|mut n| {
-                        if !host.contains(':') {
+                    Node::parse(&expanded_host, default_user.as_deref()).map(|mut n| {
+                        if !expanded_host.contains(':') {
                             n.port = default_port;
                         }
                         n
                     })?
                 }
                 NodeConfig::Detailed { host, port, user } => {
+                    // Expand environment variables
+                    let expanded_host = expand_env_vars(host);
+
                     let username = user
-                        .as_deref()
-                        .or(cluster.defaults.user.as_deref())
-                        .or(self.defaults.user.as_deref())
-                        .map(|s| s.to_string())
+                        .as_ref()
+                        .map(|u| expand_env_vars(u))
+                        .or_else(|| cluster.defaults.user.as_ref().map(|u| expand_env_vars(u)))
+                        .or_else(|| self.defaults.user.as_ref().map(|u| expand_env_vars(u)))
                         .unwrap_or_else(|| {
                             std::env::var("USER").unwrap_or_else(|_| "root".to_string())
                         });
@@ -119,7 +125,7 @@ impl Config {
                         .or(self.defaults.port)
                         .unwrap_or(22);
 
-                    Node::new(host.clone(), port, username)
+                    Node::new(expanded_host, port, username)
                 }
             };
 
@@ -142,7 +148,6 @@ impl Config {
     }
 }
 
-
 fn expand_tilde(path: &Path) -> PathBuf {
     if let Some(path_str) = path.to_str() {
         if path_str.starts_with("~/") {
@@ -154,9 +159,101 @@ fn expand_tilde(path: &Path) -> PathBuf {
     path.to_path_buf()
 }
 
+/// Expand environment variables in a string
+/// Supports ${VAR} and $VAR syntax
+fn expand_env_vars(input: &str) -> String {
+    let mut result = input.to_string();
+    let mut processed = 0;
+
+    // Handle ${VAR} syntax
+    while processed < result.len() {
+        if let Some(start) = result[processed..].find("${") {
+            let abs_start = processed + start;
+            if let Some(end) = result[abs_start..].find('}') {
+                let var_name = &result[abs_start + 2..abs_start + end];
+                if !var_name.is_empty() && var_name.chars().all(|c| c.is_alphanumeric() || c == '_')
+                {
+                    let replacement = std::env::var(var_name).unwrap_or_else(|_| {
+                        tracing::debug!("Environment variable {} not found", var_name);
+                        format!("${{{}}}", var_name)
+                    });
+                    result.replace_range(abs_start..abs_start + end + 1, &replacement);
+                    processed = abs_start + replacement.len();
+                } else {
+                    processed = abs_start + end + 1;
+                }
+            } else {
+                break;
+            }
+        } else {
+            break;
+        }
+    }
+
+    // Handle $VAR syntax (but be careful not to expand ${} again)
+    let mut i = 0;
+    let bytes = result.as_bytes();
+    let mut new_result = String::new();
+
+    while i < bytes.len() {
+        if bytes[i] == b'$' && i + 1 < bytes.len() && bytes[i + 1] != b'{' {
+            let start = i;
+            i += 1;
+
+            // Find the end of the variable name
+            while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+                i += 1;
+            }
+
+            if i > start + 1 {
+                let var_name = std::str::from_utf8(&bytes[start + 1..i]).unwrap();
+                let replacement = std::env::var(var_name).unwrap_or_else(|_| {
+                    tracing::debug!("Environment variable {} not found", var_name);
+                    String::from_utf8(bytes[start..i].to_vec()).unwrap()
+                });
+                new_result.push_str(&replacement);
+            } else {
+                new_result.push('$');
+            }
+        } else {
+            new_result.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+
+    new_result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_expand_env_vars() {
+        std::env::set_var("TEST_VAR", "test_value");
+        std::env::set_var("TEST_USER", "testuser");
+
+        // Test ${VAR} syntax
+        assert_eq!(expand_env_vars("Hello ${TEST_VAR}!"), "Hello test_value!");
+        assert_eq!(expand_env_vars("${TEST_USER}@host"), "testuser@host");
+
+        // Test $VAR syntax
+        assert_eq!(expand_env_vars("Hello $TEST_VAR!"), "Hello test_value!");
+        assert_eq!(expand_env_vars("$TEST_USER@host"), "testuser@host");
+
+        // Test mixed
+        assert_eq!(
+            expand_env_vars("${TEST_USER}:$TEST_VAR"),
+            "testuser:test_value"
+        );
+
+        // Test non-existent variable (should leave as-is)
+        assert_eq!(expand_env_vars("${NONEXISTENT}"), "${NONEXISTENT}");
+        assert_eq!(expand_env_vars("$NONEXISTENT"), "$NONEXISTENT");
+
+        // Test no variables
+        assert_eq!(expand_env_vars("no variables here"), "no variables here");
+    }
 
     #[test]
     fn test_expand_tilde() {

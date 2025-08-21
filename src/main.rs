@@ -3,7 +3,13 @@ use clap::Parser;
 use std::path::Path;
 use tracing_subscriber::EnvFilter;
 
-use bssh::{Cli, Config, Node, ParallelExecutor};
+use bssh::{
+    cli::{Cli, Commands},
+    config::Config,
+    executor::ParallelExecutor,
+    node::Node,
+    ssh::known_hosts::StrictHostKeyChecking,
+};
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -15,6 +21,12 @@ async fn main() -> Result<()> {
     // Load configuration
     let config = Config::load(&cli.config).await?;
 
+    // Handle list command first (doesn't need nodes)
+    if matches!(cli.command, Some(Commands::List)) {
+        list_clusters(&config);
+        return Ok(());
+    }
+
     // Determine nodes to execute on
     let nodes = resolve_nodes(&cli, &config).await?;
 
@@ -22,27 +34,22 @@ async fn main() -> Result<()> {
         anyhow::bail!("No hosts specified. Use -H or -c option.");
     }
 
+    // Parse strict host key checking mode
+    let strict_mode = StrictHostKeyChecking::from_str(&cli.strict_host_key_checking);
+
     // Get command to execute
     let command = cli.get_command();
 
-    if command.is_empty()
-        && !matches!(
-            cli.command,
-            Some(bssh::cli::Commands::List | bssh::cli::Commands::Ping)
-        )
-    {
+    if command.is_empty() && !matches!(cli.command, Some(Commands::Ping)) {
         anyhow::bail!("No command specified");
     }
 
-    // Handle different commands
+    // Handle remaining commands
     match cli.command {
-        Some(bssh::cli::Commands::List) => {
-            list_clusters(&config);
+        Some(Commands::Ping) => {
+            ping_nodes(nodes, cli.parallel, cli.identity.as_deref(), strict_mode).await?;
         }
-        Some(bssh::cli::Commands::Ping) => {
-            ping_nodes(nodes, cli.parallel, cli.identity.as_deref()).await?;
-        }
-        Some(bssh::cli::Commands::Copy {
+        Some(Commands::Copy {
             source: _,
             destination: _,
         }) => {
@@ -56,6 +63,7 @@ async fn main() -> Result<()> {
                 cli.parallel,
                 cli.identity.as_deref(),
                 cli.verbose > 0,
+                strict_mode,
             )
             .await?;
         }
@@ -114,11 +122,17 @@ fn list_clusters(config: &Config) {
     }
 }
 
-async fn ping_nodes(nodes: Vec<Node>, max_parallel: usize, key_path: Option<&Path>) -> Result<()> {
+async fn ping_nodes(
+    nodes: Vec<Node>,
+    max_parallel: usize,
+    key_path: Option<&Path>,
+    strict_mode: StrictHostKeyChecking,
+) -> Result<()> {
     println!("Pinging {} nodes...\n", nodes.len());
 
     let key_path = key_path.map(|p| p.to_string_lossy().to_string());
-    let executor = ParallelExecutor::new(nodes.clone(), max_parallel, key_path);
+    let executor =
+        ParallelExecutor::new_with_strict_mode(nodes.clone(), max_parallel, key_path, strict_mode);
 
     let results = executor.execute("echo 'pong'").await?;
 
@@ -138,9 +152,7 @@ async fn ping_nodes(nodes: Vec<Node>, max_parallel: usize, key_path: Option<&Pat
         }
     }
 
-    println!(
-        "\nSummary: {success_count} successful, {failed_count} failed"
-    );
+    println!("\nSummary: {success_count} successful, {failed_count} failed");
 
     Ok(())
 }
@@ -151,11 +163,13 @@ async fn execute_command(
     max_parallel: usize,
     key_path: Option<&Path>,
     verbose: bool,
+    strict_mode: StrictHostKeyChecking,
 ) -> Result<()> {
     println!("Executing command on {} nodes: {}\n", nodes.len(), command);
 
     let key_path = key_path.map(|p| p.to_string_lossy().to_string());
-    let executor = ParallelExecutor::new(nodes, max_parallel, key_path);
+    let executor =
+        ParallelExecutor::new_with_strict_mode(nodes, max_parallel, key_path, strict_mode);
 
     let results = executor.execute(command).await?;
 
@@ -168,9 +182,7 @@ async fn execute_command(
     let success_count = results.iter().filter(|r| r.is_success()).count();
     let failed_count = results.len() - success_count;
 
-    println!(
-        "\nExecution complete: {success_count} successful, {failed_count} failed"
-    );
+    println!("\nExecution complete: {success_count} successful, {failed_count} failed");
 
     if failed_count > 0 {
         std::process::exit(1);

@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
-use async_ssh2_tokio::{AuthMethod, Client, ServerCheckMethod};
+use async_ssh2_tokio::{AuthMethod, Client};
 use std::path::Path;
+
+use super::known_hosts::StrictHostKeyChecking;
 
 pub struct SshClient {
     host: String,
@@ -22,6 +24,16 @@ impl SshClient {
         command: &str,
         key_path: Option<&Path>,
     ) -> Result<CommandResult> {
+        self.connect_and_execute_with_host_check(command, key_path, None)
+            .await
+    }
+
+    pub async fn connect_and_execute_with_host_check(
+        &mut self,
+        command: &str,
+        key_path: Option<&Path>,
+        strict_mode: Option<StrictHostKeyChecking>,
+    ) -> Result<CommandResult> {
         let addr = (self.host.as_str(), self.port);
         tracing::debug!("Connecting to {}:{}", self.host, self.port);
 
@@ -42,15 +54,17 @@ impl SshClient {
             }
         };
 
+        // Set up host key checking
+        let check_method = if let Some(mode) = strict_mode {
+            super::known_hosts::get_check_method(mode)
+        } else {
+            super::known_hosts::get_check_method(StrictHostKeyChecking::AcceptNew)
+        };
+
         // Connect and authenticate
-        let client = Client::connect(
-            addr,
-            &self.username,
-            auth_method,
-            ServerCheckMethod::NoCheck, // TODO: Implement proper host key verification
-        )
-        .await
-        .context("Failed to connect to SSH server")?;
+        let client = Client::connect(addr, &self.username, auth_method, check_method)
+            .await
+            .context("Failed to connect to SSH server")?;
 
         tracing::debug!("Connected and authenticated successfully");
         tracing::debug!("Executing command: {}", command);
