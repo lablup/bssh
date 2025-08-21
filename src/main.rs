@@ -690,9 +690,9 @@ async fn download_file(
         let test_cmd = format!("test -d '{source}' && echo 'dir' || echo 'file'");
         let test_results = executor.execute(&test_cmd).await?;
         test_results.iter().any(|r| {
-            r.result.as_ref().is_ok_and(|res| {
-                String::from_utf8_lossy(&res.output).trim() == "dir"
-            })
+            r.result
+                .as_ref()
+                .is_ok_and(|res| String::from_utf8_lossy(&res.output).trim() == "dir")
         })
     } else {
         false
@@ -706,9 +706,7 @@ async fn download_file(
         );
 
         // Find all files in the directory recursively
-        let find_cmd = format!(
-            "find '{source}' -type f 2>/dev/null || find '{source}' -type f"
-        );
+        let find_cmd = format!("find '{source}' -type f 2>/dev/null || find '{source}' -type f");
         let find_results = executor.execute(&find_cmd).await?;
 
         let mut total_success = 0;
@@ -791,7 +789,8 @@ async fn download_file(
         );
 
         // First, execute ls command with glob to find matching files on first node
-        let test_node = params.nodes
+        let test_node = params
+            .nodes
             .first()
             .ok_or_else(|| anyhow::anyhow!("No nodes available"))?;
         let glob_command = format!("ls -1 {source} 2>/dev/null || true");
