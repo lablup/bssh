@@ -19,7 +19,9 @@ use std::path::PathBuf;
 #[command(
     name = "bssh",
     version,
+    before_help = "",
     about = "Backend.AI SSH - Parallel command execution across cluster nodes",
+    after_help = "Developed and maintained as part of the Backend.AI project.",
     long_about = None
 )]
 pub struct Cli {
@@ -39,7 +41,7 @@ pub struct Cli {
 
     #[arg(
         long,
-        default_value = "~/.bssh/config.yaml",
+        default_value = "~/.config/bssh/config.yaml",
         help = "Configuration file path"
     )]
     pub config: PathBuf,

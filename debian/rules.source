@@ -1,0 +1,24 @@
+#!/usr/bin/make -f
+
+# Enable all hardening options
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+# Use vendored dependencies for offline builds
+export CARGO_HOME = $(CURDIR)/debian/cargo
+export CARGO_TARGET_DIR = $(CURDIR)/target
+
+%:
+	dh $@ --buildsystem=cargo
+
+override_dh_auto_build:
+	dh_auto_build -- --release --locked
+
+override_dh_auto_install:
+	# Install the compiled binary
+	install -D -m 0755 target/release/bssh debian/bssh/usr/bin/bssh
+
+override_dh_auto_test:
+	dh_auto_test -- --release
+
+override_dh_builddeb:
+	dh_builddeb --destdir=../

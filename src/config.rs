@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use anyhow::{Context, Result};
+use directories::ProjectDirs;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
@@ -149,8 +150,8 @@ impl Config {
     /// Load configuration with priority order:
     /// 1. Backend.AI environment variables
     /// 2. Current directory config.yaml
-    /// 3. User home directory ~/.config/bssh/config.yaml
-    /// 4. Default path (usually ~/.bssh/config.yaml)
+    /// 3. XDG config directory ($XDG_CONFIG_HOME/bssh/config.yaml or ~/.config/bssh/config.yaml)
+    /// 4. Default path (from CLI argument)
     pub async fn load_with_priority(default_path: &Path) -> Result<Self> {
         // Try Backend.AI environment first
         if let Some(backendai_cluster) = Self::from_backendai_env() {
@@ -169,17 +170,28 @@ impl Config {
             return Ok(config);
         }
 
-        // Try ~/.config/bssh/config.yaml
-        if let Some(home_dir) = dirs::home_dir() {
-            let home_config = home_dir.join(".config").join("bssh").join("config.yaml");
-            if home_config.exists()
-                && let Ok(config) = Self::load(&home_config).await
+        // Try XDG config directory
+        if let Ok(xdg_config_home) = env::var("XDG_CONFIG_HOME") {
+            // Use XDG_CONFIG_HOME if set
+            let xdg_config = PathBuf::from(xdg_config_home)
+                .join("bssh")
+                .join("config.yaml");
+            if xdg_config.exists()
+                && let Ok(config) = Self::load(&xdg_config).await
+            {
+                return Ok(config);
+            }
+        } else if let Some(proj_dirs) = ProjectDirs::from("", "", "bssh") {
+            // Use directories crate for standard XDG path
+            let xdg_config = proj_dirs.config_dir().join("config.yaml");
+            if xdg_config.exists()
+                && let Ok(config) = Self::load(&xdg_config).await
             {
                 return Ok(config);
             }
         }
 
-        // Finally, try the default path
+        // Finally, try the default path from CLI (will create if needed)
         Self::load(default_path).await
     }
 

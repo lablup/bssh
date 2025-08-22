@@ -30,7 +30,7 @@ Cluster name from configuration file
 
 .TP
 .BR \-\-config " " \fICONFIG\fR
-Configuration file path (default: ~/.bssh/config.yaml)
+Configuration file path (default: ~/.config/bssh/config.yaml)
 
 .TP
 .BR \-u ", " \-\-user " " \fIUSER\fR
@@ -125,9 +125,9 @@ Backend.AI environment variables (automatic detection)
 .IP 2. 4
 Current directory (./config.yaml)
 .IP 3. 4
-User config directory (~/.config/bssh/config.yaml)
+XDG config directory ($XDG_CONFIG_HOME/bssh/config.yaml or ~/.config/bssh/config.yaml)
 .IP 4. 4
-Default location (~/.bssh/config.yaml)
+CLI specified path (via --config flag)
 
 .SS Configuration File Format
 .nf
@@ -309,12 +309,12 @@ Each output file includes metadata headers with command, host, user, exit status
 
 .SH FILES
 .TP
-.I ~/.bssh/config.yaml
-Default configuration file
+.I ~/.config/bssh/config.yaml
+Default configuration file (XDG Base Directory standard)
 
 .TP
-.I ~/.config/bssh/config.yaml
-User configuration directory location
+.I $XDG_CONFIG_HOME/bssh/config.yaml
+Configuration file when XDG_CONFIG_HOME is set
 
 .TP
 .I ~/.ssh/known_hosts
@@ -357,6 +357,8 @@ the SSH agent for authentication without specifying the -A flag
 
 .SH AUTHOR
 Written by Jeongkyu Shin and the Lablup team.
+.br
+Developed and maintained as part of the Backend.AI project.
 
 .SH REPORTING BUGS
 Report bugs to: https://github.com/lablup/bssh/issues

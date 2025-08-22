@@ -45,42 +45,42 @@ jobs:
             version: "22.04"
             arch: amd64
             os: ubuntu-22.04
-            binary_asset: all-smi-linux-x86_64.tar.gz
+            binary_asset: bssh-linux-x86_64.tar.gz
 
           # Ubuntu 22.04 LTS (Jammy) - ARM64
           - distro: jammy
             version: "22.04"
             arch: arm64
             os: ubuntu-22.04-arm
-            binary_asset: all-smi-linux-aarch64.tar.gz
+            binary_asset: bssh-linux-aarch64.tar.gz
           
           # Ubuntu 24.04 LTS (Noble) - AMD64
           - distro: noble
             version: "24.04"
             arch: amd64
             os: ubuntu-24.04
-            binary_asset: all-smi-linux-x86_64.tar.gz
+            binary_asset: bssh-linux-x86_64.tar.gz
           
           # Ubuntu 24.04 LTS (Noble) - ARM64
           - distro: noble
             version: "24.04"
             arch: arm64
             os: ubuntu-24.04-arm
-            binary_asset: all-smi-linux-aarch64.tar.gz
+            binary_asset: bssh-linux-aarch64.tar.gz
           
           # Ubuntu 24.10 (Oracular) - AMD64
           - distro: oracular
             version: "24.10"
             arch: amd64
             os: ubuntu-24.04
-            binary_asset: all-smi-linux-x86_64.tar.gz
+            binary_asset: bssh-linux-x86_64.tar.gz
           
           # Ubuntu 24.10 (Oracular) - ARM64  
           - distro: oracular
             version: "24.10"
             arch: arm64
             os: ubuntu-24.04-arm
-            binary_asset: all-smi-linux-aarch64.tar.gz
+            binary_asset: bssh-linux-aarch64.tar.gz
     
     steps:
     # ───────────────────────────────────────────────────────────────
@@ -129,13 +129,13 @@ jobs:
         tar -xzf "${{ matrix.binary_asset }}"
         
         # Verify the binary exists
-        if [ ! -f "all-smi" ]; then
+        if [ ! -f "bssh" ]; then
           echo "Error: Binary not found after extraction"
           exit 1
         fi
         
         # Make it executable
-        chmod +x all-smi
+        chmod +x bssh
       env:
         GH_TOKEN: ${{ github.token }}
     
@@ -217,11 +217,11 @@ jobs:
         mkdir -p artifacts
 
         for f in ../*_${ARCH}.deb; do
-          mv "$f" "artifacts/all-smi_${VER}_ubuntu${SERIES}.${DIST}_${ARCH}.deb"
+          mv "$f" "artifacts/bssh_${VER}_ubuntu${SERIES}.${DIST}_${ARCH}.deb"
         done
 
         for f in ../*_${ARCH}.buildinfo; do
-          mv "$f" "artifacts/all-smi_${VER}_ubuntu${SERIES}.${DIST}_${ARCH}.buildinfo"
+          mv "$f" "artifacts/bssh_${VER}_ubuntu${SERIES}.${DIST}_${ARCH}.buildinfo"
         done
 
     # ───────────────────────────────────────────────────────────────
@@ -230,7 +230,7 @@ jobs:
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: all-smi_${{ env.PACKAGE_VERSION }}_ubuntu${{ matrix.version }}.${{ matrix.distro }}_${{ matrix.arch }}
+        name: bssh_${{ env.PACKAGE_VERSION }}_ubuntu${{ matrix.version }}.${{ matrix.distro }}_${{ matrix.arch }}
         path: artifacts/
         retention-days: 7
 

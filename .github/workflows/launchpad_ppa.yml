@@ -199,7 +199,7 @@ jobs:
       if: steps.check_distro.outputs.should_run == 'true'
       run: |
         # Clean any build artifacts
-        rm -f all-smi
+        rm -f bssh
         rm -rf target/
         
         # Ensure Architecture field is 'any' for source package

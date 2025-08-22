@@ -15,7 +15,7 @@
 use anyhow::{Context, Result};
 use std::fmt;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Node {
     pub host: String,
     pub port: u16,
