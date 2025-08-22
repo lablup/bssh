@@ -441,6 +441,7 @@ impl InteractiveCommand {
             "help" | "?" => {
                 println!("\nSpecial commands:");
                 println!("  !all          - Activate all nodes");
+                println!("  !broadcast <cmd> - Execute command on all nodes (temporarily)");
                 println!("  !node<N>      - Switch to node N (e.g., !node1)");
                 println!("  !n<N>         - Shorthand for !node<N>");
                 println!("  !list, !nodes - List all nodes with status");
@@ -451,6 +452,15 @@ impl InteractiveCommand {
                 Ok(true)
             }
             _ => {
+                // Check for broadcast command
+                if let Some(rest) = command.strip_prefix("!broadcast ") {
+                    if rest.trim().is_empty() {
+                        println!("Usage: !broadcast <command>");
+                        return Ok(true);
+                    }
+                    // Return false with the broadcast command to signal it should be executed
+                    return Ok(false);
+                }
                 // Check for node selection commands
                 if let Some(node_num) = cmd.strip_prefix("node") {
                     Self::switch_to_node(node_num, sessions)
@@ -608,20 +618,56 @@ impl InteractiveCommand {
                         break;
                     }
 
-                    // Check for special commands first
-                    if line.trim().starts_with('!')
+                    // Check for broadcast command specifically
+                    let is_broadcast = line.trim().starts_with("!broadcast ");
+                    let command_to_execute = if is_broadcast {
+                        // Extract the actual command from !broadcast <command>
+                        line.trim()
+                            .strip_prefix("!broadcast ")
+                            .unwrap_or("")
+                            .to_string()
+                    } else {
+                        line.clone()
+                    };
+
+                    // Check for special commands first (non-broadcast)
+                    if !is_broadcast
+                        && line.trim().starts_with('!')
                         && Self::handle_special_command(&line, &mut sessions)?
                     {
                         continue; // Command was handled, continue to next iteration
                     }
 
+                    // Skip if broadcast command is empty
+                    if is_broadcast && command_to_execute.trim().is_empty() {
+                        println!("Usage: !broadcast <command>");
+                        continue;
+                    }
+
                     rl.add_history_entry(&line)?;
 
-                    // Send command only to active nodes
+                    // Save current active states if broadcasting
+                    let saved_states: Vec<bool> = if is_broadcast {
+                        println!("Broadcasting command to all connected nodes...");
+                        sessions.iter().map(|s| s.is_active).collect()
+                    } else {
+                        vec![]
+                    };
+
+                    // Temporarily activate all nodes for broadcast
+                    if is_broadcast {
+                        for session in &mut sessions {
+                            if session.is_connected {
+                                session.is_active = true;
+                            }
+                        }
+                    }
+
+                    // Send command to active nodes
                     let mut command_sent = false;
                     for session in &mut sessions {
                         if session.is_connected && session.is_active {
-                            if let Err(e) = session.send_command(&line).await {
+                            if let Err(e) = session.send_command(&command_to_execute).await {
                                 eprintln!(
                                     "Failed to send command to {}: {}",
                                     session.node.to_string().red(),
@@ -631,6 +677,13 @@ impl InteractiveCommand {
                             } else {
                                 command_sent = true;
                             }
+                        }
+                    }
+
+                    // Restore previous active states after broadcast
+                    if is_broadcast && !saved_states.is_empty() {
+                        for (session, was_active) in sessions.iter_mut().zip(saved_states.iter()) {
+                            session.is_active = *was_active;
                         }
                     }
 

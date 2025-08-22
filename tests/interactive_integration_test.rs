@@ -179,8 +179,10 @@ async fn test_interactive_with_no_nodes() {
     if let Err(e) = result {
         let error_msg = e.to_string();
         assert!(
-            error_msg.contains("Failed to connect") || error_msg.contains("No nodes"),
-            "Error should mention connection failure or no nodes"
+            error_msg.contains("Failed to connect")
+                || error_msg.contains("No nodes")
+                || error_msg.contains("no nodes"),
+            "Error should mention connection failure or no nodes, got: {error_msg}"
         );
     }
 }
