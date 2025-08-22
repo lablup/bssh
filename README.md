@@ -30,6 +30,43 @@ brew tap lablup/tap
 brew install bssh
 ```
 
+###  Install via Ubuntu PPA
+
+For Ubuntu users, `bssh` is available through the official PPA:
+
+```bash
+# Add the PPA repository
+sudo add-apt-repository ppa:lablup/backend-ai
+sudo apt update
+
+# Install bssh
+sudo apt install bssh
+```
+
+### Install via Debian Package
+
+For Debian and other Debian-based distributions, download the `.deb` package from the [releases page](https://github.com/lablup/bssh/releases):
+
+```bash
+# Download the latest .deb package (replace VERSION with the actual version)
+wget https://github.com/lablup/bssh/releases/download/vVERSION/bssh_VERSION_OS_ARCH.deb
+# Example: bssh_0.4.0_ubuntu24.04.noble_amd64.deb
+
+# Install the package
+sudo dpkg -i bssh_VERSION_OS_ARCH.deb
+
+# If there are dependency issues, fix them with:
+sudo apt-get install -f
+```
+
+### Download Pre-built Binary
+
+Download the latest release from the [GitHub releases page](https://github.com/lablup/bssh/releases):
+
+1. Go to https://github.com/lablup/bssh/releases
+2. Download the appropriate binary for your platform
+3. Extract the archive and place the binary in your `$PATH`
+
 ### Install from Cargo
 
 ```bash
