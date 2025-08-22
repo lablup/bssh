@@ -19,6 +19,7 @@ use std::path::PathBuf;
 #[command(
     name = "bssh",
     version,
+    before_help = "",
     about = "Backend.AI SSH - Parallel command execution across cluster nodes",
     long_about = None
 )]
