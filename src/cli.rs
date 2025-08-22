@@ -21,6 +21,7 @@ use std::path::PathBuf;
     version,
     before_help = "",
     about = "Backend.AI SSH - Parallel command execution across cluster nodes",
+    after_help = "Developed and maintained as part of the Backend.AI project.",
     long_about = None
 )]
 pub struct Cli {

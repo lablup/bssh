@@ -7,6 +7,8 @@
 
 A high-performance parallel SSH command execution tool for cluster management, built with Rust and `russh`.
 
+*Developed and maintained as part of the Backend.AI project.*
+
 ## Features
 
 - **Parallel Execution**: Execute commands across multiple nodes simultaneously

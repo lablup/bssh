@@ -1,0 +1,38 @@
+Source: bssh
+Section: utils
+Priority: optional
+Maintainer: Jeongkyu Shin <inureyes@gmail.com>
+Build-Depends: debhelper-compat (= 13),
+               cargo (>= 0.82),
+               rustc (>= 1.82),
+               pkg-config,
+               cmake,
+               build-essential
+Standards-Version: 4.6.2
+Homepage: https://github.com/lablup/bssh
+Vcs-Browser: https://github.com/lablup/bssh
+Vcs-Git: https://github.com/lablup/bssh.git
+Rules-Requires-Root: no
+
+Package: bssh
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Recommends: openssh-client,
+            openssh-server
+Suggests: ssh-agent,
+          keychain,
+          bash-completion
+Description: Backend.AI SSH - Parallel command execution across cluster nodes
+ bssh (Backend.AI SSH) is a high-performance parallel SSH command execution
+ tool for cluster management, built with Rust. It provides:
+ .
+  * Parallel command execution across multiple nodes simultaneously
+  * Cluster management via configuration files (YAML format)
+  * SFTP file transfer support (upload/download with glob patterns)
+  * Multiple authentication methods (SSH keys, SSH agent, password)
+  * Host key verification with known_hosts support
+  * Backend.AI multi-node session auto-detection
+  * Real-time progress tracking and output streaming
+  * XDG Base Directory specification compliance
+ .
+ Developed and maintained as part of the Backend.AI project.

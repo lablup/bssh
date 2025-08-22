@@ -1,0 +1,10 @@
+bssh (0.3.0-1~jammy1) jammy; urgency=medium
+
+  * Initial Debian packaging
+  * Add native SFTP directory operations and recursive file transfer support
+  * Modern UI with semantic colors and Unicode symbols
+  * Full XDG Base Directory specification compliance
+  * Backend.AI multi-node session auto-detection
+  * Multiple authentication methods support
+
+ -- Jeongkyu Shin <inureyes@gmail.com>  Fri, 22 Aug 2025 22:59:16 +0900

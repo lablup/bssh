@@ -1,0 +1,53 @@
+# Debian Packaging for bssh
+
+## Launchpad PPA Build Requirements
+
+### Important: Internet Access Restriction
+Launchpad build environments do NOT have internet access. This means:
+- You cannot download Rust or any other dependencies during build
+- All build dependencies must be declared in debian/control
+- The build must use system-provided packages only
+
+### Build Dependencies
+The following packages are required and must be available in the Ubuntu repository:
+- `rustc (>= 1.82)` - Rust compiler (requires 1.82 or newer for Rust edition 2024)
+- `cargo (>= 0.82)` - Rust package manager
+- `pkg-config` - For finding system libraries
+- `libssl-dev` - OpenSSL development files
+- `cmake` - Build system
+
+### Rust Version Requirements
+This project requires Rust 1.75 or newer. This means:
+- Ubuntu 22.04 (Jammy): May need a newer Rust version from backports
+- Ubuntu 23.10 (Noble): Should have 1.75+
+- Ubuntu 24.10 (Oracular): Should have 1.75+
+
+If building for older Ubuntu versions, you may need to:
+1. Use a PPA that provides newer Rust versions
+2. Limit support to distributions with Rust 1.75+
+
+### Build Process
+1. The debian/rules file uses system-provided rustc and cargo
+2. A temporary HOME directory is created for cargo's cache
+3. The project is built with `cargo build --release --locked`
+4. The binary is installed to /usr/bin/bssh
+
+### Troubleshooting Build Failures
+If the build fails on Launchpad:
+1. Check the build log for the exact error
+2. Common issues:
+   - Missing build dependencies: Add them to debian/control
+   - Rust version incompatibility: Ensure Rust 1.75+ is available
+   - Network access attempts: Remove any code that downloads dependencies
+   - Permission issues: Ensure proper file permissions in debian/rules
+   - Cargo registry access: The build will fail if it tries to download crates
+
+### Automatic Version Incrementing
+The packaging scripts support automatic version incrementing to avoid conflicts with existing PPA versions:
+
+1. **get-next-ppa-version.sh**: Queries the PPA to find existing versions and calculates the next revision
+2. **update-changelog.sh**: Supports `--auto-increment` flag to use the next available version
+3. **GitHub Actions**: Automatically uses version incrementing when uploading to PPA
+
+Version format: `{version}-1~{distro}{revision}`
+- Example: `0.7.2-1~noble1` → `0.7.2-1~noble2` → `0.7.2-1~noble3`
