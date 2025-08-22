@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use super::tokio_client::{AuthMethod, Client};
 use anyhow::{Context, Result};
-use async_ssh2_tokio::{AuthMethod, Client};
 use std::path::Path;
 use std::time::Duration;
 
@@ -334,5 +334,125 @@ impl CommandResult {
 
     pub fn is_success(&self) -> bool {
         self.exit_status == 0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_ssh_client_creation() {
+        let client = SshClient::new("example.com".to_string(), 22, "user".to_string());
+        assert_eq!(client.host, "example.com");
+        assert_eq!(client.port, 22);
+        assert_eq!(client.username, "user");
+    }
+
+    #[test]
+    fn test_command_result_success() {
+        let result = CommandResult {
+            host: "test.com".to_string(),
+            output: b"Hello World\n".to_vec(),
+            stderr: Vec::new(),
+            exit_status: 0,
+        };
+
+        assert!(result.is_success());
+        assert_eq!(result.stdout_string(), "Hello World\n");
+        assert_eq!(result.stderr_string(), "");
+    }
+
+    #[test]
+    fn test_command_result_failure() {
+        let result = CommandResult {
+            host: "test.com".to_string(),
+            output: Vec::new(),
+            stderr: b"Command not found\n".to_vec(),
+            exit_status: 127,
+        };
+
+        assert!(!result.is_success());
+        assert_eq!(result.stdout_string(), "");
+        assert_eq!(result.stderr_string(), "Command not found\n");
+    }
+
+    #[test]
+    fn test_command_result_with_utf8() {
+        let result = CommandResult {
+            host: "test.com".to_string(),
+            output: "한글 테스트\n".as_bytes().to_vec(),
+            stderr: "エラー\n".as_bytes().to_vec(),
+            exit_status: 1,
+        };
+
+        assert!(!result.is_success());
+        assert_eq!(result.stdout_string(), "한글 테스트\n");
+        assert_eq!(result.stderr_string(), "エラー\n");
+    }
+
+    #[test]
+    fn test_determine_auth_method_with_key() {
+        let temp_dir = TempDir::new().unwrap();
+        let key_path = temp_dir.path().join("test_key");
+        std::fs::write(&key_path, "fake key content").unwrap();
+
+        let client = SshClient::new("test.com".to_string(), 22, "user".to_string());
+        let auth = client
+            .determine_auth_method(Some(&key_path), false)
+            .unwrap();
+
+        match auth {
+            AuthMethod::PrivateKeyFile { key_file_path, .. } => {
+                assert_eq!(key_file_path, key_path);
+            }
+            _ => panic!("Expected PrivateKeyFile auth method"),
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn test_determine_auth_method_with_agent() {
+        unsafe {
+            std::env::set_var("SSH_AUTH_SOCK", "/tmp/ssh-agent.sock");
+        }
+
+        let client = SshClient::new("test.com".to_string(), 22, "user".to_string());
+        let auth = client.determine_auth_method(None, true).unwrap();
+
+        match auth {
+            AuthMethod::Agent => {}
+            _ => panic!("Expected Agent auth method"),
+        }
+
+        unsafe {
+            std::env::remove_var("SSH_AUTH_SOCK");
+        }
+    }
+
+    #[test]
+    fn test_determine_auth_method_fallback_to_default() {
+        // Create a fake home directory with default key
+        let temp_dir = TempDir::new().unwrap();
+        let ssh_dir = temp_dir.path().join(".ssh");
+        std::fs::create_dir_all(&ssh_dir).unwrap();
+        let default_key = ssh_dir.join("id_rsa");
+        std::fs::write(&default_key, "fake key").unwrap();
+
+        unsafe {
+            std::env::set_var("HOME", temp_dir.path().to_str().unwrap());
+            std::env::remove_var("SSH_AUTH_SOCK");
+        }
+
+        let client = SshClient::new("test.com".to_string(), 22, "user".to_string());
+        let auth = client.determine_auth_method(None, false).unwrap();
+
+        match auth {
+            AuthMethod::PrivateKeyFile { key_file_path, .. } => {
+                assert_eq!(key_file_path, default_key);
+            }
+            _ => panic!("Expected PrivateKeyFile auth method"),
+        }
     }
 }
