@@ -398,11 +398,11 @@ impl Client {
                         )
                         .await;
 
-                    if let Ok(auth_result) = result {
-                        if auth_result.success() {
-                            auth_success = true;
-                            break;
-                        }
+                    if let Ok(auth_result) = result
+                        && auth_result.success()
+                    {
+                        auth_success = true;
+                        break;
                     }
                 }
 
@@ -613,6 +613,7 @@ impl Client {
     }
 
     /// Helper function to recursively upload directory contents
+    #[allow(clippy::only_used_in_recursion)]
     fn upload_dir_recursive<'a>(
         &'a self,
         sftp: &'a SftpSession,
@@ -699,6 +700,7 @@ impl Client {
     }
 
     /// Helper function to recursively download directory contents
+    #[allow(clippy::only_used_in_recursion)]
     fn download_dir_recursive<'a>(
         &'a self,
         sftp: &'a SftpSession,
