@@ -231,12 +231,5 @@ Licensed under the Apache License, Version 2.0
 ## Changelog
 
 ### Recent Updates
-- **v0.2.0 (2025/08/21):** 
-  - Backend.AI multi-node session support with automatic cluster detection
-  - SSH agent authentication support with auto-detection
-  - Host key verification with StrictHostKeyChecking modes
-  - Environment variable expansion in configuration (${VAR})
-  - Connection and execution timeouts
-  - Fixed list command to work without host specification
-  - Basic SCP file copy support
+- **v0.2.0 (2025/08/21):** Added Backend.AI multi-node session support with SSH authentication, host key verification, environment variable expansion, timeouts, and SCP file copy functionality.
 - **v0.1.0 (2025/08/21):** Initial release with parallel SSH execution using async-ssh2-tokio 
