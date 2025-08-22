@@ -67,6 +67,7 @@ struct NodeSession {
     channel: Channel<Msg>,
     working_dir: String,
     is_connected: bool,
+    is_active: bool, // Whether this node is currently active for commands
 }
 
 impl NodeSession {
@@ -244,6 +245,7 @@ impl InteractiveCommand {
             channel,
             working_dir,
             is_connected: true,
+            is_active: true, // All nodes start as active
         })
     }
 
@@ -386,6 +388,108 @@ impl InteractiveCommand {
         Ok(commands_executed)
     }
 
+    /// Parse and handle special commands (starting with !)
+    fn handle_special_command(command: &str, sessions: &mut [NodeSession]) -> Result<bool> {
+        if !command.starts_with('!') {
+            return Ok(false); // Not a special command
+        }
+
+        let cmd = command.trim_start_matches('!').to_lowercase();
+
+        match cmd.as_str() {
+            "all" => {
+                // Activate all nodes
+                for session in sessions.iter_mut() {
+                    if session.is_connected {
+                        session.is_active = true;
+                    }
+                }
+                println!("All nodes activated");
+                Ok(true)
+            }
+            "list" | "nodes" | "ls" => {
+                // List all nodes with their status
+                println!("\nNodes status:");
+                for (i, session) in sessions.iter().enumerate() {
+                    let status = if !session.is_connected {
+                        "disconnected"
+                    } else if session.is_active {
+                        "active"
+                    } else {
+                        "inactive"
+                    };
+                    println!("  [{}] {} - {}", i + 1, session.node, status);
+                }
+                println!();
+                Ok(true)
+            }
+            "status" => {
+                // Show current active nodes
+                let active_nodes: Vec<String> = sessions
+                    .iter()
+                    .filter(|s| s.is_active && s.is_connected)
+                    .map(|s| s.node.to_string())
+                    .collect();
+
+                if active_nodes.is_empty() {
+                    println!("No active nodes");
+                } else {
+                    println!("Active nodes: {}", active_nodes.join(", "));
+                }
+                Ok(true)
+            }
+            "help" | "?" => {
+                println!("\nSpecial commands:");
+                println!("  !all          - Activate all nodes");
+                println!("  !node<N>      - Switch to node N (e.g., !node1)");
+                println!("  !n<N>         - Shorthand for !node<N>");
+                println!("  !list, !nodes - List all nodes with status");
+                println!("  !status       - Show active nodes");
+                println!("  !help         - Show this help");
+                println!("  exit          - Exit interactive mode");
+                println!();
+                Ok(true)
+            }
+            _ => {
+                // Check for node selection commands
+                if let Some(node_num) = cmd.strip_prefix("node") {
+                    Self::switch_to_node(node_num, sessions)
+                } else if let Some(node_num) = cmd.strip_prefix('n') {
+                    Self::switch_to_node(node_num, sessions)
+                } else {
+                    println!("Unknown command: !{cmd}. Type !help for available commands.");
+                    Ok(true)
+                }
+            }
+        }
+    }
+
+    /// Switch to a specific node by number
+    fn switch_to_node(node_num: &str, sessions: &mut [NodeSession]) -> Result<bool> {
+        match node_num.parse::<usize>() {
+            Ok(num) if num > 0 && num <= sessions.len() => {
+                // Deactivate all nodes first
+                for session in sessions.iter_mut() {
+                    session.is_active = false;
+                }
+
+                // Activate the selected node
+                let index = num - 1;
+                if sessions[index].is_connected {
+                    sessions[index].is_active = true;
+                    println!("Switched to node {}: {}", num, sessions[index].node);
+                } else {
+                    println!("Node {num} is disconnected");
+                }
+                Ok(true)
+            }
+            _ => {
+                println!("Invalid node number. Use 1-{}", sessions.len());
+                Ok(true)
+            }
+        }
+    }
+
     /// Run interactive mode with multiple nodes (multiplex)
     async fn run_multiplex_mode(&self, mut sessions: Vec<NodeSession>) -> Result<usize> {
         let mut commands_executed = 0;
@@ -404,7 +508,7 @@ impl InteractiveCommand {
             "Interactive multiplex mode started. Commands will be sent to all {} nodes.",
             sessions.len()
         );
-        println!("Type 'exit' or press Ctrl+D to quit.");
+        println!("Type 'exit' or press Ctrl+D to quit. Type '!help' for special commands.");
         println!();
 
         // Main interactive loop
@@ -414,34 +518,67 @@ impl InteractiveCommand {
                 println!("\nInterrupted by user. Exiting...");
                 break;
             }
-            // Show node status
-            print!("[");
-            for (i, session) in sessions.iter().enumerate() {
-                if i > 0 {
-                    print!(" ");
+            // Build prompt with node status
+            let active_count = sessions
+                .iter()
+                .filter(|s| s.is_active && s.is_connected)
+                .count();
+            let total_connected = sessions.iter().filter(|s| s.is_connected).count();
+
+            let prompt = if active_count == total_connected {
+                // All nodes active - show simple status
+                let mut status = String::from("[");
+                for (i, session) in sessions.iter().enumerate() {
+                    if i > 0 {
+                        status.push(' ');
+                    }
+                    if session.is_connected {
+                        status.push_str(&"●".green().to_string());
+                    } else {
+                        status.push_str(&"○".red().to_string());
+                    }
                 }
-                if session.is_connected {
-                    print!("{}", "●".green());
-                } else {
-                    print!("{}", "○".red());
+                status.push_str("] bssh> ");
+                status
+            } else {
+                // Some nodes inactive - show which are active
+                let mut status = String::from("[");
+                for (i, session) in sessions.iter().enumerate() {
+                    if i > 0 {
+                        status.push(' ');
+                    }
+                    if !session.is_connected {
+                        status.push_str(&"○".red().to_string());
+                    } else if session.is_active {
+                        status.push_str(&format!("{}", (i + 1).to_string().green()));
+                    } else {
+                        status.push_str(&"·".yellow().to_string());
+                    }
                 }
-            }
-            print!("] ");
-            io::stdout().flush()?;
+                status.push_str(&format!("] ({active_count}/{total_connected}) bssh> "));
+                status
+            };
 
             // Read input
-            let prompt = "bssh> ";
-            match rl.readline(prompt) {
+            match rl.readline(&prompt) {
                 Ok(line) => {
                     if line.trim() == "exit" {
                         break;
                     }
 
+                    // Check for special commands first
+                    if line.trim().starts_with('!')
+                        && Self::handle_special_command(&line, &mut sessions)?
+                    {
+                        continue; // Command was handled, continue to next iteration
+                    }
+
                     rl.add_history_entry(&line)?;
 
-                    // Send command to all connected nodes
+                    // Send command only to active nodes
+                    let mut command_sent = false;
                     for session in &mut sessions {
-                        if session.is_connected {
+                        if session.is_connected && session.is_active {
                             if let Err(e) = session.send_command(&line).await {
                                 eprintln!(
                                     "Failed to send command to {}: {}",
@@ -449,16 +586,26 @@ impl InteractiveCommand {
                                     e
                                 );
                                 session.is_connected = false;
+                            } else {
+                                command_sent = true;
                             }
                         }
                     }
-                    commands_executed += 1;
+
+                    if command_sent {
+                        commands_executed += 1;
+                    } else {
+                        eprintln!(
+                            "No active nodes to send command to. Use !list to see nodes or !all to activate all."
+                        );
+                        continue;
+                    }
 
                     // Wait a bit for output and collect from all nodes
                     tokio::time::sleep(Duration::from_millis(500)).await;
 
                     for session in &mut sessions {
-                        if session.is_connected {
+                        if session.is_connected && session.is_active {
                             while let Ok(Some(output)) = session.read_output().await {
                                 // Print output with node prefix
                                 for line in output.lines() {
