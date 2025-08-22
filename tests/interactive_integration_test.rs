@@ -69,7 +69,7 @@ fn test_history_file_handling() {
 
 /// Mock SSH server for testing
 struct MockSshServer {
-    port: u16,
+    _port: u16,
     running: Arc<AtomicBool>,
     connections: Arc<AtomicUsize>,
 }
@@ -77,7 +77,7 @@ struct MockSshServer {
 impl MockSshServer {
     fn new(port: u16) -> Self {
         Self {
-            port,
+            _port: port,
             running: Arc::new(AtomicBool::new(false)),
             connections: Arc::new(AtomicUsize::new(0)),
         }

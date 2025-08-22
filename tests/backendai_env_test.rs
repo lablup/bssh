@@ -13,10 +13,17 @@
 // limitations under the License.
 
 use bssh::config::Config;
+use once_cell::sync::Lazy;
 use std::env;
+use tokio::sync::Mutex;
+
+// Global mutex to serialize tests that modify environment variables
+static ENV_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
 
 #[tokio::test]
 async fn test_backendai_env_auto_detection() {
+    let _guard = ENV_MUTEX.lock().await;
+
     // Save original env vars
     let orig_hosts = env::var("BACKENDAI_CLUSTER_HOSTS").ok();
     let orig_host = env::var("BACKENDAI_CLUSTER_HOST").ok();
@@ -29,8 +36,12 @@ async fn test_backendai_env_auto_detection() {
         env::set_var("BACKENDAI_CLUSTER_ROLE", "main");
     }
 
+    // Create a temporary directory for the test
+    let temp_dir = tempfile::tempdir().unwrap();
+    let nonexistent_path = temp_dir.path().join("nonexistent.yaml");
+
     // Load config with priority (should detect Backend.AI env)
-    let config = Config::load_with_priority(&std::path::PathBuf::from("nonexistent.yaml"))
+    let config = Config::load_with_priority(&nonexistent_path)
         .await
         .expect("Config should load with Backend.AI env");
 
@@ -79,18 +90,27 @@ async fn test_backendai_env_auto_detection() {
 
 #[tokio::test]
 async fn test_backendai_env_with_single_host() {
+    let _guard = ENV_MUTEX.lock().await;
+
     // Save original env vars
     let orig_hosts = env::var("BACKENDAI_CLUSTER_HOSTS").ok();
     let orig_host = env::var("BACKENDAI_CLUSTER_HOST").ok();
+    let orig_role = env::var("BACKENDAI_CLUSTER_ROLE").ok();
 
     // Set Backend.AI environment variables with single host
     unsafe {
         env::set_var("BACKENDAI_CLUSTER_HOSTS", "single-node.ai");
         env::set_var("BACKENDAI_CLUSTER_HOST", "single-node.ai");
+        // Explicitly remove ROLE to avoid contamination from previous tests
+        env::remove_var("BACKENDAI_CLUSTER_ROLE");
     }
 
+    // Create a temporary directory for the test
+    let temp_dir = tempfile::tempdir().unwrap();
+    let nonexistent_path = temp_dir.path().join("nonexistent.yaml");
+
     // Load config
-    let config = Config::load_with_priority(&std::path::PathBuf::from("nonexistent.yaml"))
+    let config = Config::load_with_priority(&nonexistent_path)
         .await
         .expect("Config should load");
 
@@ -117,11 +137,19 @@ async fn test_backendai_env_with_single_host() {
         } else {
             env::remove_var("BACKENDAI_CLUSTER_HOST");
         }
+
+        if let Some(val) = orig_role {
+            env::set_var("BACKENDAI_CLUSTER_ROLE", val);
+        } else {
+            env::remove_var("BACKENDAI_CLUSTER_ROLE");
+        }
     }
 }
 
 #[tokio::test]
 async fn test_no_backendai_env() {
+    let _guard = ENV_MUTEX.lock().await;
+
     // Save and clear Backend.AI env vars
     let orig_hosts = env::var("BACKENDAI_CLUSTER_HOSTS").ok();
     let orig_host = env::var("BACKENDAI_CLUSTER_HOST").ok();

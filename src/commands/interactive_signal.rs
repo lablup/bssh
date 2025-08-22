@@ -91,7 +91,7 @@ pub async fn handle_terminal_resize() -> Result<tokio::sync::mpsc::UnboundedRece
 
 /// Terminal state guard for automatic restoration
 pub struct TerminalGuard {
-    original_hook: Option<Box<dyn Fn() + Send + Sync>>,
+    _original_hook: Option<Box<dyn Fn() + Send + Sync>>,
 }
 
 impl Default for TerminalGuard {
@@ -104,7 +104,7 @@ impl TerminalGuard {
     /// Create a new terminal guard that will restore terminal state on drop
     pub fn new() -> Self {
         // Save the current panic hook
-        let original_hook = std::panic::take_hook();
+        let _original_hook = std::panic::take_hook();
 
         // Set a custom panic hook that restores terminal before panicking
         std::panic::set_hook(Box::new(move |panic_info| {
@@ -116,7 +116,7 @@ impl TerminalGuard {
         }));
 
         Self {
-            original_hook: None, // We can't store the original hook due to lifetime issues
+            _original_hook: None, // We can't store the original hook due to lifetime issues
         }
     }
 

@@ -514,8 +514,12 @@ impl InteractiveCommand {
         if let Some(path_str) = path.to_str() {
             if path_str.starts_with('~') {
                 if let Some(home) = dirs::home_dir() {
-                    let expanded = path_str.replacen('~', home.to_str().unwrap(), 1);
-                    return Ok(PathBuf::from(expanded));
+                    // Handle ~ alone or ~/path
+                    if path_str == "~" {
+                        return Ok(home);
+                    } else if let Some(rest) = path_str.strip_prefix("~/") {
+                        return Ok(home.join(rest));
+                    }
                 }
             }
         }

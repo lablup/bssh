@@ -337,6 +337,7 @@ dependencies = [
  "glob",
  "indicatif",
  "mockito",
+ "once_cell",
  "owo-colors",
  "rpassword",
  "russh",
