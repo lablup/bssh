@@ -286,6 +286,7 @@ See the [LICENSE](./LICENSE) file for details.
 ## Changelog
 
 ### Recent Updates
+- **v0.4.0 (2025/08/22):** Add password authentication, SSH key passphrase support, modern UI with colors, XDG config compliance, and Debian packaging
 - **v0.3.0 (2025/08/22):** Add native SFTP directory operations and recursive file transfer support
 - **v0.2.0 (2025/08/21):** Added Backend.AI multi-node session support with SSH authentication, host key verification, environment variable expansion, timeouts, and SCP file copy functionality.
 - **v0.1.0 (2025/08/21):** Initial release with parallel SSH execution using async-ssh2-tokio 
