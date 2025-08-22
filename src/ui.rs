@@ -59,7 +59,7 @@ impl NodeGrid {
             .unwrap_or(80);
 
         // Each node cell takes approximately 25 chars (node name + status)
-        let columns = (terminal_width / 25).max(1).min(4);
+        let columns = (terminal_width / 25).clamp(1, 4);
 
         let nodes = nodes
             .into_iter()

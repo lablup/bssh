@@ -40,7 +40,7 @@ pub struct Cli {
 
     #[arg(
         long,
-        default_value = "~/.bssh/config.yaml",
+        default_value = "~/.config/bssh/config.yaml",
         help = "Configuration file path"
     )]
     pub config: PathBuf,

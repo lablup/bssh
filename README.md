@@ -1,6 +1,11 @@
 # bssh - Backend.AI SSH
 
-A high-performance parallel SSH command execution tool for cluster management, built with Rust and thrussh.
+[![Crates.io version](https://img.shields.io/crates/v/bssh.svg?style=flat-square)](https://crates.io/crates/bssh)
+[![Crates.io downloads](https://img.shields.io/crates/d/bssh.svg?style=flat-square)](https://crates.io/crates/bssh)
+![CI](https://github.com/lablup/bssh/workflows/CI/badge.svg)
+[![dependency status](https://deps.rs/repo/github/lablup/bssh/status.svg)](https://deps.rs/repo/github/lablup/bssh)
+
+A high-performance parallel SSH command execution tool for cluster management, built with Rust and `russh`.
 
 ## Features
 
@@ -13,6 +18,17 @@ A high-performance parallel SSH command execution tool for cluster management, b
 - **Output Management**: Save command outputs to files per node with detailed logging
 
 ## Installation
+
+### Install via Homebrew (macOS/Linux)
+
+The easiest way to install `bssh` on macOS and Linux is through Homebrew:
+
+```bash
+brew tap lablup/tap
+brew install bssh
+```
+
+### Install from Cargo
 
 ```bash
 cargo build --release
@@ -95,8 +111,8 @@ bssh loads configuration from the following sources in priority order:
 
 1. **Backend.AI Environment Variables** (automatic detection)
 2. **Current directory** (`./config.yaml`)
-3. **User config directory** (`~/.config/bssh/config.yaml`)
-4. **Default location** (`~/.bssh/config.yaml`)
+3. **XDG config directory** (`$XDG_CONFIG_HOME/bssh/config.yaml` or `~/.config/bssh/config.yaml`)
+4. **CLI specified path** (via `--config` flag, default: `~/.config/bssh/config.yaml`)
 
 ### Backend.AI Multi-node Session Support
 
@@ -262,9 +278,8 @@ cargo run -- -H localhost "echo hello"
 
 ## License
 
-Copyright 2025 Lablup Inc. and Jeongkyu Shin
-
-Licensed under the Apache License, Version 2.0
+This project is licensed under the Apache License 2.0.  
+See the [LICENSE](./LICENSE) file for details.
 
 ## Changelog
 
