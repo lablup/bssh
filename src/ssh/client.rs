@@ -40,7 +40,7 @@ impl SshClient {
         key_path: Option<&Path>,
         use_agent: bool,
     ) -> Result<CommandResult> {
-        self.connect_and_execute_with_host_check(command, key_path, None, use_agent)
+        self.connect_and_execute_with_host_check(command, key_path, None, use_agent, false)
             .await
     }
 
@@ -50,12 +50,13 @@ impl SshClient {
         key_path: Option<&Path>,
         strict_mode: Option<StrictHostKeyChecking>,
         use_agent: bool,
+        use_password: bool,
     ) -> Result<CommandResult> {
         let addr = (self.host.as_str(), self.port);
         tracing::debug!("Connecting to {}:{}", self.host, self.port);
 
         // Determine authentication method based on parameters
-        let auth_method = self.determine_auth_method(key_path, use_agent)?;
+        let auth_method = self.determine_auth_method(key_path, use_agent, use_password)?;
 
         // Set up host key checking
         let check_method = if let Some(mode) = strict_mode {
@@ -108,12 +109,13 @@ impl SshClient {
         key_path: Option<&Path>,
         strict_mode: Option<StrictHostKeyChecking>,
         use_agent: bool,
+        use_password: bool,
     ) -> Result<()> {
         let addr = (self.host.as_str(), self.port);
         tracing::debug!("Connecting to {}:{} for file copy", self.host, self.port);
 
         // Determine authentication method based on parameters
-        let auth_method = self.determine_auth_method(key_path, use_agent)?;
+        let auth_method = self.determine_auth_method(key_path, use_agent, use_password)?;
 
         // Set up host key checking
         let check_method = if let Some(mode) = strict_mode {
@@ -184,6 +186,7 @@ impl SshClient {
         key_path: Option<&Path>,
         strict_mode: Option<StrictHostKeyChecking>,
         use_agent: bool,
+        use_password: bool,
     ) -> Result<()> {
         let addr = (self.host.as_str(), self.port);
         tracing::debug!(
@@ -193,7 +196,7 @@ impl SshClient {
         );
 
         // Determine authentication method based on parameters
-        let auth_method = self.determine_auth_method(key_path, use_agent)?;
+        let auth_method = self.determine_auth_method(key_path, use_agent, use_password)?;
 
         // Set up host key checking
         let check_method = if let Some(mode) = strict_mode {
@@ -260,6 +263,7 @@ impl SshClient {
         key_path: Option<&Path>,
         strict_mode: Option<StrictHostKeyChecking>,
         use_agent: bool,
+        use_password: bool,
     ) -> Result<()> {
         let addr = (self.host.as_str(), self.port);
         tracing::debug!(
@@ -269,7 +273,7 @@ impl SshClient {
         );
 
         // Determine authentication method based on parameters
-        let auth_method = self.determine_auth_method(key_path, use_agent)?;
+        let auth_method = self.determine_auth_method(key_path, use_agent, use_password)?;
 
         // Set up host key checking
         let check_method = if let Some(mode) = strict_mode {
@@ -338,6 +342,7 @@ impl SshClient {
         key_path: Option<&Path>,
         strict_mode: Option<StrictHostKeyChecking>,
         use_agent: bool,
+        use_password: bool,
     ) -> Result<()> {
         let addr = (self.host.as_str(), self.port);
         tracing::debug!(
@@ -347,7 +352,7 @@ impl SshClient {
         );
 
         // Determine authentication method based on parameters
-        let auth_method = self.determine_auth_method(key_path, use_agent)?;
+        let auth_method = self.determine_auth_method(key_path, use_agent, use_password)?;
 
         // Set up host key checking
         let check_method = if let Some(mode) = strict_mode {
@@ -411,7 +416,19 @@ impl SshClient {
         &self,
         key_path: Option<&Path>,
         use_agent: bool,
+        use_password: bool,
     ) -> Result<AuthMethod> {
+        // If password authentication is explicitly requested
+        if use_password {
+            tracing::debug!("Using password authentication");
+            let password = rpassword::prompt_password(format!(
+                "Enter password for {}@{}: ",
+                self.username, self.host
+            ))
+            .with_context(|| "Failed to read password")?;
+            return Ok(AuthMethod::with_password(&password));
+        }
+
         // If SSH agent is explicitly requested, try that first
         if use_agent {
             #[cfg(not(target_os = "windows"))]
@@ -436,7 +453,24 @@ impl SshClient {
         // Try key file authentication
         if let Some(key_path) = key_path {
             tracing::debug!("Authenticating with key: {:?}", key_path);
-            return Ok(AuthMethod::with_key_file(key_path, None));
+
+            // Check if the key is encrypted by attempting to read it
+            let key_contents = std::fs::read_to_string(key_path)
+                .with_context(|| format!("Failed to read SSH key file: {key_path:?}"))?;
+
+            let passphrase = if key_contents.contains("ENCRYPTED")
+                || key_contents.contains("Proc-Type: 4,ENCRYPTED")
+            {
+                tracing::debug!("Detected encrypted SSH key, prompting for passphrase");
+                let pass =
+                    rpassword::prompt_password(format!("Enter passphrase for key {key_path:?}: "))
+                        .with_context(|| "Failed to read passphrase")?;
+                Some(pass)
+            } else {
+                None
+            };
+
+            return Ok(AuthMethod::with_key_file(key_path, passphrase.as_deref()));
         }
 
         // If no explicit key path, try SSH agent if available (auto-detect)
@@ -446,26 +480,58 @@ impl SshClient {
             return Ok(AuthMethod::Agent);
         }
 
-        // Fallback to default key location
+        // Fallback to default key locations
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        let default_key = Path::new(&home).join(".ssh").join("id_rsa");
+        let home_path = Path::new(&home).join(".ssh");
 
-        if default_key.exists() {
-            tracing::debug!("Using default key: {:?}", default_key);
-            Ok(AuthMethod::with_key_file(default_key, None))
-        } else {
-            anyhow::bail!(
-                "SSH authentication failed: No authentication method available.\n\
-                 Tried:\n\
-                 - SSH agent (SSH_AUTH_SOCK not set or agent not available)\n\
-                 - Default key file (~/.ssh/id_rsa not found)\n\
-                 \n\
-                 Solutions:\n\
-                 - Start SSH agent and add keys with 'ssh-add'\n\
-                 - Specify a key file with -i/--identity\n\
-                 - Create a default key at ~/.ssh/id_rsa"
-            );
+        // Try common key files in order of preference
+        let default_keys = [
+            home_path.join("id_ed25519"),
+            home_path.join("id_rsa"),
+            home_path.join("id_ecdsa"),
+            home_path.join("id_dsa"),
+        ];
+
+        for default_key in &default_keys {
+            if default_key.exists() {
+                tracing::debug!("Using default key: {:?}", default_key);
+
+                // Check if the key is encrypted
+                let key_contents = std::fs::read_to_string(default_key)
+                    .with_context(|| format!("Failed to read SSH key file: {default_key:?}"))?;
+
+                let passphrase = if key_contents.contains("ENCRYPTED")
+                    || key_contents.contains("Proc-Type: 4,ENCRYPTED")
+                {
+                    tracing::debug!("Detected encrypted SSH key, prompting for passphrase");
+                    let pass = rpassword::prompt_password(format!(
+                        "Enter passphrase for key {default_key:?}: "
+                    ))
+                    .with_context(|| "Failed to read passphrase")?;
+                    Some(pass)
+                } else {
+                    None
+                };
+
+                return Ok(AuthMethod::with_key_file(
+                    default_key,
+                    passphrase.as_deref(),
+                ));
+            }
         }
+
+        anyhow::bail!(
+            "SSH authentication failed: No authentication method available.\n\
+             Tried:\n\
+             - SSH agent (SSH_AUTH_SOCK not set or agent not available)\n\
+             - Default key files (~/.ssh/id_ed25519, ~/.ssh/id_rsa, etc. not found)\n\
+             \n\
+             Solutions:\n\
+             - Use --password for password authentication\n\
+             - Start SSH agent and add keys with 'ssh-add'\n\
+             - Specify a key file with -i/--identity\n\
+             - Create a default key at ~/.ssh/id_ed25519 or ~/.ssh/id_rsa"
+        );
     }
 }
 
@@ -554,7 +620,7 @@ mod tests {
 
         let client = SshClient::new("test.com".to_string(), 22, "user".to_string());
         let auth = client
-            .determine_auth_method(Some(&key_path), false)
+            .determine_auth_method(Some(&key_path), false, false)
             .unwrap();
 
         match auth {
@@ -573,7 +639,7 @@ mod tests {
         }
 
         let client = SshClient::new("test.com".to_string(), 22, "user".to_string());
-        let auth = client.determine_auth_method(None, true).unwrap();
+        let auth = client.determine_auth_method(None, true, false).unwrap();
 
         match auth {
             AuthMethod::Agent => {}
@@ -583,6 +649,15 @@ mod tests {
         unsafe {
             std::env::remove_var("SSH_AUTH_SOCK");
         }
+    }
+
+    #[test]
+    fn test_determine_auth_method_with_password() {
+        let _client = SshClient::new("test.com".to_string(), 22, "user".to_string());
+
+        // Note: We can't actually test password prompt in unit tests
+        // as it requires terminal input. This would need integration testing.
+        // For now, we just verify the function compiles with the new parameter.
     }
 
     #[test]
@@ -600,7 +675,7 @@ mod tests {
         }
 
         let client = SshClient::new("test.com".to_string(), 22, "user".to_string());
-        let auth = client.determine_auth_method(None, false).unwrap();
+        let auth = client.determine_auth_method(None, false, false).unwrap();
 
         match auth {
             AuthMethod::PrivateKeyFile { key_file_path, .. } => {

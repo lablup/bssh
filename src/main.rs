@@ -36,6 +36,7 @@ struct ExecuteCommandParams<'a> {
     verbose: bool,
     strict_mode: StrictHostKeyChecking,
     use_agent: bool,
+    use_password: bool,
     output_dir: Option<&'a Path>,
 }
 
@@ -45,6 +46,7 @@ struct FileTransferParams<'a> {
     key_path: Option<&'a Path>,
     strict_mode: StrictHostKeyChecking,
     use_agent: bool,
+    use_password: bool,
     recursive: bool,
 }
 
@@ -96,6 +98,7 @@ async fn main() -> Result<()> {
                 cli.identity.as_deref(),
                 strict_mode,
                 cli.use_agent,
+                cli.password,
             )
             .await?;
         }
@@ -110,6 +113,7 @@ async fn main() -> Result<()> {
                 key_path: cli.identity.as_deref(),
                 strict_mode,
                 use_agent: cli.use_agent,
+                use_password: cli.password,
                 recursive,
             };
             upload_file(params, &source, &destination).await?;
@@ -125,6 +129,7 @@ async fn main() -> Result<()> {
                 key_path: cli.identity.as_deref(),
                 strict_mode,
                 use_agent: cli.use_agent,
+                use_password: cli.password,
                 recursive,
             };
             download_file(params, &source, &destination).await?;
@@ -139,6 +144,7 @@ async fn main() -> Result<()> {
                 verbose: cli.verbose > 0,
                 strict_mode,
                 use_agent: cli.use_agent,
+                use_password: cli.password,
                 output_dir: cli.output_dir.as_deref(),
             };
             execute_command(params).await?;
@@ -207,16 +213,18 @@ async fn ping_nodes(
     key_path: Option<&Path>,
     strict_mode: StrictHostKeyChecking,
     use_agent: bool,
+    use_password: bool,
 ) -> Result<()> {
     println!("Pinging {} nodes...\n", nodes.len());
 
     let key_path = key_path.map(|p| p.to_string_lossy().to_string());
-    let executor = ParallelExecutor::new_with_strict_mode_and_agent(
+    let executor = ParallelExecutor::new_with_all_options(
         nodes.clone(),
         max_parallel,
         key_path,
         strict_mode,
         use_agent,
+        use_password,
     );
 
     let results = executor.execute("echo 'pong'").await?;
@@ -250,12 +258,13 @@ async fn execute_command(params: ExecuteCommandParams<'_>) -> Result<()> {
     );
 
     let key_path = params.key_path.map(|p| p.to_string_lossy().to_string());
-    let executor = ParallelExecutor::new_with_strict_mode_and_agent(
+    let executor = ParallelExecutor::new_with_all_options(
         params.nodes,
         params.max_parallel,
         key_path,
         params.strict_mode,
         params.use_agent,
+        params.use_password,
     );
 
     let results = executor.execute(params.command).await?;
@@ -475,12 +484,13 @@ async fn upload_file(
     println!("Destination: {destination}\n");
 
     let key_path_str = params.key_path.map(|p| p.to_string_lossy().to_string());
-    let executor = ParallelExecutor::new_with_strict_mode_and_agent(
+    let executor = ParallelExecutor::new_with_all_options(
         params.nodes.clone(),
         params.max_parallel,
         key_path_str.clone(),
         params.strict_mode,
         params.use_agent,
+        params.use_password,
     );
 
     let mut total_success = 0;
@@ -686,12 +696,13 @@ async fn download_file(
     }
 
     let key_path_str = params.key_path.map(|p| p.to_string_lossy().to_string());
-    let executor = ParallelExecutor::new_with_strict_mode_and_agent(
+    let executor = ParallelExecutor::new_with_all_options(
         params.nodes.clone(),
         params.max_parallel,
         key_path_str.clone(),
         params.strict_mode,
         params.use_agent,
+        params.use_password,
     );
 
     // Check if source contains glob pattern
@@ -735,6 +746,7 @@ async fn download_file(
                 key_path_str.as_deref(),
                 params.strict_mode,
                 params.use_agent,
+                params.use_password,
             )
             .await;
 
@@ -783,6 +795,7 @@ async fn download_file(
                 params.key_path,
                 Some(params.strict_mode),
                 params.use_agent,
+                params.use_password,
             )
             .await?;
 

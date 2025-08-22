@@ -28,6 +28,7 @@ pub struct ParallelExecutor {
     key_path: Option<String>,
     strict_mode: StrictHostKeyChecking,
     use_agent: bool,
+    use_password: bool,
 }
 
 impl ParallelExecutor {
@@ -52,6 +53,7 @@ impl ParallelExecutor {
             key_path,
             strict_mode,
             use_agent: false,
+            use_password: false,
         }
     }
 
@@ -68,6 +70,25 @@ impl ParallelExecutor {
             key_path,
             strict_mode,
             use_agent,
+            use_password: false,
+        }
+    }
+
+    pub fn new_with_all_options(
+        nodes: Vec<Node>,
+        max_parallel: usize,
+        key_path: Option<String>,
+        strict_mode: StrictHostKeyChecking,
+        use_agent: bool,
+        use_password: bool,
+    ) -> Self {
+        Self {
+            nodes,
+            max_parallel,
+            key_path,
+            strict_mode,
+            use_agent,
+            use_password,
         }
     }
 
@@ -89,6 +110,7 @@ impl ParallelExecutor {
                 let key_path = self.key_path.clone();
                 let strict_mode = self.strict_mode;
                 let use_agent = self.use_agent;
+                let use_password = self.use_password;
                 let semaphore = Arc::clone(&semaphore);
                 let pb = multi_progress.add(ProgressBar::new_spinner());
                 pb.set_style(style.clone());
@@ -107,6 +129,7 @@ impl ParallelExecutor {
                         key_path.as_deref(),
                         strict_mode,
                         use_agent,
+                        use_password,
                     )
                     .await;
 
@@ -170,6 +193,7 @@ impl ParallelExecutor {
                 let key_path = self.key_path.clone();
                 let strict_mode = self.strict_mode;
                 let use_agent = self.use_agent;
+                let use_password = self.use_password;
                 let semaphore = Arc::clone(&semaphore);
                 let pb = multi_progress.add(ProgressBar::new_spinner());
                 pb.set_style(style.clone());
@@ -189,6 +213,7 @@ impl ParallelExecutor {
                         key_path.as_deref(),
                         strict_mode,
                         use_agent,
+                        use_password,
                     )
                     .await;
 
@@ -245,6 +270,7 @@ impl ParallelExecutor {
                 let key_path = self.key_path.clone();
                 let strict_mode = self.strict_mode;
                 let use_agent = self.use_agent;
+                let use_password = self.use_password;
                 let semaphore = Arc::clone(&semaphore);
                 let pb = multi_progress.add(ProgressBar::new_spinner());
                 pb.set_style(style.clone());
@@ -276,6 +302,7 @@ impl ParallelExecutor {
                         key_path.as_deref(),
                         strict_mode,
                         use_agent,
+                        use_password,
                     )
                     .await;
 
@@ -338,6 +365,7 @@ impl ParallelExecutor {
                     let key_path = self.key_path.clone();
                     let strict_mode = self.strict_mode;
                     let use_agent = self.use_agent;
+                    let use_password = self.use_password;
                     let semaphore = Arc::clone(&semaphore);
                     let pb = multi_progress.add(ProgressBar::new_spinner());
                     pb.set_style(style.clone());
@@ -368,6 +396,7 @@ impl ParallelExecutor {
                             key_path.as_deref(),
                             strict_mode,
                             use_agent,
+                            use_password,
                         )
                         .await;
 
@@ -411,13 +440,20 @@ async fn execute_on_node(
     key_path: Option<&str>,
     strict_mode: StrictHostKeyChecking,
     use_agent: bool,
+    use_password: bool,
 ) -> Result<CommandResult> {
     let mut client = SshClient::new(node.host.clone(), node.port, node.username.clone());
 
     let key_path = key_path.map(Path::new);
 
     client
-        .connect_and_execute_with_host_check(command, key_path, Some(strict_mode), use_agent)
+        .connect_and_execute_with_host_check(
+            command,
+            key_path,
+            Some(strict_mode),
+            use_agent,
+            use_password,
+        )
         .await
 }
 
@@ -428,6 +464,7 @@ async fn upload_to_node(
     key_path: Option<&str>,
     strict_mode: StrictHostKeyChecking,
     use_agent: bool,
+    use_password: bool,
 ) -> Result<()> {
     let mut client = SshClient::new(node.host.clone(), node.port, node.username.clone());
 
@@ -442,6 +479,7 @@ async fn upload_to_node(
                 key_path,
                 Some(strict_mode),
                 use_agent,
+                use_password,
             )
             .await
     } else {
@@ -452,6 +490,7 @@ async fn upload_to_node(
                 key_path,
                 Some(strict_mode),
                 use_agent,
+                use_password,
             )
             .await
     }
@@ -464,6 +503,7 @@ async fn download_from_node(
     key_path: Option<&str>,
     strict_mode: StrictHostKeyChecking,
     use_agent: bool,
+    use_password: bool,
 ) -> Result<std::path::PathBuf> {
     let mut client = SshClient::new(node.host.clone(), node.port, node.username.clone());
 
@@ -478,6 +518,7 @@ async fn download_from_node(
             key_path,
             Some(strict_mode),
             use_agent,
+            use_password,
         )
         .await?;
 
@@ -491,6 +532,7 @@ pub async fn download_dir_from_node(
     key_path: Option<&str>,
     strict_mode: StrictHostKeyChecking,
     use_agent: bool,
+    use_password: bool,
 ) -> Result<std::path::PathBuf> {
     let mut client = SshClient::new(node.host.clone(), node.port, node.username.clone());
 
@@ -503,6 +545,7 @@ pub async fn download_dir_from_node(
             key_path,
             Some(strict_mode),
             use_agent,
+            use_password,
         )
         .await?;
 

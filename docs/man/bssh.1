@@ -14,8 +14,9 @@ bssh \- Backend.AI SSH - Parallel command execution across cluster nodes
 is a high-performance parallel SSH command execution tool for cluster management, built with Rust.
 It enables efficient execution of commands across multiple nodes simultaneously with real-time output streaming.
 The tool provides secure file transfer capabilities using SFTP protocol for both uploading and downloading files
-to/from multiple remote hosts in parallel. It automatically detects Backend.AI multi-node session environments 
-and supports various configuration methods.
+to/from multiple remote hosts in parallel. It supports multiple authentication methods including SSH keys (with
+passphrase support for encrypted keys), SSH agent, and password authentication. It automatically detects Backend.AI
+multi-node session environments and supports various configuration methods.
 
 .SH OPTIONS
 .TP
@@ -37,7 +38,8 @@ Default username for SSH connections
 
 .TP
 .BR \-i ", " \-\-identity " " \fIIDENTITY\fR
-SSH private key file path
+SSH private key file path. If the key is encrypted, bssh will
+automatically prompt for the passphrase.
 
 .TP
 .BR \-A ", " \-\-use\-agent
@@ -45,6 +47,12 @@ Use SSH agent for authentication (Unix/Linux/macOS only).
 When this option is specified, bssh will attempt to use the SSH agent
 for authentication. Falls back to key file authentication if the agent
 is not available or authentication fails.
+
+.TP
+.BR \-P ", " \-\-password
+Use password authentication. When this option is specified, bssh will
+prompt for the password securely without echoing it to the terminal.
+This is useful for systems that don't have SSH keys configured.
 
 .TP
 .BR \-p ", " \-\-parallel " " \fIPARALLEL\fR
@@ -206,6 +214,20 @@ Use SSH agent for authentication:
 .B bssh -A -c production "systemctl status"
 
 .TP
+Use password authentication:
+.B bssh -P -H "user@host.com" "uptime"
+.RS
+Prompts for password interactively
+.RE
+
+.TP
+Use encrypted SSH key:
+.B bssh -i ~/.ssh/encrypted_key -c production "df -h"
+.RS
+Automatically detects encrypted key and prompts for passphrase
+.RE
+
+.TP
 Save output to files:
 .B bssh --output-dir ./results -c production "ps aux"
 .RS
@@ -299,8 +321,9 @@ User configuration directory location
 SSH known hosts file for host key verification
 
 .TP
-.I ~/.ssh/id_rsa
-Default SSH private key
+.I ~/.ssh/id_ed25519, ~/.ssh/id_rsa, ~/.ssh/id_ecdsa, ~/.ssh/id_dsa
+Default SSH private keys (checked in order of preference). If a key is
+encrypted, bssh will prompt for the passphrase.
 
 .TP
 .I $SSH_AUTH_SOCK

@@ -7,7 +7,7 @@ A high-performance parallel SSH command execution tool for cluster management, b
 - **Parallel Execution**: Execute commands across multiple nodes simultaneously
 - **Cluster Management**: Define and manage node clusters via configuration files
 - **Progress Tracking**: Real-time progress indicators for each node
-- **Flexible Authentication**: Support for SSH keys and SSH agent
+- **Flexible Authentication**: Support for SSH keys, SSH agent, password authentication, and encrypted key passphrases
 - **Host Key Verification**: Secure host key checking with known_hosts support
 - **Cross-Platform**: Works on Linux and macOS
 - **Output Management**: Save command outputs to files per node with detailed logging
@@ -35,6 +35,12 @@ bssh -c staging -i ~/.ssh/custom_key "systemctl status nginx"
 # Use SSH agent for authentication
 bssh --use-agent -c production "systemctl status nginx"
 
+# Use password authentication (will prompt for password)
+bssh --password -H "user@host.com" "uptime"
+
+# Use encrypted SSH key (will prompt for passphrase)
+bssh -i ~/.ssh/encrypted_key -c production "df -h"
+
 # Limit parallel connections
 bssh -c production --parallel 5 "apt update"
 ```
@@ -47,6 +53,38 @@ bssh -c production ping
 ### List configured clusters
 ```bash
 bssh list
+```
+
+## Authentication
+
+bssh supports multiple authentication methods:
+
+### SSH Key Authentication
+- **Default keys**: Automatically tries `~/.ssh/id_ed25519`, `~/.ssh/id_rsa`, `~/.ssh/id_ecdsa`, `~/.ssh/id_dsa`
+- **Custom key**: Use `-i` flag to specify a key file
+- **Encrypted keys**: Automatically detects and prompts for passphrase
+
+### SSH Agent
+- **Auto-detection**: Automatically uses SSH agent if `SSH_AUTH_SOCK` is set
+- **Explicit**: Use `-A` flag to force SSH agent authentication
+
+### Password Authentication
+- Use `-P` flag to enable password authentication
+- Password is prompted securely without echo
+
+### Examples
+```bash
+# Use default SSH key (auto-detect)
+bssh -H "user@host" "uptime"
+
+# Use specific SSH key (prompts for passphrase if encrypted)
+bssh -i ~/.ssh/custom_key -c production "df -h"
+
+# Use SSH agent
+bssh -A -c production "systemctl status"
+
+# Use password authentication
+bssh -P -H "user@host" "ls -la"
 ```
 
 ## Configuration

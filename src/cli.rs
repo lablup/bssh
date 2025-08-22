@@ -47,7 +47,11 @@ pub struct Cli {
     #[arg(short = 'u', long, help = "Default username for SSH connections")]
     pub user: Option<String>,
 
-    #[arg(short = 'i', long, help = "SSH private key file path")]
+    #[arg(
+        short = 'i',
+        long,
+        help = "SSH private key file path (prompts for passphrase if encrypted)"
+    )]
     pub identity: Option<PathBuf>,
 
     #[arg(
@@ -56,6 +60,13 @@ pub struct Cli {
         help = "Use SSH agent for authentication (Unix/Linux/macOS only)"
     )]
     pub use_agent: bool,
+
+    #[arg(
+        short = 'P',
+        long,
+        help = "Use password authentication (will prompt for password)"
+    )]
+    pub password: bool,
 
     #[arg(
         short = 'p',
