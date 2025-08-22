@@ -208,15 +208,16 @@ clusters:
 
 ```
 Options:
-  -H, --hosts <HOSTS>                     Comma-separated list of hosts
-  -c, --cluster <CLUSTER>                 Cluster name from configuration
-  --config <CONFIG>                       Config file path [default: ~/.bssh/config.yaml]
-  -u, --user <USER>                       Default username for SSH
-  -i, --identity <IDENTITY>               SSH private key file
-  -A, --use-agent                         Use SSH agent for authentication
-  --strict-host-key-checking <MODE>       Host key checking mode [yes|no|accept-new] [default: accept-new]
-  -p, --parallel <PARALLEL>               Max parallel connections [default: 10]
-  --output-dir <OUTPUT_DIR>               Output directory for results
+  -H, --hosts <HOSTS>                     Comma-separated list of hosts (user@host:port format)
+  -c, --cluster <CLUSTER>                 Cluster name from configuration file
+  --config <CONFIG>                       Configuration file path [default: ~/.config/bssh/config.yaml]
+  -u, --user <USER>                       Default username for SSH connections
+  -i, --identity <IDENTITY>               SSH private key file path (prompts for passphrase if encrypted)
+  -A, --use-agent                         Use SSH agent for authentication (Unix/Linux/macOS only)
+  -P, --password                          Use password authentication (will prompt for password)
+  --strict-host-key-checking <MODE>       Host key checking mode (yes/no/accept-new) [default: accept-new]
+  -p, --parallel <PARALLEL>               Maximum parallel connections [default: 10]
+  --output-dir <OUTPUT_DIR>               Output directory for command results
   -v, --verbose                           Increase verbosity (-v, -vv, -vvv)
   -h, --help                              Print help
   -V, --version                           Print version
