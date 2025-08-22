@@ -12,16 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub mod cli;
-pub mod commands;
-pub mod config;
-pub mod executor;
-pub mod node;
-pub mod ssh;
-pub mod ui;
-pub mod utils;
+use tracing_subscriber::EnvFilter;
 
-pub use cli::Cli;
-pub use config::Config;
-pub use executor::ParallelExecutor;
-pub use node::Node;
+pub fn init_logging(verbosity: u8) {
+    let filter = match verbosity {
+        0 => EnvFilter::new("bssh=warn"),
+        1 => EnvFilter::new("bssh=info"),
+        2 => EnvFilter::new("bssh=debug"),
+        _ => EnvFilter::new("bssh=trace"),
+    };
+
+    tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_target(false)
+        .init();
+}
