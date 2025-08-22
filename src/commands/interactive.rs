@@ -524,9 +524,51 @@ impl InteractiveCommand {
                 .filter(|s| s.is_active && s.is_connected)
                 .count();
             let total_connected = sessions.iter().filter(|s| s.is_connected).count();
+            let total_nodes = sessions.len();
 
-            let prompt = if active_count == total_connected {
-                // All nodes active - show simple status
+            // Use compact display for many nodes (threshold: 10)
+            const MAX_INDIVIDUAL_DISPLAY: usize = 10;
+
+            let prompt = if total_nodes > MAX_INDIVIDUAL_DISPLAY {
+                // Compact display for many nodes
+                if active_count == total_connected {
+                    // All active
+                    format!("[All {total_connected}/{total_nodes}] bssh> ")
+                } else if active_count == 0 {
+                    // None active
+                    format!("[None 0/{total_connected}] bssh> ")
+                } else {
+                    // Some active - show which nodes are active (first few)
+                    let active_nodes: Vec<usize> = sessions
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, s)| s.is_active && s.is_connected)
+                        .map(|(i, _)| i + 1)
+                        .collect();
+
+                    let display = if active_nodes.len() <= 5 {
+                        // Show all active node numbers if 5 or fewer
+                        let node_list = active_nodes
+                            .iter()
+                            .map(|n| n.to_string())
+                            .collect::<Vec<_>>()
+                            .join(",");
+                        format!("[Nodes {node_list}]")
+                    } else {
+                        // Show first 3 and count
+                        let first_three = active_nodes
+                            .iter()
+                            .take(3)
+                            .map(|n| n.to_string())
+                            .collect::<Vec<_>>()
+                            .join(",");
+                        format!("[Nodes {first_three}... +{}]", active_nodes.len() - 3)
+                    };
+
+                    format!("{display} ({active_count}/{total_connected}) bssh> ")
+                }
+            } else if active_count == total_connected {
+                // All nodes active - show simple status for small number of nodes
                 let mut status = String::from("[");
                 for (i, session) in sessions.iter().enumerate() {
                     if i > 0 {
@@ -541,7 +583,7 @@ impl InteractiveCommand {
                 status.push_str("] bssh> ");
                 status
             } else {
-                // Some nodes inactive - show which are active
+                // Some nodes inactive - show which are active for small number of nodes
                 let mut status = String::from("[");
                 for (i, session) in sessions.iter().enumerate() {
                     if i > 0 {
