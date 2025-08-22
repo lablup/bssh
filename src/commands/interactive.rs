@@ -753,16 +753,15 @@ impl InteractiveCommand {
 
     /// Expand ~ in path to home directory
     fn expand_path(&self, path: &std::path::Path) -> Result<PathBuf> {
-        if let Some(path_str) = path.to_str() {
-            if path_str.starts_with('~') {
-                if let Some(home) = dirs::home_dir() {
-                    // Handle ~ alone or ~/path
-                    if path_str == "~" {
-                        return Ok(home);
-                    } else if let Some(rest) = path_str.strip_prefix("~/") {
-                        return Ok(home.join(rest));
-                    }
-                }
+        if let Some(path_str) = path.to_str()
+            && path_str.starts_with('~')
+            && let Some(home) = dirs::home_dir()
+        {
+            // Handle ~ alone or ~/path
+            if path_str == "~" {
+                return Ok(home);
+            } else if let Some(rest) = path_str.strip_prefix("~/") {
+                return Ok(home.join(rest));
             }
         }
         Ok(path.to_path_buf())
