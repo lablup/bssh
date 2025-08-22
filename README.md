@@ -224,12 +224,13 @@ cargo run -- -H localhost "echo hello"
 
 ## License
 
-Copyright 2024 Jeongkyu Shin
+Copyright 2025 Lablup Inc. and Jeongkyu Shin
 
 Licensed under the Apache License, Version 2.0
 
 ## Changelog
 
 ### Recent Updates
+- **v0.3.0 (2025/08/22):** Add native SFTP directory operations and recursive file transfer support
 - **v0.2.0 (2025/08/21):** Added Backend.AI multi-node session support with SSH authentication, host key verification, environment variable expansion, timeouts, and SCP file copy functionality.
 - **v0.1.0 (2025/08/21):** Initial release with parallel SSH execution using async-ssh2-tokio 
