@@ -1,14 +1,19 @@
 [package]
 name = "bssh"
 version = "0.3.0"
-edition = "2024"
-authors = ["Jeongkyu Shin"]
+authors = ["Jeongkyu Shin <inureyes@gmail.com>"]
 description = "Parallel SSH command execution tool for cluster management"
 license = "Apache-2.0"
+repository = "https://github.com/lablup/bssh"
+readme = "README.md"
+keywords = ["cli", "rust"]
+categories = ["command-line-utilities"]
+edition = "2024"
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }
-async-ssh2-tokio = "0.9"
+russh = "0.52.1"
+russh-sftp = "2.1.1"
 clap = { version = "4", features = ["derive", "env"] }
 anyhow = "1"
 thiserror = "2"

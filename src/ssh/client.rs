@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use super::tokio_client::{AuthMethod, Client};
 use anyhow::{Context, Result};
-use async_ssh2_tokio::{AuthMethod, Client};
 use std::path::Path;
 use std::time::Duration;
 
@@ -253,6 +253,160 @@ impl SshClient {
         Ok(())
     }
 
+    pub async fn upload_dir(
+        &mut self,
+        local_dir_path: &Path,
+        remote_dir_path: &str,
+        key_path: Option<&Path>,
+        strict_mode: Option<StrictHostKeyChecking>,
+        use_agent: bool,
+    ) -> Result<()> {
+        let addr = (self.host.as_str(), self.port);
+        tracing::debug!(
+            "Connecting to {}:{} for directory upload",
+            self.host,
+            self.port
+        );
+
+        // Determine authentication method based on parameters
+        let auth_method = self.determine_auth_method(key_path, use_agent)?;
+
+        // Set up host key checking
+        let check_method = if let Some(mode) = strict_mode {
+            super::known_hosts::get_check_method(mode)
+        } else {
+            super::known_hosts::get_check_method(StrictHostKeyChecking::AcceptNew)
+        };
+
+        // Connect and authenticate with timeout
+        let connect_timeout = Duration::from_secs(30);
+        let client = tokio::time::timeout(
+            connect_timeout,
+            Client::connect(addr, &self.username, auth_method, check_method),
+        )
+        .await
+        .with_context(|| format!("Connection timeout: Failed to connect to {}:{} after 30 seconds. Please check if the host is reachable and SSH service is running.", self.host, self.port))?
+        .with_context(|| format!("SSH connection failed to {}:{}. Please verify the hostname, port, and authentication credentials.", self.host, self.port))?;
+
+        tracing::debug!("Connected and authenticated successfully");
+
+        // Check if local directory exists
+        if !local_dir_path.exists() {
+            anyhow::bail!("Local directory does not exist: {:?}", local_dir_path);
+        }
+
+        if !local_dir_path.is_dir() {
+            anyhow::bail!("Local path is not a directory: {:?}", local_dir_path);
+        }
+
+        tracing::debug!(
+            "Uploading directory {:?} to {}:{} using SFTP",
+            local_dir_path,
+            self.host,
+            remote_dir_path
+        );
+
+        // Use the built-in upload_dir method with timeout
+        let upload_timeout = Duration::from_secs(600); // 10 minutes for directory upload
+        tokio::time::timeout(
+            upload_timeout,
+            client.upload_dir(local_dir_path, remote_dir_path.to_string()),
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "Directory upload timeout: Transfer of {:?} to {}:{} did not complete within 10 minutes",
+                local_dir_path, self.host, remote_dir_path
+            )
+        })?
+        .with_context(|| {
+            format!(
+                "Failed to upload directory {:?} to {}:{}",
+                local_dir_path, self.host, remote_dir_path
+            )
+        })?;
+
+        tracing::debug!("Directory upload completed successfully");
+
+        Ok(())
+    }
+
+    pub async fn download_dir(
+        &mut self,
+        remote_dir_path: &str,
+        local_dir_path: &Path,
+        key_path: Option<&Path>,
+        strict_mode: Option<StrictHostKeyChecking>,
+        use_agent: bool,
+    ) -> Result<()> {
+        let addr = (self.host.as_str(), self.port);
+        tracing::debug!(
+            "Connecting to {}:{} for directory download",
+            self.host,
+            self.port
+        );
+
+        // Determine authentication method based on parameters
+        let auth_method = self.determine_auth_method(key_path, use_agent)?;
+
+        // Set up host key checking
+        let check_method = if let Some(mode) = strict_mode {
+            super::known_hosts::get_check_method(mode)
+        } else {
+            super::known_hosts::get_check_method(StrictHostKeyChecking::AcceptNew)
+        };
+
+        // Connect and authenticate with timeout
+        let connect_timeout = Duration::from_secs(30);
+        let client = tokio::time::timeout(
+            connect_timeout,
+            Client::connect(addr, &self.username, auth_method, check_method),
+        )
+        .await
+        .with_context(|| format!("Connection timeout: Failed to connect to {}:{} after 30 seconds. Please check if the host is reachable and SSH service is running.", self.host, self.port))?
+        .with_context(|| format!("SSH connection failed to {}:{}. Please verify the hostname, port, and authentication credentials.", self.host, self.port))?;
+
+        tracing::debug!("Connected and authenticated successfully");
+
+        // Create parent directory if it doesn't exist
+        if let Some(parent) = local_dir_path.parent() {
+            tokio::fs::create_dir_all(parent).await.with_context(|| {
+                format!("Failed to create parent directory for {local_dir_path:?}")
+            })?;
+        }
+
+        tracing::debug!(
+            "Downloading directory from {}:{} to {:?} using SFTP",
+            self.host,
+            remote_dir_path,
+            local_dir_path
+        );
+
+        // Use the built-in download_dir method with timeout
+        let download_timeout = Duration::from_secs(600); // 10 minutes for directory download
+        tokio::time::timeout(
+            download_timeout,
+            client.download_dir(remote_dir_path.to_string(), local_dir_path),
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "Directory download timeout: Transfer from {}:{} to {:?} did not complete within 10 minutes",
+                self.host, remote_dir_path, local_dir_path
+            )
+        })?
+        .with_context(|| {
+            format!(
+                "Failed to download directory from {}:{} to {:?}",
+                self.host, remote_dir_path, local_dir_path
+            )
+        })?;
+
+        tracing::debug!("Directory download completed successfully");
+
+        Ok(())
+    }
+
     fn determine_auth_method(
         &self,
         key_path: Option<&Path>,
@@ -334,5 +488,125 @@ impl CommandResult {
 
     pub fn is_success(&self) -> bool {
         self.exit_status == 0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[test]
+    fn test_ssh_client_creation() {
+        let client = SshClient::new("example.com".to_string(), 22, "user".to_string());
+        assert_eq!(client.host, "example.com");
+        assert_eq!(client.port, 22);
+        assert_eq!(client.username, "user");
+    }
+
+    #[test]
+    fn test_command_result_success() {
+        let result = CommandResult {
+            host: "test.com".to_string(),
+            output: b"Hello World\n".to_vec(),
+            stderr: Vec::new(),
+            exit_status: 0,
+        };
+
+        assert!(result.is_success());
+        assert_eq!(result.stdout_string(), "Hello World\n");
+        assert_eq!(result.stderr_string(), "");
+    }
+
+    #[test]
+    fn test_command_result_failure() {
+        let result = CommandResult {
+            host: "test.com".to_string(),
+            output: Vec::new(),
+            stderr: b"Command not found\n".to_vec(),
+            exit_status: 127,
+        };
+
+        assert!(!result.is_success());
+        assert_eq!(result.stdout_string(), "");
+        assert_eq!(result.stderr_string(), "Command not found\n");
+    }
+
+    #[test]
+    fn test_command_result_with_utf8() {
+        let result = CommandResult {
+            host: "test.com".to_string(),
+            output: "한글 테스트\n".as_bytes().to_vec(),
+            stderr: "エラー\n".as_bytes().to_vec(),
+            exit_status: 1,
+        };
+
+        assert!(!result.is_success());
+        assert_eq!(result.stdout_string(), "한글 테스트\n");
+        assert_eq!(result.stderr_string(), "エラー\n");
+    }
+
+    #[test]
+    fn test_determine_auth_method_with_key() {
+        let temp_dir = TempDir::new().unwrap();
+        let key_path = temp_dir.path().join("test_key");
+        std::fs::write(&key_path, "fake key content").unwrap();
+
+        let client = SshClient::new("test.com".to_string(), 22, "user".to_string());
+        let auth = client
+            .determine_auth_method(Some(&key_path), false)
+            .unwrap();
+
+        match auth {
+            AuthMethod::PrivateKeyFile { key_file_path, .. } => {
+                assert_eq!(key_file_path, key_path);
+            }
+            _ => panic!("Expected PrivateKeyFile auth method"),
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn test_determine_auth_method_with_agent() {
+        unsafe {
+            std::env::set_var("SSH_AUTH_SOCK", "/tmp/ssh-agent.sock");
+        }
+
+        let client = SshClient::new("test.com".to_string(), 22, "user".to_string());
+        let auth = client.determine_auth_method(None, true).unwrap();
+
+        match auth {
+            AuthMethod::Agent => {}
+            _ => panic!("Expected Agent auth method"),
+        }
+
+        unsafe {
+            std::env::remove_var("SSH_AUTH_SOCK");
+        }
+    }
+
+    #[test]
+    fn test_determine_auth_method_fallback_to_default() {
+        // Create a fake home directory with default key
+        let temp_dir = TempDir::new().unwrap();
+        let ssh_dir = temp_dir.path().join(".ssh");
+        std::fs::create_dir_all(&ssh_dir).unwrap();
+        let default_key = ssh_dir.join("id_rsa");
+        std::fs::write(&default_key, "fake key").unwrap();
+
+        unsafe {
+            std::env::set_var("HOME", temp_dir.path().to_str().unwrap());
+            std::env::remove_var("SSH_AUTH_SOCK");
+        }
+
+        let client = SshClient::new("test.com".to_string(), 22, "user".to_string());
+        let auth = client.determine_auth_method(None, false).unwrap();
+
+        match auth {
+            AuthMethod::PrivateKeyFile { key_file_path, .. } => {
+                assert_eq!(key_file_path, default_key);
+            }
+            _ => panic!("Expected PrivateKeyFile auth method"),
+        }
     }
 }

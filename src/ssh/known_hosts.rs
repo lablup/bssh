@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use async_ssh2_tokio::ServerCheckMethod;
+use super::tokio_client::ServerCheckMethod;
 use directories::BaseDirs;
 use std::path::PathBuf;
 use std::str::FromStr;
@@ -121,5 +121,85 @@ impl FromStr for StrictHostKeyChecking {
             "accept-new" | "tofu" => Self::AcceptNew,
             _ => Self::AcceptNew, // Default
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_strict_host_key_checking_from_str() {
+        assert_eq!(
+            StrictHostKeyChecking::from_str("yes").unwrap(),
+            StrictHostKeyChecking::Yes
+        );
+        assert_eq!(
+            StrictHostKeyChecking::from_str("true").unwrap(),
+            StrictHostKeyChecking::Yes
+        );
+        assert_eq!(
+            StrictHostKeyChecking::from_str("no").unwrap(),
+            StrictHostKeyChecking::No
+        );
+        assert_eq!(
+            StrictHostKeyChecking::from_str("false").unwrap(),
+            StrictHostKeyChecking::No
+        );
+        assert_eq!(
+            StrictHostKeyChecking::from_str("accept-new").unwrap(),
+            StrictHostKeyChecking::AcceptNew
+        );
+        assert_eq!(
+            StrictHostKeyChecking::from_str("tofu").unwrap(),
+            StrictHostKeyChecking::AcceptNew
+        );
+        assert_eq!(
+            StrictHostKeyChecking::from_str("invalid").unwrap(),
+            StrictHostKeyChecking::AcceptNew
+        );
+    }
+
+    #[test]
+    fn test_strict_host_key_checking_to_bool() {
+        assert!(StrictHostKeyChecking::Yes.to_bool());
+        assert!(!StrictHostKeyChecking::No.to_bool());
+        assert!(!StrictHostKeyChecking::AcceptNew.to_bool());
+    }
+
+    #[test]
+    fn test_strict_host_key_checking_default() {
+        assert_eq!(
+            StrictHostKeyChecking::default(),
+            StrictHostKeyChecking::AcceptNew
+        );
+    }
+
+    #[test]
+    fn test_get_default_known_hosts_path() {
+        let path = get_default_known_hosts_path();
+        assert!(path.is_some());
+        if let Some(p) = path {
+            assert!(p.to_str().unwrap().contains(".ssh/known_hosts"));
+        }
+    }
+
+    #[test]
+    fn test_get_check_method() {
+        // Test with No mode
+        let method = get_check_method(StrictHostKeyChecking::No);
+        assert!(matches!(method, ServerCheckMethod::NoCheck));
+
+        // Test with AcceptNew mode (should use NoCheck since library doesn't support TOFU)
+        let method = get_check_method(StrictHostKeyChecking::AcceptNew);
+        assert!(matches!(method, ServerCheckMethod::NoCheck));
+
+        // Test with Yes mode
+        let method = get_check_method(StrictHostKeyChecking::Yes);
+        // Result depends on whether known_hosts file exists
+        assert!(matches!(
+            method,
+            ServerCheckMethod::DefaultKnownHostsFile | ServerCheckMethod::NoCheck
+        ));
     }
 }

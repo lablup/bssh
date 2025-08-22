@@ -113,7 +113,7 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }} --locked
 
       # 7) macOS code signing
-      - name: Import Developer ID certificate
+      - name: Import Distribution certificate
         if: runner.os == 'macOS'
         uses: apple-actions/import-codesign-certs@v3
         with:
@@ -125,7 +125,7 @@ jobs:
         run: |
           BIN=target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
           codesign --force --timestamp --options runtime \
-                   --sign "Developer ID Application" "$BIN"
+                   --sign "Distribution" "$BIN"
 
       # 8) Package binaries
       - name: Package Linux binary (tar.gz)

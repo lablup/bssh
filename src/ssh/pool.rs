@@ -22,8 +22,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use super::tokio_client::Client;
 use anyhow::Result;
-use async_ssh2_tokio::Client;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::RwLock;

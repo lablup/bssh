@@ -500,14 +500,16 @@ async fn upload_file(
     for file in &files {
         let remote_path = if is_dir_destination {
             // If destination is a directory or multiple files
-            if params.recursive && base_dir.is_some() {
-                // Preserve directory structure for recursive uploads
-                let relative_path = file.strip_prefix(base_dir.unwrap()).unwrap_or(file);
-                let remote_relative = relative_path.to_string_lossy();
+            if params.recursive {
+                if let Some(base) = base_dir {
+                    // Preserve directory structure for recursive uploads
+                    let relative_path = file.strip_prefix(base).unwrap_or(file);
+                    let remote_relative = relative_path.to_string_lossy();
 
-                // Create remote directory structure if needed
-                if let Some(parent) = relative_path.parent() {
-                    if !parent.as_os_str().is_empty() {
+                    // Create remote directory structure if needed
+                    if let Some(parent) = relative_path.parent()
+                        && !parent.as_os_str().is_empty()
+                    {
                         let remote_dir = if destination.ends_with('/') {
                             format!("{destination}{}", parent.display())
                         } else {
@@ -517,12 +519,23 @@ async fn upload_file(
                         let mkdir_cmd = format!("mkdir -p '{remote_dir}'");
                         let _ = executor.execute(&mkdir_cmd).await;
                     }
-                }
 
-                if destination.ends_with('/') {
-                    format!("{destination}{remote_relative}")
+                    if destination.ends_with('/') {
+                        format!("{destination}{remote_relative}")
+                    } else {
+                        format!("{destination}/{remote_relative}")
+                    }
                 } else {
-                    format!("{destination}/{remote_relative}")
+                    // No base dir, just use filename
+                    let filename = file
+                        .file_name()
+                        .ok_or_else(|| anyhow::anyhow!("Failed to get filename from {:?}", file))?
+                        .to_string_lossy();
+                    if destination.ends_with('/') {
+                        format!("{destination}{filename}")
+                    } else {
+                        format!("{destination}/{filename}")
+                    }
                 }
             } else {
                 // Non-recursive: just append filename
@@ -699,77 +712,40 @@ async fn download_file(
     };
 
     if is_directory {
-        // Recursive directory download
+        // Recursive directory download using SFTP
         println!(
-            "Recursively downloading directory {source} from {} nodes",
+            "Recursively downloading directory {source} from {} nodes using SFTP",
             params.nodes.len()
         );
-
-        // Find all files in the directory recursively
-        let find_cmd = format!("find '{source}' -type f 2>/dev/null || find '{source}' -type f");
-        let find_results = executor.execute(&find_cmd).await?;
 
         let mut total_success = 0;
         let mut total_failed = 0;
 
-        for (node_idx, result) in find_results.iter().enumerate() {
-            if let Ok(cmd_result) = &result.result {
-                let stdout = String::from_utf8_lossy(&cmd_result.output);
-                let files: Vec<String> = stdout
-                    .lines()
-                    .filter(|line| !line.is_empty())
-                    .map(|s| s.to_string())
-                    .collect();
+        // Download the entire directory from each node
+        for node in &params.nodes {
+            let node_dir = destination.join(node.to_string());
 
-                if files.is_empty() {
-                    println!("No files found in directory on {}", params.nodes[node_idx]);
-                    continue;
+            println!("\nDownloading directory from {node} to {node_dir:?}");
+
+            // Use the download_dir_from_node function directly
+            let result = bssh::executor::download_dir_from_node(
+                node.clone(),
+                source,
+                &node_dir,
+                key_path_str.as_deref(),
+                params.strict_mode,
+                params.use_agent,
+            )
+            .await;
+
+            match result {
+                Ok(_) => {
+                    println!("  ✓ Successfully downloaded directory");
+                    total_success += 1;
                 }
-
-                println!(
-                    "\nDownloading {} files from {}",
-                    files.len(),
-                    params.nodes[node_idx]
-                );
-
-                for remote_file in files {
-                    // Calculate relative path from source directory
-                    let relative_path = remote_file
-                        .strip_prefix(source)
-                        .unwrap_or(&remote_file)
-                        .trim_start_matches('/');
-
-                    // Create local file path preserving directory structure
-                    let local_file = destination
-                        .join(params.nodes[node_idx].to_string())
-                        .join(relative_path);
-
-                    // Create parent directory if needed
-                    if let Some(parent) = local_file.parent() {
-                        fs::create_dir_all(parent).await?;
-                    }
-
-                    // Download the file using the executor's download method
-                    let single_node = vec![params.nodes[node_idx].clone()];
-                    let single_executor = ParallelExecutor::new_with_strict_mode_and_agent(
-                        single_node,
-                        1,
-                        key_path_str.clone(),
-                        params.strict_mode,
-                        params.use_agent,
-                    );
-
-                    let download_results = single_executor
-                        .download_file(&remote_file, &local_file)
-                        .await?;
-
-                    if download_results.iter().any(|r| r.is_success()) {
-                        println!("  ✓ Downloaded: {remote_file} -> {local_file:?}");
-                        total_success += 1;
-                    } else {
-                        println!("  ✗ Failed: {remote_file}");
-                        total_failed += 1;
-                    }
+                Err(e) => {
+                    println!("  ✗ Failed to download directory: {e}");
+                    total_failed += 1;
                 }
             }
         }

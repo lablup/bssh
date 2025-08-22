@@ -16,6 +16,7 @@ pub mod client;
 pub mod handler;
 pub mod known_hosts;
 pub mod pool;
+pub mod tokio_client;
 
 pub use client::SshClient;
 pub use handler::BsshHandler;
