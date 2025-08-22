@@ -462,10 +462,9 @@ impl SshClient {
                 || key_contents.contains("Proc-Type: 4,ENCRYPTED")
             {
                 tracing::debug!("Detected encrypted SSH key, prompting for passphrase");
-                let pass = rpassword::prompt_password(format!(
-                    "Enter passphrase for key {key_path:?}: "
-                ))
-                .with_context(|| "Failed to read passphrase")?;
+                let pass =
+                    rpassword::prompt_password(format!("Enter passphrase for key {key_path:?}: "))
+                        .with_context(|| "Failed to read passphrase")?;
                 Some(pass)
             } else {
                 None

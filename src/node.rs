@@ -61,7 +61,18 @@ impl Node {
             .unwrap_or_else(|| {
                 std::env::var("USER")
                     .or_else(|_| std::env::var("USERNAME"))
-                    .unwrap_or_else(|_| "root".to_string())
+                    .or_else(|_| std::env::var("LOGNAME"))
+                    .unwrap_or_else(|_| {
+                        // Try to get current user from system
+                        #[cfg(unix)]
+                        {
+                            whoami::username()
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            "user".to_string()
+                        }
+                    })
             });
 
         Ok(Node {
@@ -120,5 +131,21 @@ mod tests {
     fn test_parse_with_default_user() {
         let node = Node::parse("example.com", Some("default_user")).unwrap();
         assert_eq!(node.username, "default_user");
+    }
+
+    #[test]
+    fn test_parse_uses_current_user_when_no_default() {
+        // When no user is specified, it should use current user from environment
+        let node = Node::parse("example.com", None).unwrap();
+        // Should not be "root" unless the current user is actually root
+        let current_user = std::env::var("USER")
+            .or_else(|_| std::env::var("USERNAME"))
+            .or_else(|_| std::env::var("LOGNAME"))
+            .unwrap_or_else(|_| whoami::username());
+        assert_eq!(node.username, current_user);
+        // Specifically verify it doesn't default to root when we're not root
+        if current_user != "root" {
+            assert_ne!(node.username, "root");
+        }
     }
 }

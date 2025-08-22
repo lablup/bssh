@@ -47,7 +47,11 @@ pub struct Cli {
     #[arg(short = 'u', long, help = "Default username for SSH connections")]
     pub user: Option<String>,
 
-    #[arg(short = 'i', long, help = "SSH private key file path (prompts for passphrase if encrypted)")]
+    #[arg(
+        short = 'i',
+        long,
+        help = "SSH private key file path (prompts for passphrase if encrypted)"
+    )]
     pub identity: Option<PathBuf>,
 
     #[arg(

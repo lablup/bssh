@@ -103,7 +103,18 @@ impl Config {
                 // Get current user as default
                 let default_user = env::var("USER")
                     .or_else(|_| env::var("USERNAME"))
-                    .unwrap_or_else(|_| "root".to_string());
+                    .or_else(|_| env::var("LOGNAME"))
+                    .unwrap_or_else(|_| {
+                        // Try to get current user from system
+                        #[cfg(unix)]
+                        {
+                            whoami::username()
+                        }
+                        #[cfg(not(unix))]
+                        {
+                            "user".to_string()
+                        }
+                    });
 
                 // Backend.AI multi-node clusters use port 2200 by default
                 nodes.push(NodeConfig::Simple(format!("{default_user}@{host}:2200")));
@@ -215,7 +226,20 @@ impl Config {
                         .or_else(|| cluster.defaults.user.as_ref().map(|u| expand_env_vars(u)))
                         .or_else(|| self.defaults.user.as_ref().map(|u| expand_env_vars(u)))
                         .unwrap_or_else(|| {
-                            std::env::var("USER").unwrap_or_else(|_| "root".to_string())
+                            std::env::var("USER")
+                                .or_else(|_| std::env::var("USERNAME"))
+                                .or_else(|_| std::env::var("LOGNAME"))
+                                .unwrap_or_else(|_| {
+                                    // Try to get current user from system
+                                    #[cfg(unix)]
+                                    {
+                                        whoami::username()
+                                    }
+                                    #[cfg(not(unix))]
+                                    {
+                                        "user".to_string()
+                                    }
+                                })
                         });
 
                     let port = port
