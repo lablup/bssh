@@ -152,19 +152,19 @@ impl Config {
 
         // Try current directory config.yaml
         let current_dir_config = PathBuf::from("config.yaml");
-        if current_dir_config.exists() {
-            if let Ok(config) = Self::load(&current_dir_config).await {
-                return Ok(config);
-            }
+        if current_dir_config.exists()
+            && let Ok(config) = Self::load(&current_dir_config).await
+        {
+            return Ok(config);
         }
 
         // Try ~/.config/bssh/config.yaml
         if let Some(home_dir) = dirs::home_dir() {
             let home_config = home_dir.join(".config").join("bssh").join("config.yaml");
-            if home_config.exists() {
-                if let Ok(config) = Self::load(&home_config).await {
-                    return Ok(config);
-                }
+            if home_config.exists()
+                && let Ok(config) = Self::load(&home_config).await
+            {
+                return Ok(config);
             }
         }
 
@@ -234,12 +234,11 @@ impl Config {
     }
 
     pub fn get_ssh_key(&self, cluster_name: Option<&str>) -> Option<String> {
-        if let Some(cluster_name) = cluster_name {
-            if let Some(cluster) = self.get_cluster(cluster_name) {
-                if let Some(key) = &cluster.defaults.ssh_key {
-                    return Some(key.clone());
-                }
-            }
+        if let Some(cluster_name) = cluster_name
+            && let Some(cluster) = self.get_cluster(cluster_name)
+            && let Some(key) = &cluster.defaults.ssh_key
+        {
+            return Some(key.clone());
         }
 
         self.defaults.ssh_key.clone()
@@ -247,12 +246,11 @@ impl Config {
 }
 
 fn expand_tilde(path: &Path) -> PathBuf {
-    if let Some(path_str) = path.to_str() {
-        if path_str.starts_with("~/") {
-            if let Ok(home) = std::env::var("HOME") {
-                return PathBuf::from(path_str.replacen("~", &home, 1));
-            }
-        }
+    if let Some(path_str) = path.to_str()
+        && path_str.starts_with("~/")
+        && let Ok(home) = std::env::var("HOME")
+    {
+        return PathBuf::from(path_str.replacen("~", &home, 1));
     }
     path.to_path_buf()
 }
@@ -328,8 +326,10 @@ mod tests {
 
     #[test]
     fn test_expand_env_vars() {
-        std::env::set_var("TEST_VAR", "test_value");
-        std::env::set_var("TEST_USER", "testuser");
+        unsafe {
+            std::env::set_var("TEST_VAR", "test_value");
+            std::env::set_var("TEST_USER", "testuser");
+        }
 
         // Test ${VAR} syntax
         assert_eq!(expand_env_vars("Hello ${TEST_VAR}!"), "Hello test_value!");
@@ -355,7 +355,9 @@ mod tests {
 
     #[test]
     fn test_expand_tilde() {
-        std::env::set_var("HOME", "/home/user");
+        unsafe {
+            std::env::set_var("HOME", "/home/user");
+        }
         let path = Path::new("~/.ssh/config");
         let expanded = expand_tilde(path);
         assert_eq!(expanded, PathBuf::from("/home/user/.ssh/config"));
@@ -401,10 +403,12 @@ clusters:
     #[test]
     fn test_backendai_env_parsing() {
         // Set up Backend.AI environment variables
-        std::env::set_var("BACKENDAI_CLUSTER_HOSTS", "sub1,main1");
-        std::env::set_var("BACKENDAI_CLUSTER_HOST", "main1");
-        std::env::set_var("BACKENDAI_CLUSTER_ROLE", "main");
-        std::env::set_var("USER", "testuser");
+        unsafe {
+            std::env::set_var("BACKENDAI_CLUSTER_HOSTS", "sub1,main1");
+            std::env::set_var("BACKENDAI_CLUSTER_HOST", "main1");
+            std::env::set_var("BACKENDAI_CLUSTER_ROLE", "main");
+            std::env::set_var("USER", "testuser");
+        }
 
         let cluster = Config::from_backendai_env().unwrap();
 
@@ -420,7 +424,9 @@ clusters:
         }
 
         // Test with sub role - should skip the first (main) node
-        std::env::set_var("BACKENDAI_CLUSTER_ROLE", "sub");
+        unsafe {
+            std::env::set_var("BACKENDAI_CLUSTER_ROLE", "sub");
+        }
         let cluster = Config::from_backendai_env().unwrap();
         assert_eq!(cluster.nodes.len(), 1);
 
@@ -432,8 +438,10 @@ clusters:
         }
 
         // Clean up
-        std::env::remove_var("BACKENDAI_CLUSTER_HOSTS");
-        std::env::remove_var("BACKENDAI_CLUSTER_HOST");
-        std::env::remove_var("BACKENDAI_CLUSTER_ROLE");
+        unsafe {
+            std::env::remove_var("BACKENDAI_CLUSTER_HOSTS");
+            std::env::remove_var("BACKENDAI_CLUSTER_HOST");
+            std::env::remove_var("BACKENDAI_CLUSTER_ROLE");
+        }
     }
 }
