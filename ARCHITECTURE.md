@@ -48,6 +48,7 @@ The codebase has been restructured for better maintainability and scalability:
 2. **Command Modules (`commands/`):**
    - `exec.rs`: Command execution with output management
    - `ping.rs`: Connectivity testing
+   - `interactive.rs`: Interactive shell sessions (Phase 1 completed)
    - `list.rs`: Cluster listing
    - `upload.rs`: File upload operations
    - `download.rs`: File download operations
@@ -284,6 +285,61 @@ Focus on more impactful optimizations like:
 2. **Pipelining:** Send multiple commands in single session
 3. **Compression:** Enable SSH compression for large outputs
 4. **Caching:** Cache host keys and authentication
+
+## Interactive Mode Architecture
+
+### Overview
+
+Interactive mode provides persistent shell sessions with single-node or multiplexed multi-node support. This feature enables real-time interaction with cluster nodes, maintaining stateful connections for extended operations.
+
+### Design Decisions
+
+1. **PTY Support:** 
+   - Full pseudo-terminal allocation for proper shell interaction
+   - Terminal size detection and dynamic resizing
+   - ANSI escape sequence support for colored output
+
+2. **Session Management:**
+   - Persistent SSH connections with keep-alive
+   - Graceful reconnection on connection drops
+   - Session state tracking (working directory, environment)
+
+3. **Input/Output Multiplexing:**
+   - Commands broadcast to all nodes simultaneously
+   - Node-prefixed output with color coding
+   - Visual status indicators (● connected, ○ disconnected)
+
+### Implementation Details
+
+```rust
+struct NodeSession {
+    node: Node,
+    client: Client,
+    channel: Channel<Msg>,
+    working_dir: String,
+    is_connected: bool,
+}
+```
+
+### Modes of Operation
+
+1. **Single-Node Mode (`--single-node`):**
+   - Interactive shell on one selected node
+   - Full terminal emulation
+   - Command history with rustyline
+
+2. **Multiplex Mode (default):**
+   - Commands sent to all nodes
+   - Synchronized output display
+   - Node status tracking
+
+### Future Enhancements (Phase 2-3)
+
+- Node switching with `!node1`, `!node2` commands
+- Session persistence and detach/reattach
+- Full TUI with ratatui (split panes, monitoring)
+- File manager integration
+- Performance metrics visualization
 
 ## Security Model
 

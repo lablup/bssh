@@ -137,6 +137,39 @@ pub enum Commands {
         #[arg(short = 'r', long, help = "Recursively download directories")]
         recursive: bool,
     },
+
+    #[command(about = "Start interactive shell session")]
+    Interactive {
+        #[arg(
+            long,
+            help = "Connect to a single node instead of multiplexing to all nodes"
+        )]
+        single_node: bool,
+
+        #[arg(
+            long,
+            default_value = "true",
+            help = "Multiplex input across all nodes (default behavior)"
+        )]
+        multiplex: bool,
+
+        #[arg(
+            long,
+            default_value = "[{node}:{user}@{host}:{pwd}]$ ",
+            help = "Custom prompt format"
+        )]
+        prompt_format: String,
+
+        #[arg(
+            long,
+            default_value = "~/.bssh_history",
+            help = "History file path for command history"
+        )]
+        history_file: PathBuf,
+
+        #[arg(long, help = "Initial working directory on remote hosts")]
+        work_dir: Option<String>,
+    },
 }
 
 impl Cli {

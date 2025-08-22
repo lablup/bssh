@@ -20,6 +20,7 @@ use bssh::{
     commands::{
         download::download_file,
         exec::{ExecuteCommandParams, execute_command},
+        interactive::InteractiveCommand,
         list::list_clusters,
         ping::ping_nodes,
         upload::{FileTransferParams, upload_file},
@@ -115,6 +116,29 @@ async fn main() -> Result<()> {
             };
             download_file(params, &source, &destination).await
         }
+        Some(Commands::Interactive {
+            single_node,
+            multiplex,
+            prompt_format,
+            history_file,
+            work_dir,
+        }) => {
+            let interactive_cmd = InteractiveCommand {
+                single_node,
+                multiplex,
+                prompt_format,
+                history_file,
+                work_dir,
+                nodes,
+                config: config.clone(),
+            };
+            let result = interactive_cmd.execute().await?;
+            println!("\nInteractive session ended.");
+            println!("Duration: {:?}", result.duration);
+            println!("Commands executed: {}", result.commands_executed);
+            println!("Nodes connected: {}", result.nodes_connected);
+            Ok(())
+        }
         _ => {
             // Execute command (default or Exec subcommand)
             let params = ExecuteCommandParams {
@@ -148,6 +172,12 @@ async fn resolve_nodes(cli: &Cli, config: &Config) -> Result<Vec<Node>> {
     } else if let Some(cluster_name) = &cli.cluster {
         // Get nodes from cluster configuration
         nodes = config.resolve_nodes(cluster_name)?;
+    } else {
+        // Check if Backend.AI environment is detected (automatic cluster)
+        if config.clusters.contains_key("backendai") {
+            // Automatically use Backend.AI cluster when no explicit cluster is specified
+            nodes = config.resolve_nodes("backendai")?;
+        }
     }
 
     Ok(nodes)

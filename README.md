@@ -18,6 +18,7 @@ A high-performance parallel SSH command execution tool for cluster management, b
 - **Host Key Verification**: Secure host key checking with known_hosts support
 - **Cross-Platform**: Works on Linux and macOS
 - **Output Management**: Save command outputs to files per node with detailed logging
+- **Interactive Mode**: Interactive shell sessions with single-node or multiplexed multi-node support
 
 ## Installation
 
@@ -155,14 +156,17 @@ bssh loads configuration from the following sources in priority order:
 
 ### Backend.AI Multi-node Session Support
 
-When running inside a Backend.AI multi-node session, bssh automatically detects cluster configuration from environment variables. No manual configuration needed!
+When running inside a Backend.AI multi-node session, bssh automatically detects cluster configuration from environment variables. No manual configuration or cluster specification needed!
 
 Backend.AI environment variables used:
 - `BACKENDAI_CLUSTER_HOSTS`: Comma-separated list of all node hostnames
-- `BACKENDAI_CLUSTER_HOST`: Current node's hostname
+- `BACKENDAI_CLUSTER_HOST`: Current node's hostname  
 - `BACKENDAI_CLUSTER_ROLE`: Current node's role (main or sub)
 
 Note: Backend.AI multi-node clusters use SSH port 2200 by default, which is automatically configured.
+
+**Automatic Detection:**
+When these environment variables are set, bssh automatically creates a "backendai" cluster and uses it by default when no `-c` or `-H` options are specified.
 
 Example:
 ```bash
@@ -171,6 +175,13 @@ bssh "uptime"  # Automatically executes on all cluster nodes
 
 # Or specify a command explicitly:
 bssh "nvidia-smi" # Check GPU status on all nodes
+
+# Interactive mode also works automatically:
+bssh interactive  # Opens interactive session with all Backend.AI nodes
+
+# You can still override with explicit options if needed:
+bssh -c other-cluster "command"  # Use a different cluster
+bssh -H specific-host "command"   # Use specific host
 ```
 
 ### Manual Configuration File
@@ -251,6 +262,101 @@ bssh -c webservers "sudo systemctl restart nginx"
 ### Collect logs
 ```bash
 bssh -c production --output-dir ./logs "tail -n 100 /var/log/syslog"
+```
+
+### Interactive Mode
+
+Start an interactive shell session on cluster nodes:
+
+```bash
+# Interactive session on all nodes (multiplex mode - default)
+bssh -c production interactive
+
+# Interactive session on a single node
+bssh -c production interactive --single-node
+
+# Custom prompt format
+bssh -H server1,server2 interactive --prompt-format "{user}@{host}> "
+
+# Set initial working directory
+bssh -c staging interactive --work-dir /var/www
+```
+
+In multiplex mode, commands are sent to active nodes with visual indicators:
+
+```
+[● ● ●] bssh> uptime
+[node1]  10:23:45 up 5 days, 2:14, 1 user, load average: 0.15, 0.12, 0.09
+[node2]  10:23:45 up 3 days, 4:22, 2 users, load average: 0.23, 0.19, 0.17
+[node3]  10:23:45 up 7 days, 1:45, 1 user, load average: 0.08, 0.11, 0.10
+[● ● ●] bssh> exit
+```
+
+#### Interactive Mode Special Commands
+
+Interactive mode supports special commands (starting with `!`) for node management:
+
+| Command | Description |
+|---------|-------------|
+| `!all` | Activate all connected nodes |
+| `!broadcast <cmd>` | Execute command on all nodes temporarily (without changing active nodes) |
+| `!node<N>` or `!n<N>` | Switch to node N (e.g., `!node1`, `!n2`) |
+| `!list` or `!nodes` | List all nodes with their connection status |
+| `!status` | Show currently active nodes |
+| `!help` or `!?` | Show help for special commands |
+| `exit` | Exit interactive mode |
+
+#### Node Indicators in Prompt
+
+The prompt shows node status with visual indicators:
+- `●` Active node (commands will be executed)
+- `○` Inactive node (connected but not receiving commands)
+- `·` Disconnected node
+
+Examples:
+- `[● ● ●] bssh>` - All 3 nodes active
+- `[● ○ ○] bssh>` - Only first node active
+- `[1 · ·] (1/3) bssh>` - Node 1 active, nodes 2 and 3 inactive
+
+For large clusters (>10 nodes), the prompt uses a compact format:
+- `[All 50/50] bssh>` - All 50 nodes active
+- `[None 0/50] bssh>` - No nodes active
+- `[Nodes 1,2,3... +47] (50/50) bssh>` - Specific nodes active
+
+#### Example Interactive Session
+
+```bash
+$ bssh -c production interactive
+
+Connected to 3 nodes
+[● ● ●] bssh> !status
+Active nodes: node1.example.com, node2.example.com, node3.example.com
+
+[● ● ●] bssh> !node1
+Switched to node 1
+
+[● ○ ○] (1/3) bssh> hostname
+[node1] node1.example.com
+
+[● ○ ○] (1/3) bssh> !broadcast date
+Broadcasting command to all connected nodes...
+[node1] Thu Aug 22 10:30:00 UTC 2025
+[node2] Thu Aug 22 10:30:00 UTC 2025
+[node3] Thu Aug 22 10:30:00 UTC 2025
+
+[● ○ ○] (1/3) bssh> !all
+All nodes activated
+
+[● ● ●] bssh> df -h /
+[node1] Filesystem      Size  Used Avail Use% Mounted on
+[node1] /dev/sda1        20G  5.5G   14G  30% /
+[node2] Filesystem      Size  Used Avail Use% Mounted on
+[node2] /dev/sda1        20G  7.2G   12G  38% /
+[node3] Filesystem      Size  Used Avail Use% Mounted on
+[node3] /dev/sda1        20G  4.1G   15G  22% /
+
+[● ● ●] bssh> exit
+Goodbye!
 ```
 
 ## Output File Management

@@ -811,6 +811,61 @@ impl Client {
         }
     }
 
+    /// Request an interactive shell with PTY support.
+    ///
+    /// This method opens a new SSH channel with PTY (pseudo-terminal) support,
+    /// suitable for interactive shell sessions.
+    ///
+    /// # Arguments
+    /// * `term_type` - Terminal type (e.g., "xterm", "xterm-256color", "vt100")
+    /// * `width` - Terminal width in columns
+    /// * `height` - Terminal height in rows
+    ///
+    /// # Returns
+    /// A `Channel` that can be used for bidirectional communication with the remote shell.
+    pub async fn request_interactive_shell(
+        &self,
+        term_type: &str,
+        width: u32,
+        height: u32,
+    ) -> Result<Channel<Msg>, super::Error> {
+        let channel = self.connection_handle.channel_open_session().await?;
+
+        // Request PTY with the specified terminal type and dimensions
+        channel
+            .request_pty(
+                false,
+                term_type,
+                width,
+                height,
+                0,   // pixel width (0 means undefined)
+                0,   // pixel height (0 means undefined)
+                &[], // terminal modes (empty means use defaults)
+            )
+            .await?;
+
+        // Request shell
+        channel.request_shell(false).await?;
+
+        Ok(channel)
+    }
+
+    /// Request window size change for an existing PTY channel.
+    ///
+    /// This should be called when the local terminal is resized to update
+    /// the remote PTY dimensions.
+    pub async fn resize_pty(
+        &self,
+        channel: &mut Channel<Msg>,
+        width: u32,
+        height: u32,
+    ) -> Result<(), super::Error> {
+        channel
+            .window_change(width, height, 0, 0)
+            .await
+            .map_err(super::Error::SshError)
+    }
+
     /// A debugging function to get the username this client is connected as.
     pub fn get_connection_username(&self) -> &String {
         &self.username
