@@ -23,6 +23,7 @@ use rustyline::error::ReadlineError;
 use std::io::{self, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
@@ -32,6 +33,11 @@ use crate::node::Node;
 use crate::ssh::{
     known_hosts::{StrictHostKeyChecking, get_check_method},
     tokio_client::{AuthMethod, Client},
+};
+
+use super::interactive_signal::{
+    TerminalGuard, is_interrupted, reset_interrupt, setup_async_signal_handlers,
+    setup_signal_handlers,
 };
 
 /// Interactive mode command configuration
@@ -106,6 +112,12 @@ impl NodeSession {
 impl InteractiveCommand {
     pub async fn execute(self) -> Result<InteractiveResult> {
         let start_time = std::time::Instant::now();
+
+        // Set up signal handlers and terminal guard
+        let _terminal_guard = TerminalGuard::new();
+        let shutdown = setup_signal_handlers()?;
+        setup_async_signal_handlers(Arc::clone(&shutdown)).await;
+        reset_interrupt();
 
         // Determine which nodes to connect to
         let nodes_to_connect = if self.single_node {
@@ -210,6 +222,9 @@ impl InteractiveCommand {
             .await
             .context("Failed to request interactive shell")?;
 
+        // Note: Terminal resize handling would require channel cloning or Arc<Mutex>
+        // which russh doesn't support directly. This is a limitation of the current implementation.
+
         // Set initial working directory if specified
         let working_dir = if let Some(ref dir) = self.work_dir {
             // Send cd command to set initial directory
@@ -274,6 +289,8 @@ impl InteractiveCommand {
         // Create shared state for the session
         let session_arc = Arc::new(Mutex::new(session));
         let session_clone = Arc::clone(&session_arc);
+        let shutdown = Arc::new(AtomicBool::new(false));
+        let shutdown_clone = Arc::clone(&shutdown);
 
         // Create a channel for receiving output from the SSH session
         let (output_tx, mut output_rx) = mpsc::unbounded_channel::<String>();
@@ -281,6 +298,11 @@ impl InteractiveCommand {
         // Spawn a task to read output from the SSH channel
         let output_reader = tokio::spawn(async move {
             loop {
+                // Check for shutdown signal
+                if shutdown_clone.load(Ordering::Relaxed) || is_interrupted() {
+                    break;
+                }
+
                 let mut session_guard = session_clone.lock().await;
                 if !session_guard.is_connected {
                     break;
@@ -298,6 +320,13 @@ impl InteractiveCommand {
 
         // Main interactive loop
         loop {
+            // Check for interrupt signal
+            if is_interrupted() {
+                println!("\nInterrupted by user. Exiting...");
+                shutdown.store(true, Ordering::Relaxed);
+                break;
+            }
+
             // Print any pending output
             while let Ok(output) = output_rx.try_recv() {
                 print!("{output}");
@@ -380,6 +409,11 @@ impl InteractiveCommand {
 
         // Main interactive loop
         loop {
+            // Check for interrupt signal
+            if is_interrupted() {
+                println!("\nInterrupted by user. Exiting...");
+                break;
+            }
             // Show node status
             print!("[");
             for (i, session) in sessions.iter().enumerate() {
