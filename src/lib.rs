@@ -17,6 +17,7 @@ pub mod config;
 pub mod executor;
 pub mod node;
 pub mod ssh;
+pub mod ui;
 
 pub use cli::Cli;
 pub use config::Config;

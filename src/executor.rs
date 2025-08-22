@@ -15,12 +15,14 @@
 use anyhow::Result;
 use futures::future::join_all;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
+use owo_colors::OwoColorize;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
 use crate::node::Node;
 use crate::ssh::{SshClient, client::CommandResult, known_hosts::StrictHostKeyChecking};
+use crate::ui::OutputFormatter;
 
 pub struct ParallelExecutor {
     nodes: Vec<Node>,
@@ -97,9 +99,9 @@ impl ParallelExecutor {
         let multi_progress = MultiProgress::new();
 
         let style = ProgressStyle::default_bar()
-            .template("{prefix:.bold.dim} {spinner:.green} {msg}")
+            .template("{prefix:.bold} {spinner:.cyan} {msg}")
             .unwrap()
-            .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ");
+            .tick_chars("⣾⣽⣻⢿⡿⣟⣯⣷ ");
 
         let tasks: Vec<_> = self
             .nodes
@@ -114,14 +116,19 @@ impl ParallelExecutor {
                 let semaphore = Arc::clone(&semaphore);
                 let pb = multi_progress.add(ProgressBar::new_spinner());
                 pb.set_style(style.clone());
-                pb.set_prefix(format!("[{node}]"));
-                pb.set_message("Connecting...");
-                pb.enable_steady_tick(std::time::Duration::from_millis(100));
+                let node_display = if node.to_string().len() > 20 {
+                    format!("{}...", &node.to_string()[..17])
+                } else {
+                    node.to_string()
+                };
+                pb.set_prefix(format!("[{node_display}]"));
+                pb.set_message(format!("{}", "Connecting...".cyan()));
+                pb.enable_steady_tick(std::time::Duration::from_millis(80));
 
                 tokio::spawn(async move {
                     let _permit = semaphore.acquire().await.unwrap();
 
-                    pb.set_message("Executing command...");
+                    pb.set_message(format!("{}", "Executing...".blue()));
 
                     let result = execute_on_node(
                         node.clone(),
@@ -136,16 +143,27 @@ impl ParallelExecutor {
                     match &result {
                         Ok(cmd_result) => {
                             if cmd_result.is_success() {
-                                pb.finish_with_message("✓ Success");
+                                pb.finish_with_message(format!(
+                                    "{} {}",
+                                    "●".green(),
+                                    "Success".green()
+                                ));
                             } else {
                                 pb.finish_with_message(format!(
-                                    "✗ Exit code: {}",
-                                    cmd_result.exit_status
+                                    "{} Exit code: {}",
+                                    "●".red(),
+                                    cmd_result.exit_status.to_string().red()
                                 ));
                             }
                         }
                         Err(e) => {
-                            pb.finish_with_message(format!("✗ Error: {e}"));
+                            let error_msg = format!("{e}");
+                            let short_error = if error_msg.len() > 40 {
+                                format!("{}...", &error_msg[..37])
+                            } else {
+                                error_msg
+                            };
+                            pb.finish_with_message(format!("{} {}", "●".red(), short_error.red()));
                         }
                     }
 
@@ -179,9 +197,9 @@ impl ParallelExecutor {
         let multi_progress = MultiProgress::new();
 
         let style = ProgressStyle::default_bar()
-            .template("{prefix:.bold.dim} {spinner:.green} {msg}")
+            .template("{prefix:.bold} {spinner:.cyan} {msg}")
             .unwrap()
-            .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ");
+            .tick_chars("⣾⣽⣻⢿⡿⣟⣯⣷ ");
 
         let tasks: Vec<_> = self
             .nodes
@@ -197,14 +215,19 @@ impl ParallelExecutor {
                 let semaphore = Arc::clone(&semaphore);
                 let pb = multi_progress.add(ProgressBar::new_spinner());
                 pb.set_style(style.clone());
-                pb.set_prefix(format!("[{node}]"));
-                pb.set_message("Connecting...");
-                pb.enable_steady_tick(std::time::Duration::from_millis(100));
+                let node_display = if node.to_string().len() > 20 {
+                    format!("{}...", &node.to_string()[..17])
+                } else {
+                    node.to_string()
+                };
+                pb.set_prefix(format!("[{node_display}]"));
+                pb.set_message(format!("{}", "Connecting...".cyan()));
+                pb.enable_steady_tick(std::time::Duration::from_millis(80));
 
                 tokio::spawn(async move {
                     let _permit = semaphore.acquire().await.unwrap();
 
-                    pb.set_message("Uploading file (SFTP)...");
+                    pb.set_message(format!("{}", "Uploading (SFTP)...".blue()));
 
                     let result = upload_to_node(
                         node.clone(),
@@ -219,10 +242,20 @@ impl ParallelExecutor {
 
                     match &result {
                         Ok(()) => {
-                            pb.finish_with_message("✓ File uploaded");
+                            pb.finish_with_message(format!(
+                                "{} {}",
+                                "●".green(),
+                                "Uploaded".green()
+                            ));
                         }
                         Err(e) => {
-                            pb.finish_with_message(format!("✗ Error: {e}"));
+                            let error_msg = format!("{e}");
+                            let short_error = if error_msg.len() > 40 {
+                                format!("{}...", &error_msg[..37])
+                            } else {
+                                error_msg
+                            };
+                            pb.finish_with_message(format!("{} {}", "●".red(), short_error.red()));
                         }
                     }
 
@@ -256,9 +289,9 @@ impl ParallelExecutor {
         let multi_progress = MultiProgress::new();
 
         let style = ProgressStyle::default_bar()
-            .template("{prefix:.bold.dim} {spinner:.green} {msg}")
+            .template("{prefix:.bold} {spinner:.cyan} {msg}")
             .unwrap()
-            .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ");
+            .tick_chars("⣾⣽⣻⢿⡿⣟⣯⣷ ");
 
         let tasks: Vec<_> = self
             .nodes
@@ -274,14 +307,19 @@ impl ParallelExecutor {
                 let semaphore = Arc::clone(&semaphore);
                 let pb = multi_progress.add(ProgressBar::new_spinner());
                 pb.set_style(style.clone());
-                pb.set_prefix(format!("[{node}]"));
-                pb.set_message("Connecting...");
-                pb.enable_steady_tick(std::time::Duration::from_millis(100));
+                let node_display = if node.to_string().len() > 20 {
+                    format!("{}...", &node.to_string()[..17])
+                } else {
+                    node.to_string()
+                };
+                pb.set_prefix(format!("[{node_display}]"));
+                pb.set_message(format!("{}", "Connecting...".cyan()));
+                pb.enable_steady_tick(std::time::Duration::from_millis(80));
 
                 tokio::spawn(async move {
                     let _permit = semaphore.acquire().await.unwrap();
 
-                    pb.set_message("Downloading file (SFTP)...");
+                    pb.set_message(format!("{}", "Downloading (SFTP)...".blue()));
 
                     // Generate unique filename for each node
                     let filename = if let Some(file_name) = Path::new(&remote_path).file_name() {
@@ -348,9 +386,9 @@ impl ParallelExecutor {
         let multi_progress = MultiProgress::new();
 
         let style = ProgressStyle::default_bar()
-            .template("{prefix:.bold.dim} {spinner:.green} {msg}")
+            .template("{prefix:.bold} {spinner:.cyan} {msg}")
             .unwrap()
-            .tick_chars("⠁⠂⠄⡀⢀⠠⠐⠈ ");
+            .tick_chars("⣾⣽⣻⢿⡿⣟⣯⣷ ");
 
         let mut all_results = Vec::new();
 
@@ -564,28 +602,7 @@ impl ExecutionResult {
     }
 
     pub fn print_output(&self, verbose: bool) {
-        println!("\n{}", "=".repeat(60));
-        println!("Host: {}", self.node);
-        println!("{}", "=".repeat(60));
-
-        match &self.result {
-            Ok(cmd_result) => {
-                if !cmd_result.output.is_empty() {
-                    println!("{}", cmd_result.stdout_string());
-                }
-
-                if !cmd_result.stderr.is_empty() && (verbose || !cmd_result.is_success()) {
-                    eprintln!("STDERR:\n{}", cmd_result.stderr_string());
-                }
-
-                if !cmd_result.is_success() {
-                    eprintln!("Exit code: {}", cmd_result.exit_status);
-                }
-            }
-            Err(e) => {
-                eprintln!("Error: {e}");
-            }
-        }
+        print!("{}", OutputFormatter::format_node_output(self, verbose));
     }
 }
 
@@ -603,10 +620,21 @@ impl UploadResult {
     pub fn print_summary(&self) {
         match &self.result {
             Ok(()) => {
-                println!("✓ {}: File uploaded successfully", self.node);
+                println!(
+                    "{} {}: {}",
+                    "●".green(),
+                    self.node.to_string().bold(),
+                    "File uploaded successfully".green()
+                );
             }
             Err(e) => {
-                println!("✗ {}: Failed to upload file - {}", self.node, e);
+                println!(
+                    "{} {}: {} - {}",
+                    "●".red(),
+                    self.node.to_string().bold(),
+                    "Failed to upload file".red(),
+                    e.to_string().dimmed()
+                );
             }
         }
     }
@@ -626,10 +654,22 @@ impl DownloadResult {
     pub fn print_summary(&self) {
         match &self.result {
             Ok(path) => {
-                println!("✓ {}: File downloaded to {:?}", self.node, path);
+                println!(
+                    "{} {}: {} {:?}",
+                    "●".green(),
+                    self.node.to_string().bold(),
+                    "File downloaded to".green(),
+                    path
+                );
             }
             Err(e) => {
-                println!("✗ {}: Failed to download file - {}", self.node, e);
+                println!(
+                    "{} {}: {} - {}",
+                    "●".red(),
+                    self.node.to_string().bold(),
+                    "Failed to download file".red(),
+                    e.to_string().dimmed()
+                );
             }
         }
     }

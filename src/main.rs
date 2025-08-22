@@ -15,6 +15,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use glob::glob;
+use owo_colors::OwoColorize;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
@@ -26,6 +27,7 @@ use bssh::{
     executor::ParallelExecutor,
     node::Node,
     ssh::{SshClient, known_hosts::StrictHostKeyChecking},
+    ui::OutputFormatter,
 };
 
 struct ExecuteCommandParams<'a> {
@@ -190,21 +192,32 @@ async fn resolve_nodes(cli: &Cli, config: &Config) -> Result<Vec<Node>> {
 
 fn list_clusters(config: &Config) {
     if config.clusters.is_empty() {
-        println!("No clusters configured");
+        println!("{}", "No clusters configured".dimmed());
         return;
     }
 
-    println!("Available clusters:");
+    println!("\n{} {}\n", "▶".cyan(), "Available clusters".bold());
     for (name, cluster) in &config.clusters {
-        println!("  {} ({} nodes)", name, cluster.nodes.len());
+        println!(
+            "  {} {} ({} {})",
+            "●".blue(),
+            name.bold(),
+            cluster.nodes.len().to_string().yellow(),
+            if cluster.nodes.len() == 1 {
+                "node"
+            } else {
+                "nodes"
+            }
+        );
         for node_config in &cluster.nodes {
             let node_str = match node_config {
                 bssh::config::NodeConfig::Simple(s) => s.clone(),
                 bssh::config::NodeConfig::Detailed { host, .. } => host.clone(),
             };
-            println!("    - {node_str}");
+            println!("    {} {}", "•".dimmed(), node_str.dimmed());
         }
     }
+    println!();
 }
 
 async fn ping_nodes(
@@ -215,7 +228,10 @@ async fn ping_nodes(
     use_agent: bool,
     use_password: bool,
 ) -> Result<()> {
-    println!("Pinging {} nodes...\n", nodes.len());
+    println!(
+        "{}",
+        OutputFormatter::format_command_header("ping", nodes.len())
+    );
 
     let key_path = key_path.map(|p| p.to_string_lossy().to_string());
     let executor = ParallelExecutor::new_with_all_options(
@@ -232,29 +248,43 @@ async fn ping_nodes(
     let mut success_count = 0;
     let mut failed_count = 0;
 
+    println!("\n{} {}\n", "▶".cyan(), "Connection Test Results".bold());
+
     for result in &results {
         if result.is_success() {
             success_count += 1;
-            println!("✓ {} - Connected", result.node);
+            println!(
+                "  {} {} - {}",
+                "●".green(),
+                result.node.to_string().bold(),
+                "Connected".green()
+            );
         } else {
             failed_count += 1;
-            println!("✗ {} - Failed", result.node);
+            println!(
+                "  {} {} - {}",
+                "●".red(),
+                result.node.to_string().bold(),
+                "Failed".red()
+            );
             if let Err(e) = &result.result {
-                println!("  Error: {e}");
+                println!("    {} {}", "└".dimmed(), e.to_string().dimmed());
             }
         }
     }
 
-    println!("\nSummary: {success_count} successful, {failed_count} failed");
+    println!(
+        "{}",
+        OutputFormatter::format_summary(nodes.len(), success_count, failed_count)
+    );
 
     Ok(())
 }
 
 async fn execute_command(params: ExecuteCommandParams<'_>) -> Result<()> {
     println!(
-        "Executing command on {} nodes: {}\n",
-        params.nodes.len(),
-        params.command
+        "{}",
+        OutputFormatter::format_command_header(params.command, params.nodes.len())
     );
 
     let key_path = params.key_path.map(|p| p.to_string_lossy().to_string());
@@ -283,7 +313,10 @@ async fn execute_command(params: ExecuteCommandParams<'_>) -> Result<()> {
     let success_count = results.iter().filter(|r| r.is_success()).count();
     let failed_count = results.len() - success_count;
 
-    println!("\nExecution complete: {success_count} successful, {failed_count} failed");
+    println!(
+        "{}",
+        OutputFormatter::format_summary(results.len(), success_count, failed_count)
+    );
 
     if failed_count > 0 {
         std::process::exit(1);
@@ -305,7 +338,12 @@ async fn save_outputs_to_files(
     // Get timestamp for unique file naming
     let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
 
-    println!("\nSaving outputs to directory: {output_dir:?}");
+    println!(
+        "\n{} {} {:?}\n",
+        "▶".cyan(),
+        "Saving outputs to".cyan(),
+        output_dir
+    );
 
     for result in results {
         let node_name = result.node.host.replace([':', '/'], "_");
@@ -332,7 +370,12 @@ async fn save_outputs_to_files(
                     file.write_all(&cmd_result.output).await?;
                     file.flush().await?;
 
-                    println!("  ✓ Saved stdout for {} to {:?}", result.node, stdout_file);
+                    println!(
+                        "  {} Saved stdout for {} to {:?}",
+                        "●".green(),
+                        result.node.to_string().bold(),
+                        stdout_file
+                    );
                 }
 
                 // Save stderr if not empty
@@ -355,7 +398,12 @@ async fn save_outputs_to_files(
                     file.write_all(&cmd_result.stderr).await?;
                     file.flush().await?;
 
-                    println!("  ✓ Saved stderr for {} to {:?}", result.node, stderr_file);
+                    println!(
+                        "  {} Saved stderr for {} to {:?}",
+                        "●".yellow(),
+                        result.node.to_string().bold(),
+                        stderr_file
+                    );
                 }
 
                 // If both stdout and stderr are empty, create a marker file
@@ -396,7 +444,12 @@ async fn save_outputs_to_files(
                 file.write_all(content.as_bytes()).await?;
                 file.flush().await?;
 
-                println!("  ✗ Saved error for {} to {:?}", result.node, error_file);
+                println!(
+                    "  {} Saved error for {} to {:?}",
+                    "●".red(),
+                    result.node.to_string().bold(),
+                    error_file
+                );
             }
         }
     }
@@ -449,7 +502,11 @@ async fn save_outputs_to_files(
     file.write_all(summary.as_bytes()).await?;
     file.flush().await?;
 
-    println!("  ✓ Saved execution summary to {summary_file:?}");
+    println!(
+        "\n  {} {} {summary_file:?}\n",
+        "●".blue(),
+        "Saved execution summary to".blue()
+    );
 
     Ok(())
 }
@@ -471,17 +528,20 @@ async fn upload_file(
 
     // Display upload summary
     println!(
-        "Uploading {} file(s) to {} nodes (SFTP)",
-        files.len(),
-        params.nodes.len()
+        "\n{} {} {} file(s) to {} nodes {}",
+        "▶".cyan(),
+        "Uploading".cyan().bold(),
+        files.len().to_string().yellow(),
+        params.nodes.len().to_string().yellow(),
+        "(SFTP)".dimmed()
     );
     for file in &files {
         let size = std::fs::metadata(file)
             .map(|m| format_bytes(m.len()))
             .unwrap_or_else(|_| "unknown".to_string());
-        println!("  - {file:?} ({size})");
+        println!("  {} {:?} ({})", "•".dimmed(), file, size.yellow());
     }
-    println!("Destination: {destination}\n");
+    println!("{} {}\n", "Destination:".bold(), destination.green());
 
     let key_path_str = params.key_path.map(|p| p.to_string_lossy().to_string());
     let executor = ParallelExecutor::new_with_all_options(
@@ -564,7 +624,14 @@ async fn upload_file(
             destination.to_string()
         };
 
-        println!("\nUploading {file:?} -> {remote_path}");
+        println!(
+            "\n{} {} {:?} {} {}",
+            "▶".cyan(),
+            "Uploading".cyan(),
+            file,
+            "→".dimmed(),
+            remote_path.green()
+        );
         let results = executor.upload_file(file, &remote_path).await?;
 
         // Print results for this file
@@ -579,7 +646,10 @@ async fn upload_file(
         total_failed += failed_count;
     }
 
-    println!("\nTotal upload summary: {total_success} successful, {total_failed} failed");
+    println!(
+        "{}",
+        OutputFormatter::format_summary(total_success + total_failed, total_success, total_failed)
+    );
 
     if total_failed > 0 {
         std::process::exit(1);
@@ -725,8 +795,13 @@ async fn download_file(
     if is_directory {
         // Recursive directory download using SFTP
         println!(
-            "Recursively downloading directory {source} from {} nodes using SFTP",
-            params.nodes.len()
+            "\n{} {} {} {} from {} nodes {}\n",
+            "▶".cyan(),
+            "Recursively downloading directory".cyan().bold(),
+            source.green(),
+            "from".dimmed(),
+            params.nodes.len().to_string().yellow(),
+            "(SFTP)".dimmed()
         );
 
         let mut total_success = 0;
@@ -736,7 +811,14 @@ async fn download_file(
         for node in &params.nodes {
             let node_dir = destination.join(node.to_string());
 
-            println!("\nDownloading directory from {node} to {node_dir:?}");
+            println!(
+                "\n{} {} {} {} {:?}",
+                "▶".cyan(),
+                "Downloading from".cyan(),
+                node.to_string().bold(),
+                "to".dimmed(),
+                node_dir
+            );
 
             // Use the download_dir_from_node function directly
             let result = bssh::executor::download_dir_from_node(
@@ -752,18 +834,32 @@ async fn download_file(
 
             match result {
                 Ok(_) => {
-                    println!("  ✓ Successfully downloaded directory");
+                    println!(
+                        "  {} {}",
+                        "●".green(),
+                        "Successfully downloaded directory".green()
+                    );
                     total_success += 1;
                 }
                 Err(e) => {
-                    println!("  ✗ Failed to download directory: {e}");
+                    println!(
+                        "  {} {} {}",
+                        "●".red(),
+                        "Failed to download directory:".red(),
+                        e.to_string().dimmed()
+                    );
                     total_failed += 1;
                 }
             }
         }
 
         println!(
-            "\nTotal recursive download summary: {total_success} successful, {total_failed} failed"
+            "{}",
+            OutputFormatter::format_summary(
+                total_success + total_failed,
+                total_success,
+                total_failed
+            )
         );
 
         if total_failed > 0 {
@@ -809,11 +905,16 @@ async fn download_file(
             anyhow::bail!("No files found matching pattern: {}", source);
         }
 
-        println!("Found {} file(s) matching pattern:", remote_files.len());
+        println!(
+            "\n{} {} {} file(s) matching pattern:",
+            "▶".cyan(),
+            "Found".bold(),
+            remote_files.len().to_string().yellow()
+        );
         for file in &remote_files {
-            println!("  - {file}");
+            println!("  {} {}", "•".dimmed(), file.cyan());
         }
-        println!("Destination: {destination:?}\n");
+        println!("{} {:?}\n", "Destination:".bold(), destination);
 
         // Download each file
         let results = executor
@@ -833,7 +934,14 @@ async fn download_file(
             }
         }
 
-        println!("\nTotal download summary: {total_success} successful, {total_failed} failed");
+        println!(
+            "{}",
+            OutputFormatter::format_summary(
+                total_success + total_failed,
+                total_success,
+                total_failed
+            )
+        );
 
         if total_failed > 0 {
             std::process::exit(1);
@@ -841,10 +949,13 @@ async fn download_file(
     } else {
         // Single file download
         println!(
-            "Downloading {} from {} nodes to {:?} (SFTP)\n",
-            source,
-            params.nodes.len(),
-            destination
+            "\n{} {} {} from {} nodes to {:?} {}\n",
+            "▶".cyan(),
+            "Downloading".cyan().bold(),
+            source.green(),
+            params.nodes.len().to_string().yellow(),
+            destination,
+            "(SFTP)".dimmed()
         );
 
         let results = executor.download_file(source, destination).await?;
@@ -858,7 +969,14 @@ async fn download_file(
         let success_count = results.iter().filter(|r| r.is_success()).count();
         let failed_count = results.len() - success_count;
 
-        println!("\nDownload complete: {success_count} successful, {failed_count} failed");
+        println!(
+            "{}",
+            OutputFormatter::format_summary(
+                success_count + failed_count,
+                success_count,
+                failed_count
+            )
+        );
 
         if failed_count > 0 {
             std::process::exit(1);
