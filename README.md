@@ -156,14 +156,17 @@ bssh loads configuration from the following sources in priority order:
 
 ### Backend.AI Multi-node Session Support
 
-When running inside a Backend.AI multi-node session, bssh automatically detects cluster configuration from environment variables. No manual configuration needed!
+When running inside a Backend.AI multi-node session, bssh automatically detects cluster configuration from environment variables. No manual configuration or cluster specification needed!
 
 Backend.AI environment variables used:
 - `BACKENDAI_CLUSTER_HOSTS`: Comma-separated list of all node hostnames
-- `BACKENDAI_CLUSTER_HOST`: Current node's hostname
+- `BACKENDAI_CLUSTER_HOST`: Current node's hostname  
 - `BACKENDAI_CLUSTER_ROLE`: Current node's role (main or sub)
 
 Note: Backend.AI multi-node clusters use SSH port 2200 by default, which is automatically configured.
+
+**Automatic Detection:**
+When these environment variables are set, bssh automatically creates a "backendai" cluster and uses it by default when no `-c` or `-H` options are specified.
 
 Example:
 ```bash
@@ -172,6 +175,13 @@ bssh "uptime"  # Automatically executes on all cluster nodes
 
 # Or specify a command explicitly:
 bssh "nvidia-smi" # Check GPU status on all nodes
+
+# Interactive mode also works automatically:
+bssh interactive  # Opens interactive session with all Backend.AI nodes
+
+# You can still override with explicit options if needed:
+bssh -c other-cluster "command"  # Use a different cluster
+bssh -H specific-host "command"   # Use specific host
 ```
 
 ### Manual Configuration File

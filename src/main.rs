@@ -172,6 +172,12 @@ async fn resolve_nodes(cli: &Cli, config: &Config) -> Result<Vec<Node>> {
     } else if let Some(cluster_name) = &cli.cluster {
         // Get nodes from cluster configuration
         nodes = config.resolve_nodes(cluster_name)?;
+    } else {
+        // Check if Backend.AI environment is detected (automatic cluster)
+        if config.clusters.contains_key("backendai") {
+            // Automatically use Backend.AI cluster when no explicit cluster is specified
+            nodes = config.resolve_nodes("backendai")?;
+        }
     }
 
     Ok(nodes)
