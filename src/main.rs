@@ -500,14 +500,16 @@ async fn upload_file(
     for file in &files {
         let remote_path = if is_dir_destination {
             // If destination is a directory or multiple files
-            if params.recursive && base_dir.is_some() {
-                // Preserve directory structure for recursive uploads
-                let relative_path = file.strip_prefix(base_dir.unwrap()).unwrap_or(file);
-                let remote_relative = relative_path.to_string_lossy();
+            if params.recursive {
+                if let Some(base) = base_dir {
+                    // Preserve directory structure for recursive uploads
+                    let relative_path = file.strip_prefix(base).unwrap_or(file);
+                    let remote_relative = relative_path.to_string_lossy();
 
-                // Create remote directory structure if needed
-                if let Some(parent) = relative_path.parent() {
-                    if !parent.as_os_str().is_empty() {
+                    // Create remote directory structure if needed
+                    if let Some(parent) = relative_path.parent()
+                        && !parent.as_os_str().is_empty()
+                    {
                         let remote_dir = if destination.ends_with('/') {
                             format!("{destination}{}", parent.display())
                         } else {
@@ -517,12 +519,23 @@ async fn upload_file(
                         let mkdir_cmd = format!("mkdir -p '{remote_dir}'");
                         let _ = executor.execute(&mkdir_cmd).await;
                     }
-                }
 
-                if destination.ends_with('/') {
-                    format!("{destination}{remote_relative}")
+                    if destination.ends_with('/') {
+                        format!("{destination}{remote_relative}")
+                    } else {
+                        format!("{destination}/{remote_relative}")
+                    }
                 } else {
-                    format!("{destination}/{remote_relative}")
+                    // No base dir, just use filename
+                    let filename = file
+                        .file_name()
+                        .ok_or_else(|| anyhow::anyhow!("Failed to get filename from {:?}", file))?
+                        .to_string_lossy();
+                    if destination.ends_with('/') {
+                        format!("{destination}{filename}")
+                    } else {
+                        format!("{destination}/{filename}")
+                    }
                 }
             } else {
                 // Non-recursive: just append filename
