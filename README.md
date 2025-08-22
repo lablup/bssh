@@ -18,6 +18,7 @@ A high-performance parallel SSH command execution tool for cluster management, b
 - **Host Key Verification**: Secure host key checking with known_hosts support
 - **Cross-Platform**: Works on Linux and macOS
 - **Output Management**: Save command outputs to files per node with detailed logging
+- **Interactive Mode**: Interactive shell sessions with single-node or multiplexed multi-node support
 
 ## Installation
 
@@ -251,6 +252,33 @@ bssh -c webservers "sudo systemctl restart nginx"
 ### Collect logs
 ```bash
 bssh -c production --output-dir ./logs "tail -n 100 /var/log/syslog"
+```
+
+### Interactive Mode
+
+Start an interactive shell session on cluster nodes:
+
+```bash
+# Interactive session on all nodes (multiplex mode - default)
+bssh -c production interactive
+
+# Interactive session on a single node
+bssh -c production interactive --single-node
+
+# Custom prompt format
+bssh -H server1,server2 interactive --prompt-format "{user}@{host}> "
+
+# Set initial working directory
+bssh -c staging interactive --work-dir /var/www
+```
+
+In multiplex mode, commands are sent to all connected nodes simultaneously:
+```
+[● ● ●] bssh> uptime
+[node1]  10:23:45 up 5 days, 2:14, 1 user, load average: 0.15, 0.12, 0.09
+[node2]  10:23:45 up 3 days, 4:22, 2 users, load average: 0.23, 0.19, 0.17
+[node3]  10:23:45 up 7 days, 1:45, 1 user, load average: 0.08, 0.11, 0.10
+[● ● ●] bssh> exit
 ```
 
 ## Output File Management

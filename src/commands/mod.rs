@@ -14,6 +14,7 @@
 
 pub mod download;
 pub mod exec;
+pub mod interactive;
 pub mod list;
 pub mod ping;
 pub mod upload;

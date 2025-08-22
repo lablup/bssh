@@ -22,7 +22,7 @@ use tokio::fs;
 
 use crate::node::Node;
 
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct Config {
     #[serde(default)]
     pub defaults: Defaults,
@@ -31,7 +31,7 @@ pub struct Config {
     pub clusters: HashMap<String, Cluster>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct Defaults {
     pub user: Option<String>,
     pub port: Option<u16>,
@@ -39,7 +39,7 @@ pub struct Defaults {
     pub parallel: Option<usize>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Cluster {
     pub nodes: Vec<NodeConfig>,
 
@@ -47,14 +47,14 @@ pub struct Cluster {
     pub defaults: ClusterDefaults,
 }
 
-#[derive(Debug, Serialize, Deserialize, Default)]
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct ClusterDefaults {
     pub user: Option<String>,
     pub port: Option<u16>,
     pub ssh_key: Option<String>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum NodeConfig {
     Simple(String),

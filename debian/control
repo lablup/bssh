@@ -4,8 +4,8 @@ Priority: optional
 Maintainer: Jeongkyu Shin <inureyes@gmail.com>
 Build-Depends: debhelper-compat (= 13),
                build-essential,
-               rustc (>= 1.88),
-               cargo (>= 0.88),
+               rustc (>= 1.75),
+               cargo (>= 0.75),
                pkg-config,
                cmake
 Standards-Version: 4.6.2
