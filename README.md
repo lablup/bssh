@@ -7,7 +7,7 @@ A high-performance parallel SSH command execution tool for cluster management, b
 - **Parallel Execution**: Execute commands across multiple nodes simultaneously
 - **Cluster Management**: Define and manage node clusters via configuration files
 - **Progress Tracking**: Real-time progress indicators for each node
-- **Flexible Authentication**: Support for SSH keys and SSH agent
+- **Flexible Authentication**: Support for SSH keys, SSH agent, password authentication, and encrypted key passphrases
 - **Host Key Verification**: Secure host key checking with known_hosts support
 - **Cross-Platform**: Works on Linux and macOS
 - **Output Management**: Save command outputs to files per node with detailed logging
@@ -34,6 +34,12 @@ bssh -c staging -i ~/.ssh/custom_key "systemctl status nginx"
 
 # Use SSH agent for authentication
 bssh --use-agent -c production "systemctl status nginx"
+
+# Use password authentication (will prompt for password)
+bssh --password -H "user@host.com" "uptime"
+
+# Use encrypted SSH key (will prompt for passphrase)
+bssh -i ~/.ssh/encrypted_key -c production "df -h"
 
 # Limit parallel connections
 bssh -c production --parallel 5 "apt update"

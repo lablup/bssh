@@ -58,6 +58,13 @@ pub struct Cli {
     pub use_agent: bool,
 
     #[arg(
+        short = 'P',
+        long,
+        help = "Use password authentication (will prompt for password)"
+    )]
+    pub password: bool,
+
+    #[arg(
         short = 'p',
         long,
         default_value = "10",
