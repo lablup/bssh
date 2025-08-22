@@ -34,7 +34,6 @@ jobs:
             artifact_name: bssh
             asset_name: bssh-linux-x86_64
             archive_ext: ".tar.gz"
-            protoc_platform: linux-x86_64
 
           # Linux x86_64 (musl - static)
           - target: x86_64-unknown-linux-musl
@@ -42,7 +41,6 @@ jobs:
             artifact_name: bssh
             asset_name: bssh-linux-x86_64-musl
             archive_ext: ".tar.gz"
-            protoc_platform: linux-x86_64
 
           # Linux ARM64 (glibc)
           - target: aarch64-unknown-linux-gnu
@@ -50,7 +48,6 @@ jobs:
             artifact_name: bssh
             asset_name: bssh-linux-aarch64
             archive_ext: ".tar.gz"
-            protoc_platform: linux-aarch_64
 
           # Linux ARM64 (musl - static)
           - target: aarch64-unknown-linux-musl
@@ -58,7 +55,6 @@ jobs:
             artifact_name: bssh
             asset_name: bssh-linux-aarch64-musl
             archive_ext: ".tar.gz"
-            protoc_platform: linux-aarch_64
 
           # macOS ARM64
           - target: aarch64-apple-darwin
@@ -66,7 +62,6 @@ jobs:
             artifact_name: bssh
             asset_name: bssh-macos-aarch64
             archive_ext: ".zip"
-            protoc_platform: osx-aarch_64
 
     env:
       BIN_NAME: bssh
@@ -102,8 +97,8 @@ jobs:
         run: rustup target add ${{ matrix.target }}
 
       # 5) Install musl tools only for aarch64 musl builds
-      - name: Install ARM64 musl tools (Linux aarch64 musl only)
-        if: matrix.target == 'aarch64-unknown-linux-musl'
+      - name: Install musl tools (Linux musl only)
+        if: contains(matrix.target, 'musl')
         run: |
           sudo apt update
           sudo apt install -y musl-tools

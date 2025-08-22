@@ -14,6 +14,7 @@
 
 use anyhow::Result;
 use clap::Parser;
+use std::time::Duration;
 
 use bssh::{
     cli::{Cli, Commands},
@@ -30,6 +31,32 @@ use bssh::{
     ssh::known_hosts::StrictHostKeyChecking,
     utils::init_logging,
 };
+
+/// Format a Duration into a human-readable string
+fn format_duration(duration: Duration) -> String {
+    let total_seconds = duration.as_secs_f64();
+
+    if total_seconds < 1.0 {
+        // Less than 1 second: show in milliseconds
+        format!("{:.1} ms", duration.as_secs_f64() * 1000.0)
+    } else if total_seconds < 60.0 {
+        // Less than 1 minute: show in seconds with 2 decimal places
+        format!("{total_seconds:.2} s")
+    } else {
+        // 1 minute or more: show in minutes and seconds
+        let minutes = duration.as_secs() / 60;
+        let seconds = duration.as_secs() % 60;
+        let millis = duration.subsec_millis();
+
+        if seconds == 0 {
+            format!("{minutes}m")
+        } else if millis > 0 {
+            format!("{minutes}m {seconds}.{millis:03}s")
+        } else {
+            format!("{minutes}m {seconds}s")
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -134,7 +161,7 @@ async fn main() -> Result<()> {
             };
             let result = interactive_cmd.execute().await?;
             println!("\nInteractive session ended.");
-            println!("Duration: {:?}", result.duration);
+            println!("Duration: {}", format_duration(result.duration));
             println!("Commands executed: {}", result.commands_executed);
             println!("Nodes connected: {}", result.nodes_connected);
             Ok(())
