@@ -433,15 +433,28 @@ async fn upload_to_node(
 
     let key_path = key_path.map(Path::new);
 
-    client
-        .upload_file(
-            local_path,
-            remote_path,
-            key_path,
-            Some(strict_mode),
-            use_agent,
-        )
-        .await
+    // Check if the local path is a directory
+    if local_path.is_dir() {
+        client
+            .upload_dir(
+                local_path,
+                remote_path,
+                key_path,
+                Some(strict_mode),
+                use_agent,
+            )
+            .await
+    } else {
+        client
+            .upload_file(
+                local_path,
+                remote_path,
+                key_path,
+                Some(strict_mode),
+                use_agent,
+            )
+            .await
+    }
 }
 
 async fn download_from_node(
@@ -456,8 +469,35 @@ async fn download_from_node(
 
     let key_path = key_path.map(Path::new);
 
+    // This function handles both files and directories
+    // The caller should check if it's a directory and use the appropriate method
     client
         .download_file(
+            remote_path,
+            local_path,
+            key_path,
+            Some(strict_mode),
+            use_agent,
+        )
+        .await?;
+
+    Ok(local_path.to_path_buf())
+}
+
+pub async fn download_dir_from_node(
+    node: Node,
+    remote_path: &str,
+    local_path: &Path,
+    key_path: Option<&str>,
+    strict_mode: StrictHostKeyChecking,
+    use_agent: bool,
+) -> Result<std::path::PathBuf> {
+    let mut client = SshClient::new(node.host.clone(), node.port, node.username.clone());
+
+    let key_path = key_path.map(Path::new);
+
+    client
+        .download_dir(
             remote_path,
             local_path,
             key_path,
