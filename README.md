@@ -300,6 +300,8 @@ bssh -c webservers --output-dir ./debug "systemctl status nginx"
 
 ## Development
 
+Read [ARCHITECTURE](ARCHITECTURE.md) documentation for more information.
+
 ### Building
 ```bash
 cargo build
@@ -314,6 +316,16 @@ cargo test
 ```bash
 cargo run -- -H localhost "echo hello"
 ```
+
+## SSH Implementation
+
+This project's SSH functionality is built using:
+
+- **[russh](https://github.com/Eugeny/russh)**: A pure Rust implementation of the SSH protocol, providing a modern and safe foundation for SSH communications without relying on C libraries. This is the core SSH library used directly as a dependency.
+  
+- **Implementation patterns from [async-ssh2-tokio](https://github.com/Miyoshi-Ryota/async-ssh2-tokio)**: While not used as a direct dependency, portions of the implementation code and architectural patterns from async-ssh2-tokio have been adapted and integrated into this project to provide high-level async/await APIs that work seamlessly with the Tokio runtime.
+
+This combination enables bssh to achieve high performance parallel SSH operations while maintaining memory safety and avoiding common security vulnerabilities associated with traditional C-based SSH implementations.
 
 ## License
 
