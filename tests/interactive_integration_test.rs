@@ -15,7 +15,7 @@
 //! Integration tests for interactive mode
 
 use bssh::commands::interactive::InteractiveCommand;
-use bssh::config::Config;
+use bssh::config::{Config, InteractiveConfig};
 use bssh::node::Node;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -39,6 +39,8 @@ fn test_interactive_command_builder() {
         work_dir: Some("/tmp".to_string()),
         nodes,
         config: Config::default(),
+        interactive_config: InteractiveConfig::default(),
+        cluster_name: None,
     };
 
     assert!(!cmd.single_node);
@@ -62,6 +64,8 @@ fn test_history_file_handling() {
         work_dir: None,
         nodes: vec![],
         config: Config::default(),
+        interactive_config: InteractiveConfig::default(),
+        cluster_name: None,
     };
 
     assert_eq!(cmd.history_file, history_path);
@@ -148,6 +152,8 @@ async fn test_interactive_with_unreachable_nodes() {
         work_dir: None,
         nodes,
         config: Config::default(),
+        interactive_config: InteractiveConfig::default(),
+        cluster_name: None,
     };
 
     // This should fail to connect
@@ -171,6 +177,8 @@ async fn test_interactive_with_no_nodes() {
         work_dir: None,
         nodes: vec![],
         config: Config::default(),
+        interactive_config: InteractiveConfig::default(),
+        cluster_name: None,
     };
 
     let result = cmd.execute().await;
@@ -204,6 +212,8 @@ fn test_mode_configuration() {
         work_dir: None,
         nodes: nodes.clone(),
         config: Config::default(),
+        interactive_config: InteractiveConfig::default(),
+        cluster_name: None,
     };
 
     assert!(single_cmd.single_node);
@@ -218,6 +228,8 @@ fn test_mode_configuration() {
         work_dir: None,
         nodes,
         config: Config::default(),
+        interactive_config: InteractiveConfig::default(),
+        cluster_name: None,
     };
 
     assert!(!multi_cmd.single_node);
@@ -235,6 +247,8 @@ fn test_working_directory_config() {
         work_dir: Some("/var/www".to_string()),
         nodes: vec![],
         config: Config::default(),
+        interactive_config: InteractiveConfig::default(),
+        cluster_name: None,
     };
 
     assert_eq!(cmd_with_dir.work_dir, Some("/var/www".to_string()));
@@ -247,6 +261,8 @@ fn test_working_directory_config() {
         work_dir: None,
         nodes: vec![],
         config: Config::default(),
+        interactive_config: InteractiveConfig::default(),
+        cluster_name: None,
     };
 
     assert_eq!(cmd_without_dir.work_dir, None);
@@ -271,6 +287,8 @@ fn test_prompt_format() {
             work_dir: None,
             nodes: vec![],
             config: Config::default(),
+            interactive_config: InteractiveConfig::default(),
+            cluster_name: None,
         };
 
         assert_eq!(cmd.prompt_format, format);

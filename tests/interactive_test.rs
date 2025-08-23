@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use bssh::commands::interactive::InteractiveCommand;
-use bssh::config::Config;
+use bssh::config::{Config, InteractiveConfig};
 use bssh::node::Node;
 use std::path::PathBuf;
 
@@ -27,6 +27,8 @@ async fn test_interactive_command_creation() {
         work_dir: None,
         nodes: vec![],
         config: Config::default(),
+        interactive_config: InteractiveConfig::default(),
+        cluster_name: None,
     };
 
     assert!(!cmd.single_node);
@@ -44,6 +46,8 @@ async fn test_interactive_with_no_nodes() {
         work_dir: None,
         nodes: vec![],
         config: Config::default(),
+        interactive_config: InteractiveConfig::default(),
+        cluster_name: None,
     };
 
     let result = cmd.execute().await;

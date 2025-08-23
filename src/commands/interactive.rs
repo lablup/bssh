@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use anyhow::{Context, Result};
+use chrono;
 use crossterm::terminal::{self};
 use owo_colors::OwoColorize;
 use russh::Channel;
@@ -28,7 +29,7 @@ use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, timeout};
 
-use crate::config::Config;
+use crate::config::{Config, InteractiveConfig};
 use crate::node::Node;
 use crate::ssh::{
     known_hosts::{StrictHostKeyChecking, get_check_method},
@@ -49,6 +50,8 @@ pub struct InteractiveCommand {
     pub work_dir: Option<String>,
     pub nodes: Vec<Node>,
     pub config: Config,
+    pub interactive_config: InteractiveConfig,
+    pub cluster_name: Option<String>,
 }
 
 /// Result of an interactive session
@@ -388,13 +391,18 @@ impl InteractiveCommand {
         Ok(commands_executed)
     }
 
-    /// Parse and handle special commands (starting with !)
-    fn handle_special_command(command: &str, sessions: &mut [NodeSession]) -> Result<bool> {
-        if !command.starts_with('!') {
+    /// Parse and handle special commands (starting with configured prefix)
+    fn handle_special_command(
+        &self,
+        command: &str,
+        sessions: &mut [NodeSession],
+        prefix: &str,
+    ) -> Result<bool> {
+        if !command.starts_with(prefix) {
             return Ok(false); // Not a special command
         }
 
-        let cmd = command.trim_start_matches('!').to_lowercase();
+        let cmd = command.trim_start_matches(prefix).to_lowercase();
 
         match cmd.as_str() {
             "all" => {
@@ -439,23 +447,35 @@ impl InteractiveCommand {
                 Ok(true)
             }
             "help" | "?" => {
+                let broadcast_prefix = self
+                    .interactive_config
+                    .broadcast_prefix
+                    .as_deref()
+                    .unwrap_or("!broadcast ");
                 println!("\nSpecial commands:");
-                println!("  !all          - Activate all nodes");
-                println!("  !broadcast <cmd> - Execute command on all nodes (temporarily)");
-                println!("  !node<N>      - Switch to node N (e.g., !node1)");
-                println!("  !n<N>         - Shorthand for !node<N>");
-                println!("  !list, !nodes - List all nodes with status");
-                println!("  !status       - Show active nodes");
-                println!("  !help         - Show this help");
+                println!("  {prefix}all          - Activate all nodes");
+                println!("  {broadcast_prefix}<cmd> - Execute command on all nodes (temporarily)");
+                println!("  {prefix}node<N>      - Switch to node N (e.g., {prefix}node1)");
+                println!("  {prefix}n<N>         - Shorthand for {prefix}node<N>");
+                println!("  {prefix}list, {prefix}nodes - List all nodes with status");
+                println!("  {prefix}status       - Show active nodes");
+                println!("  {prefix}help         - Show this help");
                 println!("  exit          - Exit interactive mode");
                 println!();
                 Ok(true)
             }
             _ => {
                 // Check for broadcast command
-                if let Some(rest) = command.strip_prefix("!broadcast ") {
+                let broadcast_prefix = self
+                    .interactive_config
+                    .broadcast_prefix
+                    .as_deref()
+                    .unwrap_or("!broadcast ");
+                let broadcast_cmd = format!("{prefix}broadcast ");
+
+                if let Some(rest) = command.strip_prefix(&broadcast_cmd) {
                     if rest.trim().is_empty() {
-                        println!("Usage: !broadcast <command>");
+                        println!("Usage: {broadcast_prefix}<command>");
                         return Ok(true);
                     }
                     // Return false with the broadcast command to signal it should be executed
@@ -467,7 +487,9 @@ impl InteractiveCommand {
                 } else if let Some(node_num) = cmd.strip_prefix('n') {
                     Self::switch_to_node(node_num, sessions)
                 } else {
-                    println!("Unknown command: !{cmd}. Type !help for available commands.");
+                    println!(
+                        "Unknown command: {prefix}{cmd}. Type {prefix}help for available commands."
+                    );
                     Ok(true)
                 }
             }
@@ -619,11 +641,16 @@ impl InteractiveCommand {
                     }
 
                     // Check for broadcast command specifically
-                    let is_broadcast = line.trim().starts_with("!broadcast ");
+                    let broadcast_prefix = self
+                        .interactive_config
+                        .broadcast_prefix
+                        .as_deref()
+                        .unwrap_or("!broadcast ");
+                    let is_broadcast = line.trim().starts_with(broadcast_prefix);
                     let command_to_execute = if is_broadcast {
-                        // Extract the actual command from !broadcast <command>
+                        // Extract the actual command from the broadcast prefix
                         line.trim()
-                            .strip_prefix("!broadcast ")
+                            .strip_prefix(broadcast_prefix)
                             .unwrap_or("")
                             .to_string()
                     } else {
@@ -631,16 +658,21 @@ impl InteractiveCommand {
                     };
 
                     // Check for special commands first (non-broadcast)
+                    let special_prefix = self
+                        .interactive_config
+                        .node_switch_prefix
+                        .as_deref()
+                        .unwrap_or("!");
                     if !is_broadcast
-                        && line.trim().starts_with('!')
-                        && Self::handle_special_command(&line, &mut sessions)?
+                        && line.trim().starts_with(special_prefix)
+                        && self.handle_special_command(&line, &mut sessions, special_prefix)?
                     {
                         continue; // Command was handled, continue to next iteration
                     }
 
                     // Skip if broadcast command is empty
                     if is_broadcast && command_to_execute.trim().is_empty() {
-                        println!("Usage: !broadcast <command>");
+                        println!("Usage: {broadcast_prefix}<command>");
                         continue;
                     }
 
@@ -702,14 +734,31 @@ impl InteractiveCommand {
                     for session in &mut sessions {
                         if session.is_connected && session.is_active {
                             while let Ok(Some(output)) = session.read_output().await {
-                                // Print output with node prefix
+                                // Print output with node prefix and optional timestamp
                                 for line in output.lines() {
-                                    println!(
-                                        "[{}] {}",
-                                        format!("{}@{}", session.node.username, session.node.host)
+                                    if self.interactive_config.show_timestamps {
+                                        let timestamp = chrono::Local::now().format("%H:%M:%S");
+                                        println!(
+                                            "[{} {}] {}",
+                                            timestamp.to_string().dimmed(),
+                                            format!(
+                                                "{}@{}",
+                                                session.node.username, session.node.host
+                                            )
                                             .cyan(),
-                                        line
-                                    );
+                                            line
+                                        );
+                                    } else {
+                                        println!(
+                                            "[{}] {}",
+                                            format!(
+                                                "{}@{}",
+                                                session.node.username, session.node.host
+                                            )
+                                            .cyan(),
+                                            line
+                                        );
+                                    }
                                 }
                             }
                         }
@@ -782,6 +831,8 @@ mod tests {
             work_dir: None,
             nodes: vec![],
             config: Config::default(),
+            interactive_config: InteractiveConfig::default(),
+            cluster_name: None,
         };
 
         let path = PathBuf::from("~/test/file.txt");
@@ -804,6 +855,8 @@ mod tests {
             work_dir: None,
             nodes: vec![],
             config: Config::default(),
+            interactive_config: InteractiveConfig::default(),
+            cluster_name: None,
         };
 
         let node = Node::new(String::from("example.com"), 22, String::from("alice"));

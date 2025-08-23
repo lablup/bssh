@@ -138,36 +138,41 @@ pub enum Commands {
         recursive: bool,
     },
 
-    #[command(about = "Start interactive shell session")]
+    #[command(
+        about = "Start interactive shell session\n\nInteractive mode settings can be configured globally or per-cluster in the configuration file.\nCLI arguments override configuration file settings."
+    )]
     Interactive {
         #[arg(
             long,
-            help = "Connect to a single node instead of multiplexing to all nodes"
+            help = "Connect to a single node instead of multiplexing to all nodes (overrides config)"
         )]
         single_node: bool,
 
         #[arg(
             long,
             default_value = "true",
-            help = "Multiplex input across all nodes (default behavior)"
+            help = "Multiplex input across all nodes (default behavior, overrides config)"
         )]
         multiplex: bool,
 
         #[arg(
             long,
             default_value = "[{node}:{user}@{host}:{pwd}]$ ",
-            help = "Custom prompt format"
+            help = "Custom prompt format with variables: {node}, {user}, {host}, {pwd} (overrides config)"
         )]
         prompt_format: String,
 
         #[arg(
             long,
             default_value = "~/.bssh_history",
-            help = "History file path for command history"
+            help = "History file path for command history (overrides config)"
         )]
         history_file: PathBuf,
 
-        #[arg(long, help = "Initial working directory on remote hosts")]
+        #[arg(
+            long,
+            help = "Initial working directory on remote hosts (overrides config)"
+        )]
         work_dir: Option<String>,
     },
 }

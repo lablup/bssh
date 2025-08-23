@@ -198,6 +198,24 @@ defaults:
   ssh_key: ~/.ssh/id_rsa
   parallel: 10
 
+# Global interactive mode settings (optional)
+interactive:
+  default_mode: multiplex        # single_node or multiplex
+  prompt_format: "[{node}] $ "   # Variables: {node}, {user}, {host}, {pwd}
+  history_file: ~/.bssh_history
+  show_timestamps: false         # Show timestamps in output
+  work_dir: /home/admin          # Initial working directory
+  broadcast_prefix: "!all "      # Prefix for broadcasting to all nodes
+  node_switch_prefix: "!"        # Prefix for special commands
+  colors:                        # Node-specific colors in output
+    node1: red
+    node2: blue
+    node3: green
+  keybindings:
+    switch_node: "Ctrl+N"
+    broadcast_toggle: "Ctrl+B"
+    quit: "Ctrl+Q"
+
 clusters:
   production:
     nodes:
@@ -205,6 +223,11 @@ clusters:
       - web2.example.com
       - user@web3.example.com:2222
     ssh_key: ~/.ssh/prod_key
+    # Cluster-specific interactive settings (overrides global)
+    interactive:
+      default_mode: single_node
+      prompt_format: "prod> "
+      work_dir: /var/www
   
   staging:
     nodes:
@@ -282,6 +305,38 @@ bssh -H server1,server2 interactive --prompt-format "{user}@{host}> "
 bssh -c staging interactive --work-dir /var/www
 ```
 
+#### Interactive Mode Configuration
+
+Interactive mode can be configured in your `config.yaml` file with both global and per-cluster settings. CLI arguments always override configuration file settings.
+
+**Global Configuration** (applies to all clusters unless overridden):
+```yaml
+interactive:
+  default_mode: multiplex        # or single_node
+  prompt_format: "[{node}] $ "
+  history_file: ~/.bssh_history
+  show_timestamps: true          # Add timestamps to output
+  work_dir: /home/user
+  broadcast_prefix: "!all "      # Custom prefix for broadcast commands
+  node_switch_prefix: "!"        # Custom prefix for special commands
+```
+
+**Per-Cluster Configuration** (overrides global settings):
+```yaml
+clusters:
+  production:
+    interactive:
+      default_mode: single_node  # Different mode for this cluster
+      prompt_format: "PROD> "
+      work_dir: /var/app
+```
+
+**Configuration Priority**:
+1. CLI arguments (highest priority)
+2. Cluster-specific configuration
+3. Global configuration
+4. Built-in defaults
+
 In multiplex mode, commands are sent to active nodes with visual indicators:
 
 ```
@@ -294,7 +349,7 @@ In multiplex mode, commands are sent to active nodes with visual indicators:
 
 #### Interactive Mode Special Commands
 
-Interactive mode supports special commands (starting with `!`) for node management:
+Interactive mode supports special commands for node management. By default, these commands start with `!` but the prefix can be customized in the configuration file.
 
 | Command | Description |
 |---------|-------------|
@@ -305,6 +360,13 @@ Interactive mode supports special commands (starting with `!`) for node manageme
 | `!status` | Show currently active nodes |
 | `!help` or `!?` | Show help for special commands |
 | `exit` | Exit interactive mode |
+
+**Note**: The `!` prefix and `!broadcast` command can be customized via configuration:
+```yaml
+interactive:
+  node_switch_prefix: "@"        # Use @ instead of !
+  broadcast_prefix: "@all "      # Use @all instead of !broadcast
+```
 
 #### Node Indicators in Prompt
 

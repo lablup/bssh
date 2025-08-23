@@ -15,7 +15,7 @@
 //! Example demonstrating interactive mode usage with bssh
 
 use bssh::commands::interactive::InteractiveCommand;
-use bssh::config::Config;
+use bssh::config::{Config, InteractiveConfig};
 use bssh::node::Node;
 use std::path::PathBuf;
 
@@ -46,6 +46,8 @@ async fn main() -> anyhow::Result<()> {
         work_dir: None,
         nodes,
         config: Config::default(),
+        interactive_config: InteractiveConfig::default(),
+        cluster_name: None,
     };
 
     println!("Starting interactive session...");
