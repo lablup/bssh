@@ -81,7 +81,6 @@ pub enum InteractiveMode {
     Multiplex,
 }
 
-
 fn default_interactive_mode() -> InteractiveMode {
     InteractiveMode::SingleNode
 }
