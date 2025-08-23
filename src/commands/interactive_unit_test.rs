@@ -27,6 +27,8 @@ mod tests {
             work_dir: None,
             nodes: vec![],
             config: Config::default(),
+            interactive_config: InteractiveConfig::default(),
+            cluster_name: None,
         };
 
         let path = PathBuf::from("~/test/file.txt");
@@ -68,6 +70,8 @@ mod tests {
             work_dir: None,
             nodes: vec![],
             config: Config::default(),
+            interactive_config: InteractiveConfig::default(),
+            cluster_name: None,
         };
 
         let node = Node::new(
@@ -90,6 +94,8 @@ mod tests {
             work_dir: None,
             nodes: vec![],
             config: Config::default(),
+            interactive_config: InteractiveConfig::default(),
+            cluster_name: None,
         };
 
         let node = Node::new(
@@ -113,6 +119,8 @@ mod tests {
             work_dir: None,
             nodes: vec![],
             config: Config::default(),
+            interactive_config: InteractiveConfig::default(),
+            cluster_name: None,
         };
 
         let node = Node::new(
@@ -157,6 +165,8 @@ mod tests {
                 Node::new(String::from("node2"), 22, String::from("user")),
             ],
             config: Config::default(),
+            interactive_config: InteractiveConfig::default(),
+            cluster_name: None,
         };
 
         assert!(single_node_cmd.single_node);
@@ -173,6 +183,8 @@ mod tests {
                 Node::new(String::from("node2"), 22, String::from("user")),
             ],
             config: Config::default(),
+            interactive_config: InteractiveConfig::default(),
+            cluster_name: None,
         };
 
         assert!(!multiplex_cmd.single_node);

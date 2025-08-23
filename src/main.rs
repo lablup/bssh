@@ -14,6 +14,7 @@
 
 use anyhow::Result;
 use clap::Parser;
+use std::path::PathBuf;
 use std::time::Duration;
 
 use bssh::{
@@ -26,7 +27,7 @@ use bssh::{
         ping::ping_nodes,
         upload::{FileTransferParams, upload_file},
     },
-    config::Config,
+    config::{Config, InteractiveMode},
     node::Node,
     ssh::known_hosts::StrictHostKeyChecking,
     utils::init_logging,
@@ -150,14 +151,57 @@ async fn main() -> Result<()> {
             history_file,
             work_dir,
         }) => {
+            // Get interactive config from configuration file (with cluster-specific overrides)
+            let cluster_name = cli.cluster.as_deref();
+            let interactive_config = config.get_interactive_config(cluster_name);
+
+            // Merge CLI arguments with config settings (CLI takes precedence)
+            let merged_mode = if single_node {
+                // CLI explicitly set single_node
+                (true, false)
+            } else if multiplex {
+                // CLI didn't set single_node, use multiplex
+                (false, true)
+            } else {
+                // Use config defaults
+                match interactive_config.default_mode {
+                    InteractiveMode::SingleNode => (true, false),
+                    InteractiveMode::Multiplex => (false, true),
+                }
+            };
+
+            // Use CLI values if provided, otherwise use config values
+            let merged_prompt = if prompt_format != "[{node}:{user}@{host}:{pwd}]$ " {
+                // CLI provided a custom prompt
+                prompt_format
+            } else {
+                // Use config prompt
+                interactive_config.prompt_format.clone()
+            };
+
+            let merged_history = if history_file.to_string_lossy() != "~/.bssh_history" {
+                // CLI provided a custom history file
+                history_file
+            } else if let Some(config_history) = interactive_config.history_file.clone() {
+                // Use config history file
+                PathBuf::from(config_history)
+            } else {
+                // Use default
+                history_file
+            };
+
+            let merged_work_dir = work_dir.or(interactive_config.work_dir.clone());
+
             let interactive_cmd = InteractiveCommand {
-                single_node,
-                multiplex,
-                prompt_format,
-                history_file,
-                work_dir,
+                single_node: merged_mode.0,
+                multiplex: merged_mode.1,
+                prompt_format: merged_prompt,
+                history_file: merged_history,
+                work_dir: merged_work_dir,
                 nodes,
                 config: config.clone(),
+                interactive_config,
+                cluster_name: cluster_name.map(String::from),
             };
             let result = interactive_cmd.execute().await?;
             println!("\nInteractive session ended.");

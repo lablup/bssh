@@ -29,6 +29,9 @@ pub struct Config {
 
     #[serde(default)]
     pub clusters: HashMap<String, Cluster>,
+
+    #[serde(default)]
+    pub interactive: InteractiveConfig,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
@@ -39,12 +42,90 @@ pub struct Defaults {
     pub parallel: Option<usize>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+pub struct InteractiveConfig {
+    #[serde(default = "default_interactive_mode")]
+    pub default_mode: InteractiveMode,
+
+    #[serde(default = "default_prompt_format")]
+    pub prompt_format: String,
+
+    #[serde(default)]
+    pub history_file: Option<String>,
+
+    #[serde(default)]
+    pub colors: HashMap<String, String>,
+
+    #[serde(default)]
+    pub keybindings: KeyBindings,
+
+    #[serde(default)]
+    pub broadcast_prefix: Option<String>,
+
+    #[serde(default)]
+    pub node_switch_prefix: Option<String>,
+
+    #[serde(default)]
+    pub show_timestamps: bool,
+
+    #[serde(default)]
+    pub work_dir: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "snake_case")]
+#[derive(Default)]
+pub enum InteractiveMode {
+    #[default]
+    SingleNode,
+    Multiplex,
+}
+
+
+fn default_interactive_mode() -> InteractiveMode {
+    InteractiveMode::SingleNode
+}
+
+fn default_prompt_format() -> String {
+    "[{node}:{user}@{host}:{pwd}]$ ".to_string()
+}
+
+#[derive(Debug, Serialize, Deserialize, Default, Clone)]
+pub struct KeyBindings {
+    #[serde(default = "default_switch_node")]
+    pub switch_node: String,
+
+    #[serde(default = "default_broadcast_toggle")]
+    pub broadcast_toggle: String,
+
+    #[serde(default = "default_quit")]
+    pub quit: String,
+
+    #[serde(default)]
+    pub clear_screen: Option<String>,
+}
+
+fn default_switch_node() -> String {
+    "Ctrl+N".to_string()
+}
+
+fn default_broadcast_toggle() -> String {
+    "Ctrl+B".to_string()
+}
+
+fn default_quit() -> String {
+    "Ctrl+Q".to_string()
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Cluster {
     pub nodes: Vec<NodeConfig>,
 
     #[serde(flatten)]
     pub defaults: ClusterDefaults,
+
+    #[serde(default)]
+    pub interactive: Option<InteractiveConfig>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
@@ -144,6 +225,7 @@ impl Config {
         Some(Cluster {
             nodes: filtered_nodes,
             defaults: ClusterDefaults::default(),
+            interactive: None,
         })
     }
 
@@ -279,6 +361,175 @@ impl Config {
 
         self.defaults.ssh_key.clone()
     }
+
+    /// Get interactive configuration for a cluster (with fallback to global)
+    pub fn get_interactive_config(&self, cluster_name: Option<&str>) -> InteractiveConfig {
+        let mut config = self.interactive.clone();
+
+        if let Some(cluster_name) = cluster_name
+            && let Some(cluster) = self.get_cluster(cluster_name)
+            && let Some(ref cluster_interactive) = cluster.interactive
+        {
+            // Merge cluster-specific overrides with global config
+            // Cluster settings take precedence where specified
+            config.default_mode = cluster_interactive.default_mode.clone();
+
+            if !cluster_interactive.prompt_format.is_empty() {
+                config.prompt_format = cluster_interactive.prompt_format.clone();
+            }
+
+            if cluster_interactive.history_file.is_some() {
+                config.history_file = cluster_interactive.history_file.clone();
+            }
+
+            if cluster_interactive.work_dir.is_some() {
+                config.work_dir = cluster_interactive.work_dir.clone();
+            }
+
+            if cluster_interactive.broadcast_prefix.is_some() {
+                config.broadcast_prefix = cluster_interactive.broadcast_prefix.clone();
+            }
+
+            if cluster_interactive.node_switch_prefix.is_some() {
+                config.node_switch_prefix = cluster_interactive.node_switch_prefix.clone();
+            }
+
+            // Note: For booleans, we always use the cluster value since there's no "unset" state
+            config.show_timestamps = cluster_interactive.show_timestamps;
+
+            // Merge colors (cluster colors override global ones)
+            for (k, v) in &cluster_interactive.colors {
+                config.colors.insert(k.clone(), v.clone());
+            }
+
+            // Merge keybindings
+            if !cluster_interactive.keybindings.switch_node.is_empty() {
+                config.keybindings.switch_node =
+                    cluster_interactive.keybindings.switch_node.clone();
+            }
+            if !cluster_interactive.keybindings.broadcast_toggle.is_empty() {
+                config.keybindings.broadcast_toggle =
+                    cluster_interactive.keybindings.broadcast_toggle.clone();
+            }
+            if !cluster_interactive.keybindings.quit.is_empty() {
+                config.keybindings.quit = cluster_interactive.keybindings.quit.clone();
+            }
+            if cluster_interactive.keybindings.clear_screen.is_some() {
+                config.keybindings.clear_screen =
+                    cluster_interactive.keybindings.clear_screen.clone();
+            }
+        }
+
+        config
+    }
+
+    /// Save the configuration to a file
+    pub async fn save(&self, path: &Path) -> Result<()> {
+        let expanded_path = expand_tilde(path);
+
+        // Ensure parent directory exists
+        if let Some(parent) = expanded_path.parent() {
+            fs::create_dir_all(parent)
+                .await
+                .with_context(|| format!("Failed to create directory {parent:?}"))?;
+        }
+
+        let yaml =
+            serde_yaml::to_string(self).context("Failed to serialize configuration to YAML")?;
+
+        fs::write(&expanded_path, yaml)
+            .await
+            .with_context(|| format!("Failed to write configuration to {expanded_path:?}"))?;
+
+        Ok(())
+    }
+
+    /// Update interactive preferences and save to the default config file
+    pub async fn update_interactive_preferences(
+        &mut self,
+        cluster_name: Option<&str>,
+        updates: InteractiveConfigUpdate,
+    ) -> Result<()> {
+        let target_config = if let Some(cluster_name) = cluster_name
+            && let Some(cluster) = self.clusters.get_mut(cluster_name)
+        {
+            // Update cluster-specific config
+            if cluster.interactive.is_none() {
+                cluster.interactive = Some(InteractiveConfig::default());
+            }
+            cluster.interactive.as_mut().unwrap()
+        } else {
+            // Update global config
+            &mut self.interactive
+        };
+
+        // Apply updates
+        if let Some(mode) = updates.default_mode {
+            target_config.default_mode = mode;
+        }
+        if let Some(prompt) = updates.prompt_format {
+            target_config.prompt_format = prompt;
+        }
+        if let Some(history) = updates.history_file {
+            target_config.history_file = Some(history);
+        }
+        if let Some(work_dir) = updates.work_dir {
+            target_config.work_dir = Some(work_dir);
+        }
+        if let Some(timestamps) = updates.show_timestamps {
+            target_config.show_timestamps = timestamps;
+        }
+        if let Some(colors) = updates.colors {
+            target_config.colors.extend(colors);
+        }
+
+        // Save to the appropriate config file
+        let config_path = self.get_config_path()?;
+        self.save(&config_path).await?;
+
+        Ok(())
+    }
+
+    /// Get the path to the configuration file (for saving)
+    fn get_config_path(&self) -> Result<PathBuf> {
+        // Priority order for determining config file path:
+        // 1. Current directory config.yaml (if it exists)
+        // 2. XDG config directory
+        // 3. Default ~/.bssh/config.yaml
+
+        let current_dir_config = PathBuf::from("config.yaml");
+        if current_dir_config.exists() {
+            return Ok(current_dir_config);
+        }
+
+        // Try XDG config directory
+        if let Ok(xdg_config_home) = env::var("XDG_CONFIG_HOME") {
+            let xdg_config = PathBuf::from(xdg_config_home)
+                .join("bssh")
+                .join("config.yaml");
+            return Ok(xdg_config);
+        } else if let Some(proj_dirs) = ProjectDirs::from("", "", "bssh") {
+            let xdg_config = proj_dirs.config_dir().join("config.yaml");
+            return Ok(xdg_config);
+        }
+
+        // Default to ~/.bssh/config.yaml
+        let home = env::var("HOME")
+            .or_else(|_| env::var("USERPROFILE"))
+            .context("Unable to determine home directory")?;
+        Ok(PathBuf::from(home).join(".bssh").join("config.yaml"))
+    }
+}
+
+/// Structure for updating interactive configuration preferences
+#[derive(Debug, Default)]
+pub struct InteractiveConfigUpdate {
+    pub default_mode: Option<InteractiveMode>,
+    pub prompt_format: Option<String>,
+    pub history_file: Option<String>,
+    pub work_dir: Option<String>,
+    pub show_timestamps: Option<bool>,
+    pub colors: Option<HashMap<String, String>>,
 }
 
 fn expand_tilde(path: &Path) -> PathBuf {
@@ -407,6 +658,18 @@ defaults:
   port: 22
   ssh_key: ~/.ssh/id_rsa
 
+interactive:
+  default_mode: multiplex
+  prompt_format: "[{node}] $ "
+  history_file: ~/.bssh_history
+  show_timestamps: true
+  colors:
+    node1: red
+    node2: blue
+  keybindings:
+    switch_node: "Ctrl+T"
+    broadcast_toggle: "Ctrl+A"
+
 clusters:
   production:
     nodes:
@@ -414,6 +677,9 @@ clusters:
       - web2.example.com:2222
       - user@web3.example.com
     ssh_key: ~/.ssh/prod_key
+    interactive:
+      default_mode: single_node
+      prompt_format: "prod> "
   
   staging:
     nodes:
@@ -428,12 +694,84 @@ clusters:
         assert_eq!(config.defaults.user, Some("admin".to_string()));
         assert_eq!(config.clusters.len(), 2);
 
+        // Test global interactive config
+        assert!(matches!(
+            config.interactive.default_mode,
+            InteractiveMode::Multiplex
+        ));
+        assert_eq!(config.interactive.prompt_format, "[{node}] $ ");
+        assert_eq!(
+            config.interactive.history_file,
+            Some("~/.bssh_history".to_string())
+        );
+        assert!(config.interactive.show_timestamps);
+        assert_eq!(
+            config.interactive.colors.get("node1"),
+            Some(&"red".to_string())
+        );
+        assert_eq!(config.interactive.keybindings.switch_node, "Ctrl+T");
+
         let prod_cluster = config.get_cluster("production").unwrap();
         assert_eq!(prod_cluster.nodes.len(), 3);
         assert_eq!(
             prod_cluster.defaults.ssh_key,
             Some("~/.ssh/prod_key".to_string())
         );
+
+        // Test cluster-specific interactive config
+        let prod_interactive = prod_cluster.interactive.as_ref().unwrap();
+        assert!(matches!(
+            prod_interactive.default_mode,
+            InteractiveMode::SingleNode
+        ));
+        assert_eq!(prod_interactive.prompt_format, "prod> ");
+    }
+
+    #[test]
+    fn test_interactive_config_fallback() {
+        let yaml = r#"
+interactive:
+  default_mode: multiplex
+  prompt_format: "global> "
+  show_timestamps: true
+
+clusters:
+  with_override:
+    nodes:
+      - host1
+    interactive:
+      default_mode: multiplex
+      prompt_format: "override> "
+  
+  without_override:
+    nodes:
+      - host2
+"#;
+
+        let config: Config = serde_yaml::from_str(yaml).unwrap();
+
+        // Test cluster with override - merged config
+        let with_override = config.get_interactive_config(Some("with_override"));
+        assert_eq!(with_override.prompt_format, "override> ");
+        assert!(matches!(
+            with_override.default_mode,
+            InteractiveMode::Multiplex
+        ));
+        // Note: show_timestamps uses cluster value (default false) since we can't tell if it was explicitly set
+
+        // Test cluster without override (falls back to global)
+        let without_override = config.get_interactive_config(Some("without_override"));
+        assert_eq!(without_override.prompt_format, "global> ");
+        assert!(matches!(
+            without_override.default_mode,
+            InteractiveMode::Multiplex
+        ));
+        assert!(without_override.show_timestamps);
+
+        // Test global config when no cluster specified
+        let global = config.get_interactive_config(None);
+        assert_eq!(global.prompt_format, "global> ");
+        assert!(matches!(global.default_mode, InteractiveMode::Multiplex));
     }
 
     #[test]

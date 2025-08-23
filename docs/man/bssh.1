@@ -116,6 +116,31 @@ Each downloaded file is saved with a unique name prefixed by the hostname.
 Uses SFTP protocol for secure file transfer with progress indicators.
 .RE
 
+.TP
+.B interactive
+Start an interactive shell session on cluster nodes
+.RS
+Usage: bssh interactive [\fIOPTIONS\fR]
+.br
+Opens an interactive shell session with one or more remote hosts. Supports both single-node
+and multiplex modes. In multiplex mode, commands are sent to all active nodes simultaneously.
+.PP
+Options:
+.IP "\-\-single\-node"
+Connect to a single node instead of multiplexing to all nodes
+.IP "\-\-multiplex"
+Multiplex input across all nodes (default behavior)
+.IP "\-\-prompt\-format FORMAT"
+Custom prompt format with variables: {node}, {user}, {host}, {pwd}
+.IP "\-\-history\-file PATH"
+History file path for command history (default: ~/.bssh_history)
+.IP "\-\-work\-dir DIR"
+Initial working directory on remote hosts
+.PP
+Interactive mode settings can be configured globally or per-cluster in the configuration file.
+CLI arguments override configuration file settings.
+.RE
+
 .SH CONFIGURATION
 .B bssh
 loads configuration from the following sources in priority order:
@@ -137,6 +162,16 @@ defaults:
   ssh_key: ~/.ssh/id_rsa
   parallel: 10
 
+# Global interactive mode settings (optional)
+interactive:
+  default_mode: multiplex        # single_node or multiplex
+  prompt_format: "[{node}] $ "   # Variables: {node}, {user}, {host}, {pwd}
+  history_file: ~/.bssh_history
+  show_timestamps: false         # Show timestamps in output
+  work_dir: /home/admin          # Initial working directory
+  broadcast_prefix: "!all "      # Prefix for broadcasting to all nodes
+  node_switch_prefix: "!"        # Prefix for special commands
+
 clusters:
   production:
     nodes:
@@ -144,6 +179,11 @@ clusters:
       - web2.example.com
       - user@web3.example.com:2222
     ssh_key: ~/.ssh/prod_key
+    # Cluster-specific interactive settings (overrides global)
+    interactive:
+      default_mode: single_node
+      prompt_format: "prod> "
+      work_dir: /var/www
   
   staging:
     nodes:
@@ -270,6 +310,50 @@ Download logs with wildcard pattern:
 .RS
 Downloads all files matching app*.log from /var/log/ on each node
 .RE
+
+.TP
+Start interactive mode with all nodes:
+.B bssh -c production interactive
+.RS
+Opens an interactive shell session with all nodes in multiplex mode
+.RE
+
+.TP
+Start interactive mode with single node:
+.B bssh -c production interactive --single-node
+.RS
+Prompts to select one node for interactive session
+.RE
+
+.TP
+Interactive mode with custom prompt:
+.B bssh -H server1,server2 interactive --prompt-format "{user}@{host}> "
+
+.TP
+Interactive mode with initial working directory:
+.B bssh -c staging interactive --work-dir /var/www
+.RS
+Sets initial working directory to /var/www on all nodes
+.RE
+
+.SS Interactive Mode Special Commands
+When in interactive mode, the following special commands are available (default prefix is !):
+.IP "!all"
+Activate all connected nodes
+.IP "!broadcast <cmd>"
+Execute command on all nodes temporarily
+.IP "!node<N>"
+Switch to node N (e.g., !node1, !node2)
+.IP "!list"
+List all nodes with their connection status
+.IP "!status"
+Show currently active nodes
+.IP "!help"
+Show help for special commands
+.IP "exit"
+Exit interactive mode
+.PP
+Note: The special command prefix can be customized in the configuration file.
 
 .SH EXIT STATUS
 .TP
