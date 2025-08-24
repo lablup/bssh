@@ -18,8 +18,8 @@ use bssh::commands::interactive::InteractiveCommand;
 use bssh::config::{Config, InteractiveConfig};
 use bssh::node::Node;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 use tempfile::tempdir;
 

@@ -1,7 +1,7 @@
 use russh::client::KeyboardInteractiveAuthResponse;
 use russh::{
-    Channel,
     client::{Config, Handle, Handler, Msg},
+    Channel,
 };
 use russh_sftp::{client::SftpSession, protocol::OpenFlags};
 use std::net::SocketAddr;
@@ -398,11 +398,11 @@ impl Client {
                         )
                         .await;
 
-                    if let Ok(auth_result) = result
-                        && auth_result.success()
-                    {
-                        auth_success = true;
-                        break;
+                    if let Ok(auth_result) = result {
+                        if auth_result.success() {
+                            auth_success = true;
+                            break;
+                        }
                     }
                 }
 

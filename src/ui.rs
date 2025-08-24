@@ -352,11 +352,11 @@ impl OutputFormatter {
 }
 
 pub fn print_welcome_banner() {
-    let banner = r#"
+    let banner = r"
 ╭───────────────────────────────────────╮
 │      bssh - Backend.AI SSH Tool       │
 │     Parallel Command Execution        │
 ╰───────────────────────────────────────╯
-"#;
+";
     println!("{}", banner.cyan());
 }

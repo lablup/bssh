@@ -58,9 +58,8 @@ pub async fn upload_file(
     );
     for file in &files {
         let size = std::fs::metadata(file)
-            .map(|m| format_bytes(m.len()))
-            .unwrap_or_else(|_| "unknown".to_string());
-        println!("  {} {:?} ({})", "•".dimmed(), file, size.yellow());
+            .map_or_else(|_| "unknown".to_string(), |m| format_bytes(m.len()));
+        println!("  {} {} ({})", "•".dimmed(), file.display(), size.yellow());
     }
     println!("{} {}\n", "Destination:".bold(), destination.green());
 
@@ -98,17 +97,17 @@ pub async fn upload_file(
                     let remote_relative = relative_path.to_string_lossy();
 
                     // Create remote directory structure if needed
-                    if let Some(parent) = relative_path.parent()
-                        && !parent.as_os_str().is_empty()
-                    {
-                        let remote_dir = if destination.ends_with('/') {
-                            format!("{destination}{}", parent.display())
-                        } else {
-                            format!("{destination}/{}", parent.display())
-                        };
-                        // Create remote directory using SSH command
-                        let mkdir_cmd = format!("mkdir -p '{remote_dir}'");
-                        let _ = executor.execute(&mkdir_cmd).await;
+                    if let Some(parent) = relative_path.parent() {
+                        if !parent.as_os_str().is_empty() {
+                            let remote_dir = if destination.ends_with('/') {
+                                format!("{destination}{}", parent.display())
+                            } else {
+                                format!("{destination}/{}", parent.display())
+                            };
+                            // Create remote directory using SSH command
+                            let mkdir_cmd = format!("mkdir -p '{remote_dir}'");
+                            let _ = executor.execute(&mkdir_cmd).await;
+                        }
                     }
 
                     if destination.ends_with('/') {
@@ -146,10 +145,10 @@ pub async fn upload_file(
         };
 
         println!(
-            "\n{} {} {:?} {} {}",
+            "\n{} {} {} {} {}",
             "▶".cyan(),
             "Uploading".cyan(),
-            file,
+            file.display(),
             "→".dimmed(),
             remote_path.green()
         );

@@ -162,10 +162,10 @@ impl Config {
 
         let content = fs::read_to_string(&expanded_path)
             .await
-            .with_context(|| format!("Failed to read configuration file at {expanded_path:?}. Please check file permissions and ensure the file is accessible."))?;
+            .with_context(|| format!("Failed to read configuration file at {}. Please check file permissions and ensure the file is accessible.", expanded_path.display()))?;
 
         let config: Config =
-            serde_yaml::from_str(&content).with_context(|| format!("Failed to parse YAML configuration file at {expanded_path:?}. Please check the YAML syntax is valid.\nCommon issues:\n  - Incorrect indentation (use spaces, not tabs)\n  - Missing colons after keys\n  - Unquoted special characters"))?;
+            serde_yaml::from_str(&content).with_context(|| format!("Failed to parse YAML configuration file at {}. Please check the YAML syntax is valid.\nCommon issues:\n  - Incorrect indentation (use spaces, not tabs)\n  - Missing colons after keys\n  - Unquoted special characters", expanded_path.display()))?;
 
         Ok(config)
     }
@@ -245,10 +245,10 @@ impl Config {
 
         // Try current directory config.yaml
         let current_dir_config = PathBuf::from("config.yaml");
-        if current_dir_config.exists()
-            && let Ok(config) = Self::load(&current_dir_config).await
-        {
-            return Ok(config);
+        if current_dir_config.exists() {
+            if let Ok(config) = Self::load(&current_dir_config).await {
+                return Ok(config);
+            }
         }
 
         // Try XDG config directory
@@ -257,18 +257,18 @@ impl Config {
             let xdg_config = PathBuf::from(xdg_config_home)
                 .join("bssh")
                 .join("config.yaml");
-            if xdg_config.exists()
-                && let Ok(config) = Self::load(&xdg_config).await
-            {
-                return Ok(config);
+            if xdg_config.exists() {
+                if let Ok(config) = Self::load(&xdg_config).await {
+                    return Ok(config);
+                }
             }
         } else if let Some(proj_dirs) = ProjectDirs::from("", "", "bssh") {
             // Use directories crate for standard XDG path
             let xdg_config = proj_dirs.config_dir().join("config.yaml");
-            if xdg_config.exists()
-                && let Ok(config) = Self::load(&xdg_config).await
-            {
-                return Ok(config);
+            if xdg_config.exists() {
+                if let Ok(config) = Self::load(&xdg_config).await {
+                    return Ok(config);
+                }
             }
         }
 
@@ -351,11 +351,12 @@ impl Config {
     }
 
     pub fn get_ssh_key(&self, cluster_name: Option<&str>) -> Option<String> {
-        if let Some(cluster_name) = cluster_name
-            && let Some(cluster) = self.get_cluster(cluster_name)
-            && let Some(key) = &cluster.defaults.ssh_key
-        {
-            return Some(key.clone());
+        if let Some(cluster_name) = cluster_name {
+            if let Some(cluster) = self.get_cluster(cluster_name) {
+                if let Some(key) = &cluster.defaults.ssh_key {
+                    return Some(key.clone());
+                }
+            }
         }
 
         self.defaults.ssh_key.clone()
@@ -365,57 +366,58 @@ impl Config {
     pub fn get_interactive_config(&self, cluster_name: Option<&str>) -> InteractiveConfig {
         let mut config = self.interactive.clone();
 
-        if let Some(cluster_name) = cluster_name
-            && let Some(cluster) = self.get_cluster(cluster_name)
-            && let Some(ref cluster_interactive) = cluster.interactive
-        {
-            // Merge cluster-specific overrides with global config
-            // Cluster settings take precedence where specified
-            config.default_mode = cluster_interactive.default_mode.clone();
+        if let Some(cluster_name) = cluster_name {
+            if let Some(cluster) = self.get_cluster(cluster_name) {
+                if let Some(ref cluster_interactive) = cluster.interactive {
+                    // Merge cluster-specific overrides with global config
+                    // Cluster settings take precedence where specified
+                    config.default_mode = cluster_interactive.default_mode.clone();
 
-            if !cluster_interactive.prompt_format.is_empty() {
-                config.prompt_format = cluster_interactive.prompt_format.clone();
-            }
+                    if !cluster_interactive.prompt_format.is_empty() {
+                        config.prompt_format = cluster_interactive.prompt_format.clone();
+                    }
 
-            if cluster_interactive.history_file.is_some() {
-                config.history_file = cluster_interactive.history_file.clone();
-            }
+                    if cluster_interactive.history_file.is_some() {
+                        config.history_file = cluster_interactive.history_file.clone();
+                    }
 
-            if cluster_interactive.work_dir.is_some() {
-                config.work_dir = cluster_interactive.work_dir.clone();
-            }
+                    if cluster_interactive.work_dir.is_some() {
+                        config.work_dir = cluster_interactive.work_dir.clone();
+                    }
 
-            if cluster_interactive.broadcast_prefix.is_some() {
-                config.broadcast_prefix = cluster_interactive.broadcast_prefix.clone();
-            }
+                    if cluster_interactive.broadcast_prefix.is_some() {
+                        config.broadcast_prefix = cluster_interactive.broadcast_prefix.clone();
+                    }
 
-            if cluster_interactive.node_switch_prefix.is_some() {
-                config.node_switch_prefix = cluster_interactive.node_switch_prefix.clone();
-            }
+                    if cluster_interactive.node_switch_prefix.is_some() {
+                        config.node_switch_prefix = cluster_interactive.node_switch_prefix.clone();
+                    }
 
-            // Note: For booleans, we always use the cluster value since there's no "unset" state
-            config.show_timestamps = cluster_interactive.show_timestamps;
+                    // Note: For booleans, we always use the cluster value since there's no "unset" state
+                    config.show_timestamps = cluster_interactive.show_timestamps;
 
-            // Merge colors (cluster colors override global ones)
-            for (k, v) in &cluster_interactive.colors {
-                config.colors.insert(k.clone(), v.clone());
-            }
+                    // Merge colors (cluster colors override global ones)
+                    for (k, v) in &cluster_interactive.colors {
+                        config.colors.insert(k.clone(), v.clone());
+                    }
 
-            // Merge keybindings
-            if !cluster_interactive.keybindings.switch_node.is_empty() {
-                config.keybindings.switch_node =
-                    cluster_interactive.keybindings.switch_node.clone();
-            }
-            if !cluster_interactive.keybindings.broadcast_toggle.is_empty() {
-                config.keybindings.broadcast_toggle =
-                    cluster_interactive.keybindings.broadcast_toggle.clone();
-            }
-            if !cluster_interactive.keybindings.quit.is_empty() {
-                config.keybindings.quit = cluster_interactive.keybindings.quit.clone();
-            }
-            if cluster_interactive.keybindings.clear_screen.is_some() {
-                config.keybindings.clear_screen =
-                    cluster_interactive.keybindings.clear_screen.clone();
+                    // Merge keybindings
+                    if !cluster_interactive.keybindings.switch_node.is_empty() {
+                        config.keybindings.switch_node =
+                            cluster_interactive.keybindings.switch_node.clone();
+                    }
+                    if !cluster_interactive.keybindings.broadcast_toggle.is_empty() {
+                        config.keybindings.broadcast_toggle =
+                            cluster_interactive.keybindings.broadcast_toggle.clone();
+                    }
+                    if !cluster_interactive.keybindings.quit.is_empty() {
+                        config.keybindings.quit = cluster_interactive.keybindings.quit.clone();
+                    }
+                    if cluster_interactive.keybindings.clear_screen.is_some() {
+                        config.keybindings.clear_screen =
+                            cluster_interactive.keybindings.clear_screen.clone();
+                    }
+                }
             }
         }
 
@@ -449,14 +451,17 @@ impl Config {
         cluster_name: Option<&str>,
         updates: InteractiveConfigUpdate,
     ) -> Result<()> {
-        let target_config = if let Some(cluster_name) = cluster_name
-            && let Some(cluster) = self.clusters.get_mut(cluster_name)
-        {
-            // Update cluster-specific config
-            if cluster.interactive.is_none() {
-                cluster.interactive = Some(InteractiveConfig::default());
+        let target_config = if let Some(cluster_name) = cluster_name {
+            if let Some(cluster) = self.clusters.get_mut(cluster_name) {
+                // Update cluster-specific config
+                if cluster.interactive.is_none() {
+                    cluster.interactive = Some(InteractiveConfig::default());
+                }
+                cluster.interactive.as_mut().unwrap()
+            } else {
+                // Update global config
+                &mut self.interactive
             }
-            cluster.interactive.as_mut().unwrap()
         } else {
             // Update global config
             &mut self.interactive
@@ -532,11 +537,12 @@ pub struct InteractiveConfigUpdate {
 }
 
 fn expand_tilde(path: &Path) -> PathBuf {
-    if let Some(path_str) = path.to_str()
-        && path_str.starts_with("~/")
-        && let Ok(home) = std::env::var("HOME")
-    {
-        return PathBuf::from(path_str.replacen("~", &home, 1));
+    if let Some(path_str) = path.to_str() {
+        if path_str.starts_with("~/") {
+            if let Ok(home) = std::env::var("HOME") {
+                return PathBuf::from(path_str.replacen("~", &home, 1));
+            }
+        }
     }
     path.to_path_buf()
 }

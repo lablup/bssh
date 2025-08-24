@@ -16,29 +16,29 @@ use anyhow::{Context, Result};
 use chrono;
 use crossterm::terminal::{self};
 use owo_colors::OwoColorize;
-use russh::Channel;
 use russh::client::Msg;
-use rustyline::DefaultEditor;
+use russh::Channel;
 use rustyline::config::Configurer;
 use rustyline::error::ReadlineError;
+use rustyline::DefaultEditor;
 use std::io::{self, Write};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tokio::sync::Mutex;
+use std::sync::Arc;
 use tokio::sync::mpsc;
-use tokio::time::{Duration, timeout};
+use tokio::sync::Mutex;
+use tokio::time::{timeout, Duration};
 
 use crate::config::{Config, InteractiveConfig};
 use crate::node::Node;
 use crate::ssh::{
-    known_hosts::{StrictHostKeyChecking, get_check_method},
+    known_hosts::{get_check_method, StrictHostKeyChecking},
     tokio_client::{AuthMethod, Client},
 };
 
 use super::interactive_signal::{
-    TerminalGuard, is_interrupted, reset_interrupt, setup_async_signal_handlers,
-    setup_signal_handlers,
+    is_interrupted, reset_interrupt, setup_async_signal_handlers, setup_signal_handlers,
+    TerminalGuard,
 };
 
 /// Interactive mode command configuration
@@ -222,7 +222,7 @@ impl InteractiveCommand {
 
         // Request interactive shell with PTY
         let channel = client
-            .request_interactive_shell("xterm-256color", width as u32, height as u32)
+            .request_interactive_shell("xterm-256color", u32::from(width), u32::from(height))
             .await
             .context("Failed to request interactive shell")?;
 
@@ -371,7 +371,6 @@ impl InteractiveCommand {
                 }
                 Err(ReadlineError::Interrupted) => {
                     println!("^C");
-                    continue;
                 }
                 Err(ReadlineError::Eof) => {
                     println!("^D");
@@ -582,7 +581,7 @@ impl InteractiveCommand {
                         // Show all active node numbers if 5 or fewer
                         let node_list = active_nodes
                             .iter()
-                            .map(|n| n.to_string())
+                            .map(std::string::ToString::to_string)
                             .collect::<Vec<_>>()
                             .join(",");
                         format!("[Nodes {node_list}]")
@@ -591,7 +590,7 @@ impl InteractiveCommand {
                         let first_three = active_nodes
                             .iter()
                             .take(3)
-                            .map(|n| n.to_string())
+                            .map(std::string::ToString::to_string)
                             .collect::<Vec<_>>()
                             .join(",");
                         format!("[Nodes {first_three}... +{}]", active_nodes.len() - 3)
@@ -766,7 +765,6 @@ impl InteractiveCommand {
                 }
                 Err(ReadlineError::Interrupted) => {
                     println!("^C");
-                    continue;
                 }
                 Err(ReadlineError::Eof) => {
                     println!("^D");
@@ -802,15 +800,16 @@ impl InteractiveCommand {
 
     /// Expand ~ in path to home directory
     fn expand_path(&self, path: &std::path::Path) -> Result<PathBuf> {
-        if let Some(path_str) = path.to_str()
-            && path_str.starts_with('~')
-            && let Some(home) = dirs::home_dir()
-        {
-            // Handle ~ alone or ~/path
-            if path_str == "~" {
-                return Ok(home);
-            } else if let Some(rest) = path_str.strip_prefix("~/") {
-                return Ok(home.join(rest));
+        if let Some(path_str) = path.to_str() {
+            if path_str.starts_with('~') {
+                if let Some(home) = dirs::home_dir() {
+                    // Handle ~ alone or ~/path
+                    if path_str == "~" {
+                        return Ok(home);
+                    } else if let Some(rest) = path_str.strip_prefix("~/") {
+                        return Ok(home.join(rest));
+                    }
+                }
             }
         }
         Ok(path.to_path_buf())
