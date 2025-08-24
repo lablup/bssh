@@ -13,10 +13,10 @@
 // limitations under the License.
 
 use bssh::commands::interactive_signal::{
-    TerminalGuard, is_interrupted, reset_interrupt, setup_signal_handlers,
+    is_interrupted, reset_interrupt, setup_signal_handlers, TerminalGuard,
 };
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 #[test]

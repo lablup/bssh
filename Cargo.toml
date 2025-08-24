@@ -8,7 +8,7 @@ repository = "https://github.com/lablup/bssh"
 readme = "README.md"
 keywords = ["cli", "rust"]
 categories = ["command-line-utilities"]
-edition = "2024"
+edition = "2021"
 
 [dependencies]
 tokio = { version = "1.47.1", features = ["full"] }

@@ -15,8 +15,8 @@
 //! Signal handling for interactive mode
 
 use anyhow::Result;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use tokio::signal;
 use tracing::{debug, info};
 

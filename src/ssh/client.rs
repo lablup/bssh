@@ -437,12 +437,11 @@ impl SshClient {
                 if std::env::var("SSH_AUTH_SOCK").is_ok() {
                     tracing::debug!("Using SSH agent for authentication");
                     return Ok(AuthMethod::Agent);
-                } else {
-                    tracing::warn!(
-                        "SSH agent requested but SSH_AUTH_SOCK environment variable not set"
-                    );
-                    // Fall through to key file authentication
                 }
+                tracing::warn!(
+                    "SSH agent requested but SSH_AUTH_SOCK environment variable not set"
+                );
+                // Fall through to key file authentication
             }
             #[cfg(target_os = "windows")]
             {

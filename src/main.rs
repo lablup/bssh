@@ -21,11 +21,11 @@ use bssh::{
     cli::{Cli, Commands},
     commands::{
         download::download_file,
-        exec::{ExecuteCommandParams, execute_command},
+        exec::{execute_command, ExecuteCommandParams},
         interactive::InteractiveCommand,
         list::list_clusters,
         ping::ping_nodes,
-        upload::{FileTransferParams, upload_file},
+        upload::{upload_file, FileTransferParams},
     },
     config::{Config, InteractiveMode},
     node::Node,

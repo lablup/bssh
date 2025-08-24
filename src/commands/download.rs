@@ -30,9 +30,12 @@ pub async fn download_file(
 ) -> Result<()> {
     // Create destination directory if it doesn't exist
     if !destination.exists() {
-        fs::create_dir_all(destination)
-            .await
-            .with_context(|| format!("Failed to create destination directory: {destination:?}"))?;
+        fs::create_dir_all(destination).await.with_context(|| {
+            format!(
+                "Failed to create destination directory: {}",
+                destination.display()
+            )
+        })?;
     }
 
     let key_path_str = params.key_path.map(|p| p.to_string_lossy().to_string());
@@ -168,7 +171,7 @@ pub async fn download_file(
         let remote_files: Vec<String> = String::from_utf8_lossy(&glob_result.output)
             .lines()
             .filter(|line| !line.is_empty())
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
             .collect();
 
         if remote_files.is_empty() {
@@ -184,7 +187,7 @@ pub async fn download_file(
         for file in &remote_files {
             println!("  {} {}", "•".dimmed(), file.cyan());
         }
-        println!("{} {:?}\n", "Destination:".bold(), destination);
+        println!("{} {}\n", "Destination:".bold(), destination.display());
 
         // Download each file
         let results = executor
@@ -219,12 +222,12 @@ pub async fn download_file(
     } else {
         // Single file download
         println!(
-            "\n{} {} {} from {} nodes to {:?} {}\n",
+            "\n{} {} {} from {} nodes to {} {}\n",
             "▶".cyan(),
             "Downloading".cyan().bold(),
             source.green(),
             params.nodes.len().to_string().yellow(),
-            destination,
+            destination.display(),
             "(SFTP)".dimmed()
         );
 
