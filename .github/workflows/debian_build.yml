@@ -68,16 +68,16 @@ jobs:
             os: ubuntu-24.04-arm
             binary_asset: bssh-linux-aarch64.tar.gz
           
-          # Ubuntu 24.10 (Oracular) - AMD64
-          - distro: oracular
-            version: "24.10"
+          # Ubuntu 25.04 (Plucky) - AMD64
+          - distro: plucky
+            version: "25.04"
             arch: amd64
             os: ubuntu-24.04
             binary_asset: bssh-linux-x86_64.tar.gz
           
-          # Ubuntu 24.10 (Oracular) - ARM64  
-          - distro: oracular
-            version: "24.10"
+          # Ubuntu 25.04 (Plucky) - ARM64  
+          - distro: plucky
+            version: "25.04"
             arch: arm64
             os: ubuntu-24.04-arm
             binary_asset: bssh-linux-aarch64.tar.gz
