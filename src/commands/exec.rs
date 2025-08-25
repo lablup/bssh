@@ -31,6 +31,7 @@ pub struct ExecuteCommandParams<'a> {
     pub use_agent: bool,
     pub use_password: bool,
     pub output_dir: Option<&'a Path>,
+    pub timeout: Option<u64>,
 }
 
 pub async fn execute_command(params: ExecuteCommandParams<'_>) -> Result<()> {
@@ -47,7 +48,8 @@ pub async fn execute_command(params: ExecuteCommandParams<'_>) -> Result<()> {
         params.strict_mode,
         params.use_agent,
         params.use_password,
-    );
+    )
+    .with_timeout(params.timeout);
 
     let results = executor.execute(params.command).await?;
 

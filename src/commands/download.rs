@@ -165,6 +165,7 @@ pub async fn download_file(
                 Some(params.strict_mode),
                 params.use_agent,
                 params.use_password,
+                None, // Use default timeout for ls command
             )
             .await?;
 

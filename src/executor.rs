@@ -31,6 +31,7 @@ pub struct ParallelExecutor {
     strict_mode: StrictHostKeyChecking,
     use_agent: bool,
     use_password: bool,
+    timeout: Option<u64>,
 }
 
 impl ParallelExecutor {
@@ -56,6 +57,7 @@ impl ParallelExecutor {
             strict_mode,
             use_agent: false,
             use_password: false,
+            timeout: None,
         }
     }
 
@@ -73,6 +75,7 @@ impl ParallelExecutor {
             strict_mode,
             use_agent,
             use_password: false,
+            timeout: None,
         }
     }
 
@@ -91,7 +94,13 @@ impl ParallelExecutor {
             strict_mode,
             use_agent,
             use_password,
+            timeout: None,
         }
+    }
+
+    pub fn with_timeout(mut self, timeout: Option<u64>) -> Self {
+        self.timeout = timeout;
+        self
     }
 
     pub async fn execute(&self, command: &str) -> Result<Vec<ExecutionResult>> {
@@ -113,6 +122,7 @@ impl ParallelExecutor {
                 let strict_mode = self.strict_mode;
                 let use_agent = self.use_agent;
                 let use_password = self.use_password;
+                let timeout = self.timeout;
                 let semaphore = Arc::clone(&semaphore);
                 let pb = multi_progress.add(ProgressBar::new_spinner());
                 pb.set_style(style.clone());
@@ -137,6 +147,7 @@ impl ParallelExecutor {
                         strict_mode,
                         use_agent,
                         use_password,
+                        timeout,
                     )
                     .await;
 
@@ -479,6 +490,7 @@ async fn execute_on_node(
     strict_mode: StrictHostKeyChecking,
     use_agent: bool,
     use_password: bool,
+    timeout: Option<u64>,
 ) -> Result<CommandResult> {
     let mut client = SshClient::new(node.host.clone(), node.port, node.username.clone());
 
@@ -491,6 +503,7 @@ async fn execute_on_node(
             Some(strict_mode),
             use_agent,
             use_password,
+            timeout,
         )
         .await
 }

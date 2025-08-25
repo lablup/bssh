@@ -212,6 +212,13 @@ async fn main() -> Result<()> {
         }
         _ => {
             // Execute command (default or Exec subcommand)
+            // Determine timeout: CLI argument takes precedence over config
+            let timeout = if cli.timeout > 0 {
+                Some(cli.timeout)
+            } else {
+                config.get_timeout(cli.cluster.as_deref())
+            };
+
             let params = ExecuteCommandParams {
                 nodes,
                 command: &command,
@@ -222,6 +229,7 @@ async fn main() -> Result<()> {
                 use_agent: cli.use_agent,
                 use_password: cli.password,
                 output_dir: cli.output_dir.as_deref(),
+                timeout,
             };
             execute_command(params).await
         }

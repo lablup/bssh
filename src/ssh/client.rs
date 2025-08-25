@@ -40,7 +40,7 @@ impl SshClient {
         key_path: Option<&Path>,
         use_agent: bool,
     ) -> Result<CommandResult> {
-        self.connect_and_execute_with_host_check(command, key_path, None, use_agent, false)
+        self.connect_and_execute_with_host_check(command, key_path, None, use_agent, false, None)
             .await
     }
 
@@ -51,6 +51,7 @@ impl SshClient {
         strict_mode: Option<StrictHostKeyChecking>,
         use_agent: bool,
         use_password: bool,
+        timeout_seconds: Option<u64>,
     ) -> Result<CommandResult> {
         let addr = (self.host.as_str(), self.port);
         tracing::debug!("Connecting to {}:{}", self.host, self.port);
@@ -79,14 +80,37 @@ impl SshClient {
         tracing::debug!("Executing command: {}", command);
 
         // Execute command with timeout
-        let command_timeout = Duration::from_secs(300); // 5 minutes default
-        let result = tokio::time::timeout(
-            command_timeout,
-            client.execute(command)
-        )
-        .await
-        .with_context(|| format!("Command execution timeout: The command '{}' did not complete within 5 minutes on {}:{}", command, self.host, self.port))?
-        .with_context(|| format!("Failed to execute command '{}' on {}:{}. The SSH connection was successful but the command could not be executed.", command, self.host, self.port))?;
+        let result = if let Some(timeout_secs) = timeout_seconds {
+            if timeout_secs == 0 {
+                // No timeout (unlimited)
+                tracing::debug!("Executing command with no timeout (unlimited)");
+                client.execute(command)
+                    .await
+                    .with_context(|| format!("Failed to execute command '{}' on {}:{}. The SSH connection was successful but the command could not be executed.", command, self.host, self.port))?
+            } else {
+                // With timeout
+                let command_timeout = Duration::from_secs(timeout_secs);
+                tracing::debug!("Executing command with timeout of {} seconds", timeout_secs);
+                tokio::time::timeout(
+                    command_timeout,
+                    client.execute(command)
+                )
+                .await
+                .with_context(|| format!("Command execution timeout: The command '{}' did not complete within {} seconds on {}:{}", command, timeout_secs, self.host, self.port))?
+                .with_context(|| format!("Failed to execute command '{}' on {}:{}. The SSH connection was successful but the command could not be executed.", command, self.host, self.port))?
+            }
+        } else {
+            // Default timeout of 300 seconds if not specified
+            let command_timeout = Duration::from_secs(300);
+            tracing::debug!("Executing command with default timeout of 300 seconds");
+            tokio::time::timeout(
+                command_timeout,
+                client.execute(command)
+            )
+            .await
+            .with_context(|| format!("Command execution timeout: The command '{}' did not complete within 5 minutes on {}:{}", command, self.host, self.port))?
+            .with_context(|| format!("Failed to execute command '{}' on {}:{}. The SSH connection was successful but the command could not be executed.", command, self.host, self.port))?
+        };
 
         tracing::debug!(
             "Command execution completed with status: {}",

@@ -40,6 +40,7 @@ pub struct Defaults {
     pub port: Option<u16>,
     pub ssh_key: Option<String>,
     pub parallel: Option<usize>,
+    pub timeout: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
@@ -132,6 +133,7 @@ pub struct ClusterDefaults {
     pub user: Option<String>,
     pub port: Option<u16>,
     pub ssh_key: Option<String>,
+    pub timeout: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -360,6 +362,18 @@ impl Config {
         }
 
         self.defaults.ssh_key.clone()
+    }
+
+    pub fn get_timeout(&self, cluster_name: Option<&str>) -> Option<u64> {
+        if let Some(cluster_name) = cluster_name {
+            if let Some(cluster) = self.get_cluster(cluster_name) {
+                if let Some(timeout) = cluster.defaults.timeout {
+                    return Some(timeout);
+                }
+            }
+        }
+
+        self.defaults.timeout
     }
 
     /// Get interactive configuration for a cluster (with fallback to global)

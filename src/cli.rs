@@ -96,6 +96,13 @@ pub struct Cli {
     )]
     pub strict_host_key_checking: String,
 
+    #[arg(
+        long,
+        default_value = "300",
+        help = "Command timeout in seconds (0 for unlimited)"
+    )]
+    pub timeout: u64,
+
     #[arg(trailing_var_arg = true, help = "Command to execute on remote hosts")]
     pub command_args: Vec<String>,
 }
