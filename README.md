@@ -19,6 +19,7 @@ A high-performance parallel SSH command execution tool for cluster management, b
 - **Cross-Platform**: Works on Linux and macOS
 - **Output Management**: Save command outputs to files per node with detailed logging
 - **Interactive Mode**: Interactive shell sessions with single-node or multiplexed multi-node support
+- **Configurable Timeouts**: Set command execution timeouts with support for unlimited execution (timeout=0)
 
 ## Installation
 
@@ -99,6 +100,12 @@ bssh -i ~/.ssh/encrypted_key -c production "df -h"
 
 # Limit parallel connections
 bssh -c production --parallel 5 "apt update"
+
+# Set command timeout (10 seconds)
+bssh -c production --timeout 10 "quick-check"
+
+# No timeout (unlimited execution time)
+bssh -c staging --timeout 0 "long-running-backup"
 ```
 
 ### Test connectivity
@@ -197,6 +204,7 @@ defaults:
   port: 22
   ssh_key: ~/.ssh/id_rsa
   parallel: 10
+  timeout: 300  # Command timeout in seconds (0 for unlimited)
 
 # Global interactive mode settings (optional)
 interactive:
@@ -223,6 +231,7 @@ clusters:
       - web2.example.com
       - user@web3.example.com:2222
     ssh_key: ~/.ssh/prod_key
+    timeout: 600  # Override default timeout for this cluster
     # Cluster-specific interactive settings (overrides global)
     interactive:
       default_mode: single_node
@@ -251,6 +260,7 @@ Options:
   -P, --password                          Use password authentication (will prompt for password)
   --strict-host-key-checking <MODE>       Host key checking mode (yes/no/accept-new) [default: accept-new]
   -p, --parallel <PARALLEL>               Maximum parallel connections [default: 10]
+  --timeout <TIMEOUT>                     Command timeout in seconds (0 for unlimited) [default: 300]
   --output-dir <OUTPUT_DIR>               Output directory for command results
   -v, --verbose                           Increase verbosity (-v, -vv, -vvv)
   -h, --help                              Print help
@@ -285,6 +295,18 @@ bssh -c webservers "sudo systemctl restart nginx"
 ### Collect logs
 ```bash
 bssh -c production --output-dir ./logs "tail -n 100 /var/log/syslog"
+```
+
+### Long-running commands with timeout
+```bash
+# Set 30 minute timeout for backup operations
+bssh -c production --timeout 1800 "backup-database.sh"
+
+# No timeout for data migration (may take hours)
+bssh -c production --timeout 0 "migrate-data.sh"
+
+# Quick health check with 5 second timeout
+bssh -c monitoring --timeout 5 "health-check.sh"
 ```
 
 ### Interactive Mode
@@ -504,6 +526,7 @@ See the [LICENSE](./LICENSE) file for details.
 ## Changelog
 
 ### Recent Updates
+- **v0.5.1 (2025/08/25):** Add configurable command timeout with support for unlimited execution (timeout=0), configurable via CLI and config file
 - **v0.5.0 (2025/08/22):** Add interactive mode with single-node and multiplex support, broadcast command, and improved Backend.AI cluster auto-detection
 - **v0.4.0 (2025/08/22):** Add password authentication, SSH key passphrase support, modern UI with colors, XDG config compliance, and Debian packaging
 - **v0.3.0 (2025/08/22):** Add native SFTP directory operations and recursive file transfer support
