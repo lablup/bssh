@@ -259,16 +259,25 @@ impl Config {
             );
         }
 
-        // Try Backend.AI environment first
+        // Check for Backend.AI environment first
         if let Some(backendai_cluster) = Self::from_backendai_env() {
             tracing::debug!("Using Backend.AI cluster configuration from environment");
             let mut config = Self::default();
             config
                 .clusters
-                .insert("backendai".to_string(), backendai_cluster);
+                .insert("bai_auto".to_string(), backendai_cluster);
             return Ok(config);
         }
 
+        // Load configuration from standard locations
+        Self::load_from_standard_locations().await.or_else(|_| {
+            tracing::debug!("No config file found, using default empty configuration");
+            Ok(Self::default())
+        })
+    }
+
+    /// Load configuration from standard locations (helper method)
+    async fn load_from_standard_locations() -> Result<Self> {
         // Try current directory config.yaml
         let current_dir_config = PathBuf::from("config.yaml");
         if current_dir_config.exists() {
@@ -308,9 +317,8 @@ impl Config {
             }
         }
 
-        // Finally, try the default path (will create empty config if needed)
-        tracing::debug!("No config file found, using default empty configuration");
-        Ok(Self::default())
+        // No config file found
+        anyhow::bail!("No configuration file found")
     }
 
     pub fn get_cluster(&self, name: &str) -> Option<&Cluster> {
@@ -585,7 +593,7 @@ pub struct InteractiveConfigUpdate {
     pub colors: Option<HashMap<String, String>>,
 }
 
-fn expand_tilde(path: &Path) -> PathBuf {
+pub fn expand_tilde(path: &Path) -> PathBuf {
     if let Some(path_str) = path.to_str() {
         if path_str.starts_with("~/") {
             if let Ok(home) = std::env::var("HOME") {
