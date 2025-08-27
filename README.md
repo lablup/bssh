@@ -526,6 +526,7 @@ See the [LICENSE](./LICENSE) file for details.
 ## Changelog
 
 ### Recent Updates
+- **v0.5.4 (2025/08/27):** Fix parallel config value handling and align interactive mode authentication with exec mode
 - **v0.5.3 (2025/08/27):** Use Backend.AI cluster SSH key for auto-detected environments
 - **v0.5.2 (2025/08/27):** Fix config file loading priority, improve BACKENDAI environment handling, use cluster SSH key config
 - **v0.5.1 (2025/08/25):** Add configurable command timeout with support for unlimited execution (timeout=0), configurable via CLI and config file
