@@ -53,7 +53,7 @@ fn test_upload_command_parsing() {
 fn test_upload_command_with_cluster() {
     let args = vec![
         "bssh",
-        "-c",
+        "-C",
         "production",
         "upload",
         "./local.conf",
@@ -81,7 +81,7 @@ fn test_upload_command_with_options() {
         "server1",
         "-i",
         "~/.ssh/custom_key",
-        "-p",
+        "--parallel",
         "5",
         "upload",
         "data.csv",
