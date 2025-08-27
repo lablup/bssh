@@ -29,6 +29,7 @@ use bssh::{
     },
     config::{Config, InteractiveMode},
     node::Node,
+    pty::PtyConfig,
     ssh::known_hosts::StrictHostKeyChecking,
     utils::init_logging,
 };
@@ -287,6 +288,22 @@ async fn main() -> Result<()> {
                     .map(|ssh_key| bssh::config::expand_tilde(Path::new(&ssh_key)))
             };
 
+            // Create PTY configuration based on CLI flags
+            let pty_config = PtyConfig {
+                force_pty: cli.force_tty,
+                disable_pty: cli.no_tty,
+                ..Default::default()
+            };
+
+            // Determine use_pty based on CLI flags
+            let use_pty = if cli.force_tty {
+                Some(true)
+            } else if cli.no_tty {
+                Some(false)
+            } else {
+                None // Auto-detect
+            };
+
             let interactive_cmd = InteractiveCommand {
                 single_node: merged_mode.0,
                 multiplex: merged_mode.1,
@@ -301,6 +318,8 @@ async fn main() -> Result<()> {
                 use_agent: cli.use_agent,
                 use_password: cli.password,
                 strict_mode,
+                pty_config,
+                use_pty,
             };
             let result = interactive_cmd.execute().await?;
             println!("\nInteractive session ended.");
@@ -325,6 +344,22 @@ async fn main() -> Result<()> {
                         .map(|ssh_key| bssh::config::expand_tilde(Path::new(&ssh_key)))
                 };
 
+                // Create PTY configuration based on CLI flags (SSH mode)
+                let pty_config = PtyConfig {
+                    force_pty: cli.force_tty,
+                    disable_pty: cli.no_tty,
+                    ..Default::default()
+                };
+
+                // Determine use_pty based on CLI flags
+                let use_pty = if cli.force_tty {
+                    Some(true)
+                } else if cli.no_tty {
+                    Some(false)
+                } else {
+                    None // Auto-detect (typically use PTY for SSH mode)
+                };
+
                 // Use interactive mode for single host SSH connections
                 let interactive_cmd = InteractiveCommand {
                     single_node: true, // Always single node for SSH mode
@@ -340,6 +375,8 @@ async fn main() -> Result<()> {
                     use_agent: cli.use_agent,
                     use_password: cli.password,
                     strict_mode,
+                    pty_config,
+                    use_pty,
                 };
                 let result = interactive_cmd.execute().await?;
                 println!("\nSession ended.");

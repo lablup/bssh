@@ -36,6 +36,8 @@ terminal_size = "0.4.3"
 rustyline = "17.0.1"
 crossterm = "0.29"
 ctrlc = "3.4"
+signal-hook = "0.3.18"
+atty = "0.2.14"
 
 [dev-dependencies]
 tempfile = "3"

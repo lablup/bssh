@@ -17,6 +17,7 @@
 use bssh::commands::interactive::InteractiveCommand;
 use bssh::config::{Config, InteractiveConfig};
 use bssh::node::Node;
+use bssh::pty::PtyConfig;
 use bssh::ssh::known_hosts::StrictHostKeyChecking;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -46,6 +47,8 @@ fn test_interactive_command_builder() {
         use_agent: false,
         use_password: false,
         strict_mode: StrictHostKeyChecking::AcceptNew,
+        pty_config: PtyConfig::default(),
+        use_pty: None,
     };
 
     assert!(!cmd.single_node);
@@ -75,6 +78,8 @@ fn test_history_file_handling() {
         use_agent: false,
         use_password: false,
         strict_mode: StrictHostKeyChecking::AcceptNew,
+        pty_config: PtyConfig::default(),
+        use_pty: None,
     };
 
     assert_eq!(cmd.history_file, history_path);
@@ -167,6 +172,8 @@ async fn test_interactive_with_unreachable_nodes() {
         use_agent: false,
         use_password: false,
         strict_mode: StrictHostKeyChecking::AcceptNew,
+        pty_config: PtyConfig::default(),
+        use_pty: None,
     };
 
     // This should fail to connect
@@ -196,6 +203,8 @@ async fn test_interactive_with_no_nodes() {
         use_agent: false,
         use_password: false,
         strict_mode: StrictHostKeyChecking::AcceptNew,
+        pty_config: PtyConfig::default(),
+        use_pty: None,
     };
 
     let result = cmd.execute().await;
@@ -235,6 +244,8 @@ fn test_mode_configuration() {
         use_agent: false,
         use_password: false,
         strict_mode: StrictHostKeyChecking::AcceptNew,
+        pty_config: PtyConfig::default(),
+        use_pty: None,
     };
 
     assert!(single_cmd.single_node);
@@ -255,6 +266,8 @@ fn test_mode_configuration() {
         use_agent: false,
         use_password: false,
         strict_mode: StrictHostKeyChecking::AcceptNew,
+        pty_config: PtyConfig::default(),
+        use_pty: None,
     };
 
     assert!(!multi_cmd.single_node);
@@ -278,6 +291,8 @@ fn test_working_directory_config() {
         use_agent: false,
         use_password: false,
         strict_mode: StrictHostKeyChecking::AcceptNew,
+        pty_config: PtyConfig::default(),
+        use_pty: None,
     };
 
     assert_eq!(cmd_with_dir.work_dir, Some("/var/www".to_string()));
@@ -296,6 +311,8 @@ fn test_working_directory_config() {
         use_agent: false,
         use_password: false,
         strict_mode: StrictHostKeyChecking::AcceptNew,
+        pty_config: PtyConfig::default(),
+        use_pty: None,
     };
 
     assert_eq!(cmd_without_dir.work_dir, None);
@@ -326,6 +343,8 @@ fn test_prompt_format() {
             use_agent: false,
             use_password: false,
             strict_mode: StrictHostKeyChecking::AcceptNew,
+            pty_config: PtyConfig::default(),
+            use_pty: None,
         };
 
         assert_eq!(cmd.prompt_format, format);

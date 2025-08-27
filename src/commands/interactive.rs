@@ -31,6 +31,7 @@ use tokio::time::{timeout, Duration};
 
 use crate::config::{Config, InteractiveConfig};
 use crate::node::Node;
+use crate::pty::{should_allocate_pty, PtyConfig, PtyManager};
 use crate::ssh::{
     known_hosts::{get_check_method, StrictHostKeyChecking},
     tokio_client::{AuthMethod, Client},
@@ -57,6 +58,9 @@ pub struct InteractiveCommand {
     pub use_agent: bool,
     pub use_password: bool,
     pub strict_mode: StrictHostKeyChecking,
+    // PTY configuration
+    pub pty_config: PtyConfig,
+    pub use_pty: Option<bool>, // None = auto-detect, Some(true) = force, Some(false) = disable
 }
 
 /// Result of an interactive session
@@ -119,7 +123,97 @@ impl NodeSession {
 }
 
 impl InteractiveCommand {
+    /// Determine whether to use PTY mode based on configuration
+    fn should_use_pty(&self) -> Result<bool> {
+        match self.use_pty {
+            Some(true) => Ok(true),   // Force PTY
+            Some(false) => Ok(false), // Disable PTY
+            None => {
+                // Auto-detect based on terminal and config
+                let mut pty_config = self.pty_config.clone();
+                pty_config.force_pty = self.use_pty == Some(true);
+                pty_config.disable_pty = self.use_pty == Some(false);
+                should_allocate_pty(&pty_config)
+            }
+        }
+    }
+
     pub async fn execute(self) -> Result<InteractiveResult> {
+        let use_pty = self.should_use_pty()?;
+
+        // Choose between PTY mode and traditional interactive mode
+        if use_pty {
+            // Use new PTY implementation for true terminal support
+            self.execute_with_pty().await
+        } else {
+            // Use traditional rustyline-based interactive mode (existing implementation)
+            self.execute_traditional().await
+        }
+    }
+
+    /// Execute interactive session with full PTY support
+    async fn execute_with_pty(self) -> Result<InteractiveResult> {
+        let start_time = std::time::Instant::now();
+
+        println!("Starting interactive session with PTY support...");
+
+        // Determine which nodes to connect to
+        let nodes_to_connect = self.select_nodes_to_connect()?;
+
+        // Connect to all selected nodes and get SSH channels
+        let mut channels = Vec::new();
+        let mut connected_nodes = Vec::new();
+
+        for node in nodes_to_connect {
+            match self.connect_to_node_pty(node.clone()).await {
+                Ok(channel) => {
+                    println!("✓ Connected to {} with PTY", node.to_string().green());
+                    channels.push(channel);
+                    connected_nodes.push(node);
+                }
+                Err(e) => {
+                    eprintln!("✗ Failed to connect to {}: {}", node.to_string().red(), e);
+                }
+            }
+        }
+
+        if channels.is_empty() {
+            anyhow::bail!("Failed to connect to any nodes");
+        }
+
+        let nodes_connected = channels.len();
+
+        // Create PTY manager and sessions
+        let mut pty_manager = PtyManager::new();
+
+        if self.single_node && channels.len() == 1 {
+            // Single PTY session
+            let session_id = pty_manager
+                .create_single_session(
+                    channels.into_iter().next().unwrap(),
+                    self.pty_config.clone(),
+                )
+                .await?;
+
+            pty_manager.run_single_session(session_id).await?;
+        } else {
+            // Multiple PTY sessions with multiplexing
+            let session_ids = pty_manager
+                .create_multiplex_sessions(channels, self.pty_config.clone())
+                .await?;
+
+            pty_manager.run_multiplex_sessions(session_ids).await?;
+        }
+
+        Ok(InteractiveResult {
+            duration: start_time.elapsed(),
+            commands_executed: 0, // PTY mode doesn't count discrete commands
+            nodes_connected,
+        })
+    }
+
+    /// Execute traditional interactive session (existing implementation)
+    async fn execute_traditional(self) -> Result<InteractiveResult> {
         let start_time = std::time::Instant::now();
 
         // Set up signal handlers and terminal guard
@@ -255,6 +349,77 @@ impl InteractiveCommand {
             is_connected: true,
             is_active: true, // All nodes start as active
         })
+    }
+
+    /// Select nodes to connect to based on configuration
+    fn select_nodes_to_connect(&self) -> Result<Vec<Node>> {
+        if self.single_node {
+            // In single-node mode, let user select a node or use the first one
+            if self.nodes.is_empty() {
+                anyhow::bail!("No nodes available for connection");
+            }
+
+            if self.nodes.len() == 1 {
+                Ok(vec![self.nodes[0].clone()])
+            } else {
+                // Show node selection menu
+                println!("Available nodes:");
+                for (i, node) in self.nodes.iter().enumerate() {
+                    println!("  [{}] {}", i + 1, node);
+                }
+                print!("Select node (1-{}): ", self.nodes.len());
+                io::stdout().flush()?;
+
+                let mut input = String::new();
+                io::stdin().read_line(&mut input)?;
+                let selection: usize = input.trim().parse().context("Invalid node selection")?;
+
+                if selection == 0 || selection > self.nodes.len() {
+                    anyhow::bail!("Invalid node selection");
+                }
+
+                Ok(vec![self.nodes[selection - 1].clone()])
+            }
+        } else {
+            Ok(self.nodes.clone())
+        }
+    }
+
+    /// Connect to a single node and establish a PTY-enabled SSH channel
+    async fn connect_to_node_pty(&self, node: Node) -> Result<Channel<Msg>> {
+        // Determine authentication method using the same logic as exec mode
+        let auth_method = self.determine_auth_method(&node)?;
+
+        // Set up host key checking using the configured strict mode
+        let check_method = get_check_method(self.strict_mode);
+
+        // Connect with timeout
+        let addr = (node.host.as_str(), node.port);
+        let connect_timeout = Duration::from_secs(30);
+
+        let client = timeout(
+            connect_timeout,
+            Client::connect(addr, &node.username, auth_method, check_method),
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "Connection timeout: Failed to connect to {}:{} after 30 seconds",
+                node.host, node.port
+            )
+        })?
+        .with_context(|| format!("SSH connection failed to {}:{}", node.host, node.port))?;
+
+        // Get terminal dimensions
+        let (width, height) = crate::pty::utils::get_terminal_size().unwrap_or((80, 24));
+
+        // Request interactive shell with PTY using the SSH client's method
+        let channel = client
+            .request_interactive_shell(&self.pty_config.term_type, width, height)
+            .await
+            .context("Failed to request interactive shell with PTY")?;
+
+        Ok(channel)
     }
 
     /// Determine authentication method based on node and config (same logic as exec mode)
@@ -936,6 +1101,8 @@ mod tests {
             use_agent: false,
             use_password: false,
             strict_mode: StrictHostKeyChecking::AcceptNew,
+            pty_config: PtyConfig::default(),
+            use_pty: None,
         };
 
         let path = PathBuf::from("~/test/file.txt");
@@ -964,6 +1131,8 @@ mod tests {
             use_agent: false,
             use_password: false,
             strict_mode: StrictHostKeyChecking::AcceptNew,
+            pty_config: PtyConfig::default(),
+            use_pty: None,
         };
 
         let node = Node::new(String::from("example.com"), 22, String::from("alice"));
