@@ -231,13 +231,36 @@ impl Config {
     }
 
     /// Load configuration with priority order:
-    /// 1. Backend.AI environment variables
-    /// 2. Current directory config.yaml
-    /// 3. XDG config directory ($XDG_CONFIG_HOME/bssh/config.yaml or ~/.config/bssh/config.yaml)
-    /// 4. Default path (from CLI argument)
-    pub async fn load_with_priority(default_path: &Path) -> Result<Self> {
+    /// 1. Explicit --config path (if different from default)
+    /// 2. Backend.AI environment variables
+    /// 3. Current directory config.yaml
+    /// 4. XDG config directory ($XDG_CONFIG_HOME/bssh/config.yaml or ~/.config/bssh/config.yaml)
+    /// 5. Default path (~/.config/bssh/config.yaml)
+    pub async fn load_with_priority(cli_config_path: &Path) -> Result<Self> {
+        let default_config_path = PathBuf::from("~/.config/bssh/config.yaml");
+        let expanded_cli_path = expand_tilde(cli_config_path);
+        let expanded_default_path = expand_tilde(&default_config_path);
+
+        // Check if user explicitly specified a config file (different from default)
+        let is_custom_config = expanded_cli_path != expanded_default_path;
+
+        if is_custom_config {
+            // User explicitly specified a config file - use it with highest priority
+            tracing::debug!(
+                "Using explicitly specified config file: {:?}",
+                expanded_cli_path
+            );
+            if expanded_cli_path.exists() {
+                return Self::load(&expanded_cli_path).await;
+            } else {
+                // If the user specified a file that doesn't exist, return an error
+                anyhow::bail!("Config file not found: {:?}", expanded_cli_path);
+            }
+        }
+
         // Try Backend.AI environment first
         if let Some(backendai_cluster) = Self::from_backendai_env() {
+            tracing::debug!("Using Backend.AI cluster configuration from environment");
             let mut config = Self::default();
             config
                 .clusters
@@ -248,6 +271,7 @@ impl Config {
         // Try current directory config.yaml
         let current_dir_config = PathBuf::from("config.yaml");
         if current_dir_config.exists() {
+            tracing::debug!("Found config.yaml in current directory");
             if let Ok(config) = Self::load(&current_dir_config).await {
                 return Ok(config);
             }
@@ -259,23 +283,33 @@ impl Config {
             let xdg_config = PathBuf::from(xdg_config_home)
                 .join("bssh")
                 .join("config.yaml");
+            tracing::debug!("Checking XDG_CONFIG_HOME path: {:?}", xdg_config);
             if xdg_config.exists() {
+                tracing::debug!("Found config at XDG_CONFIG_HOME: {:?}", xdg_config);
                 if let Ok(config) = Self::load(&xdg_config).await {
                     return Ok(config);
                 }
             }
-        } else if let Some(proj_dirs) = ProjectDirs::from("", "", "bssh") {
-            // Use directories crate for standard XDG path
-            let xdg_config = proj_dirs.config_dir().join("config.yaml");
-            if xdg_config.exists() {
-                if let Ok(config) = Self::load(&xdg_config).await {
-                    return Ok(config);
+        } else {
+            // Fallback to ~/.config/bssh/config.yaml if XDG_CONFIG_HOME is not set
+            if let Ok(home) = env::var("HOME") {
+                let xdg_config = PathBuf::from(home)
+                    .join(".config")
+                    .join("bssh")
+                    .join("config.yaml");
+                tracing::debug!("Checking ~/.config/bssh path: {:?}", xdg_config);
+                if xdg_config.exists() {
+                    tracing::debug!("Found config at ~/.config/bssh: {:?}", xdg_config);
+                    if let Ok(config) = Self::load(&xdg_config).await {
+                        return Ok(config);
+                    }
                 }
             }
         }
 
-        // Finally, try the default path from CLI (will create if needed)
-        Self::load(default_path).await
+        // Finally, try the default path (will create empty config if needed)
+        tracing::debug!("No config file found, using default empty configuration");
+        Ok(Self::default())
     }
 
     pub fn get_cluster(&self, name: &str) -> Option<&Cluster> {
