@@ -21,7 +21,7 @@ use std::path::PathBuf;
     version,
     before_help = "",
     about = "Backend.AI SSH - Parallel command execution across cluster nodes",
-    long_about = "bssh is a high-performance parallel SSH command execution tool for cluster management, built with Rust.\nIt enables efficient execution of commands across multiple nodes simultaneously with real-time output streaming.\nThe tool provides secure file transfer capabilities using SFTP protocol and supports multiple authentication\nmethods including SSH keys (with passphrase support), SSH agent, and password authentication.\nIt automatically detects Backend.AI multi-node session environments.",
+    long_about = "bssh is a high-performance parallel SSH command execution tool for cluster management.\nIt enables efficient execution of commands across multiple nodes simultaneously with real-time output streaming.\nThe tool provides secure file transfer capabilities using SFTP protocol and supports multiple authentication\nmethods including SSH keys (with passphrase support), SSH agent, and password authentication.\nIt automatically detects Backend.AI multi-node session environments.",
     after_help = "EXAMPLES:\n  Execute command on hosts:     bssh -H \"user@host1,host2\" \"uptime\"\n  Use cluster configuration:    bssh -c production \"df -h\"\n  Upload files with glob:       bssh -c staging upload \"*.log\" /tmp/\n  Download from all nodes:      bssh -c web download /var/log/app.log ./logs/\n  Interactive mode (multiplex): bssh -c production interactive\n  Test connectivity:            bssh -c staging ping\n\nDeveloped and maintained as part of the Backend.AI project.\nFor more examples and documentation, visit: https://github.com/lablup/bssh"
 )]
 pub struct Cli {
