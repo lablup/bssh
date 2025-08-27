@@ -387,7 +387,8 @@ async fn main() -> Result<()> {
                 let result = interactive_cmd.execute().await?;
 
                 // Ensure terminal is fully restored before printing
-                let _ = crossterm::terminal::disable_raw_mode();
+                // Use synchronized cleanup to prevent race conditions
+                bssh::pty::terminal::force_terminal_cleanup();
                 let _ = crossterm::cursor::Show;
                 let _ = std::io::Write::flush(&mut std::io::stdout());
 

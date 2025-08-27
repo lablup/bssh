@@ -16,6 +16,7 @@ use super::tokio_client::{AuthMethod, Client};
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::time::Duration;
+use zeroize::Zeroizing;
 
 use super::known_hosts::StrictHostKeyChecking;
 
@@ -445,11 +446,14 @@ impl SshClient {
         // If password authentication is explicitly requested
         if use_password {
             tracing::debug!("Using password authentication");
-            let password = rpassword::prompt_password(format!(
-                "Enter password for {}@{}: ",
-                self.username, self.host
-            ))
-            .with_context(|| "Failed to read password")?;
+            // Use Zeroizing to ensure password is cleared from memory
+            let password = Zeroizing::new(
+                rpassword::prompt_password(format!(
+                    "Enter password for {}@{}: ",
+                    self.username, self.host
+                ))
+                .with_context(|| "Failed to read password")?,
+            );
             return Ok(AuthMethod::with_password(&password));
         }
 
@@ -485,15 +489,20 @@ impl SshClient {
                 || key_contents.contains("Proc-Type: 4,ENCRYPTED")
             {
                 tracing::debug!("Detected encrypted SSH key, prompting for passphrase");
-                let pass =
+                // Use Zeroizing for passphrase security
+                let pass = Zeroizing::new(
                     rpassword::prompt_password(format!("Enter passphrase for key {key_path:?}: "))
-                        .with_context(|| "Failed to read passphrase")?;
+                        .with_context(|| "Failed to read passphrase")?,
+                );
                 Some(pass)
             } else {
                 None
             };
 
-            return Ok(AuthMethod::with_key_file(key_path, passphrase.as_deref()));
+            return Ok(AuthMethod::with_key_file(
+                key_path,
+                passphrase.as_ref().map(|p| p.as_str()),
+            ));
         }
 
         // Skip SSH agent auto-detection to avoid failures with empty agents
@@ -528,10 +537,13 @@ impl SshClient {
                     || key_contents.contains("Proc-Type: 4,ENCRYPTED")
                 {
                     tracing::debug!("Detected encrypted SSH key, prompting for passphrase");
-                    let pass = rpassword::prompt_password(format!(
-                        "Enter passphrase for key {default_key:?}: "
-                    ))
-                    .with_context(|| "Failed to read passphrase")?;
+                    // Use Zeroizing for passphrase security
+                    let pass = Zeroizing::new(
+                        rpassword::prompt_password(format!(
+                            "Enter passphrase for key {default_key:?}: "
+                        ))
+                        .with_context(|| "Failed to read passphrase")?,
+                    );
                     Some(pass)
                 } else {
                     None
@@ -539,7 +551,7 @@ impl SshClient {
 
                 return Ok(AuthMethod::with_key_file(
                     default_key,
-                    passphrase.as_deref(),
+                    passphrase.as_ref().map(|p| p.as_str()),
                 ));
             }
         }

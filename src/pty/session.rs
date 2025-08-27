@@ -19,11 +19,7 @@ use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, Mou
 use russh::{client::Msg, Channel, ChannelMsg};
 // use signal_hook::iterator::Signals; // Unused in current implementation
 use std::io::{self, Write};
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio::time::{timeout, Duration};
 
 use super::{
@@ -44,17 +40,23 @@ pub struct PtySession {
     state: PtyState,
     /// Terminal state guard for proper cleanup
     terminal_guard: Option<TerminalStateGuard>,
-    /// Shutdown signal
-    shutdown: Arc<AtomicBool>,
-    /// Message channels for internal communication
-    msg_tx: Option<mpsc::UnboundedSender<PtyMessage>>,
-    msg_rx: Option<mpsc::UnboundedReceiver<PtyMessage>>,
+    /// Cancellation signal for graceful shutdown
+    cancel_tx: watch::Sender<bool>,
+    cancel_rx: watch::Receiver<bool>,
+    /// Message channels for internal communication (bounded to prevent memory exhaustion)
+    msg_tx: Option<mpsc::Sender<PtyMessage>>,
+    msg_rx: Option<mpsc::Receiver<PtyMessage>>,
 }
 
 impl PtySession {
     /// Create a new PTY session
     pub async fn new(session_id: usize, channel: Channel<Msg>, config: PtyConfig) -> Result<Self> {
-        let (msg_tx, msg_rx) = mpsc::unbounded_channel();
+        // Use bounded channel with reasonable buffer size to prevent memory exhaustion
+        // 256 messages should be enough for terminal I/O without causing delays
+        let (msg_tx, msg_rx) = mpsc::channel(256);
+
+        // Create cancellation channel
+        let (cancel_tx, cancel_rx) = watch::channel(false);
 
         Ok(Self {
             session_id,
@@ -62,7 +64,8 @@ impl PtySession {
             config,
             state: PtyState::Inactive,
             terminal_guard: None,
-            shutdown: Arc::new(AtomicBool::new(false)),
+            cancel_tx,
+            cancel_rx,
             msg_tx: Some(msg_tx),
             msg_rx: Some(msg_rx),
         })
@@ -131,7 +134,7 @@ impl PtySession {
 
         // Set up resize signal handler
         let mut resize_signals = super::utils::setup_resize_handler()?;
-        let shutdown_for_resize = Arc::clone(&self.shutdown);
+        let cancel_for_resize = self.cancel_rx.clone();
 
         // Spawn resize handler task
         let resize_tx = self
@@ -142,13 +145,15 @@ impl PtySession {
 
         let resize_task = tokio::spawn(async move {
             for signal in resize_signals.forever() {
-                if shutdown_for_resize.load(Ordering::Relaxed) {
+                // Check cancellation
+                if *cancel_for_resize.borrow() {
                     break;
                 }
 
                 if signal == signal_hook::consts::SIGWINCH {
                     if let Ok((width, height)) = super::utils::get_terminal_size() {
-                        let _ = resize_tx.send(PtyMessage::Resize { width, height });
+                        // Try to send resize message, but don't block if channel is full
+                        let _ = resize_tx.try_send(PtyMessage::Resize { width, height });
                     }
                 }
             }
@@ -160,30 +165,36 @@ impl PtySession {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("Message sender not available"))?
             .clone();
-        let shutdown_for_input = Arc::clone(&self.shutdown);
+        let cancel_for_input = self.cancel_rx.clone();
 
-        let input_task = tokio::spawn(async move {
+        // Spawn input reader in blocking thread pool to avoid blocking async runtime
+        let input_task = tokio::task::spawn_blocking(move || {
+            // This runs in a dedicated thread pool for blocking operations
             loop {
-                if shutdown_for_input.load(Ordering::Relaxed) {
+                if *cancel_for_input.borrow() {
                     break;
                 }
 
-                // Use a shorter polling timeout for better responsiveness
-                // This allows the task to check the shutdown flag more frequently
-                let poll_timeout = Duration::from_millis(100);
+                // Poll with a longer timeout since we're in blocking thread
+                // This reduces CPU usage while maintaining responsiveness
+                let poll_timeout = Duration::from_millis(500);
 
-                // Check for input events with timeout
+                // Check for input events with timeout (blocking is OK here)
                 if crossterm::event::poll(poll_timeout).unwrap_or(false) {
                     match crossterm::event::read() {
                         Ok(event) => {
                             if let Some(data) = Self::handle_input_event(event) {
-                                if input_tx.send(PtyMessage::LocalInput(data)).is_err() {
-                                    break; // Channel closed
+                                // Use try_send to avoid blocking on bounded channel
+                                if input_tx.try_send(PtyMessage::LocalInput(data)).is_err() {
+                                    // Channel is either full or closed
+                                    // For input, we should break on error as it means session is ending
+                                    break;
                                 }
                             }
                         }
                         Err(e) => {
-                            let _ = input_tx.send(PtyMessage::Error(format!("Input error: {e}")));
+                            let _ =
+                                input_tx.try_send(PtyMessage::Error(format!("Input error: {e}")));
                             break;
                         }
                     }
@@ -196,7 +207,7 @@ impl PtySession {
         // Main message handling loop
         let mut should_terminate = false;
 
-        while !should_terminate && !self.shutdown.load(Ordering::Relaxed) {
+        while !should_terminate && !*self.cancel_rx.borrow() {
             // First check for SSH channel messages
             if let Ok(Some(msg)) = timeout(Duration::from_millis(10), self.channel.wait()).await {
                 match msg {
@@ -222,8 +233,8 @@ impl PtySession {
                     }
                     ChannelMsg::Eof | ChannelMsg::Close => {
                         tracing::debug!("SSH channel closed");
-                        // Set shutdown signal before terminating to ensure input task stops
-                        self.shutdown.store(true, Ordering::Relaxed);
+                        // Signal cancellation to all child tasks before terminating
+                        let _ = self.cancel_tx.send(true);
                         should_terminate = true;
                     }
                     _ => {}
@@ -276,12 +287,11 @@ impl PtySession {
             }
         }
 
-        // Signal shutdown first
-        self.shutdown.store(true, Ordering::Relaxed);
+        // Signal cancellation to all tasks
+        let _ = self.cancel_tx.send(true);
 
-        // Abort tasks immediately
-        resize_task.abort();
-        input_task.abort();
+        // Tasks will exit gracefully on cancellation
+        // No need to abort since they check cancellation signal
 
         // Wait for tasks to complete their abort
         let _ = tokio::time::timeout(Duration::from_millis(100), async {
@@ -297,11 +307,8 @@ impl PtySession {
         }
 
         // IMPORTANT: Explicitly restore terminal state by dropping the guard
-        // This ensures raw mode is disabled before we return
+        // The guard's drop implementation handles synchronized cleanup
         self.terminal_guard = None;
-
-        // Ensure terminal is fully restored
-        let _ = crossterm::terminal::disable_raw_mode();
 
         // Flush stdout to ensure all output is written
         let _ = io::stdout().flush();
@@ -478,7 +485,9 @@ impl PtySession {
     /// Shutdown the PTY session
     pub async fn shutdown(&mut self) -> Result<()> {
         self.state = PtyState::ShuttingDown;
-        self.shutdown.store(true, Ordering::Relaxed);
+
+        // Signal cancellation to all tasks
+        let _ = self.cancel_tx.send(true);
 
         // Send EOF to close the channel gracefully
         if let Err(e) = self.channel.eof().await {
@@ -495,7 +504,8 @@ impl PtySession {
 
 impl Drop for PtySession {
     fn drop(&mut self) {
-        self.shutdown.store(true, Ordering::Relaxed);
+        // Signal cancellation to all tasks when session is dropped
+        let _ = self.cancel_tx.send(true);
         // Terminal guard will be dropped automatically, restoring terminal state
     }
 }

@@ -28,6 +28,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::Mutex;
 use tokio::time::{timeout, Duration};
+use zeroize::Zeroizing;
 
 use crate::config::{Config, InteractiveConfig};
 use crate::node::Node;
@@ -206,7 +207,8 @@ impl InteractiveCommand {
         }
 
         // Ensure terminal is fully restored after PTY session ends
-        let _ = crossterm::terminal::disable_raw_mode();
+        // Use synchronized cleanup to prevent race conditions
+        crate::pty::terminal::force_terminal_cleanup();
         let _ = std::io::Write::flush(&mut std::io::stdout());
 
         Ok(InteractiveResult {
@@ -431,11 +433,14 @@ impl InteractiveCommand {
         // If password authentication is explicitly requested
         if self.use_password {
             tracing::debug!("Using password authentication");
-            let password = rpassword::prompt_password(format!(
-                "Enter password for {}@{}: ",
-                node.username, node.host
-            ))
-            .with_context(|| "Failed to read password")?;
+            // Use Zeroizing to ensure password is cleared from memory when dropped
+            let password = Zeroizing::new(
+                rpassword::prompt_password(format!(
+                    "Enter password for {}@{}: ",
+                    node.username, node.host
+                ))
+                .with_context(|| "Failed to read password")?,
+            );
             return Ok(AuthMethod::with_password(&password));
         }
 
@@ -471,15 +476,20 @@ impl InteractiveCommand {
                 || key_contents.contains("Proc-Type: 4,ENCRYPTED")
             {
                 tracing::debug!("Detected encrypted SSH key, prompting for passphrase");
-                let pass =
+                // Use Zeroizing for passphrase security
+                let pass = Zeroizing::new(
                     rpassword::prompt_password(format!("Enter passphrase for key {key_path:?}: "))
-                        .with_context(|| "Failed to read passphrase")?;
+                        .with_context(|| "Failed to read passphrase")?,
+                );
                 Some(pass)
             } else {
                 None
             };
 
-            return Ok(AuthMethod::with_key_file(key_path, passphrase.as_deref()));
+            return Ok(AuthMethod::with_key_file(
+                key_path,
+                passphrase.as_ref().map(|p| p.as_str()),
+            ));
         }
 
         // If no explicit key path, try SSH agent if available (auto-detect)
@@ -515,10 +525,13 @@ impl InteractiveCommand {
                     || key_contents.contains("Proc-Type: 4,ENCRYPTED")
                 {
                     tracing::debug!("Detected encrypted SSH key, prompting for passphrase");
-                    let pass = rpassword::prompt_password(format!(
-                        "Enter passphrase for key {default_key:?}: "
-                    ))
-                    .with_context(|| "Failed to read passphrase")?;
+                    // Use Zeroizing for passphrase security
+                    let pass = Zeroizing::new(
+                        rpassword::prompt_password(format!(
+                            "Enter passphrase for key {default_key:?}: "
+                        ))
+                        .with_context(|| "Failed to read passphrase")?,
+                    );
                     Some(pass)
                 } else {
                     None
@@ -526,7 +539,7 @@ impl InteractiveCommand {
 
                 return Ok(AuthMethod::with_key_file(
                     default_key,
-                    passphrase.as_deref(),
+                    passphrase.as_ref().map(|p| p.as_str()),
                 ));
             }
         }
@@ -566,8 +579,9 @@ impl InteractiveCommand {
         let shutdown = Arc::new(AtomicBool::new(false));
         let shutdown_clone = Arc::clone(&shutdown);
 
-        // Create a channel for receiving output from the SSH session
-        let (output_tx, mut output_rx) = mpsc::unbounded_channel::<String>();
+        // Create a bounded channel for receiving output from the SSH session
+        // 128 buffer size is reasonable for terminal output without causing memory issues
+        let (output_tx, mut output_rx) = mpsc::channel::<String>(128);
 
         // Spawn a task to read output from the SSH channel
         let output_reader = tokio::spawn(async move {
@@ -582,7 +596,9 @@ impl InteractiveCommand {
                     break;
                 }
                 if let Ok(Some(output)) = session_guard.read_output().await {
-                    let _ = output_tx.send(output);
+                    // Use try_send to avoid blocking; drop output if buffer is full
+                    // This prevents memory exhaustion but may lose some output under extreme load
+                    let _ = output_tx.try_send(output);
                 }
                 drop(session_guard);
                 tokio::time::sleep(Duration::from_millis(10)).await;

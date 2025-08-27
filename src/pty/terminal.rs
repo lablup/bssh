@@ -16,10 +16,16 @@
 
 use anyhow::{Context, Result};
 use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+use once_cell::sync::Lazy;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
-    Arc,
+    Arc, Mutex,
 };
+
+/// Global terminal cleanup synchronization
+/// Ensures only one cleanup attempt happens even with multiple guards
+static TERMINAL_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+static RAW_MODE_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// Terminal state information that needs to be preserved and restored
 #[derive(Debug, Clone)]
@@ -62,9 +68,13 @@ impl TerminalStateGuard {
         let saved_state = Self::save_terminal_state()?;
         let is_raw_mode_active = Arc::new(AtomicBool::new(false));
 
-        // Enter raw mode
-        enable_raw_mode().with_context(|| "Failed to enable raw mode")?;
-        is_raw_mode_active.store(true, Ordering::Relaxed);
+        // Enter raw mode with global synchronization
+        let _guard = TERMINAL_MUTEX.lock().unwrap();
+        if !RAW_MODE_ACTIVE.load(Ordering::SeqCst) {
+            enable_raw_mode().with_context(|| "Failed to enable raw mode")?;
+            RAW_MODE_ACTIVE.store(true, Ordering::SeqCst);
+            is_raw_mode_active.store(true, Ordering::Relaxed);
+        }
 
         Ok(Self {
             saved_state,
@@ -87,8 +97,10 @@ impl TerminalStateGuard {
 
     /// Manually enter raw mode
     pub fn enter_raw_mode(&self) -> Result<()> {
-        if !self.is_raw_mode_active.load(Ordering::Relaxed) {
+        let _guard = TERMINAL_MUTEX.lock().unwrap();
+        if !RAW_MODE_ACTIVE.load(Ordering::SeqCst) {
             enable_raw_mode().with_context(|| "Failed to enable raw mode")?;
+            RAW_MODE_ACTIVE.store(true, Ordering::SeqCst);
             self.is_raw_mode_active.store(true, Ordering::Relaxed);
         }
         Ok(())
@@ -96,8 +108,10 @@ impl TerminalStateGuard {
 
     /// Manually exit raw mode
     pub fn exit_raw_mode(&self) -> Result<()> {
-        if self.is_raw_mode_active.load(Ordering::Relaxed) {
+        let _guard = TERMINAL_MUTEX.lock().unwrap();
+        if RAW_MODE_ACTIVE.load(Ordering::SeqCst) {
             disable_raw_mode().with_context(|| "Failed to disable raw mode")?;
+            RAW_MODE_ACTIVE.store(false, Ordering::SeqCst);
             self.is_raw_mode_active.store(false, Ordering::Relaxed);
         }
         Ok(())
@@ -135,11 +149,20 @@ impl TerminalStateGuard {
 
     /// Restore terminal state to its original condition
     fn restore_terminal_state(&self) -> Result<()> {
-        // Exit raw mode if we enabled it
-        if self.is_raw_mode_active.load(Ordering::Relaxed) {
+        // Use global synchronization to prevent race conditions
+        let _guard = TERMINAL_MUTEX.lock().unwrap();
+
+        // Exit raw mode if it's globally active
+        if RAW_MODE_ACTIVE.load(Ordering::SeqCst) {
             if let Err(e) = disable_raw_mode() {
                 eprintln!("Warning: Failed to disable raw mode during cleanup: {e}");
+            } else {
+                RAW_MODE_ACTIVE.store(false, Ordering::SeqCst);
             }
+        }
+
+        // Mark our local state as cleaned
+        if self.is_raw_mode_active.load(Ordering::Relaxed) {
             self.is_raw_mode_active.store(false, Ordering::Relaxed);
         }
 
@@ -155,6 +178,15 @@ impl Drop for TerminalStateGuard {
         if let Err(e) = self.restore_terminal_state() {
             eprintln!("Warning: Failed to restore terminal state: {e}");
         }
+    }
+}
+
+/// Force terminal cleanup - can be called from anywhere to ensure terminal is restored
+pub fn force_terminal_cleanup() {
+    let _guard = TERMINAL_MUTEX.lock().unwrap();
+    if RAW_MODE_ACTIVE.load(Ordering::SeqCst) {
+        let _ = disable_raw_mode();
+        RAW_MODE_ACTIVE.store(false, Ordering::SeqCst);
     }
 }
 

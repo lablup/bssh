@@ -21,19 +21,15 @@
 use anyhow::{Context, Result};
 use russh::{client::Msg, Channel};
 use signal_hook::{consts::SIGWINCH, iterator::Signals};
-use std::sync::{
-    atomic::{AtomicBool, Ordering},
-    Arc,
-};
 use terminal_size::{terminal_size, Height, Width};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 use tokio::time::Duration;
 
 pub mod session;
 pub mod terminal;
 
 pub use session::PtySession;
-pub use terminal::{TerminalState, TerminalStateGuard};
+pub use terminal::{force_terminal_cleanup, TerminalState, TerminalStateGuard};
 
 /// PTY session configuration
 #[derive(Debug, Clone)]
@@ -95,15 +91,18 @@ pub enum PtyMessage {
 /// PTY manager for handling multiple PTY sessions
 pub struct PtyManager {
     active_sessions: Vec<PtySession>,
-    shutdown: Arc<AtomicBool>,
+    cancel_tx: watch::Sender<bool>,
+    cancel_rx: watch::Receiver<bool>,
 }
 
 impl PtyManager {
     /// Create a new PTY manager
     pub fn new() -> Self {
+        let (cancel_tx, cancel_rx) = watch::channel(false);
         Self {
             active_sessions: Vec::new(),
-            shutdown: Arc::new(AtomicBool::new(false)),
+            cancel_tx,
+            cancel_rx,
         }
     }
 
@@ -142,7 +141,8 @@ impl PtyManager {
         };
 
         // Ensure terminal is properly restored after session ends
-        let _ = crossterm::terminal::disable_raw_mode();
+        // Use synchronized cleanup from terminal module
+        crate::pty::terminal::force_terminal_cleanup();
 
         result
     }
@@ -156,13 +156,14 @@ impl PtyManager {
         // Start with the first session active
         let mut active_session = session_ids[0];
 
-        // Set up channels for communication between sessions
-        let (_switch_tx, mut _switch_rx) = mpsc::unbounded_channel::<usize>();
+        // Set up bounded channels for communication between sessions
+        // Session switching is infrequent, so small buffer is sufficient
+        let (_switch_tx, mut _switch_rx) = mpsc::channel::<usize>(32);
 
         // Run the multiplexed session loop
         loop {
-            // Check for shutdown signal
-            if self.shutdown.load(Ordering::Relaxed) {
+            // Check for cancellation signal
+            if *self.cancel_rx.borrow() {
                 break;
             }
 
@@ -188,7 +189,8 @@ impl PtyManager {
 
     /// Shutdown all PTY sessions
     pub async fn shutdown(&mut self) -> Result<()> {
-        self.shutdown.store(true, Ordering::Relaxed);
+        // Signal cancellation to all operations
+        let _ = self.cancel_tx.send(true);
 
         for session in &mut self.active_sessions {
             session.shutdown().await?;

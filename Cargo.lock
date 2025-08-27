@@ -366,6 +366,7 @@ dependencies = [
  "tracing-subscriber",
  "unicode-width",
  "whoami",
+ "zeroize",
 ]
 
 [[package]]

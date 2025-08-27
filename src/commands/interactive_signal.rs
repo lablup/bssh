@@ -74,8 +74,10 @@ pub async fn setup_async_signal_handlers(shutdown: Arc<AtomicBool>) {
 
 /// Handle terminal resize signal (Unix only)
 #[cfg(unix)]
-pub async fn handle_terminal_resize() -> Result<tokio::sync::mpsc::UnboundedReceiver<(u16, u16)>> {
-    let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+pub async fn handle_terminal_resize() -> Result<tokio::sync::mpsc::Receiver<(u16, u16)>> {
+    // Use bounded channel with small buffer for resize events
+    // Resize events are infrequent, so a small buffer is sufficient
+    let (tx, rx) = tokio::sync::mpsc::channel(16);
 
     tokio::spawn(async move {
         let mut sigwinch = signal::unix::signal(signal::unix::SignalKind::window_change())
@@ -86,7 +88,8 @@ pub async fn handle_terminal_resize() -> Result<tokio::sync::mpsc::UnboundedRece
 
             if let Ok((width, height)) = crossterm::terminal::size() {
                 debug!("Terminal resized to {}x{}", width, height);
-                let _ = tx.send((width, height));
+                // Use try_send for bounded channel; drop event if buffer is full
+                let _ = tx.try_send((width, height));
             }
         }
     });
