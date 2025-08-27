@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -32,6 +32,13 @@ use bssh::{
     ssh::known_hosts::StrictHostKeyChecking,
     utils::init_logging,
 };
+
+/// Show help message and exit
+fn show_help() {
+    let mut cmd = Cli::command();
+    let _ = cmd.print_help();
+    eprintln!(); // Add a newline after help
+}
 
 /// Format a Duration into a human-readable string
 fn format_duration(duration: Duration) -> String {
@@ -61,13 +68,20 @@ fn format_duration(duration: Duration) -> String {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Check if no arguments were provided
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() == 1 {
+        // Show help when no arguments provided
+        show_help();
+        std::process::exit(0);
+    }
+
     let cli = Cli::parse();
 
     // Initialize logging
     init_logging(cli.verbose);
 
     // Check if user explicitly specified options
-    let args: Vec<String> = std::env::args().collect();
     let has_explicit_config = args.iter().any(|arg| arg == "--config");
     let has_explicit_parallel = args.iter().any(|arg| {
         arg == "-p"
