@@ -314,9 +314,11 @@ impl InteractiveCommand {
         }
 
         // If no explicit key path, try SSH agent if available (auto-detect)
+        // Note: We skip auto-detection to avoid failures with empty SSH agents
+        // Only use agent if explicitly requested with use_agent flag
         #[cfg(not(target_os = "windows"))]
-        if !self.use_agent && std::env::var("SSH_AUTH_SOCK").is_ok() {
-            tracing::debug!("SSH agent detected, attempting agent authentication");
+        if self.use_agent && std::env::var("SSH_AUTH_SOCK").is_ok() {
+            tracing::debug!("SSH agent explicitly requested and available");
             return Ok(AuthMethod::Agent);
         }
 

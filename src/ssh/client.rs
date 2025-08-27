@@ -496,10 +496,11 @@ impl SshClient {
             return Ok(AuthMethod::with_key_file(key_path, passphrase.as_deref()));
         }
 
-        // If no explicit key path, try SSH agent if available (auto-detect)
+        // Skip SSH agent auto-detection to avoid failures with empty agents
+        // Only use agent if explicitly requested
         #[cfg(not(target_os = "windows"))]
-        if !use_agent && std::env::var("SSH_AUTH_SOCK").is_ok() {
-            tracing::debug!("SSH agent detected, attempting agent authentication");
+        if use_agent && std::env::var("SSH_AUTH_SOCK").is_ok() {
+            tracing::debug!("SSH agent explicitly requested and available");
             return Ok(AuthMethod::Agent);
         }
 

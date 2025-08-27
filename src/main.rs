@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -32,6 +32,13 @@ use bssh::{
     ssh::known_hosts::StrictHostKeyChecking,
     utils::init_logging,
 };
+
+/// Show help message and exit
+fn show_help() {
+    let mut cmd = Cli::command();
+    let _ = cmd.print_help();
+    eprintln!(); // Add a newline after help
+}
 
 /// Format a Duration into a human-readable string
 fn format_duration(duration: Duration) -> String {
@@ -61,20 +68,30 @@ fn format_duration(duration: Duration) -> String {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Check if no arguments were provided
+    let args: Vec<String> = std::env::args().collect();
+    if args.len() == 1 {
+        // Show help when no arguments provided
+        show_help();
+        std::process::exit(0);
+    }
+
     let cli = Cli::parse();
+
+    // Handle SSH query option (-Q)
+    if let Some(ref query) = cli.query {
+        handle_query(query);
+        return Ok(());
+    }
 
     // Initialize logging
     init_logging(cli.verbose);
 
     // Check if user explicitly specified options
-    let args: Vec<String> = std::env::args().collect();
     let has_explicit_config = args.iter().any(|arg| arg == "--config");
-    let has_explicit_parallel = args.iter().any(|arg| {
-        arg == "-p"
-            || arg == "--parallel"
-            || arg.starts_with("-p=")
-            || arg.starts_with("--parallel=")
-    });
+    let has_explicit_parallel = args
+        .iter()
+        .any(|arg| arg == "--parallel" || arg.starts_with("--parallel="));
 
     // If user explicitly specified --config, ensure the file exists
     if has_explicit_config {
@@ -107,7 +124,10 @@ async fn main() -> Result<()> {
     let (nodes, actual_cluster_name) = resolve_nodes(&cli, &config).await?;
 
     // Determine max_parallel: CLI argument takes precedence over config
-    let max_parallel = if has_explicit_parallel {
+    // For SSH mode (single host), parallel is always 1
+    let max_parallel = if cli.is_ssh_mode() {
+        1
+    } else if has_explicit_parallel {
         cli.parallel
     } else {
         config
@@ -129,8 +149,10 @@ async fn main() -> Result<()> {
     let command = cli.get_command();
 
     // Check if command is required (not for subcommands like ping, copy)
-    let needs_command = matches!(cli.command, None | Some(Commands::Exec { .. }));
-    if command.is_empty() && needs_command {
+    // In SSH mode without a command, we start an interactive session
+    let needs_command =
+        matches!(cli.command, None | Some(Commands::Exec { .. })) && !cli.is_ssh_mode();
+    if command.is_empty() && needs_command && !cli.force_tty {
         anyhow::bail!(
             "No command specified. Please provide a command to execute.\nExample: bssh -H host1,host2 'ls -la'"
         );
@@ -288,36 +310,75 @@ async fn main() -> Result<()> {
             Ok(())
         }
         _ => {
-            // Execute command (default or Exec subcommand)
-            // Determine timeout: CLI argument takes precedence over config
-            let timeout = if cli.timeout > 0 {
-                Some(cli.timeout)
-            } else {
-                config.get_timeout(actual_cluster_name.as_deref().or(cli.cluster.as_deref()))
-            };
+            // Execute command (default or Exec subcommand) or interactive shell
+            // In SSH mode without command, start interactive session
+            if cli.is_ssh_mode() && command.is_empty() {
+                // SSH mode interactive session (like ssh user@host)
+                tracing::info!("Starting SSH interactive session to {}", nodes[0].host);
 
-            // Determine SSH key path: CLI argument takes precedence over config
-            let key_path = if let Some(identity) = &cli.identity {
-                Some(identity.clone())
-            } else {
-                config
-                    .get_ssh_key(actual_cluster_name.as_deref().or(cli.cluster.as_deref()))
-                    .map(|ssh_key| bssh::config::expand_tilde(Path::new(&ssh_key)))
-            };
+                // Determine SSH key path
+                let key_path = if let Some(identity) = &cli.identity {
+                    Some(identity.clone())
+                } else {
+                    config
+                        .get_ssh_key(actual_cluster_name.as_deref().or(cli.cluster.as_deref()))
+                        .map(|ssh_key| bssh::config::expand_tilde(Path::new(&ssh_key)))
+                };
 
-            let params = ExecuteCommandParams {
-                nodes,
-                command: &command,
-                max_parallel,
-                key_path: key_path.as_deref(),
-                verbose: cli.verbose > 0,
-                strict_mode,
-                use_agent: cli.use_agent,
-                use_password: cli.password,
-                output_dir: cli.output_dir.as_deref(),
-                timeout,
-            };
-            execute_command(params).await
+                // Use interactive mode for single host SSH connections
+                let interactive_cmd = InteractiveCommand {
+                    single_node: true, // Always single node for SSH mode
+                    multiplex: false,  // No multiplexing for SSH mode
+                    prompt_format: "[{user}@{host}:{pwd}]$ ".to_string(),
+                    history_file: PathBuf::from("~/.bssh_history"),
+                    work_dir: None,
+                    nodes,
+                    config: config.clone(),
+                    interactive_config: config.get_interactive_config(None),
+                    cluster_name: None,
+                    key_path,
+                    use_agent: cli.use_agent,
+                    use_password: cli.password,
+                    strict_mode,
+                };
+                let result = interactive_cmd.execute().await?;
+                println!("\nSession ended.");
+                if cli.verbose > 0 {
+                    println!("Duration: {}", format_duration(result.duration));
+                    println!("Commands executed: {}", result.commands_executed);
+                }
+                Ok(())
+            } else {
+                // Determine timeout: CLI argument takes precedence over config
+                let timeout = if cli.timeout > 0 {
+                    Some(cli.timeout)
+                } else {
+                    config.get_timeout(actual_cluster_name.as_deref().or(cli.cluster.as_deref()))
+                };
+
+                // Determine SSH key path: CLI argument takes precedence over config
+                let key_path = if let Some(identity) = &cli.identity {
+                    Some(identity.clone())
+                } else {
+                    config
+                        .get_ssh_key(actual_cluster_name.as_deref().or(cli.cluster.as_deref()))
+                        .map(|ssh_key| bssh::config::expand_tilde(Path::new(&ssh_key)))
+                };
+
+                let params = ExecuteCommandParams {
+                    nodes,
+                    command: &command,
+                    max_parallel,
+                    key_path: key_path.as_deref(),
+                    verbose: cli.verbose > 0,
+                    strict_mode,
+                    use_agent: cli.use_agent,
+                    use_password: cli.password,
+                    output_dir: cli.output_dir.as_deref(),
+                    timeout,
+                };
+                execute_command(params).await
+            }
         }
     }
 }
@@ -326,7 +387,24 @@ async fn resolve_nodes(cli: &Cli, config: &Config) -> Result<(Vec<Node>, Option<
     let mut nodes = Vec::new();
     let mut cluster_name = None;
 
-    if let Some(hosts) = &cli.hosts {
+    // Handle SSH compatibility mode (single host)
+    if cli.is_ssh_mode() {
+        let (user, host, port) = cli
+            .parse_destination()
+            .ok_or_else(|| anyhow::anyhow!("Invalid destination format"))?;
+
+        // Get effective username
+        let username = user
+            .or_else(|| cli.get_effective_user())
+            .or_else(|| std::env::var("USER").ok())
+            .unwrap_or_else(|| "root".to_string());
+
+        // Get effective port
+        let port = port.or_else(|| cli.get_effective_port()).unwrap_or(22);
+
+        let node = Node::new(host, port, username);
+        nodes.push(node);
+    } else if let Some(hosts) = &cli.hosts {
         // Parse hosts from CLI
         for host_str in hosts {
             // Split by comma if a single argument contains multiple hosts
@@ -349,4 +427,47 @@ async fn resolve_nodes(cli: &Cli, config: &Config) -> Result<(Vec<Node>, Option<
     }
 
     Ok((nodes, cluster_name))
+}
+
+/// Handle SSH query options (-Q)
+fn handle_query(query: &str) {
+    match query {
+        "cipher" => {
+            println!("aes128-ctr\naes192-ctr\naes256-ctr");
+            println!("aes128-gcm@openssh.com\naes256-gcm@openssh.com");
+            println!("chacha20-poly1305@openssh.com");
+        }
+        "cipher-auth" => {
+            println!("aes128-gcm@openssh.com\naes256-gcm@openssh.com");
+            println!("chacha20-poly1305@openssh.com");
+        }
+        "mac" => {
+            println!("hmac-sha2-256\nhmac-sha2-512\nhmac-sha1");
+        }
+        "kex" => {
+            println!("curve25519-sha256\ncurve25519-sha256@libssh.org");
+            println!("ecdh-sha2-nistp256\necdh-sha2-nistp384\necdh-sha2-nistp521");
+        }
+        "key" | "key-plain" | "key-cert" | "key-sig" => {
+            println!("ssh-rsa\nssh-ed25519");
+            println!("ecdsa-sha2-nistp256\necdsa-sha2-nistp384\necdsa-sha2-nistp521");
+        }
+        "protocol-version" => {
+            println!("2");
+        }
+        "help" => {
+            println!("Available query options:");
+            println!("  cipher            - Supported ciphers");
+            println!("  cipher-auth       - Authenticated encryption ciphers");
+            println!("  mac               - Supported MAC algorithms");
+            println!("  kex               - Supported key exchange algorithms");
+            println!("  key               - Supported key types");
+            println!("  protocol-version  - SSH protocol version");
+        }
+        _ => {
+            eprintln!("Unknown query option: {query}");
+            eprintln!("Use 'bssh -Q help' to see available options");
+            std::process::exit(1);
+        }
+    }
 }

@@ -5,12 +5,13 @@
 ![CI](https://github.com/lablup/bssh/workflows/CI/badge.svg)
 [![dependency status](https://deps.rs/repo/github/lablup/bssh/status.svg)](https://deps.rs/repo/github/lablup/bssh)
 
-A high-performance parallel SSH command execution tool for cluster management, built with Rust and `russh`.
+A high-performance SSH client with **SSH-compatible syntax** for both single-host and parallel cluster operations, built with Rust and `russh`.
 
 *Developed and maintained as part of the Backend.AI project.*
 
 ## Features
 
+- **SSH Compatibility**: Drop-in replacement for SSH with compatible command-line syntax
 - **Parallel Execution**: Execute commands across multiple nodes simultaneously
 - **Cluster Management**: Define and manage node clusters via configuration files
 - **Progress Tracking**: Real-time progress indicators for each node
@@ -78,39 +79,57 @@ sudo cp target/release/bssh /usr/local/bin/
 
 ## Quick Start
 
-### Execute command on multiple hosts
+### SSH-Compatible Mode (Single Host)
+```bash
+# Connect to a host (just like SSH!)
+bssh user@hostname
+
+# Execute a command
+bssh user@hostname "uptime"
+
+# With specific port and key
+bssh -p 2222 -i ~/.ssh/key.pem admin@server.com
+
+# Using SSH options
+bssh -o StrictHostKeyChecking=no user@host
+
+# Query SSH capabilities
+bssh -Q cipher
+```
+
+### Multi-Server Mode (Cluster Operations)
 ```bash
 # Using direct host specification
 bssh -H "user1@host1.com,user2@host2.com:2222" "uptime"
 
 # Using cluster from config
-bssh -c production "df -h"
+bssh -C production "df -h"
 
 # With custom SSH key
-bssh -c staging -i ~/.ssh/custom_key "systemctl status nginx"
+bssh -C staging -i ~/.ssh/custom_key "systemctl status nginx"
 
 # Use SSH agent for authentication
-bssh --use-agent -c production "systemctl status nginx"
+bssh -A -C production "systemctl status nginx"
 
 # Use password authentication (will prompt for password)
 bssh --password -H "user@host.com" "uptime"
 
 # Use encrypted SSH key (will prompt for passphrase)
-bssh -i ~/.ssh/encrypted_key -c production "df -h"
+bssh -i ~/.ssh/encrypted_key -C production "df -h"
 
 # Limit parallel connections
-bssh -c production --parallel 5 "apt update"
+bssh -C production --parallel 5 "apt update"
 
 # Set command timeout (10 seconds)
-bssh -c production --timeout 10 "quick-check"
+bssh -C production --timeout 10 "quick-check"
 
 # No timeout (unlimited execution time)
-bssh -c staging --timeout 0 "long-running-backup"
+bssh -C staging --timeout 0 "long-running-backup"
 ```
 
 ### Test connectivity
 ```bash
-bssh -c production ping
+bssh -C production ping
 ```
 
 ### List configured clusters
@@ -187,7 +206,7 @@ bssh "nvidia-smi" # Check GPU status on all nodes
 bssh interactive  # Opens interactive session with all Backend.AI nodes
 
 # You can still override with explicit options if needed:
-bssh -c other-cluster "command"  # Use a different cluster
+bssh -C other-cluster "command"  # Use a different cluster
 bssh -H specific-host "command"   # Use specific host
 ```
 
@@ -279,7 +298,7 @@ bssh "python train.py --distributed"  # Run distributed training
 
 ### Run system updates
 ```bash
-bssh -c production "sudo apt update && sudo apt upgrade -y"
+bssh -C production "sudo apt update && sudo apt upgrade -y"
 ```
 
 ### Check disk usage
@@ -289,24 +308,24 @@ bssh -H "server1,server2,server3" "df -h | grep -E '^/dev/'"
 
 ### Restart services
 ```bash
-bssh -c webservers "sudo systemctl restart nginx"
+bssh -C webservers "sudo systemctl restart nginx"
 ```
 
 ### Collect logs
 ```bash
-bssh -c production --output-dir ./logs "tail -n 100 /var/log/syslog"
+bssh -C production --output-dir ./logs "tail -n 100 /var/log/syslog"
 ```
 
 ### Long-running commands with timeout
 ```bash
 # Set 30 minute timeout for backup operations
-bssh -c production --timeout 1800 "backup-database.sh"
+bssh -C production --timeout 1800 "backup-database.sh"
 
 # No timeout for data migration (may take hours)
-bssh -c production --timeout 0 "migrate-data.sh"
+bssh -C production --timeout 0 "migrate-data.sh"
 
 # Quick health check with 5 second timeout
-bssh -c monitoring --timeout 5 "health-check.sh"
+bssh -C monitoring --timeout 5 "health-check.sh"
 ```
 
 ### Interactive Mode
@@ -315,16 +334,16 @@ Start an interactive shell session on cluster nodes:
 
 ```bash
 # Interactive session on all nodes (multiplex mode - default)
-bssh -c production interactive
+bssh -C production interactive
 
 # Interactive session on a single node
-bssh -c production interactive --single-node
+bssh -C production interactive --single-node
 
 # Custom prompt format
 bssh -H server1,server2 interactive --prompt-format "{user}@{host}> "
 
 # Set initial working directory
-bssh -c staging interactive --work-dir /var/www
+bssh -C staging interactive --work-dir /var/www
 ```
 
 #### Interactive Mode Configuration
@@ -410,7 +429,7 @@ For large clusters (>10 nodes), the prompt uses a compact format:
 #### Example Interactive Session
 
 ```bash
-$ bssh -c production interactive
+$ bssh -C production interactive
 
 Connected to 3 nodes
 [● ● ●] bssh> !status
@@ -480,13 +499,13 @@ Each output file includes metadata headers:
 ### Example Usage
 ```bash
 # Save outputs to timestamped directory
-bssh -c production --output-dir ./results/$(date +%Y%m%d) "ps aux | head -10"
+bssh -C production --output-dir ./results/$(date +%Y%m%d) "ps aux | head -10"
 
 # Collect system information
-bssh -c all-servers --output-dir ./system-info "uname -a; df -h; free -m"
+bssh -C all-servers --output-dir ./system-info "uname -a; df -h; free -m"
 
 # Debug failed services
-bssh -c webservers --output-dir ./debug "systemctl status nginx"
+bssh -C webservers --output-dir ./debug "systemctl status nginx"
 ```
 
 ## Development
