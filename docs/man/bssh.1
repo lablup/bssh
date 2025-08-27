@@ -1,45 +1,105 @@
 .\" Manpage for bssh
 .\" Contact the maintainers to correct errors or typos.
-.TH BSSH 1 "August 27, 2025" "v0.5.3" "bssh Manual"
+.TH BSSH 1 "December 2024" "v0.5.3" "bssh Manual"
 
 .SH NAME
-bssh \- Backend.AI SSH - Parallel command execution across cluster nodes
+bssh \- Backend.AI SSH - SSH-compatible client with parallel execution capabilities
 
 .SH SYNOPSIS
 .B bssh
-[\fIOPTIONS\fR] [\fICOMMAND_ARGS\fR...] [\fICOMMAND\fR]
+[\fIOPTIONS\fR] [\fIdestination\fR] [\fIcommand\fR [\fIargument\fR...]]
+.br
+.B bssh
+[\fIOPTIONS\fR] \fICOMMAND\fR
 
 .SH DESCRIPTION
 .B bssh
-is a high-performance parallel SSH command execution tool for cluster management, built with Rust.
-It enables efficient execution of commands across multiple nodes simultaneously with real-time output streaming.
-The tool provides secure file transfer capabilities using SFTP protocol for both uploading and downloading files
-to/from multiple remote hosts in parallel. It supports multiple authentication methods including SSH keys (with
-passphrase support for encrypted keys), SSH agent, and password authentication. It automatically detects Backend.AI
-multi-node session environments and supports various configuration methods.
+is a high-performance SSH client that can be used as a drop-in replacement for standard SSH while also providing
+powerful parallel execution capabilities for cluster management. Built with Rust, it supports both single-host
+SSH connections (SSH compatibility mode) and multi-server operations (cluster mode).
+
+.B SSH Compatibility Mode:
+When used with a single destination (e.g., bssh user@host), bssh behaves like standard SSH, supporting
+common SSH options and automatically starting an interactive shell when no command is provided.
+
+.B Multi-Server Mode:
+When used with clusters (-C) or multiple hosts (-H), bssh executes commands across multiple nodes
+simultaneously with real-time output streaming.
+
+The tool provides secure file transfer capabilities using SFTP protocol, supports multiple authentication
+methods (SSH keys with passphrase support, SSH agent, password), and automatically detects Backend.AI
+multi-node session environments.
 
 .SH OPTIONS
+
+.SS SSH-Compatible Options
+.TP
+.BR \-i " " \fIidentity_file\fR
+SSH private key file path (same as ssh -i)
+
+.TP
+.BR \-l " " \fIlogin_name\fR
+Specifies the user to log in as on the remote machine (same as ssh -l)
+
+.TP
+.BR \-p " " \fIport\fR
+Port to connect to on the remote host (same as ssh -p)
+
+.TP
+.BR \-o " " \fIoption\fR
+SSH options in key=value format (e.g., -o StrictHostKeyChecking=no)
+Can be specified multiple times
+
+.TP
+.BR \-F " " \fIconfigfile\fR
+Specifies an alternative SSH configuration file
+
+.TP
+.BR \-q
+Quiet mode (suppress non-error messages)
+
+.TP
+.BR \-t
+Force pseudo-terminal allocation
+
+.TP
+.BR \-T
+Disable pseudo-terminal allocation
+
+.TP
+.BR \-J " " \fIdestination\fR
+Connect via jump host(s) (ProxyJump) [planned feature]
+
+.TP
+.BR \-Q " " \fIquery_option\fR
+Query SSH configuration options (cipher, kex, mac, key, protocol-version, help)
+
+.TP
+.BR \-4
+Force use of IPv4 addresses only
+
+.TP
+.BR \-6
+Force use of IPv6 addresses only
+
+.TP
+.BR \-x
+Disable X11 forwarding
+
+.SS Multi-Server Options
 .TP
 .BR \-H ", " \-\-hosts " " \fIHOSTS\fR
 Comma-separated list of hosts in [user@]hostname[:port] format.
 Example: user1@host1:2222,user2@host2
 
 .TP
-.BR \-c ", " \-\-cluster " " \fICLUSTER\fR
-Cluster name from configuration file
+.BR \-C ", " \-\-cluster " " \fICLUSTER\fR
+Cluster name from configuration file (uppercase C for multi-server mode)
 
 .TP
 .BR \-\-config " " \fICONFIG\fR
 Configuration file path (default: ~/.config/bssh/config.yaml)
 
-.TP
-.BR \-u ", " \-\-user " " \fIUSER\fR
-Default username for SSH connections
-
-.TP
-.BR \-i ", " \-\-identity " " \fIIDENTITY\fR
-SSH private key file path. If the key is encrypted, bssh will
-automatically prompt for the passphrase.
 
 .TP
 .BR \-A ", " \-\-use\-agent
@@ -49,14 +109,15 @@ for authentication. Falls back to key file authentication if the agent
 is not available or authentication fails.
 
 .TP
-.BR \-P ", " \-\-password
+.BR \-\-password
 Use password authentication. When this option is specified, bssh will
 prompt for the password securely without echoing it to the terminal.
 This is useful for systems that don't have SSH keys configured.
 
 .TP
-.BR \-p ", " \-\-parallel " " \fIPARALLEL\fR
-Maximum parallel connections (default: 10)
+.BR \-\-parallel " " \fIPARALLEL\fR
+Maximum parallel connections for multi-server mode (default: 10)
+Note: -p is now used for port (SSH compatibility)
 
 .TP
 .BR \-\-output\-dir " " \fIOUTPUT_DIR\fR
@@ -213,25 +274,48 @@ Current node's role (main or sub)
 Note: Backend.AI multi-node clusters use SSH port 2200 by default, which is automatically configured.
 
 .SH EXAMPLES
+
+.SS SSH Compatibility Mode (Single Host)
+.TP
+Connect to a host (interactive shell):
+.B bssh user@hostname
+
+.TP
+Execute a command:
+.B bssh user@hostname "uptime"
+
+.TP
+Specify port and key:
+.B bssh -p 2222 -i ~/.ssh/key.pem admin@server.com
+
+.TP
+Use SSH options:
+.B bssh -o StrictHostKeyChecking=no user@host
+
+.TP
+Query SSH capabilities:
+.B bssh -Q cipher
+
+.SS Multi-Server Mode
 .TP
 Execute command on multiple hosts:
 .B bssh -H "user1@host1,user2@host2" "uptime"
 
 .TP
 Use cluster from configuration:
-.B bssh -c production "df -h"
+.B bssh -C production "df -h"
 
 .TP
 Test connectivity:
-.B bssh -c production ping
+.B bssh -C production ping
 
 .TP
 Upload file to remote hosts (SFTP):
-.B bssh -c production upload local_file.txt /tmp/remote_file.txt
+.B bssh -C production upload local_file.txt /tmp/remote_file.txt
 
 .TP
 Download file from remote hosts (SFTP):
-.B bssh -c production download /etc/passwd ./downloads/
+.B bssh -C production download /etc/passwd ./downloads/
 .RS
 Downloads /etc/passwd from each host to ./downloads/ directory.
 Files are saved as hostname_passwd (e.g., web1_passwd, web2_passwd)
@@ -247,11 +331,11 @@ Increase verbosity for debugging:
 
 .TP
 Use custom SSH key:
-.B bssh -i ~/.ssh/custom_key -c staging "systemctl status"
+.B bssh -i ~/.ssh/custom_key -C staging "systemctl status"
 
 .TP
 Use SSH agent for authentication:
-.B bssh -A -c production "systemctl status"
+.B bssh -A -C production "systemctl status"
 
 .TP
 Use password authentication:
@@ -262,14 +346,14 @@ Prompts for password interactively
 
 .TP
 Use encrypted SSH key:
-.B bssh -i ~/.ssh/encrypted_key -c production "df -h"
+.B bssh -i ~/.ssh/encrypted_key -C production "df -h"
 .RS
 Automatically detects encrypted key and prompts for passphrase
 .RE
 
 .TP
 Save output to files:
-.B bssh --output-dir ./results -c production "ps aux"
+.B bssh --output-dir ./results -C production "ps aux"
 .RS
 Creates timestamped files per node:
 .br
@@ -288,39 +372,39 @@ Upload configuration file to all nodes:
 
 .TP
 Download logs from all web servers:
-.B bssh -c webservers download /var/log/nginx/access.log ./logs/
+.B bssh -C webservers download /var/log/nginx/access.log ./logs/
 .RS
 Each file is saved as hostname_access.log in the ./logs/ directory
 .RE
 
 .TP
 Upload with custom SSH key and increased parallelism:
-.B bssh -i ~/.ssh/deploy_key -p 20 -c production upload deploy.tar.gz /tmp/
+.B bssh -i ~/.ssh/deploy_key --parallel 20 -C production upload deploy.tar.gz /tmp/
 
 .TP
 Upload multiple files with glob pattern:
-.B bssh -c production upload "*.log" /var/backups/logs/
+.B bssh -C production upload "*.log" /var/backups/logs/
 .RS
 Uploads all .log files from current directory to /var/backups/logs/ on all nodes
 .RE
 
 .TP
 Download logs with wildcard pattern:
-.B bssh -c production download "/var/log/app*.log" ./collected_logs/
+.B bssh -C production download "/var/log/app*.log" ./collected_logs/
 .RS
 Downloads all files matching app*.log from /var/log/ on each node
 .RE
 
 .TP
 Start interactive mode with all nodes:
-.B bssh -c production interactive
+.B bssh -C production interactive
 .RS
 Opens an interactive shell session with all nodes in multiplex mode
 .RE
 
 .TP
 Start interactive mode with single node:
-.B bssh -c production interactive --single-node
+.B bssh -C production interactive --single-node
 .RS
 Prompts to select one node for interactive session
 .RE
@@ -331,7 +415,7 @@ Interactive mode with custom prompt:
 
 .TP
 Interactive mode with initial working directory:
-.B bssh -c staging interactive --work-dir /var/www
+.B bssh -C staging interactive --work-dir /var/www
 .RS
 Sets initial working directory to /var/www on all nodes
 .RE
@@ -460,6 +544,16 @@ Licensed under the Apache License, Version 2.0
 .BR ssh-keygen (1)
 
 .SH NOTES
+.SS Breaking Changes (v0.5.3+)
+.TP
+.B Cluster option changed:
+The cluster option has changed from lowercase -c to uppercase -C to avoid conflicts 
+with SSH's -c (cipher) option. Update your scripts accordingly.
+.TP
+.B Parallel option changed:
+The -p option now specifies port (SSH compatibility). For parallel connections,
+use --parallel instead.
+
 .SS SFTP Requirements
 The upload and download commands require SFTP subsystem to be enabled on the remote SSH servers.
 Most SSH servers have SFTP enabled by default with a configuration line like:
