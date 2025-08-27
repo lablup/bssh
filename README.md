@@ -526,6 +526,7 @@ See the [LICENSE](./LICENSE) file for details.
 ## Changelog
 
 ### Recent Updates
+- **v0.5.2 (2025/08/27):** Fix config file loading priority, improve BACKENDAI environment handling, use cluster SSH key config
 - **v0.5.1 (2025/08/25):** Add configurable command timeout with support for unlimited execution (timeout=0), configurable via CLI and config file
 - **v0.5.0 (2025/08/22):** Add interactive mode with single-node and multiplex support, broadcast command, and improved Backend.AI cluster auto-detection
 - **v0.4.0 (2025/08/22):** Add password authentication, SSH key passphrase support, modern UI with colors, XDG config compliance, and Debian packaging
