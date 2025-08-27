@@ -14,7 +14,7 @@
 
 use anyhow::Result;
 use clap::Parser;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use bssh::{
@@ -98,7 +98,7 @@ async fn main() -> Result<()> {
     }
 
     // Determine nodes to execute on
-    let nodes = resolve_nodes(&cli, &config).await?;
+    let (nodes, actual_cluster_name) = resolve_nodes(&cli, &config).await?;
 
     if nodes.is_empty() {
         anyhow::bail!(
@@ -124,10 +124,19 @@ async fn main() -> Result<()> {
     // Handle remaining commands
     match cli.command {
         Some(Commands::Ping) => {
+            // Determine SSH key path: CLI argument takes precedence over config
+            let key_path = if let Some(identity) = &cli.identity {
+                Some(identity.clone())
+            } else {
+                config
+                    .get_ssh_key(actual_cluster_name.as_deref().or(cli.cluster.as_deref()))
+                    .map(|ssh_key| bssh::config::expand_tilde(Path::new(&ssh_key)))
+            };
+
             ping_nodes(
                 nodes,
                 cli.parallel,
-                cli.identity.as_deref(),
+                key_path.as_deref(),
                 strict_mode,
                 cli.use_agent,
                 cli.password,
@@ -139,10 +148,19 @@ async fn main() -> Result<()> {
             destination,
             recursive,
         }) => {
+            // Determine SSH key path: CLI argument takes precedence over config
+            let key_path = if let Some(identity) = &cli.identity {
+                Some(identity.clone())
+            } else {
+                config
+                    .get_ssh_key(actual_cluster_name.as_deref().or(cli.cluster.as_deref()))
+                    .map(|ssh_key| bssh::config::expand_tilde(Path::new(&ssh_key)))
+            };
+
             let params = FileTransferParams {
                 nodes,
                 max_parallel: cli.parallel,
-                key_path: cli.identity.as_deref(),
+                key_path: key_path.as_deref(),
                 strict_mode,
                 use_agent: cli.use_agent,
                 use_password: cli.password,
@@ -155,10 +173,19 @@ async fn main() -> Result<()> {
             destination,
             recursive,
         }) => {
+            // Determine SSH key path: CLI argument takes precedence over config
+            let key_path = if let Some(identity) = &cli.identity {
+                Some(identity.clone())
+            } else {
+                config
+                    .get_ssh_key(actual_cluster_name.as_deref().or(cli.cluster.as_deref()))
+                    .map(|ssh_key| bssh::config::expand_tilde(Path::new(&ssh_key)))
+            };
+
             let params = FileTransferParams {
                 nodes,
                 max_parallel: cli.parallel,
-                key_path: cli.identity.as_deref(),
+                key_path: key_path.as_deref(),
                 strict_mode,
                 use_agent: cli.use_agent,
                 use_password: cli.password,
@@ -238,14 +265,23 @@ async fn main() -> Result<()> {
             let timeout = if cli.timeout > 0 {
                 Some(cli.timeout)
             } else {
-                config.get_timeout(cli.cluster.as_deref())
+                config.get_timeout(actual_cluster_name.as_deref().or(cli.cluster.as_deref()))
+            };
+
+            // Determine SSH key path: CLI argument takes precedence over config
+            let key_path = if let Some(identity) = &cli.identity {
+                Some(identity.clone())
+            } else {
+                config
+                    .get_ssh_key(actual_cluster_name.as_deref().or(cli.cluster.as_deref()))
+                    .map(|ssh_key| bssh::config::expand_tilde(Path::new(&ssh_key)))
             };
 
             let params = ExecuteCommandParams {
                 nodes,
                 command: &command,
                 max_parallel: cli.parallel,
-                key_path: cli.identity.as_deref(),
+                key_path: key_path.as_deref(),
                 verbose: cli.verbose > 0,
                 strict_mode,
                 use_agent: cli.use_agent,
@@ -258,8 +294,9 @@ async fn main() -> Result<()> {
     }
 }
 
-async fn resolve_nodes(cli: &Cli, config: &Config) -> Result<Vec<Node>> {
+async fn resolve_nodes(cli: &Cli, config: &Config) -> Result<(Vec<Node>, Option<String>)> {
     let mut nodes = Vec::new();
+    let mut cluster_name = None;
 
     if let Some(hosts) = &cli.hosts {
         // Parse hosts from CLI
@@ -270,16 +307,18 @@ async fn resolve_nodes(cli: &Cli, config: &Config) -> Result<Vec<Node>> {
                 nodes.push(node);
             }
         }
-    } else if let Some(cluster_name) = &cli.cluster {
+    } else if let Some(cli_cluster_name) = &cli.cluster {
         // Get nodes from cluster configuration
-        nodes = config.resolve_nodes(cluster_name)?;
+        nodes = config.resolve_nodes(cli_cluster_name)?;
+        cluster_name = Some(cli_cluster_name.clone());
     } else {
         // Check if Backend.AI environment is detected (automatic cluster)
-        if config.clusters.contains_key("backendai") {
+        if config.clusters.contains_key("bai_auto") {
             // Automatically use Backend.AI cluster when no explicit cluster is specified
-            nodes = config.resolve_nodes("backendai")?;
+            nodes = config.resolve_nodes("bai_auto")?;
+            cluster_name = Some("bai_auto".to_string());
         }
     }
 
-    Ok(nodes)
+    Ok((nodes, cluster_name))
 }

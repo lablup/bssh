@@ -45,19 +45,19 @@ async fn test_backendai_env_auto_detection() {
         .await
         .expect("Config should load with Backend.AI env");
 
-    // Check that backendai cluster was created
-    assert!(config.clusters.contains_key("backendai"));
+    // Check that bai_auto cluster was created
+    assert!(config.clusters.contains_key("bai_auto"));
 
-    // Get the backendai cluster
-    let cluster = config.clusters.get("backendai").unwrap();
+    // Get the bai_auto cluster
+    let cluster = config.clusters.get("bai_auto").unwrap();
 
     // Verify nodes were parsed correctly
     assert_eq!(cluster.nodes.len(), 3);
 
-    // Resolve nodes for the backendai cluster
+    // Resolve nodes for the bai_auto cluster
     let nodes = config
-        .resolve_nodes("backendai")
-        .expect("Should resolve backendai nodes");
+        .resolve_nodes("bai_auto")
+        .expect("Should resolve bai_auto nodes");
     assert_eq!(nodes.len(), 3);
 
     // Check node details
@@ -114,11 +114,11 @@ async fn test_backendai_env_with_single_host() {
         .await
         .expect("Config should load");
 
-    // Verify backendai cluster exists
-    assert!(config.clusters.contains_key("backendai"));
+    // Verify bai_auto cluster exists
+    assert!(config.clusters.contains_key("bai_auto"));
 
     let nodes = config
-        .resolve_nodes("backendai")
+        .resolve_nodes("bai_auto")
         .expect("Should resolve nodes");
     assert_eq!(nodes.len(), 1);
     assert_eq!(nodes[0].host, "single-node.ai");
