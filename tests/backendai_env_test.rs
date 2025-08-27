@@ -51,6 +51,13 @@ async fn test_backendai_env_auto_detection() {
     // Get the bai_auto cluster
     let cluster = config.clusters.get("bai_auto").unwrap();
 
+    // Verify SSH key is set to Backend.AI cluster key
+    assert_eq!(
+        cluster.defaults.ssh_key,
+        Some("/home/config/ssh/id_cluster".to_string()),
+        "Backend.AI cluster should use /home/config/ssh/id_cluster as SSH key"
+    );
+
     // Verify nodes were parsed correctly
     assert_eq!(cluster.nodes.len(), 3);
 
@@ -65,6 +72,13 @@ async fn test_backendai_env_auto_detection() {
     assert_eq!(nodes[0].port, 2200); // Backend.AI default port
     assert_eq!(nodes[1].host, "node2.ai");
     assert_eq!(nodes[2].host, "node3.ai");
+
+    // Verify get_ssh_key returns the correct key for Backend.AI cluster
+    assert_eq!(
+        config.get_ssh_key(Some("bai_auto")),
+        Some("/home/config/ssh/id_cluster".to_string()),
+        "get_ssh_key should return Backend.AI cluster key path"
+    );
 
     // Restore original env vars
     unsafe {

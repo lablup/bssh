@@ -225,7 +225,10 @@ impl Config {
 
         Some(Cluster {
             nodes: filtered_nodes,
-            defaults: ClusterDefaults::default(),
+            defaults: ClusterDefaults {
+                ssh_key: Some("/home/config/ssh/id_cluster".to_string()),
+                ..ClusterDefaults::default()
+            },
             interactive: None,
         })
     }
