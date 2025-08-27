@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use anyhow::Result;
-use clap::{CommandFactory, Parser};
+use clap::Parser;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -34,11 +34,17 @@ use bssh::{
     utils::init_logging,
 };
 
-/// Show help message and exit
-fn show_help() {
-    let mut cmd = Cli::command();
-    let _ = cmd.print_help();
-    eprintln!(); // Add a newline after help
+/// Show concise usage message (like SSH)
+fn show_usage() {
+    println!("usage: bssh [-46AqtTvx] [-C cluster] [-F configfile] [-H hosts]");
+    println!("           [-i identity_file] [-J destination] [-l login_name]");
+    println!("           [-o option] [-p port] [--config config] [--parallel N]");
+    println!("           [--output-dir dir] [--timeout seconds] [--use-agent]");
+    println!("           destination [command [argument ...]]");
+    println!("       bssh [-Q query_option]");
+    println!("       bssh [exec|list|ping|upload|download|interactive] ...");
+    println!();
+    println!("For more information, try 'bssh --help'");
 }
 
 /// Format a Duration into a human-readable string
@@ -72,8 +78,8 @@ async fn main() -> Result<()> {
     // Check if no arguments were provided
     let args: Vec<String> = std::env::args().collect();
     if args.len() == 1 {
-        // Show help when no arguments provided
-        show_help();
+        // Show concise usage when no arguments provided (like SSH)
+        show_usage();
         std::process::exit(0);
     }
 
