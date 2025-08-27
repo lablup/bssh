@@ -231,7 +231,7 @@ impl Config {
     }
 
     /// Load configuration with priority order:
-    /// 1. Explicit --config path (if different from default)
+    /// 1. Explicit --config path (if exists and different from default)
     /// 2. Backend.AI environment variables
     /// 3. Current directory config.yaml
     /// 4. XDG config directory ($XDG_CONFIG_HOME/bssh/config.yaml or ~/.config/bssh/config.yaml)
@@ -244,18 +244,19 @@ impl Config {
         // Check if user explicitly specified a config file (different from default)
         let is_custom_config = expanded_cli_path != expanded_default_path;
 
-        if is_custom_config {
-            // User explicitly specified a config file - use it with highest priority
+        if is_custom_config && expanded_cli_path.exists() {
+            // User explicitly specified a config file and it exists - use it with highest priority
             tracing::debug!(
                 "Using explicitly specified config file: {:?}",
                 expanded_cli_path
             );
-            if expanded_cli_path.exists() {
-                return Self::load(&expanded_cli_path).await;
-            } else {
-                // If the user specified a file that doesn't exist, return an error
-                anyhow::bail!("Config file not found: {:?}", expanded_cli_path);
-            }
+            return Self::load(&expanded_cli_path).await;
+        } else if is_custom_config {
+            // Custom config specified but doesn't exist - log and continue
+            tracing::debug!(
+                "Custom config file not found, continuing with other sources: {:?}",
+                expanded_cli_path
+            );
         }
 
         // Try Backend.AI environment first

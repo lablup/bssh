@@ -66,6 +66,28 @@ async fn main() -> Result<()> {
     // Initialize logging
     init_logging(cli.verbose);
 
+    // Check if user explicitly specified --config option
+    let args: Vec<String> = std::env::args().collect();
+    let has_explicit_config = args.iter().any(|arg| arg == "--config");
+
+    // If user explicitly specified --config, ensure the file exists
+    if has_explicit_config {
+        let expanded_path = if cli.config.starts_with("~") {
+            let path_str = cli.config.to_string_lossy();
+            if let Ok(home) = std::env::var("HOME") {
+                PathBuf::from(path_str.replacen("~", &home, 1))
+            } else {
+                cli.config.clone()
+            }
+        } else {
+            cli.config.clone()
+        };
+
+        if !expanded_path.exists() {
+            anyhow::bail!("Config file not found: {:?}", expanded_path);
+        }
+    }
+
     // Load configuration with priority
     let config = Config::load_with_priority(&cli.config).await?;
 
