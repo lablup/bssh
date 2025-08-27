@@ -20,11 +20,16 @@ use std::path::PathBuf;
     name = "bssh",
     version,
     before_help = "",
-    about = "Backend.AI SSH - Parallel command execution across cluster nodes",
-    long_about = "bssh is a high-performance parallel SSH command execution tool for cluster management.\nIt enables efficient execution of commands across multiple nodes simultaneously with real-time output streaming.\nThe tool provides secure file transfer capabilities using SFTP protocol and supports multiple authentication\nmethods including SSH keys (with passphrase support), SSH agent, and password authentication.\nIt automatically detects Backend.AI multi-node session environments.",
-    after_help = "EXAMPLES:\n  Execute command on hosts:     bssh -H \"user@host1,host2\" \"uptime\"\n  Use cluster configuration:    bssh -c production \"df -h\"\n  Upload files with glob:       bssh -c staging upload \"*.log\" /tmp/\n  Download from all nodes:      bssh -c web download /var/log/app.log ./logs/\n  Interactive mode (multiplex): bssh -c production interactive\n  Test connectivity:            bssh -c staging ping\n\nDeveloped and maintained as part of the Backend.AI project.\nFor more examples and documentation, visit: https://github.com/lablup/bssh"
+    about = "Backend.AI SSH - SSH-compatible parallel command execution tool",
+    long_about = "bssh is a high-performance SSH client with parallel execution capabilities.\nIt can be used as a drop-in replacement for SSH (single host) or as a powerful cluster management tool (multiple hosts).\n\nSSH Compatibility Mode:\n  bssh user@host                    # Interactive shell\n  bssh user@host command            # Execute command\n  bssh -p 2222 user@host            # Custom port\n  bssh -i key.pem user@host         # Custom key\n\nMulti-Server Mode:\n  bssh -C production \"uptime\"       # Execute on cluster\n  bssh -H \"host1,host2\" \"df -h\"     # Execute on hosts\n\nThe tool provides secure file transfer using SFTP and supports SSH keys, SSH agent, and password authentication.\nIt automatically detects Backend.AI multi-node session environments.",
+    after_help = "EXAMPLES:\n  SSH Mode:\n    bssh user@host                         # Interactive shell\n    bssh admin@server.com \"uptime\"         # Execute command\n    bssh -p 2222 -i ~/.ssh/key user@host   # Custom port and key\n\n  Multi-Server Mode:\n    bssh -C production \"systemctl status\"  # Use cluster config\n    bssh -H \"web1,web2,web3\" \"df -h\"      # Direct hosts\n\n  File Operations:\n    bssh -C staging upload file.txt /tmp/  # Upload to cluster\n    bssh -H host1,host2 download /etc/hosts ./backups/\n\n  Other Commands:\n    bssh list                              # List configured clusters\n    bssh -C production ping                # Test connectivity\n\nFor more information: https://github.com/lablup/bssh"
 )]
 pub struct Cli {
+    /// SSH destination in format: [user@]hostname[:port] or ssh://[user@]hostname[:port]
+    /// Used for SSH compatibility mode (single host connection)
+    #[arg(value_name = "destination", conflicts_with_all = ["cluster", "hosts"])]
+    pub destination: Option<String>,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 
@@ -36,7 +41,11 @@ pub struct Cli {
     )]
     pub hosts: Option<Vec<String>>,
 
-    #[arg(short = 'c', long, help = "Cluster name from configuration file")]
+    #[arg(
+        short = 'C',
+        long = "cluster",
+        help = "Cluster name from configuration file (multi-server mode)"
+    )]
     pub cluster: Option<String>,
 
     #[arg(
@@ -46,7 +55,11 @@ pub struct Cli {
     )]
     pub config: PathBuf,
 
-    #[arg(short = 'u', long, help = "Default username for SSH connections")]
+    #[arg(
+        short = 'l',
+        long = "login",
+        help = "Specifies the user to log in as on the remote machine (SSH-compatible)"
+    )]
     pub user: Option<String>,
 
     #[arg(
@@ -64,19 +77,25 @@ pub struct Cli {
     pub use_agent: bool,
 
     #[arg(
-        short = 'P',
-        long,
+        long = "password",
         help = "Use password authentication (will prompt for password)"
     )]
     pub password: bool,
 
     #[arg(
-        short = 'p',
-        long,
+        long = "parallel",
         default_value = "10",
-        help = "Maximum parallel connections"
+        help = "Maximum parallel connections (multi-server mode)"
     )]
     pub parallel: usize,
+
+    #[arg(
+        short = 'p',
+        long = "port",
+        value_name = "port",
+        help = "Port to connect to on the remote host (SSH-compatible)"
+    )]
+    pub port: Option<u16>,
 
     #[arg(
         long,
@@ -108,6 +127,73 @@ pub struct Cli {
 
     #[arg(trailing_var_arg = true, help = "Command to execute on remote hosts")]
     pub command_args: Vec<String>,
+
+    // SSH-compatible options
+    #[arg(short = 'o', long = "option", value_name = "option", action = clap::ArgAction::Append,
+        help = "SSH options (e.g., -o StrictHostKeyChecking=no)")]
+    pub ssh_options: Vec<String>,
+
+    #[arg(
+        short = 'F',
+        long = "ssh-config",
+        value_name = "configfile",
+        help = "Specifies an alternative SSH configuration file"
+    )]
+    pub ssh_config: Option<PathBuf>,
+
+    #[arg(
+        short = 'q',
+        long = "quiet",
+        conflicts_with = "verbose",
+        help = "Quiet mode (suppress non-error messages)"
+    )]
+    pub quiet: bool,
+
+    #[arg(short = 't', long = "tty", help = "Force pseudo-terminal allocation")]
+    pub force_tty: bool,
+
+    #[arg(
+        short = 'T',
+        long = "no-tty",
+        conflicts_with = "force_tty",
+        help = "Disable pseudo-terminal allocation"
+    )]
+    pub no_tty: bool,
+
+    #[arg(
+        short = 'J',
+        long = "jump",
+        value_name = "destination",
+        help = "Connect via jump host(s) (ProxyJump)"
+    )]
+    pub jump_hosts: Option<String>,
+
+    #[arg(short = 'x', long = "no-x11", help = "Disable X11 forwarding")]
+    pub no_x11: bool,
+
+    #[arg(
+        short = '4',
+        long = "ipv4",
+        conflicts_with = "ipv6",
+        help = "Force use of IPv4 addresses only"
+    )]
+    pub ipv4: bool,
+
+    #[arg(
+        short = '6',
+        long = "ipv6",
+        conflicts_with = "ipv4",
+        help = "Force use of IPv6 addresses only"
+    )]
+    pub ipv6: bool,
+
+    #[arg(
+        short = 'Q',
+        long = "query",
+        value_name = "query_option",
+        help = "Query SSH configuration options"
+    )]
+    pub query: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -224,5 +310,97 @@ impl Cli {
         } else {
             String::new()
         }
+    }
+
+    /// Check if running in SSH compatibility mode (single host)
+    pub fn is_ssh_mode(&self) -> bool {
+        self.destination.is_some() && self.cluster.is_none() && self.hosts.is_none()
+    }
+
+    /// Check if running in multi-server mode
+    pub fn is_multi_server_mode(&self) -> bool {
+        self.cluster.is_some() || self.hosts.is_some()
+    }
+
+    /// Parse destination string into components (user, host, port)
+    pub fn parse_destination(&self) -> Option<(Option<String>, String, Option<u16>)> {
+        self.destination.as_ref().map(|dest| {
+            // Handle ssh:// prefix
+            let dest = dest.strip_prefix("ssh://").unwrap_or(dest);
+
+            // Parse [user@]hostname[:port]
+            let parts: Vec<&str> = dest.splitn(2, '@').collect();
+            let (user, host_port) = if parts.len() == 2 {
+                (Some(parts[0].to_string()), parts[1])
+            } else {
+                (None, parts[0])
+            };
+
+            // Parse hostname[:port]
+            if let Some(idx) = host_port.rfind(':') {
+                // Check if this is actually a port number (not IPv6 address)
+                if let Ok(port) = host_port[idx + 1..].parse::<u16>() {
+                    let host = host_port[..idx].to_string();
+                    (user, host, Some(port))
+                } else {
+                    // Not a valid port, treat entire string as hostname
+                    (user, host_port.to_string(), None)
+                }
+            } else {
+                (user, host_port.to_string(), None)
+            }
+        })
+    }
+
+    /// Get effective username (from -l option, destination, or environment)
+    pub fn get_effective_user(&self) -> Option<String> {
+        // Priority: -l option > destination > config
+        if let Some(ref login) = self.user {
+            return Some(login.clone());
+        }
+
+        if let Some((user, _, _)) = self.parse_destination() {
+            return user;
+        }
+
+        None
+    }
+
+    /// Get effective port (from -p option, destination, SSH options, or default)
+    pub fn get_effective_port(&self) -> Option<u16> {
+        // Priority: -p option > destination > -o Port= > default
+        if let Some(port) = self.port {
+            return Some(port);
+        }
+
+        if let Some((_, _, Some(port))) = self.parse_destination() {
+            return Some(port);
+        }
+
+        // Check SSH options for Port=
+        for opt in &self.ssh_options {
+            if let Some(port_str) = opt.strip_prefix("Port=") {
+                if let Ok(port) = port_str.parse::<u16>() {
+                    return Some(port);
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Parse SSH options into a map
+    pub fn parse_ssh_options(&self) -> std::collections::HashMap<String, String> {
+        let mut options = std::collections::HashMap::new();
+
+        for opt in &self.ssh_options {
+            if let Some(eq_idx) = opt.find('=') {
+                let key = opt[..eq_idx].to_string();
+                let value = opt[eq_idx + 1..].to_string();
+                options.insert(key, value);
+            }
+        }
+
+        options
     }
 }
