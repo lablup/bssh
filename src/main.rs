@@ -241,6 +241,15 @@ async fn main() -> Result<()> {
 
             let merged_work_dir = work_dir.or(interactive_config.work_dir.clone());
 
+            // Determine SSH key path: CLI argument takes precedence over config
+            let key_path = if let Some(identity) = &cli.identity {
+                Some(identity.clone())
+            } else {
+                config
+                    .get_ssh_key(actual_cluster_name.as_deref().or(cli.cluster.as_deref()))
+                    .map(|ssh_key| bssh::config::expand_tilde(Path::new(&ssh_key)))
+            };
+
             let interactive_cmd = InteractiveCommand {
                 single_node: merged_mode.0,
                 multiplex: merged_mode.1,
@@ -251,6 +260,10 @@ async fn main() -> Result<()> {
                 config: config.clone(),
                 interactive_config,
                 cluster_name: cluster_name.map(String::from),
+                key_path,
+                use_agent: cli.use_agent,
+                use_password: cli.password,
+                strict_mode,
             };
             let result = interactive_cmd.execute().await?;
             println!("\nInteractive session ended.");
