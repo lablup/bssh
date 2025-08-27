@@ -583,32 +583,51 @@ impl InteractiveCommand {
         // 128 buffer size is reasonable for terminal output without causing memory issues
         let (output_tx, mut output_rx) = mpsc::channel::<String>(128);
 
-        // Spawn a task to read output from the SSH channel
+        // Spawn a task to read output from the SSH channel using select! for efficiency
         let output_reader = tokio::spawn(async move {
-            loop {
-                // Check for shutdown signal
-                if shutdown_clone.load(Ordering::Relaxed) || is_interrupted() {
-                    break;
-                }
+            let mut shutdown_watch = {
+                let shutdown_clone_for_watch = Arc::clone(&shutdown_clone);
+                tokio::spawn(async move {
+                    loop {
+                        if shutdown_clone_for_watch.load(Ordering::Relaxed) || is_interrupted() {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                })
+            };
 
-                let mut session_guard = session_clone.lock().await;
-                if !session_guard.is_connected {
-                    break;
+            loop {
+                tokio::select! {
+                    // Check for output from SSH session
+                    _ = tokio::time::sleep(Duration::from_millis(10)) => {
+                        let mut session_guard = session_clone.lock().await;
+                        if !session_guard.is_connected {
+                            break;
+                        }
+                        if let Ok(Some(output)) = session_guard.read_output().await {
+                            // Use try_send to avoid blocking; drop output if buffer is full
+                            // This prevents memory exhaustion but may lose some output under extreme load
+                            if output_tx.try_send(output).is_err() {
+                                // Channel closed or full, exit gracefully
+                                break;
+                            }
+                        }
+                        drop(session_guard);
+                    }
+
+                    // Check for shutdown signal
+                    _ = &mut shutdown_watch => {
+                        break;
+                    }
                 }
-                if let Ok(Some(output)) = session_guard.read_output().await {
-                    // Use try_send to avoid blocking; drop output if buffer is full
-                    // This prevents memory exhaustion but may lose some output under extreme load
-                    let _ = output_tx.try_send(output);
-                }
-                drop(session_guard);
-                tokio::time::sleep(Duration::from_millis(10)).await;
             }
         });
 
         println!("Interactive session started. Type 'exit' or press Ctrl+D to quit.");
         println!();
 
-        // Main interactive loop
+        // Main interactive loop using tokio::select! for efficient event multiplexing
         loop {
             // Check for interrupt signal
             if is_interrupted() {
@@ -617,7 +636,7 @@ impl InteractiveCommand {
                 break;
             }
 
-            // Print any pending output
+            // Print any pending output first
             while let Ok(output) = output_rx.try_recv() {
                 print!("{output}");
                 io::stdout().flush()?;
@@ -634,42 +653,64 @@ impl InteractiveCommand {
                 break;
             }
 
-            // Read input
-            match rl.readline(&prompt) {
-                Ok(line) => {
-                    if line.trim() == "exit" {
-                        // Send exit command to remote server before breaking
-                        let mut session_guard = session_arc.lock().await;
-                        session_guard.send_command("exit").await?;
-                        drop(session_guard);
-                        // Give the SSH session a moment to process the exit
-                        tokio::time::sleep(Duration::from_millis(100)).await;
-                        break;
-                    }
-
-                    rl.add_history_entry(&line)?;
-
-                    // Send command to remote
-                    let mut session_guard = session_arc.lock().await;
-                    session_guard.send_command(&line).await?;
-                    commands_executed += 1;
-
-                    // Track directory changes
-                    if line.trim().starts_with("cd ") {
-                        // Update working directory
-                        session_guard.send_command("pwd").await?;
+            // Use select! to handle multiple events efficiently
+            tokio::select! {
+                // Handle new output from SSH session
+                output = output_rx.recv() => {
+                    match output {
+                        Some(output) => {
+                            print!("{output}");
+                            io::stdout().flush()?;
+                            continue; // Continue without reading input to process more output
+                        }
+                        None => {
+                            // Output channel closed, session likely ended
+                            eprintln!("Session output channel closed. Exiting.");
+                            break;
+                        }
                     }
                 }
-                Err(ReadlineError::Interrupted) => {
-                    println!("^C");
-                }
-                Err(ReadlineError::Eof) => {
-                    println!("^D");
-                    break;
-                }
-                Err(err) => {
-                    eprintln!("Error: {err}");
-                    break;
+
+                // Handle user input (this runs in a separate task since readline is blocking)
+                _ = tokio::time::sleep(Duration::from_millis(10)) => {
+                    // Read input using rustyline (this needs to remain synchronous)
+                    match rl.readline(&prompt) {
+                        Ok(line) => {
+                            if line.trim() == "exit" {
+                                // Send exit command to remote server before breaking
+                                let mut session_guard = session_arc.lock().await;
+                                session_guard.send_command("exit").await?;
+                                drop(session_guard);
+                                // Give the SSH session a moment to process the exit
+                                tokio::time::sleep(Duration::from_millis(100)).await;
+                                break;
+                            }
+
+                            rl.add_history_entry(&line)?;
+
+                            // Send command to remote
+                            let mut session_guard = session_arc.lock().await;
+                            session_guard.send_command(&line).await?;
+                            commands_executed += 1;
+
+                            // Track directory changes
+                            if line.trim().starts_with("cd ") {
+                                // Update working directory
+                                session_guard.send_command("pwd").await?;
+                            }
+                        }
+                        Err(ReadlineError::Interrupted) => {
+                            println!("^C");
+                        }
+                        Err(ReadlineError::Eof) => {
+                            println!("^D");
+                            break;
+                        }
+                        Err(err) => {
+                            eprintln!("Error: {err}");
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -1029,37 +1070,63 @@ impl InteractiveCommand {
                         continue;
                     }
 
-                    // Wait a bit for output and collect from all nodes
-                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    // Use select! to efficiently collect output from all active nodes
+                    let output_timeout = tokio::time::sleep(Duration::from_millis(500));
+                    tokio::pin!(output_timeout);
 
-                    for session in &mut sessions {
-                        if session.is_connected && session.is_active {
-                            while let Ok(Some(output)) = session.read_output().await {
-                                // Print output with node prefix and optional timestamp
-                                for line in output.lines() {
-                                    if self.interactive_config.show_timestamps {
-                                        let timestamp = chrono::Local::now().format("%H:%M:%S");
-                                        println!(
-                                            "[{} {}] {}",
-                                            timestamp.to_string().dimmed(),
-                                            format!(
-                                                "{}@{}",
-                                                session.node.username, session.node.host
-                                            )
-                                            .cyan(),
-                                            line
-                                        );
-                                    } else {
-                                        println!(
-                                            "[{}] {}",
-                                            format!(
-                                                "{}@{}",
-                                                session.node.username, session.node.host
-                                            )
-                                            .cyan(),
-                                            line
-                                        );
+                    // Collect output with timeout using select!
+                    loop {
+                        let mut has_output = false;
+
+                        tokio::select! {
+                            // Timeout reached, stop collecting output
+                            _ = &mut output_timeout => {
+                                break;
+                            }
+
+                            // Try to read output from each active session
+                            _ = async {
+                                for session in &mut sessions {
+                                    if session.is_connected && session.is_active {
+                                        if let Ok(Some(output)) = session.read_output().await {
+                                            has_output = true;
+                                            // Print output with node prefix and optional timestamp
+                                            for line in output.lines() {
+                                                if self.interactive_config.show_timestamps {
+                                                    let timestamp = chrono::Local::now().format("%H:%M:%S");
+                                                    println!(
+                                                        "[{} {}] {}",
+                                                        timestamp.to_string().dimmed(),
+                                                        format!(
+                                                            "{}@{}",
+                                                            session.node.username, session.node.host
+                                                        )
+                                                        .cyan(),
+                                                        line
+                                                    );
+                                                } else {
+                                                    println!(
+                                                        "[{}] {}",
+                                                        format!(
+                                                            "{}@{}",
+                                                            session.node.username, session.node.host
+                                                        )
+                                                        .cyan(),
+                                                        line
+                                                    );
+                                                }
+                                            }
+                                        }
                                     }
+                                }
+
+                                // If no output was found, sleep briefly to avoid busy waiting
+                                if !has_output {
+                                    tokio::time::sleep(Duration::from_millis(10)).await;
+                                }
+                            } => {
+                                if !has_output {
+                                    break; // No more output available
                                 }
                             }
                         }

@@ -160,40 +160,76 @@ impl PtyManager {
         // Session switching is infrequent, so small buffer is sufficient
         let (_switch_tx, mut _switch_rx) = mpsc::channel::<usize>(32);
 
-        // Run the multiplexed session loop
+        // Run the multiplexed session loop using select! for efficient event handling
+        let mut cancel_rx = self.cancel_rx.clone();
+
         loop {
-            // Check for cancellation signal
-            if *self.cancel_rx.borrow() {
-                break;
-            }
-
-            // Check for session switch commands
-            if let Ok(new_session) = _switch_rx.try_recv() {
-                if session_ids.contains(&new_session) {
-                    active_session = new_session;
-                    println!("Switched to PTY session {new_session}");
-                } else {
-                    eprintln!("Invalid PTY session: {new_session}");
+            tokio::select! {
+                // Check for cancellation signal
+                _ = cancel_rx.changed() => {
+                    if *cancel_rx.borrow() {
+                        tracing::debug!("PTY multiplex received cancellation signal");
+                        break;
+                    }
                 }
-            }
 
-            // Run the active session for a short time
-            if let Some(_session) = self.active_sessions.get_mut(active_session) {
-                // TODO: Implement session time-slicing for multiplex mode
-                tokio::time::sleep(Duration::from_millis(100)).await;
+                // Check for session switch commands
+                new_session = _switch_rx.recv() => {
+                    match new_session {
+                        Some(session_id) => {
+                            if session_ids.contains(&session_id) {
+                                active_session = session_id;
+                                println!("Switched to PTY session {session_id}");
+                            } else {
+                                eprintln!("Invalid PTY session: {session_id}");
+                            }
+                        }
+                        None => {
+                            // Switch channel closed
+                            break;
+                        }
+                    }
+                }
+
+                // Run active session processing
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                    // TODO: Implement session time-slicing for multiplex mode
+                    // For now, just continue the loop
+                    if let Some(_session) = self.active_sessions.get_mut(active_session) {
+                        // Session processing would go here
+                    }
+                }
             }
         }
 
         Ok(())
     }
 
-    /// Shutdown all PTY sessions
+    /// Shutdown all PTY sessions with proper select!-based cleanup
     pub async fn shutdown(&mut self) -> Result<()> {
         // Signal cancellation to all operations
         let _ = self.cancel_tx.send(true);
 
-        for session in &mut self.active_sessions {
-            session.shutdown().await?;
+        // Use select! to handle concurrent shutdown of multiple sessions
+        let shutdown_futures: Vec<_> = self
+            .active_sessions
+            .iter_mut()
+            .map(|session| session.shutdown())
+            .collect();
+
+        // Wait for all sessions to shutdown with timeout
+        let shutdown_timeout = Duration::from_secs(5);
+
+        tokio::select! {
+            results = futures::future::try_join_all(shutdown_futures) => {
+                match results {
+                    Ok(_) => tracing::debug!("All PTY sessions shutdown successfully"),
+                    Err(e) => tracing::warn!("Some PTY sessions failed to shutdown cleanly: {e}"),
+                }
+            }
+            _ = tokio::time::sleep(shutdown_timeout) => {
+                tracing::warn!("PTY session shutdown timed out after {} seconds", shutdown_timeout.as_secs());
+            }
         }
 
         self.active_sessions.clear();

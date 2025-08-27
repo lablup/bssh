@@ -20,7 +20,7 @@ use russh::{client::Msg, Channel, ChannelMsg};
 // use signal_hook::iterator::Signals; // Unused in current implementation
 use std::io::{self, Write};
 use tokio::sync::{mpsc, watch};
-use tokio::time::{timeout, Duration};
+use tokio::time::Duration;
 
 use super::{
     terminal::{TerminalOps, TerminalStateGuard},
@@ -144,16 +144,35 @@ impl PtySession {
             .clone();
 
         let resize_task = tokio::spawn(async move {
-            for signal in resize_signals.forever() {
-                // Check cancellation
-                if *cancel_for_resize.borrow() {
-                    break;
-                }
+            let mut cancel_for_resize = cancel_for_resize;
 
-                if signal == signal_hook::consts::SIGWINCH {
-                    if let Ok((width, height)) = super::utils::get_terminal_size() {
-                        // Try to send resize message, but don't block if channel is full
-                        let _ = resize_tx.try_send(PtyMessage::Resize { width, height });
+            loop {
+                tokio::select! {
+                    // Handle resize signals
+                    signal = async {
+                        for signal in resize_signals.forever() {
+                            if signal == signal_hook::consts::SIGWINCH {
+                                return signal;
+                            }
+                        }
+                        signal_hook::consts::SIGWINCH // fallback, won't be reached
+                    } => {
+                        if signal == signal_hook::consts::SIGWINCH {
+                            if let Ok((width, height)) = super::utils::get_terminal_size() {
+                                // Try to send resize message, but don't block if channel is full
+                                if resize_tx.try_send(PtyMessage::Resize { width, height }).is_err() {
+                                    // Channel full or closed, exit gracefully
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    // Handle cancellation
+                    _ = cancel_for_resize.changed() => {
+                        if *cancel_for_resize.borrow() {
+                            break;
+                        }
                     }
                 }
             }
@@ -204,54 +223,61 @@ impl PtySession {
 
         // We'll integrate channel reading into the main loop since russh Channel doesn't clone
 
-        // Main message handling loop
+        // Main message handling loop using tokio::select! for efficient event multiplexing
         let mut should_terminate = false;
+        let mut cancel_rx = self.cancel_rx.clone();
 
-        while !should_terminate && !*self.cancel_rx.borrow() {
-            // First check for SSH channel messages
-            if let Ok(Some(msg)) = timeout(Duration::from_millis(10), self.channel.wait()).await {
-                match msg {
-                    ChannelMsg::Data { ref data } => {
-                        // Write directly to stdout
-                        if let Err(e) = io::stdout().write_all(data) {
-                            tracing::error!("Failed to write to stdout: {e}");
-                            should_terminate = true;
-                        } else {
-                            let _ = io::stdout().flush();
-                        }
-                    }
-                    ChannelMsg::ExtendedData { ref data, ext } => {
-                        if ext == 1 {
-                            // stderr - write to stdout as well for PTY mode
+        while !should_terminate {
+            tokio::select! {
+                // Handle SSH channel messages
+                msg = self.channel.wait() => {
+                    match msg {
+                        Some(ChannelMsg::Data { ref data }) => {
+                            // Write directly to stdout
                             if let Err(e) = io::stdout().write_all(data) {
-                                tracing::error!("Failed to write stderr to stdout: {e}");
+                                tracing::error!("Failed to write to stdout: {e}");
                                 should_terminate = true;
                             } else {
                                 let _ = io::stdout().flush();
                             }
                         }
+                        Some(ChannelMsg::ExtendedData { ref data, ext }) => {
+                            if ext == 1 {
+                                // stderr - write to stdout as well for PTY mode
+                                if let Err(e) = io::stdout().write_all(data) {
+                                    tracing::error!("Failed to write stderr to stdout: {e}");
+                                    should_terminate = true;
+                                } else {
+                                    let _ = io::stdout().flush();
+                                }
+                            }
+                        }
+                        Some(ChannelMsg::Eof) | Some(ChannelMsg::Close) => {
+                            tracing::debug!("SSH channel closed");
+                            // Signal cancellation to all child tasks before terminating
+                            let _ = self.cancel_tx.send(true);
+                            should_terminate = true;
+                        }
+                        Some(_) => {
+                            // Handle other channel messages if needed
+                        }
+                        None => {
+                            // Channel ended
+                            should_terminate = true;
+                        }
                     }
-                    ChannelMsg::Eof | ChannelMsg::Close => {
-                        tracing::debug!("SSH channel closed");
-                        // Signal cancellation to all child tasks before terminating
-                        let _ = self.cancel_tx.send(true);
-                        should_terminate = true;
-                    }
-                    _ => {}
                 }
-            }
 
-            // Then check for local messages (input, resize, etc.)
-            match timeout(Duration::from_millis(10), msg_rx.recv()).await {
-                Ok(Some(message)) => {
+                // Handle local messages (input, resize, etc.)
+                message = msg_rx.recv() => {
                     match message {
-                        PtyMessage::LocalInput(data) => {
+                        Some(PtyMessage::LocalInput(data)) => {
                             if let Err(e) = self.channel.data(data.as_slice()).await {
                                 tracing::error!("Failed to send data to SSH channel: {e}");
                                 should_terminate = true;
                             }
                         }
-                        PtyMessage::RemoteOutput(data) => {
+                        Some(PtyMessage::RemoteOutput(data)) => {
                             // Write directly to stdout for better performance
                             if let Err(e) = io::stdout().write_all(&data) {
                                 tracing::error!("Failed to write to stdout: {e}");
@@ -260,29 +286,34 @@ impl PtySession {
                                 let _ = io::stdout().flush();
                             }
                         }
-                        PtyMessage::Resize { width, height } => {
+                        Some(PtyMessage::Resize { width, height }) => {
                             if let Err(e) = self.channel.window_change(width, height, 0, 0).await {
                                 tracing::warn!("Failed to send window resize to remote: {e}");
                             } else {
                                 tracing::debug!("Terminal resized to {width}x{height}");
                             }
                         }
-                        PtyMessage::Terminate => {
+                        Some(PtyMessage::Terminate) => {
                             tracing::debug!("PTY session {} terminating", self.session_id);
                             should_terminate = true;
                         }
-                        PtyMessage::Error(error) => {
+                        Some(PtyMessage::Error(error)) => {
                             tracing::error!("PTY error: {error}");
+                            should_terminate = true;
+                        }
+                        None => {
+                            // Message channel closed
                             should_terminate = true;
                         }
                     }
                 }
-                Ok(None) => {
-                    // Channel closed
-                    should_terminate = true;
-                }
-                Err(_) => {
-                    // Timeout - continue loop
+
+                // Handle cancellation signal
+                _ = cancel_rx.changed() => {
+                    if *cancel_rx.borrow() {
+                        tracing::debug!("PTY session {} received cancellation signal", self.session_id);
+                        should_terminate = true;
+                    }
                 }
             }
         }
@@ -293,10 +324,14 @@ impl PtySession {
         // Tasks will exit gracefully on cancellation
         // No need to abort since they check cancellation signal
 
-        // Wait for tasks to complete their abort
+        // Wait for tasks to complete gracefully with select!
         let _ = tokio::time::timeout(Duration::from_millis(100), async {
-            while !resize_task.is_finished() || !input_task.is_finished() {
-                tokio::time::sleep(Duration::from_millis(10)).await;
+            tokio::select! {
+                _ = resize_task => {},
+                _ = input_task => {},
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                    // Timeout reached, tasks should have finished by now
+                }
             }
         })
         .await;
