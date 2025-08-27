@@ -161,7 +161,6 @@ impl PtySession {
             .ok_or_else(|| anyhow::anyhow!("Message sender not available"))?
             .clone();
         let shutdown_for_input = Arc::clone(&self.shutdown);
-        let timeout_duration = self.config.timeout;
 
         let input_task = tokio::spawn(async move {
             loop {
@@ -169,8 +168,12 @@ impl PtySession {
                     break;
                 }
 
+                // Use a shorter polling timeout for better responsiveness
+                // This allows the task to check the shutdown flag more frequently
+                let poll_timeout = Duration::from_millis(100);
+
                 // Check for input events with timeout
-                if crossterm::event::poll(timeout_duration).unwrap_or(false) {
+                if crossterm::event::poll(poll_timeout).unwrap_or(false) {
                     match crossterm::event::read() {
                         Ok(event) => {
                             if let Some(data) = Self::handle_input_event(event) {
@@ -219,6 +222,8 @@ impl PtySession {
                     }
                     ChannelMsg::Eof | ChannelMsg::Close => {
                         tracing::debug!("SSH channel closed");
+                        // Set shutdown signal before terminating to ensure input task stops
+                        self.shutdown.store(true, Ordering::Relaxed);
                         should_terminate = true;
                     }
                     _ => {}
@@ -271,14 +276,35 @@ impl PtySession {
             }
         }
 
-        // Cleanup tasks
+        // Signal shutdown first
+        self.shutdown.store(true, Ordering::Relaxed);
+
+        // Abort tasks immediately
         resize_task.abort();
         input_task.abort();
+
+        // Wait for tasks to complete their abort
+        let _ = tokio::time::timeout(Duration::from_millis(100), async {
+            while !resize_task.is_finished() || !input_task.is_finished() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await;
 
         // Disable mouse support if we enabled it
         if self.config.enable_mouse {
             let _ = TerminalOps::disable_mouse();
         }
+
+        // IMPORTANT: Explicitly restore terminal state by dropping the guard
+        // This ensures raw mode is disabled before we return
+        self.terminal_guard = None;
+
+        // Ensure terminal is fully restored
+        let _ = crossterm::terminal::disable_raw_mode();
+
+        // Flush stdout to ensure all output is written
+        let _ = io::stdout().flush();
 
         self.state = PtyState::Closed;
         Ok(())

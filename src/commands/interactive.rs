@@ -205,6 +205,10 @@ impl InteractiveCommand {
             pty_manager.run_multiplex_sessions(session_ids).await?;
         }
 
+        // Ensure terminal is fully restored after PTY session ends
+        let _ = crossterm::terminal::disable_raw_mode();
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+
         Ok(InteractiveResult {
             duration: start_time.elapsed(),
             commands_executed: 0, // PTY mode doesn't count discrete commands
@@ -618,6 +622,12 @@ impl InteractiveCommand {
             match rl.readline(&prompt) {
                 Ok(line) => {
                     if line.trim() == "exit" {
+                        // Send exit command to remote server before breaking
+                        let mut session_guard = session_arc.lock().await;
+                        session_guard.send_command("exit").await?;
+                        drop(session_guard);
+                        // Give the SSH session a moment to process the exit
+                        tokio::time::sleep(Duration::from_millis(100)).await;
                         break;
                     }
 
@@ -649,7 +659,18 @@ impl InteractiveCommand {
         }
 
         // Clean up
+        shutdown.store(true, Ordering::Relaxed);
         output_reader.abort();
+
+        // Properly close the SSH session
+        let mut session_guard = session_arc.lock().await;
+        if session_guard.is_connected {
+            // Close the SSH channel properly
+            let _ = session_guard.channel.close().await;
+            session_guard.is_connected = false;
+        }
+        drop(session_guard);
+
         let _ = rl.save_history(&history_path);
 
         Ok(commands_executed)

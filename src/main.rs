@@ -379,12 +379,20 @@ async fn main() -> Result<()> {
                     use_pty,
                 };
                 let result = interactive_cmd.execute().await?;
+
+                // Ensure terminal is fully restored before printing
+                let _ = crossterm::terminal::disable_raw_mode();
+                let _ = crossterm::cursor::Show;
+                let _ = std::io::Write::flush(&mut std::io::stdout());
+
                 println!("\nSession ended.");
                 if cli.verbose > 0 {
                     println!("Duration: {}", format_duration(result.duration));
                     println!("Commands executed: {}", result.commands_executed);
                 }
-                Ok(())
+
+                // Force exit to ensure proper termination
+                std::process::exit(0);
             } else {
                 // Determine timeout: CLI argument takes precedence over config
                 let timeout = if cli.timeout > 0 {

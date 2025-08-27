@@ -135,11 +135,16 @@ impl PtyManager {
 
     /// Run a single PTY session
     pub async fn run_single_session(&mut self, session_id: usize) -> Result<()> {
-        if let Some(session) = self.active_sessions.get_mut(session_id) {
+        let result = if let Some(session) = self.active_sessions.get_mut(session_id) {
             session.run().await
         } else {
             anyhow::bail!("PTY session {session_id} not found")
-        }
+        };
+
+        // Ensure terminal is properly restored after session ends
+        let _ = crossterm::terminal::disable_raw_mode();
+
+        result
     }
 
     /// Run multiple PTY sessions with session switching
