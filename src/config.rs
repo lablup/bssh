@@ -133,6 +133,7 @@ pub struct ClusterDefaults {
     pub user: Option<String>,
     pub port: Option<u16>,
     pub ssh_key: Option<String>,
+    pub parallel: Option<usize>,
     pub timeout: Option<u64>,
 }
 
@@ -420,6 +421,18 @@ impl Config {
         }
 
         self.defaults.timeout
+    }
+
+    pub fn get_parallel(&self, cluster_name: Option<&str>) -> Option<usize> {
+        if let Some(cluster_name) = cluster_name {
+            if let Some(cluster) = self.get_cluster(cluster_name) {
+                if let Some(parallel) = cluster.defaults.parallel {
+                    return Some(parallel);
+                }
+            }
+        }
+
+        self.defaults.parallel
     }
 
     /// Get interactive configuration for a cluster (with fallback to global)

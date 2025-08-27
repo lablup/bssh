@@ -66,9 +66,15 @@ async fn main() -> Result<()> {
     // Initialize logging
     init_logging(cli.verbose);
 
-    // Check if user explicitly specified --config option
+    // Check if user explicitly specified options
     let args: Vec<String> = std::env::args().collect();
     let has_explicit_config = args.iter().any(|arg| arg == "--config");
+    let has_explicit_parallel = args.iter().any(|arg| {
+        arg == "-p"
+            || arg == "--parallel"
+            || arg.starts_with("-p=")
+            || arg.starts_with("--parallel=")
+    });
 
     // If user explicitly specified --config, ensure the file exists
     if has_explicit_config {
@@ -99,6 +105,15 @@ async fn main() -> Result<()> {
 
     // Determine nodes to execute on
     let (nodes, actual_cluster_name) = resolve_nodes(&cli, &config).await?;
+
+    // Determine max_parallel: CLI argument takes precedence over config
+    let max_parallel = if has_explicit_parallel {
+        cli.parallel
+    } else {
+        config
+            .get_parallel(actual_cluster_name.as_deref().or(cli.cluster.as_deref()))
+            .unwrap_or(cli.parallel) // Fall back to CLI default (10)
+    };
 
     if nodes.is_empty() {
         anyhow::bail!(
@@ -135,7 +150,7 @@ async fn main() -> Result<()> {
 
             ping_nodes(
                 nodes,
-                cli.parallel,
+                max_parallel,
                 key_path.as_deref(),
                 strict_mode,
                 cli.use_agent,
@@ -159,7 +174,7 @@ async fn main() -> Result<()> {
 
             let params = FileTransferParams {
                 nodes,
-                max_parallel: cli.parallel,
+                max_parallel,
                 key_path: key_path.as_deref(),
                 strict_mode,
                 use_agent: cli.use_agent,
@@ -184,7 +199,7 @@ async fn main() -> Result<()> {
 
             let params = FileTransferParams {
                 nodes,
-                max_parallel: cli.parallel,
+                max_parallel,
                 key_path: key_path.as_deref(),
                 strict_mode,
                 use_agent: cli.use_agent,
@@ -293,7 +308,7 @@ async fn main() -> Result<()> {
             let params = ExecuteCommandParams {
                 nodes,
                 command: &command,
-                max_parallel: cli.parallel,
+                max_parallel,
                 key_path: key_path.as_deref(),
                 verbose: cli.verbose > 0,
                 strict_mode,
