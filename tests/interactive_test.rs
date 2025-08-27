@@ -15,6 +15,7 @@
 use bssh::commands::interactive::InteractiveCommand;
 use bssh::config::{Config, InteractiveConfig};
 use bssh::node::Node;
+use bssh::ssh::known_hosts::StrictHostKeyChecking;
 use std::path::PathBuf;
 
 #[tokio::test]
@@ -29,6 +30,10 @@ async fn test_interactive_command_creation() {
         config: Config::default(),
         interactive_config: InteractiveConfig::default(),
         cluster_name: None,
+        key_path: None,
+        use_agent: false,
+        use_password: false,
+        strict_mode: StrictHostKeyChecking::AcceptNew,
     };
 
     assert!(!cmd.single_node);
@@ -48,6 +53,10 @@ async fn test_interactive_with_no_nodes() {
         config: Config::default(),
         interactive_config: InteractiveConfig::default(),
         cluster_name: None,
+        key_path: None,
+        use_agent: false,
+        use_password: false,
+        strict_mode: StrictHostKeyChecking::AcceptNew,
     };
 
     let result = cmd.execute().await;
