@@ -21,11 +21,14 @@ use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
 // Internal modules
+mod env_cache;
 mod parser;
 mod path;
 mod pattern;
 mod resolver;
 mod security;
+#[cfg(test)]
+mod integration_tests;
 mod types;
 
 // Re-export public types

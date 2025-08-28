@@ -20,6 +20,8 @@
 use anyhow::Result;
 use std::path::PathBuf;
 
+use super::env_cache::GLOBAL_ENV_CACHE;
+
 /// Expand tilde and environment variables in a path (secure implementation)
 ///
 /// # Security Features
@@ -227,6 +229,8 @@ fn secure_expand_environment_variables(input: &str) -> Result<String> {
             }
 
             // Security check: Is this variable in our whitelist?
+            // Note: The environment cache now handles whitelist validation,
+            // but we keep this check for defense in depth
             if !safe_variables.contains(var_name.as_str()) {
                 tracing::warn!(
                     "Blocked expansion of non-whitelisted environment variable '{}'. \
@@ -238,28 +242,39 @@ fn secure_expand_environment_variables(input: &str) -> Result<String> {
                 continue;
             }
 
-            // Get the variable value
-            if let Ok(var_value) = std::env::var(&var_name) {
-                // Security validation of the variable value
-                let sanitized_value = sanitize_environment_value(&var_value, &var_name)?;
+            // Get the variable value from cache
+            match GLOBAL_ENV_CACHE.get_env_var(&var_name) {
+                Ok(Some(var_value)) => {
+                    // Security validation of the variable value
+                    let sanitized_value = sanitize_environment_value(&var_value, &var_name)?;
 
-                // Replace the variable reference with the sanitized value
-                result.replace_range(start_pos..end_pos, &sanitized_value);
-                changed = true;
-
-                tracing::debug!(
-                    "Expanded environment variable '{}' (length: {}) in path expansion",
-                    var_name,
-                    sanitized_value.len()
-                );
-            } else {
-                // Variable not found - leave as-is or replace with empty based on SSH conventions
-                if is_braced {
-                    // ${VAR} when VAR doesn't exist typically becomes empty
-                    result.replace_range(start_pos..end_pos, "");
+                    // Replace the variable reference with the sanitized value
+                    result.replace_range(start_pos..end_pos, &sanitized_value);
                     changed = true;
+
+                    tracing::debug!(
+                        "Expanded environment variable '{}' (length: {}) in path expansion",
+                        var_name,
+                        sanitized_value.len()
+                    );
                 }
-                // $VAR when VAR doesn't exist is typically left as-is
+                Ok(None) => {
+                    // Variable not found or not whitelisted - leave as-is or replace with empty based on SSH conventions
+                    if is_braced {
+                        // ${VAR} when VAR doesn't exist typically becomes empty
+                        result.replace_range(start_pos..end_pos, "");
+                        changed = true;
+                    }
+                    // $VAR when VAR doesn't exist is typically left as-is
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to get environment variable '{}' from cache: {}. Skipping expansion.",
+                        var_name,
+                        e
+                    );
+                    // Continue without expanding - fail safely
+                }
             }
         }
     }
