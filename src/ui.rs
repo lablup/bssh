@@ -354,7 +354,7 @@ impl OutputFormatter {
 pub fn print_welcome_banner() {
     let banner = r"
 ╭───────────────────────────────────────╮
-│      bssh - Backend.AI SSH Tool       │
+│        bssh - Broadcast SSH           │
 │     Parallel Command Execution        │
 ╰───────────────────────────────────────╯
 ";

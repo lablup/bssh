@@ -42,7 +42,7 @@ signal-hook = "0.3.18"
 atty = "0.2.14"
 arrayvec = "0.7.6"
 smallvec = "1.13.2"
-lru = "0.12"
+lru = "0.16"
 
 [dev-dependencies]
 tempfile = "3"

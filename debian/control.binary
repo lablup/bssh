@@ -17,8 +17,8 @@ Recommends: openssh-client,
 Suggests: ssh-agent,
           keychain,
           bash-completion
-Description: Backend.AI SSH - Parallel command execution across cluster nodes
- bssh (Backend.AI SSH) is a high-performance parallel SSH command execution
+Description: Broadcast SSH - Parallel command execution across cluster nodes
+ bssh (Broadcast SSH) is a high-performance parallel SSH command execution
  tool for cluster management, built with Rust. It provides:
  .
   * Parallel command execution across multiple nodes simultaneously
