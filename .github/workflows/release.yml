@@ -86,28 +86,22 @@ jobs:
 
       # 3) Install Rust toolchain
       - name: Install Rust toolchain
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@stable
         with:
-          profile: minimal
-          toolchain: stable
-          override: true
+          targets: ${{ matrix.target }}
 
-      # 4) Add target architecture
-      - name: Add target architecture
-        run: rustup target add ${{ matrix.target }}
-
-      # 5) Install musl tools only for aarch64 musl builds
+      # 4) Install musl tools only for aarch64 musl builds
       - name: Install musl tools (Linux musl only)
         if: contains(matrix.target, 'musl')
         run: |
           sudo apt update
           sudo apt install -y musl-tools
 
-      # 6) Build the release binary
+      # 5) Build the release binary
       - name: Build release binary
         run: cargo build --release --target ${{ matrix.target }} --locked
 
-      # 7) macOS code signing
+      # 6) macOS code signing
       - name: Import Distribution certificate
         if: runner.os == 'macOS'
         uses: apple-actions/import-codesign-certs@v3
@@ -122,7 +116,7 @@ jobs:
           codesign --force --timestamp --options runtime \
                    --sign "Distribution" "$BIN"
 
-      # 8) Package binaries
+      # 7) Package binaries
       - name: Package Linux binary (tar.gz)
         if: runner.os == 'Linux'
         run: |
@@ -142,7 +136,7 @@ jobs:
           cp docs/man/bssh.1 package/
           ditto -c -k --sequesterRsrc package "$ASSET"
 
-      # 9) Generate checksum
+      # 8) Generate checksum
       - name: Generate checksum
         run: |
           FILE="${{ matrix.asset_name }}${{ matrix.archive_ext }}"
@@ -152,7 +146,7 @@ jobs:
             shasum -a 256 "$FILE" > "$FILE.sha256"
           fi
 
-      # 11) Upload release artifacts and checksum
+      # 9) Upload release artifacts and checksum
       - name: Upload release artifacts
         if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
