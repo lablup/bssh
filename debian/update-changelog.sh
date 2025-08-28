@@ -57,7 +57,13 @@ for TAG in "${TAGS[@]}"; do
   BODY=$(echo "$rel_json" | jq -r '.body')
 
   # Debian date format
-  FORMATTED_DATE=$(date -d "$DATE" "+%a, %d %b %Y %H:%M:%S %z")
+  if date --version >/dev/null 2>&1; then
+    # GNU date (Linux)
+    FORMATTED_DATE=$(date -d "$DATE" "+%a, %d %b %Y %H:%M:%S %z")
+  else
+    # BSD date (macOS)
+    FORMATTED_DATE=$(date -j -f "%Y-%m-%dT%H:%M:%SZ" "$DATE" "+%a, %d %b %Y %H:%M:%S %z")
+  fi
 
   # Determine version suffix
   if [[ "$AUTO_INCREMENT" == "true" ]]; then

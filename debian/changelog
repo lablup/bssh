@@ -1,10 +1,33 @@
-bssh (0.3.0-1~jammy1) jammy; urgency=medium
+bssh (0.6.1-1~jammy1) jammy; urgency=medium
 
-  * Initial Debian packaging
-  * Add native SFTP directory operations and recursive file transfer support
-  * Modern UI with semantic colors and Unicode symbols
-  * Full XDG Base Directory specification compliance
-  * Backend.AI multi-node session auto-detection
-  * Multiple authentication methods support
+  * v0.6.1
+  ### New Features
+  None
+  
+  ### Improvements
+  - **Branding Update**: Rebranded from 'Backend.AI SSH' to 'Broadcast SSH' to better reflect the tool's core functionality of broadcast/parallel command execution
+  - **Documentation**: Updated all help text, manpages, and package descriptions with the new branding
+  
+  ### Bug Fixes
+  None
+  
+  ### CI/CD Improvements
+  None
+  
+  ### Technical Details
+  - Maintained Backend.AI project association in documentation while emphasizing the tool's broader utility
+  - Updated project branding across CLI help output, UI banners, man pages, and Debian package metadata
+  
+  ### Dependencies
+  None
+  
+  ### Breaking Changes
+  None
+  
+  ### Known Issues
+  None
+  
+  **Full Changelog**: https://github.com/lablup/bssh/compare/v0.6.0...v0.6.1
 
- -- Jeongkyu Shin <inureyes@gmail.com>  Fri, 22 Aug 2025 22:59:16 +0900
+ -- Jeongkyu Shin <inureyes@gmail.com>  Thu, 28 Aug 2025 13:57:13 +0900
+
