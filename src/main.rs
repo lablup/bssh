@@ -127,12 +127,12 @@ async fn main() -> Result<()> {
     // Load configuration with priority
     let config = Config::load_with_priority(&cli.config).await?;
 
-    // Load SSH configuration
+    // Load SSH configuration with caching for improved performance
     let ssh_config = if let Some(ref ssh_config_path) = cli.ssh_config {
-        SshConfig::load_from_file(ssh_config_path)
+        SshConfig::load_from_file_cached(ssh_config_path)
             .with_context(|| format!("Failed to load SSH config from {ssh_config_path:?}"))?
     } else {
-        SshConfig::load_default().unwrap_or_else(|_| {
+        SshConfig::load_default_cached().unwrap_or_else(|_| {
             tracing::debug!("No SSH config found or failed to load, using empty config");
             SshConfig::new()
         })
@@ -141,6 +141,12 @@ async fn main() -> Result<()> {
     // Handle list command first (doesn't need nodes)
     if matches!(cli.command, Some(Commands::List)) {
         list_clusters(&config);
+        return Ok(());
+    }
+
+    // Handle cache-stats command (doesn't need nodes)
+    if let Some(Commands::CacheStats { detailed, clear, maintain }) = &cli.command {
+        handle_cache_stats(*detailed, *clear, *maintain);
         return Ok(());
     }
 
@@ -629,6 +635,89 @@ async fn resolve_nodes(
     }
 
     Ok((nodes, cluster_name))
+}
+
+/// Handle cache statistics command
+fn handle_cache_stats(detailed: bool, clear: bool, maintain: bool) {
+    use bssh::ssh::GLOBAL_CACHE;
+    use owo_colors::OwoColorize;
+
+    if clear {
+        GLOBAL_CACHE.clear();
+        println!("{}", "Cache cleared".green());
+    }
+
+    if maintain {
+        let removed = GLOBAL_CACHE.maintain();
+        println!(
+            "{}: Removed {} expired/stale entries",
+            "Cache maintenance".yellow(),
+            removed
+        );
+    }
+
+    let stats = GLOBAL_CACHE.stats();
+    let config = GLOBAL_CACHE.config();
+
+    println!("\n{}", "SSH Configuration Cache Statistics".cyan().bold());
+    println!("=====================================");
+
+    // Basic statistics
+    println!("\n{}", "Cache Configuration:".bright_blue());
+    println!("  Enabled: {}", if config.enabled { 
+        format!("{}", "Yes".green()) 
+    } else { 
+        format!("{}", "No".red()) 
+    });
+    println!("  Max Entries: {}", config.max_entries.to_string().cyan());
+    println!("  TTL: {}", format!("{:?}", config.ttl).cyan());
+
+    println!("\n{}", "Cache Statistics:".bright_blue());
+    println!("  Current Entries: {}/{}", 
+             stats.current_entries.to_string().cyan(), 
+             stats.max_entries.to_string().yellow());
+    
+    let total_requests = stats.hits + stats.misses;
+    if total_requests > 0 {
+        println!("  Hit Rate: {:.1}% ({}/{} requests)", 
+                 (stats.hit_rate() * 100.0).to_string().green(),
+                 stats.hits.to_string().green(),
+                 total_requests.to_string().cyan());
+        println!("  Miss Rate: {:.1}% ({} misses)", 
+                 (stats.miss_rate() * 100.0).to_string().yellow(),
+                 stats.misses.to_string().yellow());
+    } else {
+        println!("  No cache requests yet");
+    }
+
+    println!("\n{}", "Eviction Statistics:".bright_blue());
+    println!("  TTL Evictions: {}", stats.ttl_evictions.to_string().yellow());
+    println!("  Stale Evictions: {}", stats.stale_evictions.to_string().yellow());
+    println!("  LRU Evictions: {}", stats.lru_evictions.to_string().yellow());
+
+    if detailed && stats.current_entries > 0 {
+        println!("\n{}", "Detailed Entry Information:".bright_blue());
+        let debug_info = GLOBAL_CACHE.debug_info();
+        
+        for (path, info) in debug_info {
+            println!("  {}: {}", 
+                     path.display().to_string().cyan(), 
+                     info);
+        }
+    }
+
+    if !config.enabled {
+        println!("\n{}", "Note: Caching is currently disabled".red());
+        println!("Set BSSH_CACHE_ENABLED=true to enable caching");
+    } else if stats.current_entries == 0 && total_requests == 0 {
+        println!("\n{}", "Note: No SSH configs have been loaded yet".yellow());
+        println!("Try running some bssh commands to populate the cache");
+    }
+
+    println!("\n{}", "Environment Variables:".bright_blue());
+    println!("  BSSH_CACHE_ENABLED={}", std::env::var("BSSH_CACHE_ENABLED").unwrap_or_else(|_| "true (default)".to_string()));
+    println!("  BSSH_CACHE_SIZE={}", std::env::var("BSSH_CACHE_SIZE").unwrap_or_else(|_| "100 (default)".to_string()));
+    println!("  BSSH_CACHE_TTL={}", std::env::var("BSSH_CACHE_TTL").unwrap_or_else(|_| "300 (default)".to_string()));
 }
 
 /// Handle SSH query options (-Q)

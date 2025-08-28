@@ -299,6 +299,22 @@ pub enum Commands {
         )]
         work_dir: Option<String>,
     },
+
+    #[command(
+        about = "Display SSH config cache statistics",
+        long_about = "Shows detailed statistics and debug information about the SSH configuration cache.\nIncludes hit rates, cache size, eviction counts, and entry details.\nUseful for performance monitoring and cache tuning.\n\nCache can be configured via environment variables:\n  BSSH_CACHE_ENABLED=true/false  - Enable/disable caching\n  BSSH_CACHE_SIZE=100            - Maximum cache entries\n  BSSH_CACHE_TTL=300             - TTL in seconds",
+        after_help = "Examples:\n  bssh cache-stats                  # Show basic statistics\n  bssh cache-stats --detailed       # Show per-entry information\n  bssh cache-stats --clear           # Clear cache and show stats"
+    )]
+    CacheStats {
+        #[arg(long, help = "Show detailed per-entry information")]
+        detailed: bool,
+
+        #[arg(long, help = "Clear the cache before showing statistics")]
+        clear: bool,
+
+        #[arg(long, help = "Perform cache maintenance (remove expired entries)")]
+        maintain: bool,
+    },
 }
 
 impl Cli {

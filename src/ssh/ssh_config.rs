@@ -106,6 +106,12 @@ impl SshConfig {
             .with_context(|| format!("Failed to parse SSH config file: {}", path.display()))
     }
 
+    /// Load SSH configuration from a file with caching
+    /// Uses the global cache to improve performance for repeated access
+    pub fn load_from_file_cached<P: AsRef<Path>>(path: P) -> Result<Self> {
+        crate::ssh::GLOBAL_CACHE.get_or_load(path)
+    }
+
     /// Load SSH configuration from the default locations
     pub fn load_default() -> Result<Self> {
         // Try user-specific SSH config first
@@ -124,6 +130,12 @@ impl SshConfig {
 
         // Return empty config if no files found
         Ok(Self::new())
+    }
+
+    /// Load SSH configuration from the default locations with caching
+    /// Uses the global cache to improve performance for repeated access
+    pub fn load_default_cached() -> Result<Self> {
+        crate::ssh::GLOBAL_CACHE.load_default()
     }
 
     /// Parse SSH configuration from a string
