@@ -43,6 +43,18 @@ use super::interactive_signal::{
     TerminalGuard,
 };
 
+/// SSH output polling interval for responsive display
+/// - 10ms provides very responsive output display
+/// - Short enough to appear instantaneous to users
+/// - Balances CPU usage with terminal responsiveness
+const SSH_OUTPUT_POLL_INTERVAL_MS: u64 = 10;
+
+/// Number of nodes to show in compact display format
+/// - 3 nodes provides enough context without overwhelming output
+/// - Shows first three nodes with ellipsis for remainder
+/// - Keeps command prompts readable in multi-node mode
+const NODES_TO_SHOW_IN_COMPACT: usize = 3;
+
 /// Interactive mode command configuration
 pub struct InteractiveCommand {
     pub single_node: bool,
@@ -93,8 +105,17 @@ impl NodeSession {
 
     /// Read available output from this node
     async fn read_output(&mut self) -> Result<Option<String>> {
-        // Try to read with a short timeout
-        match timeout(Duration::from_millis(100), self.channel.wait()).await {
+        // SSH channel read timeout design:
+        // - 100ms prevents blocking while waiting for output
+        // - Short enough to maintain interactive responsiveness
+        // - Allows polling loop to check for other events (shutdown, input)
+        const SSH_OUTPUT_READ_TIMEOUT_MS: u64 = 100;
+        match timeout(
+            Duration::from_millis(SSH_OUTPUT_READ_TIMEOUT_MS),
+            self.channel.wait(),
+        )
+        .await
+        {
             Ok(Some(msg)) => match msg {
                 russh::ChannelMsg::Data { ref data } => {
                     Ok(Some(String::from_utf8_lossy(data).to_string()))
@@ -307,7 +328,13 @@ impl InteractiveCommand {
 
         // Connect with timeout
         let addr = (node.host.as_str(), node.port);
-        let connect_timeout = Duration::from_secs(30);
+        // SSH connection timeout design:
+        // - 30 seconds balances user patience with network reliability
+        // - Sufficient for slow networks, DNS resolution, SSH negotiation
+        // - Industry standard timeout for interactive SSH connections
+        // - Prevents indefinite hang on unreachable hosts
+        const SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
+        let connect_timeout = Duration::from_secs(SSH_CONNECT_TIMEOUT_SECS);
 
         let client = timeout(
             connect_timeout,
@@ -401,7 +428,13 @@ impl InteractiveCommand {
 
         // Connect with timeout
         let addr = (node.host.as_str(), node.port);
-        let connect_timeout = Duration::from_secs(30);
+        // SSH connection timeout design:
+        // - 30 seconds balances user patience with network reliability
+        // - Sufficient for slow networks, DNS resolution, SSH negotiation
+        // - Industry standard timeout for interactive SSH connections
+        // - Prevents indefinite hang on unreachable hosts
+        const SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
+        let connect_timeout = Duration::from_secs(SSH_CONNECT_TIMEOUT_SECS);
 
         let client = timeout(
             connect_timeout,
@@ -580,8 +613,13 @@ impl InteractiveCommand {
         let shutdown_clone = Arc::clone(&shutdown);
 
         // Create a bounded channel for receiving output from the SSH session
-        // 128 buffer size is reasonable for terminal output without causing memory issues
-        let (output_tx, mut output_rx) = mpsc::channel::<String>(128);
+        // SSH output channel sizing:
+        // - 128 capacity handles burst terminal output without blocking SSH reader
+        // - Each message is variable size (terminal output lines/chunks)
+        // - Bounded to prevent memory exhaustion from high-volume output
+        // - Large enough to smooth out bursty shell command output
+        const SSH_OUTPUT_CHANNEL_SIZE: usize = 128;
+        let (output_tx, mut output_rx) = mpsc::channel::<String>(SSH_OUTPUT_CHANNEL_SIZE);
 
         // Spawn a task to read output from the SSH channel using select! for efficiency
         let output_reader = tokio::spawn(async move {
@@ -592,7 +630,12 @@ impl InteractiveCommand {
                         if shutdown_clone_for_watch.load(Ordering::Relaxed) || is_interrupted() {
                             break;
                         }
-                        tokio::time::sleep(Duration::from_millis(50)).await;
+                        // Shutdown polling interval:
+                        // - 50ms provides responsive shutdown detection
+                        // - Prevents tight spin loop during shutdown
+                        // - Fast enough that users won't notice delay on Ctrl+C
+                        const SHUTDOWN_POLL_INTERVAL_MS: u64 = 50;
+                        tokio::time::sleep(Duration::from_millis(SHUTDOWN_POLL_INTERVAL_MS)).await;
                     }
                 })
             };
@@ -600,7 +643,11 @@ impl InteractiveCommand {
             loop {
                 tokio::select! {
                     // Check for output from SSH session
-                    _ = tokio::time::sleep(Duration::from_millis(10)) => {
+                    // SSH output polling interval:
+                    // - 10ms provides very responsive output display
+                    // - Short enough to appear instantaneous to users
+                    // - Balances CPU usage with terminal responsiveness
+                    _ = tokio::time::sleep(Duration::from_millis(SSH_OUTPUT_POLL_INTERVAL_MS)) => {
                         let mut session_guard = session_clone.lock().await;
                         if !session_guard.is_connected {
                             break;
@@ -672,7 +719,11 @@ impl InteractiveCommand {
                 }
 
                 // Handle user input (this runs in a separate task since readline is blocking)
-                _ = tokio::time::sleep(Duration::from_millis(10)) => {
+                // User input processing interval:
+                // - 10ms keeps UI responsive during input processing
+                // - Allows other events to be processed (output, signals)
+                // - Short interval since readline() might block briefly
+                _ = tokio::time::sleep(Duration::from_millis(SSH_OUTPUT_POLL_INTERVAL_MS)) => {
                     // Read input using rustyline (this needs to remain synchronous)
                     match rl.readline(&prompt) {
                         Ok(line) => {
@@ -682,7 +733,12 @@ impl InteractiveCommand {
                                 session_guard.send_command("exit").await?;
                                 drop(session_guard);
                                 // Give the SSH session a moment to process the exit
-                                tokio::time::sleep(Duration::from_millis(100)).await;
+                                // SSH exit command processing delay:
+                                // - 100ms allows remote shell to process exit command
+                                // - Prevents premature connection termination
+                                // - Ensures clean session shutdown
+                                const SSH_EXIT_DELAY_MS: u64 = 100;
+                                tokio::time::sleep(Duration::from_millis(SSH_EXIT_DELAY_MS)).await;
                                 break;
                             }
 
@@ -932,11 +988,14 @@ impl InteractiveCommand {
                         // Show first 3 and count
                         let first_three = active_nodes
                             .iter()
-                            .take(3)
+                            .take(NODES_TO_SHOW_IN_COMPACT)
                             .map(std::string::ToString::to_string)
                             .collect::<Vec<_>>()
                             .join(",");
-                        format!("[Nodes {first_three}... +{}]", active_nodes.len() - 3)
+                        format!(
+                            "[Nodes {first_three}... +{}]",
+                            active_nodes.len() - NODES_TO_SHOW_IN_COMPACT
+                        )
                     };
 
                     format!("{display} ({active_count}/{total_connected}) bssh> ")
@@ -1122,7 +1181,11 @@ impl InteractiveCommand {
 
                                 // If no output was found, sleep briefly to avoid busy waiting
                                 if !has_output {
-                                    tokio::time::sleep(Duration::from_millis(10)).await;
+                                    // Output polling interval in multiplex mode:
+                                    // - 10ms provides responsive output collection
+                                    // - Prevents busy waiting when no output available
+                                    // - Short enough to maintain interactive feel
+                                    tokio::time::sleep(Duration::from_millis(SSH_OUTPUT_POLL_INTERVAL_MS)).await;
                                 }
                             } => {
                                 if !has_output {

@@ -68,7 +68,12 @@ impl SshClient {
         };
 
         // Connect and authenticate with timeout
-        let connect_timeout = Duration::from_secs(30);
+        // SSH connection timeout design:
+        // - 30 seconds accommodates slow networks and SSH negotiation
+        // - Industry standard for SSH client connections
+        // - Balances user patience with reliability on poor networks
+        const SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
+        let connect_timeout = Duration::from_secs(SSH_CONNECT_TIMEOUT_SECS);
         let client = tokio::time::timeout(
             connect_timeout,
             Client::connect(addr, &self.username, auth_method, check_method)
@@ -101,8 +106,14 @@ impl SshClient {
                 .with_context(|| format!("Failed to execute command '{}' on {}:{}. The SSH connection was successful but the command could not be executed.", command, self.host, self.port))?
             }
         } else {
-            // Default timeout of 300 seconds if not specified
-            let command_timeout = Duration::from_secs(300);
+            // Default timeout if not specified
+            // SSH command execution timeout design:
+            // - 5 minutes (300s) handles long-running commands
+            // - Prevents indefinite hang on unresponsive commands
+            // - Long enough for system updates, compilations, etc.
+            // - Short enough to detect truly hung processes
+            const DEFAULT_COMMAND_TIMEOUT_SECS: u64 = 300;
+            let command_timeout = Duration::from_secs(DEFAULT_COMMAND_TIMEOUT_SECS);
             tracing::debug!("Executing command with default timeout of 300 seconds");
             tokio::time::timeout(
                 command_timeout,
@@ -150,7 +161,12 @@ impl SshClient {
         };
 
         // Connect and authenticate with timeout
-        let connect_timeout = Duration::from_secs(30);
+        // SSH connection timeout design:
+        // - 30 seconds accommodates slow networks and SSH negotiation
+        // - Industry standard for SSH client connections
+        // - Balances user patience with reliability on poor networks
+        const SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
+        let connect_timeout = Duration::from_secs(SSH_CONNECT_TIMEOUT_SECS);
         let client = tokio::time::timeout(
             connect_timeout,
             Client::connect(addr, &self.username, auth_method, check_method)
@@ -180,7 +196,12 @@ impl SshClient {
         );
 
         // Use the built-in upload_file method with timeout (SFTP-based)
-        let upload_timeout = Duration::from_secs(300); // 5 minutes for file upload
+        // File upload timeout design:
+        // - 5 minutes handles typical file sizes over slow networks
+        // - Sufficient for multi-MB files on broadband connections
+        // - Prevents hang on network failures or very large files
+        const FILE_UPLOAD_TIMEOUT_SECS: u64 = 300;
+        let upload_timeout = Duration::from_secs(FILE_UPLOAD_TIMEOUT_SECS);
         tokio::time::timeout(
             upload_timeout,
             client.upload_file(local_path, remote_path.to_string()),
@@ -231,7 +252,12 @@ impl SshClient {
         };
 
         // Connect and authenticate with timeout
-        let connect_timeout = Duration::from_secs(30);
+        // SSH connection timeout design:
+        // - 30 seconds accommodates slow networks and SSH negotiation
+        // - Industry standard for SSH client connections
+        // - Balances user patience with reliability on poor networks
+        const SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
+        let connect_timeout = Duration::from_secs(SSH_CONNECT_TIMEOUT_SECS);
         let client = tokio::time::timeout(
             connect_timeout,
             Client::connect(addr, &self.username, auth_method, check_method)
@@ -257,7 +283,12 @@ impl SshClient {
         );
 
         // Use the built-in download_file method with timeout (SFTP-based)
-        let download_timeout = Duration::from_secs(300); // 5 minutes for file download
+        // File download timeout design:
+        // - 5 minutes handles typical file sizes over slow networks
+        // - Sufficient for multi-MB files on broadband connections
+        // - Prevents hang on network failures or very large files
+        const FILE_DOWNLOAD_TIMEOUT_SECS: u64 = 300;
+        let download_timeout = Duration::from_secs(FILE_DOWNLOAD_TIMEOUT_SECS);
         tokio::time::timeout(
             download_timeout,
             client.download_file(remote_path.to_string(), local_path),
@@ -308,7 +339,12 @@ impl SshClient {
         };
 
         // Connect and authenticate with timeout
-        let connect_timeout = Duration::from_secs(30);
+        // SSH connection timeout design:
+        // - 30 seconds accommodates slow networks and SSH negotiation
+        // - Industry standard for SSH client connections
+        // - Balances user patience with reliability on poor networks
+        const SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
+        let connect_timeout = Duration::from_secs(SSH_CONNECT_TIMEOUT_SECS);
         let client = tokio::time::timeout(
             connect_timeout,
             Client::connect(addr, &self.username, auth_method, check_method),
@@ -336,7 +372,13 @@ impl SshClient {
         );
 
         // Use the built-in upload_dir method with timeout
-        let upload_timeout = Duration::from_secs(600); // 10 minutes for directory upload
+        // Directory upload timeout design:
+        // - 10 minutes handles directories with many files
+        // - Accounts for SFTP overhead per file (connection setup, etc.)
+        // - Longer than single file to accommodate batch operations
+        // - Prevents indefinite hang on large directory trees
+        const DIR_UPLOAD_TIMEOUT_SECS: u64 = 600;
+        let upload_timeout = Duration::from_secs(DIR_UPLOAD_TIMEOUT_SECS);
         tokio::time::timeout(
             upload_timeout,
             client.upload_dir(local_dir_path, remote_dir_path.to_string()),
@@ -387,7 +429,12 @@ impl SshClient {
         };
 
         // Connect and authenticate with timeout
-        let connect_timeout = Duration::from_secs(30);
+        // SSH connection timeout design:
+        // - 30 seconds accommodates slow networks and SSH negotiation
+        // - Industry standard for SSH client connections
+        // - Balances user patience with reliability on poor networks
+        const SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
+        let connect_timeout = Duration::from_secs(SSH_CONNECT_TIMEOUT_SECS);
         let client = tokio::time::timeout(
             connect_timeout,
             Client::connect(addr, &self.username, auth_method, check_method),
@@ -413,7 +460,13 @@ impl SshClient {
         );
 
         // Use the built-in download_dir method with timeout
-        let download_timeout = Duration::from_secs(600); // 10 minutes for directory download
+        // Directory download timeout design:
+        // - 10 minutes handles directories with many files
+        // - Accounts for SFTP overhead per file (connection setup, etc.)
+        // - Longer than single file to accommodate batch operations
+        // - Prevents indefinite hang on large directory trees
+        const DIR_DOWNLOAD_TIMEOUT_SECS: u64 = 600;
+        let download_timeout = Duration::from_secs(DIR_DOWNLOAD_TIMEOUT_SECS);
         tokio::time::timeout(
             download_timeout,
             client.download_dir(remote_dir_path.to_string(), local_dir_path),

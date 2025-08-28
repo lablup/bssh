@@ -21,6 +21,7 @@
 use anyhow::{Context, Result};
 use russh::{client::Msg, Channel};
 use signal_hook::{consts::SIGWINCH, iterator::Signals};
+use smallvec::SmallVec;
 use terminal_size::{terminal_size, Height, Width};
 use tokio::sync::{mpsc, watch};
 use tokio::time::Duration;
@@ -30,6 +31,12 @@ pub mod terminal;
 
 pub use session::PtySession;
 pub use terminal::{force_terminal_cleanup, TerminalState, TerminalStateGuard};
+
+/// Session processing interval for multiplex mode
+/// - 100ms provides reasonable time-slicing for multiplex mode
+/// - Allows other async tasks to run without starving
+/// - Not critical for responsiveness as actual I/O is event-driven
+const SESSION_PROCESSING_INTERVAL_MS: u64 = 100;
 
 /// PTY session configuration
 #[derive(Debug, Clone)]
@@ -48,12 +55,18 @@ pub struct PtyConfig {
 
 impl Default for PtyConfig {
     fn default() -> Self {
+        // Default PTY configuration timeout design:
+        // - 10ms provides rapid response to input/output events
+        // - Short enough to feel instantaneous to users (<20ms threshold)
+        // - Balances CPU usage with responsiveness for interactive terminals
+        const DEFAULT_PTY_TIMEOUT_MS: u64 = 10;
+
         Self {
             term_type: "xterm-256color".to_string(),
             force_pty: false,
             disable_pty: false,
             enable_mouse: false,
-            timeout: Duration::from_millis(10),
+            timeout: Duration::from_millis(DEFAULT_PTY_TIMEOUT_MS),
         }
     }
 }
@@ -74,12 +87,15 @@ pub enum PtyState {
 }
 
 /// Terminal input/output message
+/// Uses SmallVec to avoid heap allocations for small messages (typical for key presses)
 #[derive(Debug)]
 pub enum PtyMessage {
     /// Data from local terminal to send to remote
-    LocalInput(Vec<u8>),
+    /// SmallVec<[u8; 8]> keeps key sequences stack-allocated
+    LocalInput(SmallVec<[u8; 8]>),
     /// Data from remote to display on local terminal
-    RemoteOutput(Vec<u8>),
+    /// SmallVec<[u8; 64]> handles most terminal output without allocation
+    RemoteOutput(SmallVec<[u8; 64]>),
     /// Terminal resize event
     Resize { width: u32, height: u32 },
     /// PTY session should terminate
@@ -157,8 +173,12 @@ impl PtyManager {
         let mut active_session = session_ids[0];
 
         // Set up bounded channels for communication between sessions
-        // Session switching is infrequent, so small buffer is sufficient
-        let (_switch_tx, mut _switch_rx) = mpsc::channel::<usize>(32);
+        // Session switching channel sizing:
+        // - 32 capacity handles burst session switches without blocking
+        // - Session switches are infrequent user actions, small buffer sufficient
+        // - Prevents memory exhaustion from accumulated switch commands
+        const SESSION_SWITCH_CHANNEL_SIZE: usize = 32;
+        let (_switch_tx, mut _switch_rx) = mpsc::channel::<usize>(SESSION_SWITCH_CHANNEL_SIZE);
 
         // Run the multiplexed session loop using select! for efficient event handling
         let mut cancel_rx = self.cancel_rx.clone();
@@ -192,7 +212,11 @@ impl PtyManager {
                 }
 
                 // Run active session processing
-                _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                // Session processing interval design:
+                // - 100ms provides reasonable time-slicing for multiplex mode
+                // - Allows other async tasks to run without starving
+                // - Not critical for responsiveness as actual I/O is event-driven
+                _ = tokio::time::sleep(Duration::from_millis(SESSION_PROCESSING_INTERVAL_MS)) => {
                     // TODO: Implement session time-slicing for multiplex mode
                     // For now, just continue the loop
                     if let Some(_session) = self.active_sessions.get_mut(active_session) {
@@ -218,7 +242,13 @@ impl PtyManager {
             .collect();
 
         // Wait for all sessions to shutdown with timeout
-        let shutdown_timeout = Duration::from_secs(5);
+        // PTY manager shutdown timeout design:
+        // - 5 seconds allows time for multiple sessions to cleanup gracefully
+        // - Long enough for network operations to complete (channel close, etc.)
+        // - Prevents indefinite hang if some sessions don't respond to shutdown
+        // - After timeout, remaining sessions are abandoned (memory cleanup via Drop)
+        const PTY_SHUTDOWN_TIMEOUT_SECS: u64 = 5;
+        let shutdown_timeout = Duration::from_secs(PTY_SHUTDOWN_TIMEOUT_SECS);
 
         tokio::select! {
             results = futures::future::try_join_all(shutdown_futures) => {

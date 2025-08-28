@@ -76,8 +76,13 @@ pub async fn setup_async_signal_handlers(shutdown: Arc<AtomicBool>) {
 #[cfg(unix)]
 pub async fn handle_terminal_resize() -> Result<tokio::sync::mpsc::Receiver<(u16, u16)>> {
     // Use bounded channel with small buffer for resize events
-    // Resize events are infrequent, so a small buffer is sufficient
-    let (tx, rx) = tokio::sync::mpsc::channel(16);
+    // Terminal resize signal channel sizing:
+    // - 16 capacity handles rapid resize events without blocking
+    // - Resize events are infrequent but can burst during window dragging
+    // - Small buffer prevents memory accumulation of outdated resize events
+    // - Bounded to ensure latest resize information is processed promptly
+    const RESIZE_SIGNAL_CHANNEL_SIZE: usize = 16;
+    let (tx, rx) = tokio::sync::mpsc::channel(RESIZE_SIGNAL_CHANNEL_SIZE);
 
     tokio::spawn(async move {
         let mut sigwinch = signal::unix::signal(signal::unix::SignalKind::window_change())

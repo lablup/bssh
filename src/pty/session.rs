@@ -17,6 +17,7 @@
 use anyhow::{Context, Result};
 use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent};
 use russh::{client::Msg, Channel, ChannelMsg};
+use smallvec::SmallVec;
 // use signal_hook::iterator::Signals; // Unused in current implementation
 use std::io::{self, Write};
 use tokio::sync::{mpsc, watch};
@@ -26,6 +27,76 @@ use super::{
     terminal::{TerminalOps, TerminalStateGuard},
     PtyConfig, PtyMessage, PtyState,
 };
+
+// Buffer size constants for allocation optimization
+// These values are chosen based on empirical testing and SSH protocol characteristics
+
+/// Maximum size for terminal key sequences (ANSI escape sequences are typically 3-7 bytes)
+/// Value: 8 bytes - Accommodates the longest standard ANSI sequences (F-keys: ESC[2x~)
+/// Rationale: Most key sequences are 1-5 bytes, 8 provides safe headroom without waste
+#[allow(dead_code)]
+const MAX_KEY_SEQUENCE_SIZE: usize = 8;
+
+/// Buffer size for SSH I/O operations (4KB aligns with typical SSH packet sizes)
+/// Value: 4096 bytes - Matches common SSH packet fragmentation boundaries
+/// Rationale: SSH protocol commonly uses 4KB packets; larger buffers reduce syscalls
+/// but increase memory usage. 4KB provides optimal balance for interactive sessions.
+#[allow(dead_code)]
+const SSH_IO_BUFFER_SIZE: usize = 4096;
+
+/// Maximum size for terminal output chunks processed at once
+/// Value: 1024 bytes - Balance between responsiveness and efficiency
+/// Rationale: Smaller chunks improve perceived responsiveness for interactive use,
+/// while still being large enough to batch terminal escape sequences efficiently.
+#[allow(dead_code)]
+const TERMINAL_OUTPUT_CHUNK_SIZE: usize = 1024;
+
+// Const arrays for frequently used key sequences to avoid repeated allocations
+/// Control key sequences - frequently used in terminal input
+const CTRL_C_SEQUENCE: &[u8] = &[0x03]; // Ctrl+C (SIGINT)
+const CTRL_D_SEQUENCE: &[u8] = &[0x04]; // Ctrl+D (EOF)
+const CTRL_Z_SEQUENCE: &[u8] = &[0x1a]; // Ctrl+Z (SIGTSTP)
+const CTRL_A_SEQUENCE: &[u8] = &[0x01]; // Ctrl+A
+const CTRL_E_SEQUENCE: &[u8] = &[0x05]; // Ctrl+E
+const CTRL_U_SEQUENCE: &[u8] = &[0x15]; // Ctrl+U
+const CTRL_K_SEQUENCE: &[u8] = &[0x0b]; // Ctrl+K
+const CTRL_W_SEQUENCE: &[u8] = &[0x17]; // Ctrl+W
+const CTRL_L_SEQUENCE: &[u8] = &[0x0c]; // Ctrl+L
+const CTRL_R_SEQUENCE: &[u8] = &[0x12]; // Ctrl+R
+
+/// Special keys - frequently used in terminal input
+const ENTER_SEQUENCE: &[u8] = &[0x0d]; // Carriage return
+const TAB_SEQUENCE: &[u8] = &[0x09]; // Tab
+const BACKSPACE_SEQUENCE: &[u8] = &[0x7f]; // DEL
+const ESC_SEQUENCE: &[u8] = &[0x1b]; // ESC
+
+/// Arrow keys - ANSI escape sequences
+const UP_ARROW_SEQUENCE: &[u8] = &[0x1b, 0x5b, 0x41]; // ESC[A
+const DOWN_ARROW_SEQUENCE: &[u8] = &[0x1b, 0x5b, 0x42]; // ESC[B
+const RIGHT_ARROW_SEQUENCE: &[u8] = &[0x1b, 0x5b, 0x43]; // ESC[C
+const LEFT_ARROW_SEQUENCE: &[u8] = &[0x1b, 0x5b, 0x44]; // ESC[D
+
+/// Function keys - commonly used
+const F1_SEQUENCE: &[u8] = &[0x1b, 0x4f, 0x50]; // F1: ESC OP
+const F2_SEQUENCE: &[u8] = &[0x1b, 0x4f, 0x51]; // F2: ESC OQ
+const F3_SEQUENCE: &[u8] = &[0x1b, 0x4f, 0x52]; // F3: ESC OR
+const F4_SEQUENCE: &[u8] = &[0x1b, 0x4f, 0x53]; // F4: ESC OS
+const F5_SEQUENCE: &[u8] = &[0x1b, 0x5b, 0x31, 0x35, 0x7e]; // F5: ESC[15~
+const F6_SEQUENCE: &[u8] = &[0x1b, 0x5b, 0x31, 0x37, 0x7e]; // F6: ESC[17~
+const F7_SEQUENCE: &[u8] = &[0x1b, 0x5b, 0x31, 0x38, 0x7e]; // F7: ESC[18~
+const F8_SEQUENCE: &[u8] = &[0x1b, 0x5b, 0x31, 0x39, 0x7e]; // F8: ESC[19~
+const F9_SEQUENCE: &[u8] = &[0x1b, 0x5b, 0x32, 0x30, 0x7e]; // F9: ESC[20~
+const F10_SEQUENCE: &[u8] = &[0x1b, 0x5b, 0x32, 0x31, 0x7e]; // F10: ESC[21~
+const F11_SEQUENCE: &[u8] = &[0x1b, 0x5b, 0x32, 0x33, 0x7e]; // F11: ESC[23~
+const F12_SEQUENCE: &[u8] = &[0x1b, 0x5b, 0x32, 0x34, 0x7e]; // F12: ESC[24~
+
+/// Other special keys
+const HOME_SEQUENCE: &[u8] = &[0x1b, 0x5b, 0x48]; // ESC[H
+const END_SEQUENCE: &[u8] = &[0x1b, 0x5b, 0x46]; // ESC[F
+const PAGE_UP_SEQUENCE: &[u8] = &[0x1b, 0x5b, 0x35, 0x7e]; // ESC[5~
+const PAGE_DOWN_SEQUENCE: &[u8] = &[0x1b, 0x5b, 0x36, 0x7e]; // ESC[6~
+const INSERT_SEQUENCE: &[u8] = &[0x1b, 0x5b, 0x32, 0x7e]; // ESC[2~
+const DELETE_SEQUENCE: &[u8] = &[0x1b, 0x5b, 0x33, 0x7e]; // ESC[3~
 
 /// A PTY session managing the bidirectional communication between
 /// local terminal and remote SSH session.
@@ -52,8 +123,13 @@ impl PtySession {
     /// Create a new PTY session
     pub async fn new(session_id: usize, channel: Channel<Msg>, config: PtyConfig) -> Result<Self> {
         // Use bounded channel with reasonable buffer size to prevent memory exhaustion
-        // 256 messages should be enough for terminal I/O without causing delays
-        let (msg_tx, msg_rx) = mpsc::channel(256);
+        // PTY message channel sizing:
+        // - 256 messages capacity balances memory usage with responsiveness
+        // - Each message is ~8-64 bytes (key presses/small terminal output)
+        // - Total memory: ~16KB worst case, prevents unbounded growth
+        // - Large enough to handle burst input/output without blocking
+        const PTY_MESSAGE_CHANNEL_SIZE: usize = 256;
+        let (msg_tx, msg_rx) = mpsc::channel(PTY_MESSAGE_CHANNEL_SIZE);
 
         // Create cancellation channel
         let (cancel_tx, cancel_rx) = watch::channel(false);
@@ -195,8 +271,13 @@ impl PtySession {
                 }
 
                 // Poll with a longer timeout since we're in blocking thread
-                // This reduces CPU usage while maintaining responsiveness
-                let poll_timeout = Duration::from_millis(500);
+                // Input polling timeout design:
+                // - 500ms provides good balance between CPU usage and responsiveness
+                // - Longer than async timeouts (10-100ms) since this is blocking thread
+                // - Still responsive enough that users won't notice delay
+                // - Reduces CPU usage compared to tight polling loops
+                const INPUT_POLL_TIMEOUT_MS: u64 = 500;
+                let poll_timeout = Duration::from_millis(INPUT_POLL_TIMEOUT_MS);
 
                 // Check for input events with timeout (blocking is OK here)
                 if crossterm::event::poll(poll_timeout).unwrap_or(false) {
@@ -325,11 +406,16 @@ impl PtySession {
         // No need to abort since they check cancellation signal
 
         // Wait for tasks to complete gracefully with select!
-        let _ = tokio::time::timeout(Duration::from_millis(100), async {
+        // Task cleanup timeout design:
+        // - 100ms is sufficient for tasks to receive cancellation signal and exit
+        // - Short timeout prevents hanging on cleanup but allows graceful shutdown
+        // - Tasks should check cancellation signal frequently (10-50ms intervals)
+        const TASK_CLEANUP_TIMEOUT_MS: u64 = 100;
+        let _ = tokio::time::timeout(Duration::from_millis(TASK_CLEANUP_TIMEOUT_MS), async {
             tokio::select! {
                 _ = resize_task => {},
                 _ = input_task => {},
-                _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                _ = tokio::time::sleep(Duration::from_millis(TASK_CLEANUP_TIMEOUT_MS)) => {
                     // Timeout reached, tasks should have finished by now
                 }
             }
@@ -353,7 +439,8 @@ impl PtySession {
     }
 
     /// Handle input events and convert them to raw bytes
-    fn handle_input_event(event: Event) -> Option<Vec<u8>> {
+    /// Returns SmallVec to avoid heap allocations for small key sequences
+    fn handle_input_event(event: Event) -> Option<SmallVec<[u8; 8]>> {
         match event {
             Event::Key(key_event) => {
                 // Only process key press events (not release)
@@ -377,7 +464,8 @@ impl PtySession {
     }
 
     /// Convert key events to raw byte sequences
-    fn key_event_to_bytes(key_event: KeyEvent) -> Option<Vec<u8>> {
+    /// Uses SmallVec to avoid heap allocations for key sequences (typically 1-5 bytes)
+    fn key_event_to_bytes(key_event: KeyEvent) -> Option<SmallVec<[u8; 8]>> {
         match key_event {
             // Handle special key combinations
             KeyEvent {
@@ -386,21 +474,21 @@ impl PtySession {
                 ..
             } => {
                 match c {
-                    'c' | 'C' => Some(vec![0x03]), // Ctrl+C (SIGINT)
-                    'd' | 'D' => Some(vec![0x04]), // Ctrl+D (EOF)
-                    'z' | 'Z' => Some(vec![0x1a]), // Ctrl+Z (SIGTSTP)
-                    'a' | 'A' => Some(vec![0x01]), // Ctrl+A
-                    'e' | 'E' => Some(vec![0x05]), // Ctrl+E
-                    'u' | 'U' => Some(vec![0x15]), // Ctrl+U
-                    'k' | 'K' => Some(vec![0x0b]), // Ctrl+K
-                    'w' | 'W' => Some(vec![0x17]), // Ctrl+W
-                    'l' | 'L' => Some(vec![0x0c]), // Ctrl+L
-                    'r' | 'R' => Some(vec![0x12]), // Ctrl+R
+                    'c' | 'C' => Some(SmallVec::from_slice(CTRL_C_SEQUENCE)), // Ctrl+C (SIGINT)
+                    'd' | 'D' => Some(SmallVec::from_slice(CTRL_D_SEQUENCE)), // Ctrl+D (EOF)
+                    'z' | 'Z' => Some(SmallVec::from_slice(CTRL_Z_SEQUENCE)), // Ctrl+Z (SIGTSTP)
+                    'a' | 'A' => Some(SmallVec::from_slice(CTRL_A_SEQUENCE)), // Ctrl+A
+                    'e' | 'E' => Some(SmallVec::from_slice(CTRL_E_SEQUENCE)), // Ctrl+E
+                    'u' | 'U' => Some(SmallVec::from_slice(CTRL_U_SEQUENCE)), // Ctrl+U
+                    'k' | 'K' => Some(SmallVec::from_slice(CTRL_K_SEQUENCE)), // Ctrl+K
+                    'w' | 'W' => Some(SmallVec::from_slice(CTRL_W_SEQUENCE)), // Ctrl+W
+                    'l' | 'L' => Some(SmallVec::from_slice(CTRL_L_SEQUENCE)), // Ctrl+L
+                    'r' | 'R' => Some(SmallVec::from_slice(CTRL_R_SEQUENCE)), // Ctrl+R
                     _ => {
                         // General Ctrl+ handling: Ctrl+A is 0x01, Ctrl+B is 0x02, etc.
                         let byte = (c.to_ascii_lowercase() as u8).saturating_sub(b'a' - 1);
                         if byte <= 26 {
-                            Some(vec![byte])
+                            Some(SmallVec::from_slice(&[byte]))
                         } else {
                             None
                         }
@@ -413,46 +501,49 @@ impl PtySession {
                 code: KeyCode::Char(c),
                 modifiers: KeyModifiers::NONE,
                 ..
-            } => Some(c.to_string().into_bytes()),
+            } => {
+                let bytes = c.to_string().into_bytes();
+                Some(SmallVec::from_slice(&bytes))
+            }
 
             // Handle special keys
             KeyEvent {
                 code: KeyCode::Enter,
                 ..
-            } => Some(vec![0x0d]), // Carriage return
+            } => Some(SmallVec::from_slice(ENTER_SEQUENCE)), // Carriage return
 
             KeyEvent {
                 code: KeyCode::Tab, ..
-            } => Some(vec![0x09]), // Tab
+            } => Some(SmallVec::from_slice(TAB_SEQUENCE)), // Tab
 
             KeyEvent {
                 code: KeyCode::Backspace,
                 ..
-            } => Some(vec![0x7f]), // DEL (some terminals use 0x08 for backspace)
+            } => Some(SmallVec::from_slice(BACKSPACE_SEQUENCE)), // DEL (some terminals use 0x08 for backspace)
 
             KeyEvent {
                 code: KeyCode::Esc, ..
-            } => Some(vec![0x1b]), // ESC
+            } => Some(SmallVec::from_slice(ESC_SEQUENCE)), // ESC
 
             // Arrow keys (ANSI escape sequences)
             KeyEvent {
                 code: KeyCode::Up, ..
-            } => Some(vec![0x1b, 0x5b, 0x41]), // ESC[A
+            } => Some(SmallVec::from_slice(UP_ARROW_SEQUENCE)), // ESC[A
 
             KeyEvent {
                 code: KeyCode::Down,
                 ..
-            } => Some(vec![0x1b, 0x5b, 0x42]), // ESC[B
+            } => Some(SmallVec::from_slice(DOWN_ARROW_SEQUENCE)), // ESC[B
 
             KeyEvent {
                 code: KeyCode::Right,
                 ..
-            } => Some(vec![0x1b, 0x5b, 0x43]), // ESC[C
+            } => Some(SmallVec::from_slice(RIGHT_ARROW_SEQUENCE)), // ESC[C
 
             KeyEvent {
                 code: KeyCode::Left,
                 ..
-            } => Some(vec![0x1b, 0x5b, 0x44]), // ESC[D
+            } => Some(SmallVec::from_slice(LEFT_ARROW_SEQUENCE)), // ESC[D
 
             // Function keys
             KeyEvent {
@@ -460,19 +551,19 @@ impl PtySession {
                 ..
             } => {
                 match n {
-                    1 => Some(vec![0x1b, 0x4f, 0x50]),              // F1: ESC OP
-                    2 => Some(vec![0x1b, 0x4f, 0x51]),              // F2: ESC OQ
-                    3 => Some(vec![0x1b, 0x4f, 0x52]),              // F3: ESC OR
-                    4 => Some(vec![0x1b, 0x4f, 0x53]),              // F4: ESC OS
-                    5 => Some(vec![0x1b, 0x5b, 0x31, 0x35, 0x7e]),  // F5: ESC[15~
-                    6 => Some(vec![0x1b, 0x5b, 0x31, 0x37, 0x7e]),  // F6: ESC[17~
-                    7 => Some(vec![0x1b, 0x5b, 0x31, 0x38, 0x7e]),  // F7: ESC[18~
-                    8 => Some(vec![0x1b, 0x5b, 0x31, 0x39, 0x7e]),  // F8: ESC[19~
-                    9 => Some(vec![0x1b, 0x5b, 0x32, 0x30, 0x7e]),  // F9: ESC[20~
-                    10 => Some(vec![0x1b, 0x5b, 0x32, 0x31, 0x7e]), // F10: ESC[21~
-                    11 => Some(vec![0x1b, 0x5b, 0x32, 0x33, 0x7e]), // F11: ESC[23~
-                    12 => Some(vec![0x1b, 0x5b, 0x32, 0x34, 0x7e]), // F12: ESC[24~
-                    _ => None,                                      // F13+ not commonly supported
+                    1 => Some(SmallVec::from_slice(F1_SEQUENCE)), // F1: ESC OP
+                    2 => Some(SmallVec::from_slice(F2_SEQUENCE)), // F2: ESC OQ
+                    3 => Some(SmallVec::from_slice(F3_SEQUENCE)), // F3: ESC OR
+                    4 => Some(SmallVec::from_slice(F4_SEQUENCE)), // F4: ESC OS
+                    5 => Some(SmallVec::from_slice(F5_SEQUENCE)), // F5: ESC[15~
+                    6 => Some(SmallVec::from_slice(F6_SEQUENCE)), // F6: ESC[17~
+                    7 => Some(SmallVec::from_slice(F7_SEQUENCE)), // F7: ESC[18~
+                    8 => Some(SmallVec::from_slice(F8_SEQUENCE)), // F8: ESC[19~
+                    9 => Some(SmallVec::from_slice(F9_SEQUENCE)), // F9: ESC[20~
+                    10 => Some(SmallVec::from_slice(F10_SEQUENCE)), // F10: ESC[21~
+                    11 => Some(SmallVec::from_slice(F11_SEQUENCE)), // F11: ESC[23~
+                    12 => Some(SmallVec::from_slice(F12_SEQUENCE)), // F12: ESC[24~
+                    _ => None,                                    // F13+ not commonly supported
                 }
             }
 
@@ -480,38 +571,38 @@ impl PtySession {
             KeyEvent {
                 code: KeyCode::Home,
                 ..
-            } => Some(vec![0x1b, 0x5b, 0x48]), // ESC[H
+            } => Some(SmallVec::from_slice(HOME_SEQUENCE)), // ESC[H
 
             KeyEvent {
                 code: KeyCode::End, ..
-            } => Some(vec![0x1b, 0x5b, 0x46]), // ESC[F
+            } => Some(SmallVec::from_slice(END_SEQUENCE)), // ESC[F
 
             KeyEvent {
                 code: KeyCode::PageUp,
                 ..
-            } => Some(vec![0x1b, 0x5b, 0x35, 0x7e]), // ESC[5~
+            } => Some(SmallVec::from_slice(PAGE_UP_SEQUENCE)), // ESC[5~
 
             KeyEvent {
                 code: KeyCode::PageDown,
                 ..
-            } => Some(vec![0x1b, 0x5b, 0x36, 0x7e]), // ESC[6~
+            } => Some(SmallVec::from_slice(PAGE_DOWN_SEQUENCE)), // ESC[6~
 
             KeyEvent {
                 code: KeyCode::Insert,
                 ..
-            } => Some(vec![0x1b, 0x5b, 0x32, 0x7e]), // ESC[2~
+            } => Some(SmallVec::from_slice(INSERT_SEQUENCE)), // ESC[2~
 
             KeyEvent {
                 code: KeyCode::Delete,
                 ..
-            } => Some(vec![0x1b, 0x5b, 0x33, 0x7e]), // ESC[3~
+            } => Some(SmallVec::from_slice(DELETE_SEQUENCE)), // ESC[3~
 
             _ => None,
         }
     }
 
     /// Convert mouse events to raw byte sequences
-    fn mouse_event_to_bytes(_mouse_event: MouseEvent) -> Option<Vec<u8>> {
+    fn mouse_event_to_bytes(_mouse_event: MouseEvent) -> Option<SmallVec<[u8; 8]>> {
         // TODO: Implement mouse event to bytes conversion
         // This requires implementing the terminal mouse reporting protocol
         None

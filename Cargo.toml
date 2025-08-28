@@ -40,6 +40,8 @@ crossterm = "0.29"
 ctrlc = "3.4"
 signal-hook = "0.3.18"
 atty = "0.2.14"
+arrayvec = "0.7.6"
+smallvec = "1.13.2"
 
 [dev-dependencies]
 tempfile = "3"

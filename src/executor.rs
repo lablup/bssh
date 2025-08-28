@@ -133,7 +133,12 @@ impl ParallelExecutor {
                 };
                 pb.set_prefix(format!("[{node_display}]"));
                 pb.set_message(format!("{}", "Connecting...".cyan()));
-                pb.enable_steady_tick(std::time::Duration::from_millis(80));
+                // Progress bar tick rate design:
+                // - 80ms provides smooth visual updates without excessive CPU usage
+                // - Fast enough for responsive UI feedback during connections
+                // - Slower than video refresh rates to avoid unnecessary work
+                const PROGRESS_BAR_TICK_RATE_MS: u64 = 80;
+                pb.enable_steady_tick(std::time::Duration::from_millis(PROGRESS_BAR_TICK_RATE_MS));
 
                 tokio::spawn(async move {
                     let _permit = semaphore.acquire().await.unwrap();
@@ -233,7 +238,12 @@ impl ParallelExecutor {
                 };
                 pb.set_prefix(format!("[{node_display}]"));
                 pb.set_message(format!("{}", "Connecting...".cyan()));
-                pb.enable_steady_tick(std::time::Duration::from_millis(80));
+                // Progress bar tick rate design:
+                // - 80ms provides smooth visual updates without excessive CPU usage
+                // - Fast enough for responsive UI feedback during connections
+                // - Slower than video refresh rates to avoid unnecessary work
+                const PROGRESS_BAR_TICK_RATE_MS: u64 = 80;
+                pb.enable_steady_tick(std::time::Duration::from_millis(PROGRESS_BAR_TICK_RATE_MS));
 
                 tokio::spawn(async move {
                     let _permit = semaphore.acquire().await.unwrap();
@@ -325,7 +335,12 @@ impl ParallelExecutor {
                 };
                 pb.set_prefix(format!("[{node_display}]"));
                 pb.set_message(format!("{}", "Connecting...".cyan()));
-                pb.enable_steady_tick(std::time::Duration::from_millis(80));
+                // Progress bar tick rate design:
+                // - 80ms provides smooth visual updates without excessive CPU usage
+                // - Fast enough for responsive UI feedback during connections
+                // - Slower than video refresh rates to avoid unnecessary work
+                const PROGRESS_BAR_TICK_RATE_MS: u64 = 80;
+                pb.enable_steady_tick(std::time::Duration::from_millis(PROGRESS_BAR_TICK_RATE_MS));
 
                 tokio::spawn(async move {
                     let _permit = semaphore.acquire().await.unwrap();
@@ -420,7 +435,14 @@ impl ParallelExecutor {
                     pb.set_style(style.clone());
                     pb.set_prefix(format!("[{node}]"));
                     pb.set_message(format!("Downloading {remote_path}"));
-                    pb.enable_steady_tick(std::time::Duration::from_millis(100));
+                    // Progress bar tick rate for downloads:
+                    // - 100ms provides adequate feedback for file transfer progress
+                    // - Slightly slower than connection progress (less frequent updates needed)
+                    // - Balances responsiveness with system resources
+                    const DOWNLOAD_PROGRESS_TICK_RATE_MS: u64 = 100;
+                    pb.enable_steady_tick(std::time::Duration::from_millis(
+                        DOWNLOAD_PROGRESS_TICK_RATE_MS,
+                    ));
 
                     tokio::spawn(async move {
                         let _permit = semaphore.acquire().await.unwrap();
