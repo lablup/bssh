@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -30,19 +30,25 @@ use bssh::{
     config::{Config, InteractiveMode},
     node::Node,
     pty::PtyConfig,
-    ssh::known_hosts::StrictHostKeyChecking,
+    ssh::{known_hosts::StrictHostKeyChecking, SshConfig},
     utils::init_logging,
 };
 
 /// Show concise usage message (like SSH)
 fn show_usage() {
-    println!("usage: bssh [-46AqtTvx] [-C cluster] [-F configfile] [-H hosts]");
+    println!("usage: bssh [-46AqtTvx] [-C cluster] [-F ssh_configfile] [-H hosts]");
     println!("           [-i identity_file] [-J destination] [-l login_name]");
     println!("           [-o option] [-p port] [--config config] [--parallel N]");
     println!("           [--output-dir dir] [--timeout seconds] [--use-agent]");
     println!("           destination [command [argument ...]]");
     println!("       bssh [-Q query_option]");
     println!("       bssh [exec|list|ping|upload|download|interactive] ...");
+    println!();
+    println!("SSH Config Support:");
+    println!("  -F ssh_configfile    Use alternative SSH configuration file");
+    println!("                       Defaults to ~/.ssh/config if available");
+    println!("                       Supports: Host, HostName, User, Port, IdentityFile,");
+    println!("                       StrictHostKeyChecking, ProxyJump, and more");
     println!();
     println!("For more information, try 'bssh --help'");
 }
@@ -121,6 +127,17 @@ async fn main() -> Result<()> {
     // Load configuration with priority
     let config = Config::load_with_priority(&cli.config).await?;
 
+    // Load SSH configuration
+    let ssh_config = if let Some(ref ssh_config_path) = cli.ssh_config {
+        SshConfig::load_from_file(ssh_config_path)
+            .with_context(|| format!("Failed to load SSH config from {ssh_config_path:?}"))?
+    } else {
+        SshConfig::load_default().unwrap_or_else(|_| {
+            tracing::debug!("No SSH config found or failed to load, using empty config");
+            SshConfig::new()
+        })
+    };
+
     // Handle list command first (doesn't need nodes)
     if matches!(cli.command, Some(Commands::List)) {
         list_clusters(&config);
@@ -128,7 +145,7 @@ async fn main() -> Result<()> {
     }
 
     // Determine nodes to execute on
-    let (nodes, actual_cluster_name) = resolve_nodes(&cli, &config).await?;
+    let (nodes, actual_cluster_name) = resolve_nodes(&cli, &config, &ssh_config).await?;
 
     // Determine max_parallel: CLI argument takes precedence over config
     // For SSH mode (single host), parallel is always 1
@@ -148,9 +165,13 @@ async fn main() -> Result<()> {
         );
     }
 
-    // Parse strict host key checking mode
-    let strict_mode: StrictHostKeyChecking =
-        cli.strict_host_key_checking.parse().unwrap_or_default();
+    // Parse strict host key checking mode with SSH config integration
+    let hostname = if cli.is_ssh_mode() {
+        cli.parse_destination().map(|(_, host, _)| host)
+    } else {
+        None
+    };
+    let strict_mode = determine_strict_host_key_checking(&cli, &ssh_config, hostname.as_deref());
 
     // Get command to execute
     let command = cli.get_command();
@@ -165,17 +186,24 @@ async fn main() -> Result<()> {
         );
     }
 
+    // Calculate hostname for SSH config integration (used in multiple commands)
+    let hostname_for_ssh_config = if cli.is_ssh_mode() {
+        cli.parse_destination().map(|(_, host, _)| host)
+    } else {
+        None
+    };
+
     // Handle remaining commands
     match cli.command {
         Some(Commands::Ping) => {
-            // Determine SSH key path: CLI argument takes precedence over config
-            let key_path = if let Some(identity) = &cli.identity {
-                Some(identity.clone())
-            } else {
-                config
-                    .get_ssh_key(actual_cluster_name.as_deref().or(cli.cluster.as_deref()))
-                    .map(|ssh_key| bssh::config::expand_tilde(Path::new(&ssh_key)))
-            };
+            // Determine SSH key path with SSH config integration
+            let key_path = determine_ssh_key_path(
+                &cli,
+                &config,
+                &ssh_config,
+                hostname_for_ssh_config.as_deref(),
+                actual_cluster_name.as_deref().or(cli.cluster.as_deref()),
+            );
 
             ping_nodes(
                 nodes,
@@ -188,18 +216,18 @@ async fn main() -> Result<()> {
             .await
         }
         Some(Commands::Upload {
-            source,
-            destination,
+            ref source,
+            ref destination,
             recursive,
         }) => {
-            // Determine SSH key path: CLI argument takes precedence over config
-            let key_path = if let Some(identity) = &cli.identity {
-                Some(identity.clone())
-            } else {
-                config
-                    .get_ssh_key(actual_cluster_name.as_deref().or(cli.cluster.as_deref()))
-                    .map(|ssh_key| bssh::config::expand_tilde(Path::new(&ssh_key)))
-            };
+            // Determine SSH key path with SSH config integration
+            let key_path = determine_ssh_key_path(
+                &cli,
+                &config,
+                &ssh_config,
+                hostname_for_ssh_config.as_deref(),
+                actual_cluster_name.as_deref().or(cli.cluster.as_deref()),
+            );
 
             let params = FileTransferParams {
                 nodes,
@@ -210,21 +238,21 @@ async fn main() -> Result<()> {
                 use_password: cli.password,
                 recursive,
             };
-            upload_file(params, &source, &destination).await
+            upload_file(params, source, destination).await
         }
         Some(Commands::Download {
-            source,
-            destination,
+            ref source,
+            ref destination,
             recursive,
         }) => {
-            // Determine SSH key path: CLI argument takes precedence over config
-            let key_path = if let Some(identity) = &cli.identity {
-                Some(identity.clone())
-            } else {
-                config
-                    .get_ssh_key(actual_cluster_name.as_deref().or(cli.cluster.as_deref()))
-                    .map(|ssh_key| bssh::config::expand_tilde(Path::new(&ssh_key)))
-            };
+            // Determine SSH key path with SSH config integration
+            let key_path = determine_ssh_key_path(
+                &cli,
+                &config,
+                &ssh_config,
+                hostname_for_ssh_config.as_deref(),
+                actual_cluster_name.as_deref().or(cli.cluster.as_deref()),
+            );
 
             let params = FileTransferParams {
                 nodes,
@@ -235,14 +263,14 @@ async fn main() -> Result<()> {
                 use_password: cli.password,
                 recursive,
             };
-            download_file(params, &source, &destination).await
+            download_file(params, source, destination).await
         }
         Some(Commands::Interactive {
             single_node,
             multiplex,
-            prompt_format,
-            history_file,
-            work_dir,
+            ref prompt_format,
+            ref history_file,
+            ref work_dir,
         }) => {
             // Get interactive config from configuration file (with cluster-specific overrides)
             let cluster_name = cli.cluster.as_deref();
@@ -266,7 +294,7 @@ async fn main() -> Result<()> {
             // Use CLI values if provided, otherwise use config values
             let merged_prompt = if prompt_format != "[{node}:{user}@{host}:{pwd}]$ " {
                 // CLI provided a custom prompt
-                prompt_format
+                prompt_format.clone()
             } else {
                 // Use config prompt
                 interactive_config.prompt_format.clone()
@@ -274,25 +302,25 @@ async fn main() -> Result<()> {
 
             let merged_history = if history_file.to_string_lossy() != "~/.bssh_history" {
                 // CLI provided a custom history file
-                history_file
+                history_file.clone()
             } else if let Some(config_history) = interactive_config.history_file.clone() {
                 // Use config history file
                 PathBuf::from(config_history)
             } else {
                 // Use default
-                history_file
+                history_file.clone()
             };
 
-            let merged_work_dir = work_dir.or(interactive_config.work_dir.clone());
+            let merged_work_dir = work_dir.clone().or(interactive_config.work_dir.clone());
 
-            // Determine SSH key path: CLI argument takes precedence over config
-            let key_path = if let Some(identity) = &cli.identity {
-                Some(identity.clone())
-            } else {
-                config
-                    .get_ssh_key(actual_cluster_name.as_deref().or(cli.cluster.as_deref()))
-                    .map(|ssh_key| bssh::config::expand_tilde(Path::new(&ssh_key)))
-            };
+            // Determine SSH key path with SSH config integration
+            let key_path = determine_ssh_key_path(
+                &cli,
+                &config,
+                &ssh_config,
+                hostname_for_ssh_config.as_deref(),
+                actual_cluster_name.as_deref().or(cli.cluster.as_deref()),
+            );
 
             // Create PTY configuration based on CLI flags
             let pty_config = PtyConfig {
@@ -341,14 +369,14 @@ async fn main() -> Result<()> {
                 // SSH mode interactive session (like ssh user@host)
                 tracing::info!("Starting SSH interactive session to {}", nodes[0].host);
 
-                // Determine SSH key path
-                let key_path = if let Some(identity) = &cli.identity {
-                    Some(identity.clone())
-                } else {
-                    config
-                        .get_ssh_key(actual_cluster_name.as_deref().or(cli.cluster.as_deref()))
-                        .map(|ssh_key| bssh::config::expand_tilde(Path::new(&ssh_key)))
-                };
+                // Determine SSH key path with SSH config integration
+                let key_path = determine_ssh_key_path(
+                    &cli,
+                    &config,
+                    &ssh_config,
+                    hostname_for_ssh_config.as_deref(),
+                    actual_cluster_name.as_deref().or(cli.cluster.as_deref()),
+                );
 
                 // Create PTY configuration based on CLI flags (SSH mode)
                 let pty_config = PtyConfig {
@@ -408,14 +436,19 @@ async fn main() -> Result<()> {
                     config.get_timeout(actual_cluster_name.as_deref().or(cli.cluster.as_deref()))
                 };
 
-                // Determine SSH key path: CLI argument takes precedence over config
-                let key_path = if let Some(identity) = &cli.identity {
-                    Some(identity.clone())
+                // Determine SSH key path with SSH config integration
+                let hostname = if cli.is_ssh_mode() {
+                    cli.parse_destination().map(|(_, host, _)| host)
                 } else {
-                    config
-                        .get_ssh_key(actual_cluster_name.as_deref().or(cli.cluster.as_deref()))
-                        .map(|ssh_key| bssh::config::expand_tilde(Path::new(&ssh_key)))
+                    None
                 };
+                let key_path = determine_ssh_key_path(
+                    &cli,
+                    &config,
+                    &ssh_config,
+                    hostname.as_deref(),
+                    actual_cluster_name.as_deref().or(cli.cluster.as_deref()),
+                );
 
                 let params = ExecuteCommandParams {
                     nodes,
@@ -435,7 +468,117 @@ async fn main() -> Result<()> {
     }
 }
 
-async fn resolve_nodes(cli: &Cli, config: &Config) -> Result<(Vec<Node>, Option<String>)> {
+/// Parse a node string with SSH config integration
+fn parse_node_with_ssh_config(node_str: &str, ssh_config: &SshConfig) -> Result<Node> {
+    // First parse the raw node string to extract user, host, port from CLI
+    let (user_part, host_part) = if let Some(at_pos) = node_str.find('@') {
+        let user = &node_str[..at_pos];
+        let rest = &node_str[at_pos + 1..];
+        (Some(user), rest)
+    } else {
+        (None, node_str)
+    };
+
+    let (raw_host, cli_port) = if let Some(colon_pos) = host_part.rfind(':') {
+        let host = &host_part[..colon_pos];
+        let port_str = &host_part[colon_pos + 1..];
+        let port = port_str.parse::<u16>().context("Invalid port number")?;
+        (host, Some(port))
+    } else {
+        (host_part, None)
+    };
+
+    // Now resolve using SSH config with CLI taking precedence
+    let effective_hostname = ssh_config.get_effective_hostname(raw_host);
+    let effective_user = if let Some(user) = user_part {
+        user.to_string()
+    } else if let Some(ssh_user) = ssh_config.get_effective_user(raw_host, None) {
+        ssh_user
+    } else {
+        std::env::var("USER")
+            .or_else(|_| std::env::var("USERNAME"))
+            .or_else(|_| std::env::var("LOGNAME"))
+            .unwrap_or_else(|_| {
+                // Try to get current user from system
+                #[cfg(unix)]
+                {
+                    whoami::username()
+                }
+                #[cfg(not(unix))]
+                {
+                    "user".to_string()
+                }
+            })
+    };
+    let effective_port = ssh_config.get_effective_port(raw_host, cli_port);
+
+    Ok(Node::new(
+        effective_hostname,
+        effective_port,
+        effective_user,
+    ))
+}
+
+/// Determine strict host key checking mode with SSH config integration
+fn determine_strict_host_key_checking(
+    cli: &Cli,
+    ssh_config: &SshConfig,
+    hostname: Option<&str>,
+) -> StrictHostKeyChecking {
+    // CLI argument takes precedence
+    if cli.strict_host_key_checking != "accept-new" {
+        return cli.strict_host_key_checking.parse().unwrap_or_default();
+    }
+
+    // SSH config value for specific hostname
+    if let Some(host) = hostname {
+        if let Some(ssh_config_value) = ssh_config.get_strict_host_key_checking(host) {
+            return match ssh_config_value.to_lowercase().as_str() {
+                "yes" => StrictHostKeyChecking::Yes,
+                "no" => StrictHostKeyChecking::No,
+                "ask" | "accept-new" => StrictHostKeyChecking::AcceptNew,
+                _ => StrictHostKeyChecking::AcceptNew,
+            };
+        }
+    }
+
+    // Default from CLI (already parsed)
+    cli.strict_host_key_checking.parse().unwrap_or_default()
+}
+
+/// Determine SSH key path with integration of SSH config
+fn determine_ssh_key_path(
+    cli: &Cli,
+    config: &Config,
+    ssh_config: &SshConfig,
+    hostname: Option<&str>,
+    cluster_name: Option<&str>,
+) -> Option<PathBuf> {
+    // CLI identity file takes highest precedence
+    if let Some(identity) = &cli.identity {
+        return Some(identity.clone());
+    }
+
+    // SSH config identity files (for specific hostname if available)
+    if let Some(host) = hostname {
+        let identity_files = ssh_config.get_identity_files(host);
+        if !identity_files.is_empty() {
+            // Return the first identity file from SSH config
+            return Some(identity_files[0].clone());
+        }
+    }
+
+    // Cluster configuration SSH key
+    config
+        .get_ssh_key(cluster_name)
+        .map(|ssh_key| bssh::config::expand_tilde(Path::new(&ssh_key)))
+}
+
+async fn resolve_nodes(
+    cli: &Cli,
+    config: &Config,
+    ssh_config: &SshConfig,
+) -> Result<(Vec<Node>, Option<String>)> {
     let mut nodes = Vec::new();
     let mut cluster_name = None;
 
@@ -445,23 +588,30 @@ async fn resolve_nodes(cli: &Cli, config: &Config) -> Result<(Vec<Node>, Option<
             .parse_destination()
             .ok_or_else(|| anyhow::anyhow!("Invalid destination format"))?;
 
-        // Get effective username
-        let username = user
-            .or_else(|| cli.get_effective_user())
-            .or_else(|| std::env::var("USER").ok())
-            .unwrap_or_else(|| "root".to_string());
+        // Resolve using SSH config with CLI taking precedence
+        let effective_hostname = ssh_config.get_effective_hostname(&host);
+        let effective_user = if let Some(u) = user {
+            u
+        } else if let Some(cli_user) = cli.get_effective_user() {
+            cli_user
+        } else if let Some(ssh_user) = ssh_config.get_effective_user(&host, None) {
+            ssh_user
+        } else if let Ok(env_user) = std::env::var("USER") {
+            env_user
+        } else {
+            "root".to_string()
+        };
+        let effective_port =
+            ssh_config.get_effective_port(&host, port.or_else(|| cli.get_effective_port()));
 
-        // Get effective port
-        let port = port.or_else(|| cli.get_effective_port()).unwrap_or(22);
-
-        let node = Node::new(host, port, username);
+        let node = Node::new(effective_hostname, effective_port, effective_user);
         nodes.push(node);
     } else if let Some(hosts) = &cli.hosts {
         // Parse hosts from CLI
         for host_str in hosts {
             // Split by comma if a single argument contains multiple hosts
             for single_host in host_str.split(',') {
-                let node = Node::parse(single_host.trim(), None)?;
+                let node = parse_node_with_ssh_config(single_host.trim(), ssh_config)?;
                 nodes.push(node);
             }
         }

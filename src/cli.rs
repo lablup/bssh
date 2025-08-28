@@ -21,8 +21,8 @@ use std::path::PathBuf;
     version,
     before_help = "\n\nBackend.AI SSH - Parallel command execution across cluster nodes",
     about = "Backend.AI SSH - SSH-compatible parallel command execution tool",
-    long_about = "bssh is a high-performance SSH client with parallel execution capabilities.\nIt can be used as a drop-in replacement for SSH (single host) or as a powerful cluster management tool (multiple hosts).\n\nThe tool provides secure file transfer using SFTP and supports SSH keys, SSH agent, and password authentication.\nIt automatically detects Backend.AI multi-node session environments.",
-    after_help = "EXAMPLES:\n  SSH Mode:\n    bssh user@host                         # Interactive shell\n    bssh admin@server.com \"uptime\"         # Execute command\n    bssh -p 2222 -i ~/.ssh/key user@host   # Custom port and key\n\n  Multi-Server Mode:\n    bssh -C production \"systemctl status\"  # Use cluster config\n    bssh -H \"web1,web2,web3\" \"df -h\"      # Direct hosts\n\n  File Operations:\n    bssh -C staging upload file.txt /tmp/  # Upload to cluster\n    bssh -H host1,host2 download /etc/hosts ./backups/\n\n  Other Commands:\n    bssh list                              # List configured clusters\n    bssh -C production ping                # Test connectivity\n\nDeveloped and maintained as part of the Backend.AI project.\nFor more information: https://github.com/lablup/bssh"
+    long_about = "bssh is a high-performance SSH client with parallel execution capabilities.\nIt can be used as a drop-in replacement for SSH (single host) or as a powerful cluster management tool (multiple hosts).\n\nThe tool provides secure file transfer using SFTP and supports SSH keys, SSH agent, and password authentication.\nIt automatically detects Backend.AI multi-node session environments.\n\nSSH Configuration Support:\n- Reads standard SSH config files (defaulting to ~/.ssh/config)\n- Supports Host patterns, HostName, User, Port, IdentityFile, StrictHostKeyChecking\n- ProxyJump, and many other SSH configuration directives\n- CLI arguments override SSH config values following SSH precedence rules",
+    after_help = "EXAMPLES:\n  SSH Mode:\n    bssh user@host                         # Interactive shell\n    bssh admin@server.com \"uptime\"         # Execute command\n    bssh -p 2222 -i ~/.ssh/key user@host   # Custom port and key\n    bssh -F ~/.ssh/myconfig webserver      # Use custom SSH config\n\n  Multi-Server Mode:\n    bssh -C production \"systemctl status\"  # Use cluster config\n    bssh -H \"web1,web2,web3\" \"df -h\"      # Direct hosts\n    bssh -F /etc/ssh/ssh_config -H web*    # SSH config with wildcards\n\n  File Operations:\n    bssh -C staging upload file.txt /tmp/  # Upload to cluster\n    bssh -H host1,host2 download /etc/hosts ./backups/\n\n  Other Commands:\n    bssh list                              # List configured clusters\n    bssh -C production ping                # Test connectivity\n\n  SSH Config Example (~/.ssh/config):\n    Host web*\n        HostName web.example.com\n        User webuser\n        Port 2222\n        IdentityFile ~/.ssh/web_key\n        StrictHostKeyChecking yes\n\nDeveloped and maintained as part of the Backend.AI project.\nFor more information: https://github.com/lablup/bssh"
 )]
 pub struct Cli {
     /// SSH destination in format: [user@]hostname[:port] or ssh://[user@]hostname[:port]
@@ -137,7 +137,7 @@ pub struct Cli {
         short = 'F',
         long = "ssh-config",
         value_name = "configfile",
-        help = "Specifies an alternative SSH configuration file"
+        help = "Specifies an alternative SSH configuration file\nSupports standard SSH config format with Host, HostName, User, Port, IdentityFile, etc.\nDefaults to ~/.ssh/config if not specified and file exists"
     )]
     pub ssh_config: Option<PathBuf>,
 
