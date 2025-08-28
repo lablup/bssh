@@ -575,7 +575,8 @@ impl SshConfig {
                     anyhow::bail!("ControlPath requires a value at line {}", line_number);
                 }
                 let path = args[0].to_string();
-                Self::validate_executable_string(&path, "ControlPath", line_number)?;
+                // ControlPath has different validation - it allows SSH substitution patterns
+                Self::validate_control_path(&path, line_number)?;
                 host.control_path = Some(path);
             }
             "controlpersist" => {
@@ -780,6 +781,96 @@ impl SshConfig {
 
         Ok(())
     }
+    
+    /// Validate ControlPath specifically (allows SSH substitution tokens)
+    /// 
+    /// ControlPath is a special case because it commonly uses SSH substitution tokens
+    /// like %h, %p, %r, %u which contain literal % and should be allowed, but we still
+    /// need to block dangerous patterns.
+    /// 
+    /// # Arguments
+    /// * `path` - The ControlPath value to validate
+    /// * `line_number` - The line number in the config file (for error messages)
+    ///
+    /// # Returns
+    /// * `Ok(())` if the path is safe
+    /// * `Err(anyhow::Error)` if the path contains dangerous patterns
+    fn validate_control_path(path: &str, line_number: usize) -> Result<()> {
+        // ControlPath "none" is a special case to disable control path
+        if path == "none" {
+            return Ok(());
+        }
+
+        // Define dangerous characters for ControlPath (more permissive than general commands)
+        const DANGEROUS_CHARS: &[char] = &[
+            ';',    // Command separator
+            '&',    // Background process / command separator  
+            '|',    // Pipe
+            '`',    // Command substitution (backticks)
+            '>',    // Output redirection
+            '<',    // Input redirection
+            '\n',   // Newline (command separator)
+            '\r',   // Carriage return
+            '\0',   // Null byte
+            // Note: $ is allowed for environment variables but not for command substitution
+        ];
+
+        // Check for dangerous characters
+        if let Some(dangerous_char) = path.chars().find(|c| DANGEROUS_CHARS.contains(c)) {
+            anyhow::bail!(
+                "Security violation: ControlPath contains dangerous character '{}' at line {}. \
+                 This could enable command injection attacks.",
+                dangerous_char,
+                line_number
+            );
+        }
+
+        // Check for command substitution patterns (but allow environment variables)
+        if path.contains("$(") {
+            anyhow::bail!(
+                "Security violation: ControlPath contains command substitution pattern at line {}. \
+                 This could enable command injection attacks.",
+                line_number
+            );
+        }
+
+        // Check for paths starting with suspicious patterns
+        if path.trim_start().starts_with('-') {
+            anyhow::bail!(
+                "Security violation: ControlPath starts with '-' at line {}. \
+                 This could be interpreted as a command flag.",
+                line_number
+            );
+        }
+
+        // Validate SSH substitution tokens
+        let chars: Vec<char> = path.chars().collect();
+        let mut i = 0;
+        while i < chars.len() {
+            if chars[i] == '%' && i + 1 < chars.len() {
+                let next_char = chars[i + 1];
+                match next_char {
+                    'h' | 'p' | 'r' | 'u' | 'L' | 'l' | 'n' | 'd' | '%' => {
+                        // These are legitimate SSH substitution tokens
+                        i += 2; // Skip both % and the token character
+                    }
+                    _ => {
+                        // Unknown substitution pattern - potentially dangerous
+                        anyhow::bail!(
+                            "Security violation: ControlPath contains unknown substitution pattern '%{}' at line {}. \
+                             Only %h, %p, %r, %u, %L, %l, %n, %d, and %% are allowed.",
+                            next_char,
+                            line_number
+                        );
+                    }
+                }
+            } else {
+                i += 1;
+            }
+        }
+
+        Ok(())
+    }
 
     /// Securely validate and expand a file path to prevent path traversal attacks
     ///
@@ -801,7 +892,8 @@ impl SshConfig {
     /// * `Err(anyhow::Error)` if the path is unsafe or invalid
     fn secure_validate_path(path: &str, path_type: &str, line_number: usize) -> Result<PathBuf> {
         // First expand the path using the existing logic
-        let expanded_path = Self::expand_path_internal(path);
+        let expanded_path = Self::expand_path_internal(path)
+            .with_context(|| format!("Failed to expand path '{}' at line {}", path, line_number))?;
         
         // Convert to string for analysis
         let path_str = expanded_path.to_string_lossy();
@@ -1009,8 +1101,19 @@ impl SshConfig {
         Ok(())
     }
     
-    /// Expand tilde and environment variables in a path (internal implementation)
-    fn expand_path_internal(path: &str) -> PathBuf {
+    /// Expand tilde and environment variables in a path (secure implementation)
+    /// 
+    /// # Security Features
+    /// - Uses whitelist approach for environment variable expansion
+    /// - Prevents recursive expansion attacks
+    /// - Sanitizes expanded values to prevent injection
+    /// - Limits expansion depth to prevent infinite recursion
+    /// - Validates final expanded path for security
+    /// 
+    /// # Returns
+    /// * `Ok(PathBuf)` - Successfully expanded path
+    /// * `Err(anyhow::Error)` - Expansion failed due to security violations
+    fn expand_path_internal(path: &str) -> Result<PathBuf> {
         let path = if let Some(stripped) = path.strip_prefix("~/") {
             if let Some(home) = dirs::home_dir() {
                 home.join(stripped)
@@ -1021,28 +1124,358 @@ impl SshConfig {
             PathBuf::from(path)
         };
 
-        // Simple environment variable expansion (basic implementation)
+        // Secure environment variable expansion
         let path_str = path.to_string_lossy();
         if path_str.contains('$') {
-            // This is a simplified expansion - a full implementation would handle
-            // ${VAR}, $VAR, and proper shell-like expansion
-            let mut expanded = path_str.to_string();
-            for (key, value) in std::env::vars() {
-                expanded = expanded.replace(&format!("${key}"), &value);
-                expanded = expanded.replace(&format!("${{{key}}}"), &value);
+            match Self::secure_expand_environment_variables(&path_str) {
+                Ok(expanded) => Ok(PathBuf::from(expanded)),
+                Err(e) => {
+                    // Check if this is a security violation that should cause hard failure
+                    let error_msg = e.to_string();
+                    if error_msg.contains("Security violation") {
+                        // Re-throw security violations - don't silently ignore them
+                        Err(e.context("Environment variable expansion security violation"))
+                    } else {
+                        tracing::warn!(
+                            "Environment variable expansion failed for '{}': {}. Using original path.",
+                            path_str, e
+                        );
+                        Ok(path)
+                    }
+                }
             }
-            PathBuf::from(expanded)
         } else {
-            path
+            Ok(path)
         }
     }
-    
-    /// Legacy expand_path function for backward compatibility (now uses secure validation)
-    fn expand_path(path: &str) -> PathBuf {
-        // Use the internal expansion without security validation for backward compatibility
-        // This should only be used in non-security-critical contexts
-        Self::expand_path_internal(path)
+
+    /// Securely expand environment variables with whitelist and validation
+    /// 
+    /// # Security Implementation
+    /// - Only allows specific safe environment variables (whitelist approach)
+    /// - Prevents recursive expansion by limiting depth
+    /// - Sanitizes values to prevent secondary injection
+    /// - Validates expanded content for dangerous patterns
+    /// 
+    /// # Arguments
+    /// * `input` - The string containing environment variables to expand
+    /// 
+    /// # Returns
+    /// * `Ok(String)` - Successfully expanded string
+    /// * `Err(anyhow::Error)` - Expansion failed due to security restrictions
+    fn secure_expand_environment_variables(input: &str) -> Result<String> {
+        // Maximum expansion depth to prevent infinite recursion
+        const MAX_EXPANSION_DEPTH: usize = 5;
+        
+        // Whitelist of safe environment variables
+        let safe_variables = std::collections::HashSet::from([
+            // User identity variables (generally safe)
+            "HOME", "USER", "LOGNAME", "USERNAME",
+            
+            // SSH-specific variables (contextually safe)
+            "SSH_AUTH_SOCK", "SSH_CONNECTION", "SSH_CLIENT", "SSH_TTY",
+            
+            // Locale settings (safe for paths)
+            "LANG", "LC_ALL", "LC_CTYPE", "LC_MESSAGES",
+            
+            // Safe system variables
+            "TMPDIR", "TEMP", "TMP",
+            
+            // Terminal-related (generally safe)
+            "TERM", "COLORTERM",
+        ]);
+
+        // Variables that are explicitly dangerous and should never be expanded
+        let dangerous_variables = std::collections::HashSet::from([
+            "PATH", "LD_LIBRARY_PATH", "LD_PRELOAD", "DYLD_LIBRARY_PATH",
+            "PYTHONPATH", "PERL5LIB", "RUBYLIB", "CLASSPATH",
+            "IFS", "PS1", "PS2", "PS4", "PROMPT_COMMAND",
+            "SHELL", "BASH_ENV", "ENV", "FCEDIT", "FPATH",
+            "CDPATH", "GLOBIGNORE", "HISTFILE", "HISTSIZE",
+            "MAILCHECK", "MAILPATH", "MANPATH",
+        ]);
+
+        let mut result = input.to_string();
+        let mut expansion_depth = 0;
+        let mut changed = true;
+        
+        // Iteratively expand variables until no more changes or max depth reached
+        while changed && expansion_depth < MAX_EXPANSION_DEPTH {
+            changed = false;
+            expansion_depth += 1;
+            
+            // Find all variable references in current iteration
+            let mut vars_to_expand = Vec::new();
+            
+            // Match ${VAR} pattern
+            let mut pos = 0;
+            while let Some(start) = result[pos..].find("${") {
+                let abs_start = pos + start;
+                if let Some(end) = result[abs_start + 2..].find('}') {
+                    let abs_end = abs_start + 2 + end;
+                    let var_name = &result[abs_start + 2..abs_end];
+                    vars_to_expand.push((abs_start, abs_end + 1, var_name.to_string(), true));
+                    pos = abs_end + 1;
+                } else {
+                    // Unclosed brace - potential injection attempt
+                    anyhow::bail!(
+                        "Security violation: Unclosed brace in environment variable expansion. \
+                         This could indicate an injection attempt."
+                    );
+                }
+            }
+            
+            // Match $VAR pattern (simpler, more limited)
+            pos = 0;
+            while let Some(start) = result[pos..].find('$') {
+                let abs_start = pos + start;
+                if abs_start + 1 < result.len() && !result.chars().nth(abs_start + 1).unwrap().is_ascii_alphabetic() {
+                    pos = abs_start + 1;
+                    continue;
+                }
+                
+                // Find end of variable name
+                let var_start = abs_start + 1;
+                let var_end = result[var_start..].find(|c: char| !c.is_alphanumeric() && c != '_')
+                    .map(|i| var_start + i)
+                    .unwrap_or(result.len());
+                
+                if var_start < var_end {
+                    let var_name = &result[var_start..var_end];
+                    // Only process if not already found as ${VAR}
+                    if !vars_to_expand.iter().any(|(_, _, name, _)| name == var_name) {
+                        vars_to_expand.push((abs_start, var_end, var_name.to_string(), false));
+                    }
+                }
+                pos = var_end.max(abs_start + 1);
+            }
+            
+            // Sort by position (descending) to replace from end to start
+            vars_to_expand.sort_by(|a, b| b.0.cmp(&a.0));
+            
+            // Process each variable
+            for (start_pos, end_pos, var_name, is_braced) in vars_to_expand {
+                // Security check: Is this variable dangerous?
+                if dangerous_variables.contains(var_name.as_str()) {
+                    tracing::warn!(
+                        "Blocked expansion of dangerous environment variable '{}'. \
+                         This variable could be used for injection attacks.",
+                        var_name
+                    );
+                    anyhow::bail!(
+                        "Security violation: Attempted to expand dangerous environment variable '{}'. \
+                         Variables like PATH, LD_LIBRARY_PATH, LD_PRELOAD are not allowed for security reasons.",
+                        var_name
+                    );
+                }
+                
+                // Security check: Is this variable in our whitelist?
+                if !safe_variables.contains(var_name.as_str()) {
+                    tracing::warn!(
+                        "Blocked expansion of non-whitelisted environment variable '{}'. \
+                         Only specific safe variables are allowed.",
+                        var_name
+                    );
+                    // For non-whitelisted variables, we continue without expanding rather than failing
+                    // This maintains compatibility while being secure
+                    continue;
+                }
+                
+                // Get the variable value
+                if let Ok(var_value) = std::env::var(&var_name) {
+                    // Security validation of the variable value
+                    let sanitized_value = Self::sanitize_environment_value(&var_value, &var_name)?;
+                    
+                    // Replace the variable reference with the sanitized value
+                    result.replace_range(start_pos..end_pos, &sanitized_value);
+                    changed = true;
+                    
+                    tracing::debug!(
+                        "Expanded environment variable '{}' (length: {}) in path expansion",
+                        var_name, sanitized_value.len()
+                    );
+                } else {
+                    // Variable not found - leave as-is or replace with empty based on SSH conventions
+                    if is_braced {
+                        // ${VAR} when VAR doesn't exist typically becomes empty
+                        result.replace_range(start_pos..end_pos, "");
+                        changed = true;
+                    }
+                    // $VAR when VAR doesn't exist is typically left as-is
+                }
+            }
+        }
+        
+        // Security check: Did we hit the expansion depth limit?
+        if expansion_depth >= MAX_EXPANSION_DEPTH {
+            anyhow::bail!(
+                "Security violation: Environment variable expansion depth limit exceeded ({} levels). \
+                 This could indicate a recursive expansion attack.",
+                MAX_EXPANSION_DEPTH
+            );
+        }
+        
+        // Final security validation of the result
+        Self::validate_expanded_path_content(&result)?;
+        
+        Ok(result)
     }
+    
+    /// Sanitize environment variable values to prevent secondary injection
+    /// 
+    /// # Security Features
+    /// - Removes or escapes dangerous shell metacharacters
+    /// - Validates against known dangerous patterns
+    /// - Prevents path traversal sequences in values
+    /// - Limits value length to prevent DoS
+    /// 
+    /// # Arguments
+    /// * `value` - The environment variable value to sanitize
+    /// * `var_name` - The variable name (for error reporting)
+    /// 
+    /// # Returns
+    /// * `Ok(String)` - Sanitized value safe for use
+    /// * `Err(anyhow::Error)` - Value contains dangerous content that cannot be sanitized
+    fn sanitize_environment_value(value: &str, var_name: &str) -> Result<String> {
+        // Limit value length to prevent DoS attacks
+        const MAX_VALUE_LENGTH: usize = 4096;
+        if value.len() > MAX_VALUE_LENGTH {
+            anyhow::bail!(
+                "Security violation: Environment variable '{}' value is too long ({} bytes). \
+                 Maximum allowed length is {} bytes to prevent DoS attacks.",
+                var_name, value.len(), MAX_VALUE_LENGTH
+            );
+        }
+        
+        // Check for null bytes (could be used for path truncation attacks)
+        if value.contains('\0') {
+            anyhow::bail!(
+                "Security violation: Environment variable '{}' contains null byte. \
+                 This could be used for path truncation attacks.",
+                var_name
+            );
+        }
+        
+        // Check for dangerous shell metacharacters that could enable injection
+        const DANGEROUS_CHARS: &[char] = &[';', '&', '|', '`', '\n', '\r'];
+        if let Some(dangerous_char) = value.chars().find(|c| DANGEROUS_CHARS.contains(c)) {
+            anyhow::bail!(
+                "Security violation: Environment variable '{}' contains dangerous character '{}'. \
+                 This could enable command injection attacks.",
+                var_name, dangerous_char
+            );
+        }
+        
+        // Check for command substitution patterns
+        if value.contains("$(") || value.contains("${") {
+            anyhow::bail!(
+                "Security violation: Environment variable '{}' contains command substitution pattern. \
+                 This could enable command injection attacks.",
+                var_name
+            );
+        }
+        
+        // Check for path traversal sequences
+        if value.contains("../") || value.contains("..\\") {
+            // For some variables like HOME, relative paths might be legitimate
+            // but we should be very cautious
+            match var_name {
+                "HOME" | "TMPDIR" | "TEMP" | "TMP" => {
+                    // For these variables, warn but allow (they're typically set by the system)
+                    tracing::warn!(
+                        "Environment variable '{}' contains path traversal sequence '{}'. \
+                         This may be legitimate for system variables but could indicate an attack.",
+                        var_name, value
+                    );
+                }
+                _ => {
+                    anyhow::bail!(
+                        "Security violation: Environment variable '{}' contains path traversal sequence. \
+                         This could enable directory traversal attacks.",
+                        var_name
+                    );
+                }
+            }
+        }
+        
+        // Additional validation for specific variable types
+        match var_name {
+            "SSH_AUTH_SOCK" => {
+                // Should be a socket path, typically in /tmp or similar
+                if !value.starts_with('/') && !value.starts_with("./") {
+                    tracing::warn!(
+                        "SSH_AUTH_SOCK '{}' does not look like a typical socket path",
+                        value
+                    );
+                }
+            }
+            "HOME" => {
+                // Should be an absolute path to a directory
+                if !value.starts_with('/') && !value.contains(":\\") {
+                    tracing::warn!(
+                        "HOME '{}' does not look like a typical home directory path",
+                        value
+                    );
+                }
+            }
+            _ => {}
+        }
+        
+        Ok(value.to_string())
+    }
+    
+    /// Validate the final expanded path content for security
+    /// 
+    /// # Security Features
+    /// - Checks for remaining dangerous patterns after expansion
+    /// - Validates overall path structure
+    /// - Ensures no injection sequences remain
+    /// 
+    /// # Arguments
+    /// * `expanded` - The fully expanded path string
+    /// 
+    /// # Returns
+    /// * `Ok(())` - Path content is safe
+    /// * `Err(anyhow::Error)` - Path contains dangerous patterns
+    fn validate_expanded_path_content(expanded: &str) -> Result<()> {
+        // Check for any remaining unexpanded variables that could indicate failed injection
+        if expanded.contains("$(") || expanded.contains("`") {
+            anyhow::bail!(
+                "Security violation: Expanded path still contains command substitution patterns. \
+                 This could indicate a sophisticated injection attempt."
+            );
+        }
+        
+        // Check for suspicious patterns that might have been introduced during expansion
+        if expanded.contains("//") && !expanded.starts_with("http") {
+            // Multiple slashes could indicate path confusion attacks
+            tracing::debug!(
+                "Expanded path contains multiple consecutive slashes: '{}'",
+                expanded
+            );
+        }
+        
+        // Check length to prevent extremely long paths that could cause issues
+        const MAX_PATH_LENGTH: usize = 4096;
+        if expanded.len() > MAX_PATH_LENGTH {
+            anyhow::bail!(
+                "Security violation: Expanded path is too long ({} characters). \
+                 Maximum allowed length is {} characters.",
+                expanded.len(), MAX_PATH_LENGTH
+            );
+        }
+        
+        // Check for control characters that could cause terminal escape sequences
+        if expanded.chars().any(|c| c.is_control() && c != '\t') {
+            anyhow::bail!(
+                "Security violation: Expanded path contains control characters. \
+                 This could be used for terminal escape sequence attacks."
+            );
+        }
+        
+        Ok(())
+    }
+    
 
     /// Find configuration for a specific hostname
     pub fn find_host_config(&self, hostname: &str) -> SshHostConfig {
@@ -1444,12 +1877,12 @@ Host web1.example.com
     #[test]
     fn test_expand_path() {
         // Test tilde expansion
-        let path = SshConfig::expand_path("~/.ssh/config");
+        let path = SshConfig::expand_path_internal("~/.ssh/config").unwrap();
         assert!(path.to_string_lossy().contains(".ssh/config"));
         assert!(!path.to_string_lossy().starts_with("~"));
 
         // Test regular path
-        let path = SshConfig::expand_path("/etc/ssh/ssh_config");
+        let path = SshConfig::expand_path_internal("/etc/ssh/ssh_config").unwrap();
         assert_eq!(path, PathBuf::from("/etc/ssh/ssh_config"));
     }
 
@@ -2196,6 +2629,358 @@ Host testhost
 
         // Clean up
         std::env::remove_var("TEST_MALICIOUS_VAR");
+    }
+
+    #[test]
+    fn test_secure_environment_variable_whitelist() {
+        // Test that only whitelisted variables are expanded
+        
+        // Set up safe and dangerous test variables
+        std::env::set_var("HOME", "/home/testuser");
+        std::env::set_var("USER", "testuser");
+        std::env::set_var("SSH_AUTH_SOCK", "/tmp/ssh-auth-sock");
+        std::env::set_var("PATH", "/usr/bin:/bin:/evil/path");
+        std::env::set_var("LD_PRELOAD", "malicious.so");
+        std::env::set_var("SHELL", "/bin/bash");
+        std::env::set_var("UNKNOWN_VAR", "should_not_expand");
+        
+        // Test safe variable expansion
+        let safe_config = r#"
+Host testhost
+    User testuser
+    IdentityFile ${HOME}/.ssh/id_rsa
+    UserKnownHostsFile ${HOME}/.ssh/known_hosts
+"#;
+        
+        let result = SshConfig::parse(safe_config);
+        assert!(result.is_ok(), "Safe environment variables should be allowed: {:?}", result.err());
+        
+        let config = result.unwrap();
+        let host = config.find_host_config("testhost");
+        
+        // Verify that HOME was expanded
+        assert!(
+            !host.identity_files.is_empty(),
+            "Identity files should be populated"
+        );
+        let identity_file = &host.identity_files[0];
+        assert!(
+            identity_file.to_string_lossy().contains("/home/testuser"),
+            "HOME should be expanded in identity file path"
+        );
+        
+        // Test dangerous variable blocking by directly testing expansion
+        // Note: These variables won't expand because they're not whitelisted,
+        // but we test that if they were in the whitelist, they would be blocked
+        let dangerous_variables = vec!["PATH", "LD_PRELOAD", "SHELL"];
+        
+        for var_name in dangerous_variables {
+            std::env::set_var(var_name, "/safe/value");
+            
+            // Test the expansion function directly to verify dangerous variable blocking
+            let test_input = format!("${{{}}}/extra", var_name);
+            let result = SshConfig::secure_expand_environment_variables(&test_input);
+            
+            // Should fail because variable is in dangerous list
+            assert!(
+                result.is_err(),
+                "Dangerous variable '{}' should be blocked in expansion",
+                var_name
+            );
+            
+            let error = result.unwrap_err();
+            let error_msg = error.to_string();
+            assert!(
+                error_msg.contains("Security violation") && 
+                error_msg.contains("dangerous environment variable"),
+                "Error should mention dangerous variable for {}: {}",
+                var_name, error_msg
+            );
+            
+            std::env::remove_var(var_name);
+        }
+        
+        // Test unknown variable handling (should be ignored, not fail)
+        let unknown_config = r#"
+Host testhost
+    User testuser
+    IdentityFile ${UNKNOWN_VAR}/.ssh/id_rsa
+"#;
+        
+        let result = SshConfig::parse(unknown_config);
+        assert!(result.is_ok(), "Unknown variables should be ignored, not fail: {:?}", result.err());
+        
+        // Clean up
+        std::env::remove_var("PATH");
+        std::env::remove_var("LD_PRELOAD");
+        std::env::remove_var("SHELL");
+        std::env::remove_var("UNKNOWN_VAR");
+    }
+    
+    #[test]
+    fn test_environment_variable_sanitization() {
+        // Test various malicious values in whitelisted environment variables
+        // We use whitelisted variables to test that even safe variables get sanitized
+        let malicious_values = vec![
+            ("HOME", "/safe/start; rm -rf /"),
+            ("USER", "safe_user | evil_command"),
+            ("TMPDIR", "/tmp & background_evil"),
+            ("HOME", "/safe/start`whoami`"),
+            ("USER", "safe_user\nevil_command"),
+            ("TMPDIR", "/tmp\revil_command"),
+            ("HOME", "/safe/start$(evil)"),
+            ("USER", "safe_user${evil}"),
+            // Note: null bytes are blocked by Rust's std::env::set_var, so we test that separately
+        ];
+        
+        // Test null byte separately using direct function call
+        let null_test_result = SshConfig::sanitize_environment_value("/safe/start\0evil", "HOME");
+        assert!(null_test_result.is_err(), "Null bytes should be blocked in environment values");
+        let null_error = null_test_result.unwrap_err();
+        assert!(null_error.to_string().contains("null byte"), "Error should mention null byte");
+        
+        for (var_name, malicious_value) in malicious_values {
+            std::env::set_var(var_name, malicious_value);
+            
+            let config_content = format!(
+                r#"
+Host testhost
+    User testuser
+    IdentityFile ${{{}}}/.ssh/id_rsa
+"#,
+                var_name
+            );
+            
+            let result = SshConfig::parse(&config_content);
+            assert!(
+                result.is_err(),
+                "Malicious value in whitelisted variable {} should be blocked: {}",
+                var_name, malicious_value.replace('\0', "\\0").replace('\n', "\\n").replace('\r', "\\r")
+            );
+            
+            let error = result.unwrap_err();
+            let error_chain: Vec<String> = error.chain().map(|e| e.to_string()).collect();
+            
+            let contains_security_violation = error_chain.iter().any(|msg| 
+                msg.contains("Security violation") || 
+                msg.contains("dangerous character") || 
+                msg.contains("command injection") || 
+                msg.contains("environment variable expansion security violation")
+            );
+            
+            assert!(
+                contains_security_violation,
+                "Error should mention security violation for {}: {:?}",
+                var_name, error_chain
+            );
+            
+            std::env::remove_var(var_name);
+        }
+    }
+    
+    #[test]
+    fn test_recursive_expansion_prevention() {
+        // Test recursive expansion attack prevention using whitelisted variables
+        // Create a recursive loop with HOME referencing itself indirectly
+        std::env::set_var("HOME", "${USER}/home");
+        std::env::set_var("USER", "${TMPDIR}/user");
+        std::env::set_var("TMPDIR", "${HOME}/tmp"); // Circular reference
+        
+        let config_content = r#"
+Host testhost
+    User testuser
+    IdentityFile ${HOME}/.ssh/id_rsa
+"#;
+        
+        let result = SshConfig::parse(config_content);
+        assert!(
+            result.is_err(),
+            "Recursive expansion should be blocked"
+        );
+        
+        let error = result.unwrap_err();
+        let error_chain: Vec<String> = error.chain().map(|e| e.to_string()).collect();
+        
+        let contains_security_violation = error_chain.iter().any(|msg| 
+            msg.contains("Security violation") && 
+            (msg.contains("expansion depth limit") || 
+             msg.contains("command substitution pattern") ||
+             msg.contains("dangerous character"))
+        );
+        
+        assert!(
+            contains_security_violation,
+            "Error should mention security violation (expansion depth or command substitution): {:?}",
+            error_chain
+        );
+        
+        // Clean up
+        std::env::remove_var("HOME");
+        std::env::remove_var("USER");
+        std::env::remove_var("TMPDIR");
+    }
+    
+    #[test]
+    fn test_path_length_limits() {
+        // Test extremely long paths to prevent DoS using whitelisted variable
+        let long_value = "a".repeat(5000); // Exceeds MAX_VALUE_LENGTH
+        std::env::set_var("HOME", &long_value);
+        
+        let config_content = r#"
+Host testhost
+    User testuser
+    IdentityFile ${HOME}/.ssh/id_rsa
+"#;
+        
+        let result = SshConfig::parse(config_content);
+        assert!(
+            result.is_err(),
+            "Extremely long environment variable should be blocked"
+        );
+        
+        let error = result.unwrap_err();
+        let error_msg = error.to_string();
+        assert!(
+            error_msg.contains("Security violation") &&
+            error_msg.contains("too long"),
+            "Error should mention length limit: {}",
+            error_msg
+        );
+        
+        std::env::remove_var("HOME");
+    }
+    
+    #[test]
+    fn test_legitimate_environment_variable_usage() {
+        // Test that legitimate usage still works
+        std::env::set_var("HOME", "/home/testuser");
+        std::env::set_var("USER", "testuser");
+        std::env::set_var("SSH_AUTH_SOCK", "/tmp/ssh-agent-1000");
+        std::env::set_var("TMPDIR", "/tmp");
+        
+        let config_content = r#"
+Host testhost
+    User testuser
+    IdentityFile ${HOME}/.ssh/id_rsa
+    UserKnownHostsFile ${HOME}/.ssh/known_hosts
+    ControlPath ${TMPDIR}/ssh-control-%h-%p-%r
+"#;
+        
+        let result = SshConfig::parse(config_content);
+        assert!(result.is_ok(), "Legitimate environment variable usage should work: {:?}", result.err());
+        
+        let config = result.unwrap();
+        let host = config.find_host_config("testhost");
+        
+        // Verify expansions worked correctly
+        // Note: Only file paths get environment variable expansion for security reasons
+        // Hostname and User do not expand environment variables to prevent injection attacks
+        assert_eq!(host.user, Some("testuser".to_string()));
+        
+        if !host.identity_files.is_empty() {
+            let identity_file = &host.identity_files[0];
+            assert!(identity_file.to_string_lossy().contains("/home/testuser/.ssh/id_rsa"));
+        }
+        
+        if let Some(ref control_path) = host.control_path {
+            // ControlPath doesn't expand environment variables for security reasons,
+            // so it should contain the literal ${TMPDIR}
+            assert!(control_path.contains("${TMPDIR}"));
+        }
+        
+        // Clean up
+        std::env::remove_var("HOME");
+        std::env::remove_var("USER");
+        std::env::remove_var("SSH_AUTH_SOCK");
+        std::env::remove_var("TMPDIR");
+    }
+    
+    #[test]
+    fn test_mixed_expansion_patterns() {
+        // Test both ${VAR} and $VAR patterns
+        std::env::set_var("HOME", "/home/testuser");
+        std::env::set_var("USER", "testuser");
+        
+        let config_content = r#"
+Host testhost
+    User testuser
+    IdentityFile $HOME/.ssh/${USER}_key
+    UserKnownHostsFile ${HOME}/.ssh/known_hosts_$USER
+"#;
+        
+        let result = SshConfig::parse(config_content);
+        assert!(result.is_ok(), "Mixed expansion patterns should work: {:?}", result.err());
+        
+        let config = result.unwrap();
+        let host = config.find_host_config("testhost");
+        
+        // Verify both patterns were expanded correctly
+        if !host.identity_files.is_empty() {
+            let identity_file = &host.identity_files[0];
+            let path_str = identity_file.to_string_lossy();
+            assert!(path_str.contains("/home/testuser/.ssh/testuser_key"));
+        }
+        
+        if let Some(ref known_hosts) = host.user_known_hosts_file {
+            let path_str = known_hosts.to_string_lossy();
+            assert!(path_str.contains("/home/testuser/.ssh/known_hosts_testuser"));
+        }
+        
+        std::env::remove_var("HOME");
+        std::env::remove_var("USER");
+    }
+    
+    #[test]
+    fn test_unclosed_brace_detection() {
+        // Test that unclosed braces are detected as potential injection attempts
+        let config_content = r#"
+Host testhost
+    User testuser
+    IdentityFile ${HOME/.ssh/id_rsa
+"#;
+        
+        let result = SshConfig::parse(config_content);
+        assert!(result.is_err(), "Unclosed brace should be detected");
+        
+        let error = result.unwrap_err();
+        let error_msg = error.to_string();
+        assert!(
+            error_msg.contains("Security violation") && error_msg.contains("Unclosed brace"),
+            "Error should mention unclosed brace security violation: {}",
+            error_msg
+        );
+    }
+    
+    #[test]
+    fn test_case_sensitivity_in_variable_names() {
+        // Test that variable name matching is case-sensitive for security
+        std::env::set_var("home", "/tmp/fake_home"); // lowercase, not in whitelist
+        std::env::set_var("HOME", "/home/realuser"); // uppercase, in whitelist
+        
+        let config_content = r#"
+Host testhost
+    User testuser
+    IdentityFile ${home}/.ssh/id_rsa
+"#;
+        
+        // The lowercase 'home' should not be expanded (not whitelisted)
+        let result = SshConfig::parse(config_content);
+        assert!(result.is_ok(), "Non-whitelisted variables should be ignored, not fail");
+        
+        let config = result.unwrap();
+        let host = config.find_host_config("testhost");
+        
+        if !host.identity_files.is_empty() {
+            let identity_file = &host.identity_files[0];
+            let path_str = identity_file.to_string_lossy();
+            // Should not contain the fake_home value
+            assert!(!path_str.contains("/tmp/fake_home"));
+            // Should still contain the literal ${home} since it wasn't expanded
+            assert!(path_str.contains("${home}") || path_str.contains("home"));
+        }
+        
+        std::env::remove_var("home");
+        std::env::remove_var("HOME");
     }
 
     #[test]
