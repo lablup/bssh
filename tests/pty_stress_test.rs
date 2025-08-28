@@ -29,6 +29,7 @@ use tokio::sync::mpsc;
 use tokio::time::{timeout, Instant};
 
 // Helper to generate random data
+#[allow(dead_code)]
 fn generate_random_data(size: usize) -> Vec<u8> {
     (0..size).map(|i| (i % 256) as u8).collect()
 }
@@ -360,7 +361,7 @@ async fn test_massive_message_batches() {
         let receiver = tokio::spawn(async move {
             let recv_start = Instant::now();
             let mut count = 0;
-            while let Some(_) = rx.recv().await {
+            while rx.recv().await.is_some() {
                 count += 1;
                 if count >= batch_size {
                     break;

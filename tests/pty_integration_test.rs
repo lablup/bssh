@@ -45,6 +45,7 @@ fn create_test_pty_config() -> PtyConfig {
 }
 
 // Helper to generate random data
+#[allow(dead_code)]
 fn generate_random_data(size: usize) -> Vec<u8> {
     (0..size).map(|i| (i % 256) as u8).collect()
 }

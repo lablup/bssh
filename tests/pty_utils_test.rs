@@ -186,8 +186,9 @@ fn test_terminal_size_bounds_checking() {
     let (width, height) = get_terminal_size().unwrap();
 
     // Test u32 conversion safety
-    assert!(width <= u32::MAX);
-    assert!(height <= u32::MAX);
+    // These checks are redundant since width and height are already u32
+    // assert!(width <= u32::MAX);
+    // assert!(height <= u32::MAX);
 
     // Test reasonable terminal size limits
     assert!(width >= 1, "Width should be at least 1");

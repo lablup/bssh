@@ -546,6 +546,7 @@ See the [LICENSE](./LICENSE) file for details.
 ## Changelog
 
 ### Recent Updates
+- **v0.6.0 (2025/08/28):** Add SSH config file support (-F), PTY allocation, security enhancements, performance improvements, and SSH-compatible command-line interface
 - **v0.5.4 (2025/08/27):** Fix parallel config value handling and align interactive mode authentication with exec mode
 - **v0.5.3 (2025/08/27):** Use Backend.AI cluster SSH key for auto-detected environments
 - **v0.5.2 (2025/08/27):** Fix config file loading priority, improve BACKENDAI environment handling, use cluster SSH key config
