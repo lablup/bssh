@@ -314,7 +314,7 @@ pub(super) fn secure_validate_path(
 ) -> Result<PathBuf> {
     // First expand the path using the existing logic
     let expanded_path = expand_path_internal(path)
-        .with_context(|| format!("Failed to expand path '{}' at line {}", path, line_number))?;
+        .with_context(|| format!("Failed to expand path '{path}' at line {line_number}"))?;
 
     // Convert to string for analysis
     let path_str = expanded_path.to_string_lossy();
@@ -571,7 +571,7 @@ mod tests {
 
         for cmd in legitimate_commands {
             let result = validate_executable_string(cmd, "ProxyCommand", 1);
-            assert!(result.is_ok(), "Legitimate command should pass: {}", cmd);
+            assert!(result.is_ok(), "Legitimate command should pass: {cmd}");
         }
     }
 
@@ -595,16 +595,13 @@ mod tests {
             let result = validate_executable_string(cmd, "ProxyCommand", 1);
             assert!(
                 result.is_err(),
-                "Malicious command should be blocked: {}",
-                cmd
+                "Malicious command should be blocked: {cmd}"
             );
 
             let error = result.unwrap_err().to_string();
             assert!(
                 error.contains("Security violation"),
-                "Error should mention security violation for: {}. Got: {}",
-                cmd,
-                error
+                "Error should mention security violation for: {cmd}. Got: {error}"
             );
         }
     }
@@ -620,11 +617,7 @@ mod tests {
 
         for path in legitimate_paths {
             let result = validate_control_path(path, 1);
-            assert!(
-                result.is_ok(),
-                "Legitimate ControlPath should pass: {}",
-                path
-            );
+            assert!(result.is_ok(), "Legitimate ControlPath should pass: {path}");
         }
     }
 
@@ -643,8 +636,7 @@ mod tests {
             let result = validate_control_path(path, 1);
             assert!(
                 result.is_err(),
-                "Malicious ControlPath should be blocked: {}",
-                path
+                "Malicious ControlPath should be blocked: {path}"
             );
         }
     }
@@ -659,18 +651,12 @@ mod tests {
 
         for path in traversal_paths {
             let result = secure_validate_path(path, "identity", 1);
-            assert!(
-                result.is_err(),
-                "Path traversal should be blocked: {}",
-                path
-            );
+            assert!(result.is_err(), "Path traversal should be blocked: {path}");
 
             let error = result.unwrap_err().to_string();
             assert!(
                 error.contains("traversal") || error.contains("Security violation"),
-                "Error should mention traversal for: {}. Got: {}",
-                path,
-                error
+                "Error should mention traversal for: {path}. Got: {error}"
             );
         }
     }

@@ -139,8 +139,10 @@ impl SshConfigCache {
         let cache_size = std::num::NonZeroUsize::new(config.max_entries)
             .unwrap_or(std::num::NonZeroUsize::new(100).unwrap());
 
-        let mut stats = CacheStats::default();
-        stats.max_entries = config.max_entries;
+        let stats = CacheStats {
+            max_entries: config.max_entries,
+            ..Default::default()
+        };
 
         Self {
             cache: Arc::new(RwLock::new(LruCache::new(cache_size))),
@@ -156,11 +158,13 @@ impl SshConfigCache {
         }
 
         let path_ref = path.as_ref();
-        let path = tokio::fs::canonicalize(path_ref).await
+        let path = tokio::fs::canonicalize(path_ref)
+            .await
             .with_context(|| format!("Failed to canonicalize path: {}", path_ref.display()))?;
 
         // Check if file exists and get its modification time
-        let file_metadata = tokio::fs::metadata(&path).await
+        let file_metadata = tokio::fs::metadata(&path)
+            .await
             .with_context(|| format!("Failed to read file metadata: {}", path.display()))?;
 
         let current_mtime = file_metadata
@@ -174,7 +178,8 @@ impl SshConfigCache {
 
         // Cache miss - load from file
         trace!("Cache miss for SSH config: {}", path.display());
-        let config = SshConfig::load_from_file(&path).await
+        let config = SshConfig::load_from_file(&path)
+            .await
             .with_context(|| format!("Failed to load SSH config from file: {}", path.display()))?;
 
         // Store in cache
@@ -334,37 +339,41 @@ impl SshConfigCache {
             return 0;
         }
 
-        let mut cache = self.cache.write().unwrap();
         let mut to_remove = Vec::new();
         let mut expired_count = 0;
         let mut stale_count = 0;
 
-        // Collect keys to remove (can't remove while iterating)
+        // Collect keys to check and expired entries (can't remove while iterating)
         // We'll use tokio::spawn to check file metadata concurrently
         let mut check_tasks = Vec::new();
-        
-        for (path, entry) in cache.iter() {
-            if entry.is_expired(self.config.ttl) {
-                to_remove.push(path.clone());
-                expired_count += 1;
-            } else {
-                let path_clone = path.clone();
-                let entry_mtime = entry.file_mtime;
-                check_tasks.push(tokio::spawn(async move {
-                    if let Ok(metadata) = tokio::fs::metadata(&path_clone).await {
-                        if let Ok(current_mtime) = metadata.modified() {
-                            (path_clone, entry_mtime != current_mtime, true)
+
+        {
+            // Scope the lock to release it before awaiting
+            let cache = self.cache.write().unwrap();
+
+            for (path, entry) in cache.iter() {
+                if entry.is_expired(self.config.ttl) {
+                    to_remove.push(path.clone());
+                    expired_count += 1;
+                } else {
+                    let path_clone = path.clone();
+                    let entry_mtime = entry.file_mtime;
+                    check_tasks.push(tokio::spawn(async move {
+                        if let Ok(metadata) = tokio::fs::metadata(&path_clone).await {
+                            if let Ok(current_mtime) = metadata.modified() {
+                                (path_clone, entry_mtime != current_mtime, true)
+                            } else {
+                                (path_clone, false, false)
+                            }
                         } else {
-                            (path_clone, false, false)
+                            // File doesn't exist anymore
+                            (path_clone, true, false)
                         }
-                    } else {
-                        // File doesn't exist anymore
-                        (path_clone, true, false)
-                    }
-                }));
+                    }));
+                }
             }
-        }
-        
+        } // Lock is dropped here
+
         // Wait for all file checks to complete
         for task in check_tasks {
             if let Ok((path, is_stale, _file_exists)) = task.await {
@@ -376,14 +385,18 @@ impl SshConfigCache {
         }
 
         // Remove expired and stale entries
-        for path in &to_remove {
-            cache.pop(path);
+        {
+            let mut cache = self.cache.write().unwrap();
+            for path in &to_remove {
+                cache.pop(path);
+            }
         }
 
         let removed_count = to_remove.len();
 
         // Update statistics
         {
+            let cache = self.cache.read().unwrap();
             let mut stats = self.stats.write().unwrap();
             stats.ttl_evictions += expired_count as u64;
             stats.stale_evictions += stale_count as u64;

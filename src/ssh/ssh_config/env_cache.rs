@@ -85,10 +85,12 @@ pub struct EnvCacheStats {
     /// Current number of entries in cache
     pub current_entries: usize,
     /// Maximum number of entries allowed
+    #[allow(dead_code)]
     pub max_entries: usize,
 }
 
 impl EnvCacheStats {
+    #[allow(dead_code)]
     pub fn hit_rate(&self) -> f64 {
         let total = self.hits + self.misses;
         if total == 0 {
@@ -119,8 +121,10 @@ impl EnvironmentCache {
 
     /// Create a new environment cache with custom configuration
     pub fn with_config(config: EnvCacheConfig) -> Self {
-        let mut stats = EnvCacheStats::default();
-        stats.max_entries = config.max_entries;
+        let stats = EnvCacheStats {
+            max_entries: config.max_entries,
+            ..Default::default()
+        };
 
         // Define the whitelist of safe environment variables
         // This is the same whitelist used in path.rs for security
@@ -128,7 +132,7 @@ impl EnvironmentCache {
             // User identity variables (generally safe)
             "HOME",
             "USER",
-            "LOGNAME", 
+            "LOGNAME",
             "USERNAME",
             // SSH-specific variables (contextually safe)
             "SSH_AUTH_SOCK",
@@ -196,7 +200,7 @@ impl EnvironmentCache {
 
         // Cache miss - fetch from environment
         let value = std::env::var(var_name).ok();
-        
+
         // Store in cache
         self.put(var_name.to_string(), value.clone());
 
@@ -219,7 +223,7 @@ impl EnvironmentCache {
             if entry.is_expired(self.config.ttl) {
                 tracing::trace!("Environment variable cache entry expired: {}", var_name);
                 cache.remove(var_name);
-                
+
                 let mut stats = self.stats.write().unwrap();
                 stats.ttl_evictions += 1;
                 return Ok(None);
@@ -254,7 +258,10 @@ impl EnvironmentCache {
                 .map(|(k, _)| k.clone())
             {
                 cache.remove(&oldest_key);
-                tracing::debug!("Evicted environment variable from cache due to size limit: {}", oldest_key);
+                tracing::debug!(
+                    "Evicted environment variable from cache due to size limit: {}",
+                    oldest_key
+                );
             }
         }
 
@@ -271,6 +278,7 @@ impl EnvironmentCache {
     }
 
     /// Clear all entries from the cache
+    #[allow(dead_code)]
     pub fn clear(&self) {
         let mut cache = self.cache.write().unwrap();
         cache.clear();
@@ -280,6 +288,7 @@ impl EnvironmentCache {
     }
 
     /// Remove a specific entry from the cache
+    #[allow(dead_code)]
     pub fn remove(&self, var_name: &str) -> Option<String> {
         let mut cache = self.cache.write().unwrap();
         let entry = cache.remove(var_name)?;
@@ -291,16 +300,19 @@ impl EnvironmentCache {
     }
 
     /// Get current cache statistics
+    #[allow(dead_code)]
     pub fn stats(&self) -> EnvCacheStats {
         self.stats.read().unwrap().clone()
     }
 
     /// Get cache configuration
+    #[allow(dead_code)]
     pub fn config(&self) -> &EnvCacheConfig {
         &self.config
     }
 
     /// Perform cache maintenance (remove expired entries)
+    #[allow(dead_code)]
     pub fn maintain(&self) -> usize {
         if !self.config.enabled {
             return 0;
@@ -342,12 +354,14 @@ impl EnvironmentCache {
 
     /// Refresh cache by clearing all entries
     /// This forces all environment variables to be re-read from the system
+    #[allow(dead_code)]
     pub fn refresh(&self) {
         self.clear();
         tracing::debug!("Environment variable cache refreshed");
     }
 
     /// Get detailed information about cache entries (for debugging)
+    #[allow(dead_code)]
     pub fn debug_info(&self) -> HashMap<String, String> {
         let cache = self.cache.read().unwrap();
         let mut info = HashMap::new();
@@ -372,11 +386,13 @@ impl EnvironmentCache {
     }
 
     /// Check if a variable is in the safe whitelist
+    #[allow(dead_code)]
     pub fn is_safe_variable(&self, var_name: &str) -> bool {
         self.safe_variables.contains(var_name)
     }
 
     /// Get the list of safe environment variables
+    #[allow(dead_code)]
     pub fn safe_variables(&self) -> Vec<&'static str> {
         self.safe_variables.iter().copied().collect()
     }
@@ -409,7 +425,9 @@ pub static GLOBAL_ENV_CACHE: Lazy<EnvironmentCache> = Lazy::new(|| {
 
     tracing::debug!(
         "Initializing environment variable cache with {} max entries, {:?} TTL, enabled: {}",
-        config.max_entries, config.ttl, config.enabled
+        config.max_entries,
+        config.ttl,
+        config.enabled
     );
 
     EnvironmentCache::with_config(config)
@@ -432,7 +450,7 @@ mod tests {
     #[test]
     fn test_cache_entry_expiration() {
         let mut entry = CacheEntry::new(Some("test".to_string()));
-        
+
         // Fresh entry should not be expired
         assert!(!entry.is_expired(Duration::from_secs(60)));
 
@@ -446,15 +464,13 @@ mod tests {
         let cache = EnvironmentCache::new();
 
         // Test getting a safe environment variable
-        if let Ok(home_value) = cache.get_env_var("HOME") {
+        if let Ok(Some(value)) = cache.get_env_var("HOME") {
             // Should not be None since HOME is typically set
-            if let Some(value) = home_value {
-                assert!(!value.is_empty());
-                
-                // Second call should be a cache hit
-                let cached_value = cache.get_env_var("HOME").unwrap();
-                assert_eq!(cached_value, Some(value));
-            }
+            assert!(!value.is_empty());
+
+            // Second call should be a cache hit
+            let cached_value = cache.get_env_var("HOME").unwrap();
+            assert_eq!(cached_value, Some(value));
         }
 
         let stats = cache.stats();
@@ -464,15 +480,15 @@ mod tests {
     #[test]
     fn test_env_cache_unsafe_variable_blocked() {
         let cache = EnvironmentCache::new();
-        
+
         // Try to access a dangerous variable
         let result = cache.get_env_var("PATH").unwrap();
         assert_eq!(result, None); // Should be blocked
-        
+
         // Check that it's not considered safe
         assert!(!cache.is_safe_variable("PATH"));
         assert!(!cache.is_safe_variable("LD_PRELOAD"));
-        
+
         // Check that safe variables are allowed
         assert!(cache.is_safe_variable("HOME"));
         assert!(cache.is_safe_variable("USER"));
@@ -489,13 +505,13 @@ mod tests {
 
         // Get a variable to cache it
         let _result1 = cache.get_env_var("HOME");
-        
+
         // Wait for TTL to expire
         std::thread::sleep(Duration::from_millis(100));
-        
+
         // Should miss cache due to expiration
         let _result2 = cache.get_env_var("HOME");
-        
+
         let stats = cache.stats();
         assert!(stats.ttl_evictions > 0);
     }
@@ -511,7 +527,7 @@ mod tests {
 
         // Fill cache beyond limit
         let _r1 = cache.get_env_var("HOME");
-        let _r2 = cache.get_env_var("USER");  
+        let _r2 = cache.get_env_var("USER");
         let _r3 = cache.get_env_var("TMPDIR"); // Should evict oldest
 
         let stats = cache.stats();
@@ -521,24 +537,24 @@ mod tests {
     #[test]
     fn test_env_cache_clear_and_refresh() {
         let cache = EnvironmentCache::new();
-        
+
         // Cache some variables
         let _r1 = cache.get_env_var("HOME");
         assert!(cache.stats().current_entries > 0);
-        
+
         // Clear cache
         cache.clear();
         assert_eq!(cache.stats().current_entries, 0);
-        
+
         // Cache again and refresh
         let _r2 = cache.get_env_var("HOME");
         assert!(cache.stats().current_entries > 0);
-        
+
         cache.refresh();
         assert_eq!(cache.stats().current_entries, 0);
     }
 
-    #[test] 
+    #[test]
     fn test_env_cache_maintenance() {
         let config = EnvCacheConfig {
             ttl: Duration::from_millis(50),
@@ -595,7 +611,7 @@ mod tests {
     fn test_env_cache_safe_variables_list() {
         let cache = EnvironmentCache::new();
         let safe_vars = cache.safe_variables();
-        
+
         assert!(safe_vars.contains(&"HOME"));
         assert!(safe_vars.contains(&"USER"));
         assert!(safe_vars.contains(&"SSH_AUTH_SOCK"));
@@ -607,14 +623,14 @@ mod tests {
     fn test_env_cache_concurrent_access() {
         let cache = Arc::new(EnvironmentCache::new());
         let counter = Arc::new(AtomicUsize::new(0));
-        
+
         let mut handles = vec![];
-        
+
         // Spawn multiple threads accessing the cache
         for _ in 0..10 {
             let cache_clone = Arc::clone(&cache);
             let counter_clone = Arc::clone(&counter);
-            
+
             let handle = std::thread::spawn(move || {
                 for _ in 0..100 {
                     if cache_clone.get_env_var("HOME").is_ok() {
@@ -624,15 +640,15 @@ mod tests {
             });
             handles.push(handle);
         }
-        
+
         // Wait for all threads to complete
         for handle in handles {
             handle.join().unwrap();
         }
-        
+
         // Should have successful accesses
         assert!(counter.load(Ordering::Relaxed) > 0);
-        
+
         // Cache should have entries
         let stats = cache.stats();
         assert!(stats.hits + stats.misses > 0);

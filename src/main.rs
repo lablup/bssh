@@ -129,7 +129,8 @@ async fn main() -> Result<()> {
 
     // Load SSH configuration with caching for improved performance
     let ssh_config = if let Some(ref ssh_config_path) = cli.ssh_config {
-        SshConfig::load_from_file_cached(ssh_config_path).await
+        SshConfig::load_from_file_cached(ssh_config_path)
+            .await
             .with_context(|| format!("Failed to load SSH config from {ssh_config_path:?}"))?
     } else {
         SshConfig::load_default_cached().await.unwrap_or_else(|_| {

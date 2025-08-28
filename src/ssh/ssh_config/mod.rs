@@ -22,13 +22,13 @@ use std::path::{Path, PathBuf};
 
 // Internal modules
 mod env_cache;
+#[cfg(test)]
+mod integration_tests;
 mod parser;
 mod path;
 mod pattern;
 mod resolver;
 mod security;
-#[cfg(test)]
-mod integration_tests;
 mod types;
 
 // Re-export public types
@@ -49,7 +49,8 @@ impl SshConfig {
     /// Load SSH configuration from a file
     pub async fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref();
-        let content = tokio::fs::read_to_string(path).await
+        let content = tokio::fs::read_to_string(path)
+            .await
             .with_context(|| format!("Failed to read SSH config file: {}", path.display()))?;
 
         Self::parse(&content)

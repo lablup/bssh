@@ -126,7 +126,7 @@ pub(super) fn parse_option(
                 anyhow::bail!("IdentityFile requires a value at line {}", line_number);
             }
             let path = secure_validate_path(args[0], "identity", line_number)
-                .with_context(|| format!("Invalid IdentityFile path at line {}", line_number))?;
+                .with_context(|| format!("Invalid IdentityFile path at line {line_number}"))?;
             host.identity_files.push(path);
         }
         "identitiesonly" => {
@@ -172,7 +172,7 @@ pub(super) fn parse_option(
             }
             let path =
                 secure_validate_path(args[0], "known_hosts", line_number).with_context(|| {
-                    format!("Invalid UserKnownHostsFile path at line {}", line_number)
+                    format!("Invalid UserKnownHostsFile path at line {line_number}")
                 })?;
             host.user_known_hosts_file = Some(path);
         }
@@ -185,7 +185,7 @@ pub(super) fn parse_option(
             }
             let path =
                 secure_validate_path(args[0], "known_hosts", line_number).with_context(|| {
-                    format!("Invalid GlobalKnownHostsFile path at line {}", line_number)
+                    format!("Invalid GlobalKnownHostsFile path at line {line_number}")
                 })?;
             host.global_known_hosts_file = Some(path);
         }
