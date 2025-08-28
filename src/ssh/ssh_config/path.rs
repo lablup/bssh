@@ -17,7 +17,7 @@
 //! This module provides secure path expansion capabilities with environment variable
 //! substitution while preventing injection attacks and path traversal vulnerabilities.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::path::PathBuf;
 
 /// Expand tilde and environment variables in a path (secure implementation)

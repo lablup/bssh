@@ -129,10 +129,10 @@ async fn main() -> Result<()> {
 
     // Load SSH configuration with caching for improved performance
     let ssh_config = if let Some(ref ssh_config_path) = cli.ssh_config {
-        SshConfig::load_from_file_cached(ssh_config_path)
+        SshConfig::load_from_file_cached(ssh_config_path).await
             .with_context(|| format!("Failed to load SSH config from {ssh_config_path:?}"))?
     } else {
-        SshConfig::load_default_cached().unwrap_or_else(|_| {
+        SshConfig::load_default_cached().await.unwrap_or_else(|_| {
             tracing::debug!("No SSH config found or failed to load, using empty config");
             SshConfig::new()
         })
@@ -151,7 +151,7 @@ async fn main() -> Result<()> {
         maintain,
     }) = &cli.command
     {
-        handle_cache_stats(*detailed, *clear, *maintain);
+        handle_cache_stats(*detailed, *clear, *maintain).await;
         return Ok(());
     }
 
@@ -643,7 +643,7 @@ async fn resolve_nodes(
 }
 
 /// Handle cache statistics command
-fn handle_cache_stats(detailed: bool, clear: bool, maintain: bool) {
+async fn handle_cache_stats(detailed: bool, clear: bool, maintain: bool) {
     use bssh::ssh::GLOBAL_CACHE;
     use owo_colors::OwoColorize;
 
@@ -653,7 +653,7 @@ fn handle_cache_stats(detailed: bool, clear: bool, maintain: bool) {
     }
 
     if maintain {
-        let removed = GLOBAL_CACHE.maintain();
+        let removed = GLOBAL_CACHE.maintain().await;
         println!(
             "{}: Removed {} expired/stale entries",
             "Cache maintenance".yellow(),

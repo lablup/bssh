@@ -150,18 +150,17 @@ impl SshConfigCache {
     }
 
     /// Get an SSH config from cache or load it from file
-    pub fn get_or_load<P: AsRef<Path>>(&self, path: P) -> Result<SshConfig> {
+    pub async fn get_or_load<P: AsRef<Path>>(&self, path: P) -> Result<SshConfig> {
         if !self.config.enabled {
-            return SshConfig::load_from_file(path);
+            return SshConfig::load_from_file(path).await;
         }
 
         let path_ref = path.as_ref();
-        let path = path_ref
-            .canonicalize()
+        let path = tokio::fs::canonicalize(path_ref).await
             .with_context(|| format!("Failed to canonicalize path: {}", path_ref.display()))?;
 
         // Check if file exists and get its modification time
-        let file_metadata = std::fs::metadata(&path)
+        let file_metadata = tokio::fs::metadata(&path).await
             .with_context(|| format!("Failed to read file metadata: {}", path.display()))?;
 
         let current_mtime = file_metadata
@@ -175,7 +174,7 @@ impl SshConfigCache {
 
         // Cache miss - load from file
         trace!("Cache miss for SSH config: {}", path.display());
-        let config = SshConfig::load_from_file(&path)
+        let config = SshConfig::load_from_file(&path).await
             .with_context(|| format!("Failed to load SSH config from file: {}", path.display()))?;
 
         // Store in cache
@@ -254,23 +253,23 @@ impl SshConfigCache {
     }
 
     /// Load SSH config from default locations with caching
-    pub fn load_default(&self) -> Result<SshConfig> {
+    pub async fn load_default(&self) -> Result<SshConfig> {
         if !self.config.enabled {
-            return SshConfig::load_default();
+            return SshConfig::load_default().await;
         }
 
         // Try user-specific SSH config first
         if let Some(home_dir) = dirs::home_dir() {
             let user_config = home_dir.join(".ssh").join("config");
-            if user_config.exists() {
-                return self.get_or_load(&user_config);
+            if tokio::fs::try_exists(&user_config).await.unwrap_or(false) {
+                return self.get_or_load(&user_config).await;
             }
         }
 
         // Try system-wide SSH config
         let system_config = Path::new("/etc/ssh/ssh_config");
-        if system_config.exists() {
-            return self.get_or_load(system_config);
+        if tokio::fs::try_exists(system_config).await.unwrap_or(false) {
+            return self.get_or_load(system_config).await;
         }
 
         // Return empty config if no files found
@@ -287,9 +286,9 @@ impl SshConfigCache {
     }
 
     /// Remove a specific entry from the cache
-    pub fn remove<P: AsRef<Path>>(&self, path: P) -> Option<SshConfig> {
+    pub async fn remove<P: AsRef<Path>>(&self, path: P) -> Option<SshConfig> {
         let path = path.as_ref();
-        if let Ok(canonical_path) = path.canonicalize() {
+        if let Ok(canonical_path) = tokio::fs::canonicalize(path).await {
             let mut cache = self.cache.write().unwrap();
             let entry = cache.pop(&canonical_path)?;
 
@@ -330,7 +329,7 @@ impl SshConfigCache {
     }
 
     /// Perform cache maintenance (remove expired and stale entries)
-    pub fn maintain(&self) -> usize {
+    pub async fn maintain(&self) -> usize {
         if !self.config.enabled {
             return 0;
         }
@@ -341,21 +340,38 @@ impl SshConfigCache {
         let mut stale_count = 0;
 
         // Collect keys to remove (can't remove while iterating)
+        // We'll use tokio::spawn to check file metadata concurrently
+        let mut check_tasks = Vec::new();
+        
         for (path, entry) in cache.iter() {
             if entry.is_expired(self.config.ttl) {
                 to_remove.push(path.clone());
                 expired_count += 1;
-            } else if let Ok(metadata) = std::fs::metadata(path) {
-                if let Ok(current_mtime) = metadata.modified() {
-                    if entry.is_stale(current_mtime) {
-                        to_remove.push(path.clone());
-                        stale_count += 1;
-                    }
-                }
             } else {
-                // File doesn't exist anymore
-                to_remove.push(path.clone());
-                stale_count += 1;
+                let path_clone = path.clone();
+                let entry_mtime = entry.file_mtime;
+                check_tasks.push(tokio::spawn(async move {
+                    if let Ok(metadata) = tokio::fs::metadata(&path_clone).await {
+                        if let Ok(current_mtime) = metadata.modified() {
+                            (path_clone, entry_mtime != current_mtime, true)
+                        } else {
+                            (path_clone, false, false)
+                        }
+                    } else {
+                        // File doesn't exist anymore
+                        (path_clone, true, false)
+                    }
+                }));
+            }
+        }
+        
+        // Wait for all file checks to complete
+        for task in check_tasks {
+            if let Ok((path, is_stale, _file_exists)) = task.await {
+                if is_stale {
+                    to_remove.push(path);
+                    stale_count += 1;
+                }
             }
         }
 
@@ -496,7 +512,7 @@ mod tests {
         let path = temp_file.path().to_path_buf();
 
         // First load should be a cache miss
-        let config1 = cache.get_or_load(&path).unwrap();
+        let config1 = tokio_test::block_on(cache.get_or_load(&path)).unwrap();
         assert_eq!(config1.hosts.len(), 1);
 
         let stats = cache.stats();
@@ -504,7 +520,7 @@ mod tests {
         assert_eq!(stats.hits, 0);
 
         // Second load should be a cache hit
-        let config2 = cache.get_or_load(&path).unwrap();
+        let config2 = tokio_test::block_on(cache.get_or_load(&path)).unwrap();
         assert_eq!(config2.hosts.len(), 1);
 
         let stats = cache.stats();
@@ -525,7 +541,7 @@ mod tests {
         let path = temp_file.path().to_path_buf();
 
         // Load initial config
-        let config1 = cache.get_or_load(&path).unwrap();
+        let config1 = tokio_test::block_on(cache.get_or_load(&path)).unwrap();
         assert_eq!(config1.hosts.len(), 1);
 
         // Modify the file
@@ -535,7 +551,7 @@ mod tests {
         temp_file.flush().unwrap();
 
         // Should detect file modification and reload
-        let config2 = cache.get_or_load(&path).unwrap();
+        let config2 = tokio_test::block_on(cache.get_or_load(&path)).unwrap();
         assert_eq!(config2.hosts.len(), 2);
 
         let stats = cache.stats();
@@ -558,13 +574,13 @@ mod tests {
         let path = temp_file.path().to_path_buf();
 
         // Load initial config
-        let _config1 = cache.get_or_load(&path).unwrap();
+        let _config1 = tokio_test::block_on(cache.get_or_load(&path)).unwrap();
 
         // Wait for TTL to expire
         std::thread::sleep(Duration::from_millis(100));
 
         // Should reload due to TTL expiration
-        let _config2 = cache.get_or_load(&path).unwrap();
+        let _config2 = tokio_test::block_on(cache.get_or_load(&path)).unwrap();
 
         let stats = cache.stats();
         assert_eq!(stats.ttl_evictions, 1);
@@ -581,16 +597,16 @@ mod tests {
         let path = temp_file.path().to_path_buf();
 
         // Load config
-        let _config = cache.get_or_load(&path).unwrap();
+        let _config = tokio_test::block_on(cache.get_or_load(&path)).unwrap();
         assert_eq!(cache.stats().current_entries, 1);
 
         // Remove specific entry
-        let removed_config = cache.remove(&path);
+        let removed_config = tokio_test::block_on(cache.remove(&path));
         assert!(removed_config.is_some());
         assert_eq!(cache.stats().current_entries, 0);
 
         // Load again and clear all
-        let _config = cache.get_or_load(&path).unwrap();
+        let _config = tokio_test::block_on(cache.get_or_load(&path)).unwrap();
         assert_eq!(cache.stats().current_entries, 1);
 
         cache.clear();
@@ -613,14 +629,14 @@ mod tests {
         let path = temp_file.path().to_path_buf();
 
         // Load config
-        let _config = cache.get_or_load(&path).unwrap();
+        let _config = tokio_test::block_on(cache.get_or_load(&path)).unwrap();
         assert_eq!(cache.stats().current_entries, 1);
 
         // Wait for expiration
         std::thread::sleep(Duration::from_millis(100));
 
         // Run maintenance
-        let removed = cache.maintain();
+        let removed = tokio_test::block_on(cache.maintain());
         assert_eq!(removed, 1);
         assert_eq!(cache.stats().current_entries, 0);
     }
@@ -641,8 +657,8 @@ mod tests {
         let path = temp_file.path().to_path_buf();
 
         // Should not use cache when disabled
-        let _config1 = cache.get_or_load(&path).unwrap();
-        let _config2 = cache.get_or_load(&path).unwrap();
+        let _config1 = tokio_test::block_on(cache.get_or_load(&path)).unwrap();
+        let _config2 = tokio_test::block_on(cache.get_or_load(&path)).unwrap();
 
         let stats = cache.stats();
         assert_eq!(stats.hits, 0);

@@ -44,9 +44,9 @@ impl SshConfig {
     }
 
     /// Load SSH configuration from a file
-    pub fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
+    pub async fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref();
-        let content = std::fs::read_to_string(path)
+        let content = tokio::fs::read_to_string(path).await
             .with_context(|| format!("Failed to read SSH config file: {}", path.display()))?;
 
         Self::parse(&content)
@@ -55,24 +55,24 @@ impl SshConfig {
 
     /// Load SSH configuration from a file with caching
     /// Uses the global cache to improve performance for repeated access
-    pub fn load_from_file_cached<P: AsRef<Path>>(path: P) -> Result<Self> {
-        crate::ssh::GLOBAL_CACHE.get_or_load(path)
+    pub async fn load_from_file_cached<P: AsRef<Path>>(path: P) -> Result<Self> {
+        crate::ssh::GLOBAL_CACHE.get_or_load(path).await
     }
 
     /// Load SSH configuration from the default locations
-    pub fn load_default() -> Result<Self> {
+    pub async fn load_default() -> Result<Self> {
         // Try user-specific SSH config first
         if let Some(home_dir) = dirs::home_dir() {
             let user_config = home_dir.join(".ssh").join("config");
-            if user_config.exists() {
-                return Self::load_from_file(&user_config);
+            if tokio::fs::try_exists(&user_config).await.unwrap_or(false) {
+                return Self::load_from_file(&user_config).await;
             }
         }
 
         // Try system-wide SSH config
         let system_config = Path::new("/etc/ssh/ssh_config");
-        if system_config.exists() {
-            return Self::load_from_file(system_config);
+        if tokio::fs::try_exists(system_config).await.unwrap_or(false) {
+            return Self::load_from_file(system_config).await;
         }
 
         // Return empty config if no files found
@@ -81,8 +81,8 @@ impl SshConfig {
 
     /// Load SSH configuration from the default locations with caching
     /// Uses the global cache to improve performance for repeated access
-    pub fn load_default_cached() -> Result<Self> {
-        crate::ssh::GLOBAL_CACHE.load_default()
+    pub async fn load_default_cached() -> Result<Self> {
+        crate::ssh::GLOBAL_CACHE.load_default().await
     }
 
     /// Parse SSH configuration from a string
@@ -227,7 +227,7 @@ Host test.example.com
 
         std::fs::write(&config_file, config_content).unwrap();
 
-        let config = SshConfig::load_from_file(&config_file).unwrap();
+        let config = tokio_test::block_on(SshConfig::load_from_file(&config_file)).unwrap();
         assert_eq!(config.hosts.len(), 1);
         assert_eq!(config.hosts[0].host_patterns, vec!["test.example.com"]);
         assert_eq!(config.hosts[0].user, Some("testuser".to_string()));
