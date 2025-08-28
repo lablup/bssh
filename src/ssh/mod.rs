@@ -13,11 +13,15 @@
 // limitations under the License.
 
 pub mod client;
+pub mod config_cache;
 pub mod handler;
 pub mod known_hosts;
 pub mod pool;
+pub mod ssh_config;
 pub mod tokio_client;
 
 pub use client::SshClient;
+pub use config_cache::{CacheConfig, CacheStats, SshConfigCache, GLOBAL_CACHE};
 pub use handler::BsshHandler;
 pub use pool::ConnectionPool;
+pub use ssh_config::{SshConfig, SshHostConfig};

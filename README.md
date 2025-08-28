@@ -20,6 +20,7 @@ A high-performance SSH client with **SSH-compatible syntax** for both single-hos
 - **Cross-Platform**: Works on Linux and macOS
 - **Output Management**: Save command outputs to files per node with detailed logging
 - **Interactive Mode**: Interactive shell sessions with single-node or multiplexed multi-node support
+- **SSH Config Caching**: High-performance caching of SSH configurations with TTL and file modification detection
 - **Configurable Timeouts**: Set command execution timeouts with support for unlimited execution (timeout=0)
 
 ## Installation
