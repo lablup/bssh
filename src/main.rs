@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use anyhow::Result;
-use clap::{CommandFactory, Parser};
+use clap::Parser;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -29,15 +29,22 @@ use bssh::{
     },
     config::{Config, InteractiveMode},
     node::Node,
+    pty::PtyConfig,
     ssh::known_hosts::StrictHostKeyChecking,
     utils::init_logging,
 };
 
-/// Show help message and exit
-fn show_help() {
-    let mut cmd = Cli::command();
-    let _ = cmd.print_help();
-    eprintln!(); // Add a newline after help
+/// Show concise usage message (like SSH)
+fn show_usage() {
+    println!("usage: bssh [-46AqtTvx] [-C cluster] [-F configfile] [-H hosts]");
+    println!("           [-i identity_file] [-J destination] [-l login_name]");
+    println!("           [-o option] [-p port] [--config config] [--parallel N]");
+    println!("           [--output-dir dir] [--timeout seconds] [--use-agent]");
+    println!("           destination [command [argument ...]]");
+    println!("       bssh [-Q query_option]");
+    println!("       bssh [exec|list|ping|upload|download|interactive] ...");
+    println!();
+    println!("For more information, try 'bssh --help'");
 }
 
 /// Format a Duration into a human-readable string
@@ -71,8 +78,8 @@ async fn main() -> Result<()> {
     // Check if no arguments were provided
     let args: Vec<String> = std::env::args().collect();
     if args.len() == 1 {
-        // Show help when no arguments provided
-        show_help();
+        // Show concise usage when no arguments provided (like SSH)
+        show_usage();
         std::process::exit(0);
     }
 
@@ -287,6 +294,22 @@ async fn main() -> Result<()> {
                     .map(|ssh_key| bssh::config::expand_tilde(Path::new(&ssh_key)))
             };
 
+            // Create PTY configuration based on CLI flags
+            let pty_config = PtyConfig {
+                force_pty: cli.force_tty,
+                disable_pty: cli.no_tty,
+                ..Default::default()
+            };
+
+            // Determine use_pty based on CLI flags
+            let use_pty = if cli.force_tty {
+                Some(true)
+            } else if cli.no_tty {
+                Some(false)
+            } else {
+                None // Auto-detect
+            };
+
             let interactive_cmd = InteractiveCommand {
                 single_node: merged_mode.0,
                 multiplex: merged_mode.1,
@@ -301,6 +324,8 @@ async fn main() -> Result<()> {
                 use_agent: cli.use_agent,
                 use_password: cli.password,
                 strict_mode,
+                pty_config,
+                use_pty,
             };
             let result = interactive_cmd.execute().await?;
             println!("\nInteractive session ended.");
@@ -325,6 +350,22 @@ async fn main() -> Result<()> {
                         .map(|ssh_key| bssh::config::expand_tilde(Path::new(&ssh_key)))
                 };
 
+                // Create PTY configuration based on CLI flags (SSH mode)
+                let pty_config = PtyConfig {
+                    force_pty: cli.force_tty,
+                    disable_pty: cli.no_tty,
+                    ..Default::default()
+                };
+
+                // Determine use_pty based on CLI flags
+                let use_pty = if cli.force_tty {
+                    Some(true)
+                } else if cli.no_tty {
+                    Some(false)
+                } else {
+                    None // Auto-detect (typically use PTY for SSH mode)
+                };
+
                 // Use interactive mode for single host SSH connections
                 let interactive_cmd = InteractiveCommand {
                     single_node: true, // Always single node for SSH mode
@@ -340,14 +381,25 @@ async fn main() -> Result<()> {
                     use_agent: cli.use_agent,
                     use_password: cli.password,
                     strict_mode,
+                    pty_config,
+                    use_pty,
                 };
                 let result = interactive_cmd.execute().await?;
+
+                // Ensure terminal is fully restored before printing
+                // Use synchronized cleanup to prevent race conditions
+                bssh::pty::terminal::force_terminal_cleanup();
+                let _ = crossterm::cursor::Show;
+                let _ = std::io::Write::flush(&mut std::io::stdout());
+
                 println!("\nSession ended.");
                 if cli.verbose > 0 {
                     println!("Duration: {}", format_duration(result.duration));
                     println!("Commands executed: {}", result.commands_executed);
                 }
-                Ok(())
+
+                // Force exit to ensure proper termination
+                std::process::exit(0);
             } else {
                 // Determine timeout: CLI argument takes precedence over config
                 let timeout = if cli.timeout > 0 {

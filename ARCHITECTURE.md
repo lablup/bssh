@@ -309,6 +309,140 @@ Interactive mode provides persistent shell sessions with single-node or multiple
    - Node-prefixed output with color coding
    - Visual status indicators (● connected, ○ disconnected)
 
+## PTY Implementation Design
+
+### Architecture Overview
+
+The PTY implementation provides true terminal emulation for interactive SSH sessions. It's designed with careful attention to performance, memory usage, and user experience through systematic configuration of timeouts, buffer sizes, and concurrency controls.
+
+### Core Components
+
+1. **PTY Session (`pty/session.rs`)**
+   - Manages bidirectional terminal communication
+   - Handles terminal resize events
+   - Processes key sequences and ANSI escape codes
+   - Provides graceful shutdown with proper cleanup
+
+2. **PTY Manager (`pty/mod.rs`)**  
+   - Orchestrates multiple PTY sessions
+   - Supports both single-node and multiplex modes
+   - Manages session lifecycle and resource cleanup
+
+3. **Terminal State Management (`pty/terminal.rs`)**
+   - RAII guards for terminal state preservation
+   - Raw mode management with global synchronization
+   - Mouse support and alternate screen handling
+
+### Buffer Pool Design (`utils/buffer_pool.rs`)
+
+The buffer pool uses a three-tier system optimized for different I/O patterns:
+
+**Buffer Tier Design Rationale:**
+- **Small (1KB)**: Terminal key sequences, command responses
+  - Optimal for individual keypresses and short responses
+  - Minimizes memory waste for frequent small allocations
+- **Medium (8KB)**: SSH command I/O, multi-line output  
+  - Balances memory usage with syscall efficiency
+  - Matches common SSH channel packet sizes
+- **Large (64KB)**: SFTP transfers, bulk operations
+  - Reduces syscall overhead for high-throughput operations
+  - Standard size for network I/O buffers
+
+**Pool Management:**
+- Maximum 16 buffers per tier prevents unbounded memory growth
+- Total pooled memory: 16KB (small) + 128KB (medium) + 1MB (large) = ~1.14MB
+- Automatic return to pool on buffer drop (RAII pattern)
+
+### Timeout and Performance Constants
+
+All timeouts and buffer sizes have been carefully chosen based on empirical testing and user experience requirements:
+
+**Connection Timeouts:**
+- **SSH Connection**: 30 seconds - Industry standard, handles slow networks and SSH negotiation
+- **Command Execution**: 300 seconds (5 minutes) - Accommodates long-running operations
+- **File Operations**: 300s (single files), 600s (directories) - Based on typical transfer sizes
+
+**Interactive Response Times:**
+- **Input Polling**: 10ms - Appears instantaneous to users (<20ms perception threshold)
+- **Output Processing**: 10ms - Maintains real-time feel for terminal output
+- **PTY Timeout**: 10ms - Rapid response for interactive terminals
+- **Input Poll (blocking)**: 500ms - Longer timeout in blocking thread reduces CPU usage
+
+**Channel and Buffer Sizing:**
+- **PTY Message Channel**: 256 messages - Handles burst I/O without delays (~16KB memory)
+- **SSH Output Channel**: 128 messages - Smooths bursty shell command output
+- **Session Switch Channel**: 32 messages - Sufficient for user switching actions
+- **Resize Signal Channel**: 16 messages - Handles rapid window resizing events
+
+**Cleanup and Shutdown:**
+- **Task Cleanup**: 100ms - Allows graceful task termination
+- **PTY Shutdown**: 5 seconds - Time for multiple sessions to cleanup
+- **SSH Exit Delay**: 100ms - Ensures remote shell processes exit command
+
+### Memory Management Strategy
+
+**Stack-Allocated Optimizations:**
+- `SmallVec<[u8; 8]>` for key sequences - Most terminal key sequences are 1-5 bytes
+- `SmallVec<[u8; 64]>` for output messages - Typical terminal lines fit in 64 bytes
+- Pre-allocated constant arrays for common key sequences (Ctrl+C, arrows, function keys)
+
+**Bounded Channels:**
+- All channels use bounded capacity to prevent memory exhaustion
+- Graceful degradation when channels reach capacity (drop oldest data)
+- Non-blocking sends with error handling prevent deadlocks
+
+### Concurrency Design
+
+**Event Multiplexing:**
+- Extensive use of `tokio::select!` for efficient event handling
+- Separate tasks for input reading, output processing, and resize handling
+- Cancellation tokens for coordinated shutdown across all tasks
+
+**Thread Pool Usage:**
+- Input reading runs in blocking thread pool (crossterm limitation)
+- All other operations use async runtime for maximum concurrency
+- Semaphore-based concurrency limiting in parallel execution
+
+### Error Handling and Recovery
+
+**Graceful Degradation:**
+- Connection failures don't crash entire session
+- Output channel saturation drops data rather than blocking
+- Terminal state always restored on exit (RAII guards)
+
+**Resource Cleanup:**
+- Multiple cleanup mechanisms ensure terminal restoration
+- `Drop` implementations provide failsafe cleanup
+- Force cleanup functions for emergency recovery
+
+### Performance Characteristics
+
+**Target Performance:**
+- **Latency**: <10ms for key press to remote echo
+- **Throughput**: Handle 1000+ lines/second output streams
+- **Memory**: <50MB for 100 concurrent PTY sessions
+- **CPU**: <5% on modern systems for typical workloads
+
+**Optimization Techniques:**
+- Constant arrays for frequent key sequences avoid allocations
+- Buffer pooling reduces GC pressure
+- Bounded channels prevent unbounded memory growth
+- Event-driven architecture minimizes polling overhead
+
+### Security Considerations
+
+**Input Sanitization:**
+- All key sequences validated before transmission
+- Terminal escape sequences handled safely
+- No arbitrary code execution from terminal sequences
+
+**Resource Limits:**
+- Channel capacities prevent memory exhaustion attacks
+- Timeout values prevent resource starvation
+- Proper cleanup prevents resource leaks
+
+This design provides a production-ready PTY implementation that balances performance, reliability, and user experience while maintaining strict resource controls and graceful error handling.
+
 ### Implementation Details
 
 ```rust

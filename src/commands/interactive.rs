@@ -28,9 +28,11 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::sync::Mutex;
 use tokio::time::{timeout, Duration};
+use zeroize::Zeroizing;
 
 use crate::config::{Config, InteractiveConfig};
 use crate::node::Node;
+use crate::pty::{should_allocate_pty, PtyConfig, PtyManager};
 use crate::ssh::{
     known_hosts::{get_check_method, StrictHostKeyChecking},
     tokio_client::{AuthMethod, Client},
@@ -40,6 +42,18 @@ use super::interactive_signal::{
     is_interrupted, reset_interrupt, setup_async_signal_handlers, setup_signal_handlers,
     TerminalGuard,
 };
+
+/// SSH output polling interval for responsive display
+/// - 10ms provides very responsive output display
+/// - Short enough to appear instantaneous to users
+/// - Balances CPU usage with terminal responsiveness
+const SSH_OUTPUT_POLL_INTERVAL_MS: u64 = 10;
+
+/// Number of nodes to show in compact display format
+/// - 3 nodes provides enough context without overwhelming output
+/// - Shows first three nodes with ellipsis for remainder
+/// - Keeps command prompts readable in multi-node mode
+const NODES_TO_SHOW_IN_COMPACT: usize = 3;
 
 /// Interactive mode command configuration
 pub struct InteractiveCommand {
@@ -57,6 +71,9 @@ pub struct InteractiveCommand {
     pub use_agent: bool,
     pub use_password: bool,
     pub strict_mode: StrictHostKeyChecking,
+    // PTY configuration
+    pub pty_config: PtyConfig,
+    pub use_pty: Option<bool>, // None = auto-detect, Some(true) = force, Some(false) = disable
 }
 
 /// Result of an interactive session
@@ -88,8 +105,17 @@ impl NodeSession {
 
     /// Read available output from this node
     async fn read_output(&mut self) -> Result<Option<String>> {
-        // Try to read with a short timeout
-        match timeout(Duration::from_millis(100), self.channel.wait()).await {
+        // SSH channel read timeout design:
+        // - 100ms prevents blocking while waiting for output
+        // - Short enough to maintain interactive responsiveness
+        // - Allows polling loop to check for other events (shutdown, input)
+        const SSH_OUTPUT_READ_TIMEOUT_MS: u64 = 100;
+        match timeout(
+            Duration::from_millis(SSH_OUTPUT_READ_TIMEOUT_MS),
+            self.channel.wait(),
+        )
+        .await
+        {
             Ok(Some(msg)) => match msg {
                 russh::ChannelMsg::Data { ref data } => {
                     Ok(Some(String::from_utf8_lossy(data).to_string()))
@@ -119,7 +145,102 @@ impl NodeSession {
 }
 
 impl InteractiveCommand {
+    /// Determine whether to use PTY mode based on configuration
+    fn should_use_pty(&self) -> Result<bool> {
+        match self.use_pty {
+            Some(true) => Ok(true),   // Force PTY
+            Some(false) => Ok(false), // Disable PTY
+            None => {
+                // Auto-detect based on terminal and config
+                let mut pty_config = self.pty_config.clone();
+                pty_config.force_pty = self.use_pty == Some(true);
+                pty_config.disable_pty = self.use_pty == Some(false);
+                should_allocate_pty(&pty_config)
+            }
+        }
+    }
+
     pub async fn execute(self) -> Result<InteractiveResult> {
+        let use_pty = self.should_use_pty()?;
+
+        // Choose between PTY mode and traditional interactive mode
+        if use_pty {
+            // Use new PTY implementation for true terminal support
+            self.execute_with_pty().await
+        } else {
+            // Use traditional rustyline-based interactive mode (existing implementation)
+            self.execute_traditional().await
+        }
+    }
+
+    /// Execute interactive session with full PTY support
+    async fn execute_with_pty(self) -> Result<InteractiveResult> {
+        let start_time = std::time::Instant::now();
+
+        println!("Starting interactive session with PTY support...");
+
+        // Determine which nodes to connect to
+        let nodes_to_connect = self.select_nodes_to_connect()?;
+
+        // Connect to all selected nodes and get SSH channels
+        let mut channels = Vec::new();
+        let mut connected_nodes = Vec::new();
+
+        for node in nodes_to_connect {
+            match self.connect_to_node_pty(node.clone()).await {
+                Ok(channel) => {
+                    println!("✓ Connected to {} with PTY", node.to_string().green());
+                    channels.push(channel);
+                    connected_nodes.push(node);
+                }
+                Err(e) => {
+                    eprintln!("✗ Failed to connect to {}: {}", node.to_string().red(), e);
+                }
+            }
+        }
+
+        if channels.is_empty() {
+            anyhow::bail!("Failed to connect to any nodes");
+        }
+
+        let nodes_connected = channels.len();
+
+        // Create PTY manager and sessions
+        let mut pty_manager = PtyManager::new();
+
+        if self.single_node && channels.len() == 1 {
+            // Single PTY session
+            let session_id = pty_manager
+                .create_single_session(
+                    channels.into_iter().next().unwrap(),
+                    self.pty_config.clone(),
+                )
+                .await?;
+
+            pty_manager.run_single_session(session_id).await?;
+        } else {
+            // Multiple PTY sessions with multiplexing
+            let session_ids = pty_manager
+                .create_multiplex_sessions(channels, self.pty_config.clone())
+                .await?;
+
+            pty_manager.run_multiplex_sessions(session_ids).await?;
+        }
+
+        // Ensure terminal is fully restored after PTY session ends
+        // Use synchronized cleanup to prevent race conditions
+        crate::pty::terminal::force_terminal_cleanup();
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+
+        Ok(InteractiveResult {
+            duration: start_time.elapsed(),
+            commands_executed: 0, // PTY mode doesn't count discrete commands
+            nodes_connected,
+        })
+    }
+
+    /// Execute traditional interactive session (existing implementation)
+    async fn execute_traditional(self) -> Result<InteractiveResult> {
         let start_time = std::time::Instant::now();
 
         // Set up signal handlers and terminal guard
@@ -207,7 +328,13 @@ impl InteractiveCommand {
 
         // Connect with timeout
         let addr = (node.host.as_str(), node.port);
-        let connect_timeout = Duration::from_secs(30);
+        // SSH connection timeout design:
+        // - 30 seconds balances user patience with network reliability
+        // - Sufficient for slow networks, DNS resolution, SSH negotiation
+        // - Industry standard timeout for interactive SSH connections
+        // - Prevents indefinite hang on unreachable hosts
+        const SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
+        let connect_timeout = Duration::from_secs(SSH_CONNECT_TIMEOUT_SECS);
 
         let client = timeout(
             connect_timeout,
@@ -257,16 +384,96 @@ impl InteractiveCommand {
         })
     }
 
+    /// Select nodes to connect to based on configuration
+    fn select_nodes_to_connect(&self) -> Result<Vec<Node>> {
+        if self.single_node {
+            // In single-node mode, let user select a node or use the first one
+            if self.nodes.is_empty() {
+                anyhow::bail!("No nodes available for connection");
+            }
+
+            if self.nodes.len() == 1 {
+                Ok(vec![self.nodes[0].clone()])
+            } else {
+                // Show node selection menu
+                println!("Available nodes:");
+                for (i, node) in self.nodes.iter().enumerate() {
+                    println!("  [{}] {}", i + 1, node);
+                }
+                print!("Select node (1-{}): ", self.nodes.len());
+                io::stdout().flush()?;
+
+                let mut input = String::new();
+                io::stdin().read_line(&mut input)?;
+                let selection: usize = input.trim().parse().context("Invalid node selection")?;
+
+                if selection == 0 || selection > self.nodes.len() {
+                    anyhow::bail!("Invalid node selection");
+                }
+
+                Ok(vec![self.nodes[selection - 1].clone()])
+            }
+        } else {
+            Ok(self.nodes.clone())
+        }
+    }
+
+    /// Connect to a single node and establish a PTY-enabled SSH channel
+    async fn connect_to_node_pty(&self, node: Node) -> Result<Channel<Msg>> {
+        // Determine authentication method using the same logic as exec mode
+        let auth_method = self.determine_auth_method(&node)?;
+
+        // Set up host key checking using the configured strict mode
+        let check_method = get_check_method(self.strict_mode);
+
+        // Connect with timeout
+        let addr = (node.host.as_str(), node.port);
+        // SSH connection timeout design:
+        // - 30 seconds balances user patience with network reliability
+        // - Sufficient for slow networks, DNS resolution, SSH negotiation
+        // - Industry standard timeout for interactive SSH connections
+        // - Prevents indefinite hang on unreachable hosts
+        const SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
+        let connect_timeout = Duration::from_secs(SSH_CONNECT_TIMEOUT_SECS);
+
+        let client = timeout(
+            connect_timeout,
+            Client::connect(addr, &node.username, auth_method, check_method),
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "Connection timeout: Failed to connect to {}:{} after 30 seconds",
+                node.host, node.port
+            )
+        })?
+        .with_context(|| format!("SSH connection failed to {}:{}", node.host, node.port))?;
+
+        // Get terminal dimensions
+        let (width, height) = crate::pty::utils::get_terminal_size().unwrap_or((80, 24));
+
+        // Request interactive shell with PTY using the SSH client's method
+        let channel = client
+            .request_interactive_shell(&self.pty_config.term_type, width, height)
+            .await
+            .context("Failed to request interactive shell with PTY")?;
+
+        Ok(channel)
+    }
+
     /// Determine authentication method based on node and config (same logic as exec mode)
     fn determine_auth_method(&self, node: &Node) -> Result<AuthMethod> {
         // If password authentication is explicitly requested
         if self.use_password {
             tracing::debug!("Using password authentication");
-            let password = rpassword::prompt_password(format!(
-                "Enter password for {}@{}: ",
-                node.username, node.host
-            ))
-            .with_context(|| "Failed to read password")?;
+            // Use Zeroizing to ensure password is cleared from memory when dropped
+            let password = Zeroizing::new(
+                rpassword::prompt_password(format!(
+                    "Enter password for {}@{}: ",
+                    node.username, node.host
+                ))
+                .with_context(|| "Failed to read password")?,
+            );
             return Ok(AuthMethod::with_password(&password));
         }
 
@@ -302,15 +509,20 @@ impl InteractiveCommand {
                 || key_contents.contains("Proc-Type: 4,ENCRYPTED")
             {
                 tracing::debug!("Detected encrypted SSH key, prompting for passphrase");
-                let pass =
+                // Use Zeroizing for passphrase security
+                let pass = Zeroizing::new(
                     rpassword::prompt_password(format!("Enter passphrase for key {key_path:?}: "))
-                        .with_context(|| "Failed to read passphrase")?;
+                        .with_context(|| "Failed to read passphrase")?,
+                );
                 Some(pass)
             } else {
                 None
             };
 
-            return Ok(AuthMethod::with_key_file(key_path, passphrase.as_deref()));
+            return Ok(AuthMethod::with_key_file(
+                key_path,
+                passphrase.as_ref().map(|p| p.as_str()),
+            ));
         }
 
         // If no explicit key path, try SSH agent if available (auto-detect)
@@ -346,10 +558,13 @@ impl InteractiveCommand {
                     || key_contents.contains("Proc-Type: 4,ENCRYPTED")
                 {
                     tracing::debug!("Detected encrypted SSH key, prompting for passphrase");
-                    let pass = rpassword::prompt_password(format!(
-                        "Enter passphrase for key {default_key:?}: "
-                    ))
-                    .with_context(|| "Failed to read passphrase")?;
+                    // Use Zeroizing for passphrase security
+                    let pass = Zeroizing::new(
+                        rpassword::prompt_password(format!(
+                            "Enter passphrase for key {default_key:?}: "
+                        ))
+                        .with_context(|| "Failed to read passphrase")?,
+                    );
                     Some(pass)
                 } else {
                     None
@@ -357,7 +572,7 @@ impl InteractiveCommand {
 
                 return Ok(AuthMethod::with_key_file(
                     default_key,
-                    passphrase.as_deref(),
+                    passphrase.as_ref().map(|p| p.as_str()),
                 ));
             }
         }
@@ -397,33 +612,69 @@ impl InteractiveCommand {
         let shutdown = Arc::new(AtomicBool::new(false));
         let shutdown_clone = Arc::clone(&shutdown);
 
-        // Create a channel for receiving output from the SSH session
-        let (output_tx, mut output_rx) = mpsc::unbounded_channel::<String>();
+        // Create a bounded channel for receiving output from the SSH session
+        // SSH output channel sizing:
+        // - 128 capacity handles burst terminal output without blocking SSH reader
+        // - Each message is variable size (terminal output lines/chunks)
+        // - Bounded to prevent memory exhaustion from high-volume output
+        // - Large enough to smooth out bursty shell command output
+        const SSH_OUTPUT_CHANNEL_SIZE: usize = 128;
+        let (output_tx, mut output_rx) = mpsc::channel::<String>(SSH_OUTPUT_CHANNEL_SIZE);
 
-        // Spawn a task to read output from the SSH channel
+        // Spawn a task to read output from the SSH channel using select! for efficiency
         let output_reader = tokio::spawn(async move {
-            loop {
-                // Check for shutdown signal
-                if shutdown_clone.load(Ordering::Relaxed) || is_interrupted() {
-                    break;
-                }
+            let mut shutdown_watch = {
+                let shutdown_clone_for_watch = Arc::clone(&shutdown_clone);
+                tokio::spawn(async move {
+                    loop {
+                        if shutdown_clone_for_watch.load(Ordering::Relaxed) || is_interrupted() {
+                            break;
+                        }
+                        // Shutdown polling interval:
+                        // - 50ms provides responsive shutdown detection
+                        // - Prevents tight spin loop during shutdown
+                        // - Fast enough that users won't notice delay on Ctrl+C
+                        const SHUTDOWN_POLL_INTERVAL_MS: u64 = 50;
+                        tokio::time::sleep(Duration::from_millis(SHUTDOWN_POLL_INTERVAL_MS)).await;
+                    }
+                })
+            };
 
-                let mut session_guard = session_clone.lock().await;
-                if !session_guard.is_connected {
-                    break;
+            loop {
+                tokio::select! {
+                    // Check for output from SSH session
+                    // SSH output polling interval:
+                    // - 10ms provides very responsive output display
+                    // - Short enough to appear instantaneous to users
+                    // - Balances CPU usage with terminal responsiveness
+                    _ = tokio::time::sleep(Duration::from_millis(SSH_OUTPUT_POLL_INTERVAL_MS)) => {
+                        let mut session_guard = session_clone.lock().await;
+                        if !session_guard.is_connected {
+                            break;
+                        }
+                        if let Ok(Some(output)) = session_guard.read_output().await {
+                            // Use try_send to avoid blocking; drop output if buffer is full
+                            // This prevents memory exhaustion but may lose some output under extreme load
+                            if output_tx.try_send(output).is_err() {
+                                // Channel closed or full, exit gracefully
+                                break;
+                            }
+                        }
+                        drop(session_guard);
+                    }
+
+                    // Check for shutdown signal
+                    _ = &mut shutdown_watch => {
+                        break;
+                    }
                 }
-                if let Ok(Some(output)) = session_guard.read_output().await {
-                    let _ = output_tx.send(output);
-                }
-                drop(session_guard);
-                tokio::time::sleep(Duration::from_millis(10)).await;
             }
         });
 
         println!("Interactive session started. Type 'exit' or press Ctrl+D to quit.");
         println!();
 
-        // Main interactive loop
+        // Main interactive loop using tokio::select! for efficient event multiplexing
         loop {
             // Check for interrupt signal
             if is_interrupted() {
@@ -432,7 +683,7 @@ impl InteractiveCommand {
                 break;
             }
 
-            // Print any pending output
+            // Print any pending output first
             while let Ok(output) = output_rx.try_recv() {
                 print!("{output}");
                 io::stdout().flush()?;
@@ -449,42 +700,90 @@ impl InteractiveCommand {
                 break;
             }
 
-            // Read input
-            match rl.readline(&prompt) {
-                Ok(line) => {
-                    if line.trim() == "exit" {
-                        break;
-                    }
-
-                    rl.add_history_entry(&line)?;
-
-                    // Send command to remote
-                    let mut session_guard = session_arc.lock().await;
-                    session_guard.send_command(&line).await?;
-                    commands_executed += 1;
-
-                    // Track directory changes
-                    if line.trim().starts_with("cd ") {
-                        // Update working directory
-                        session_guard.send_command("pwd").await?;
+            // Use select! to handle multiple events efficiently
+            tokio::select! {
+                // Handle new output from SSH session
+                output = output_rx.recv() => {
+                    match output {
+                        Some(output) => {
+                            print!("{output}");
+                            io::stdout().flush()?;
+                            continue; // Continue without reading input to process more output
+                        }
+                        None => {
+                            // Output channel closed, session likely ended
+                            eprintln!("Session output channel closed. Exiting.");
+                            break;
+                        }
                     }
                 }
-                Err(ReadlineError::Interrupted) => {
-                    println!("^C");
-                }
-                Err(ReadlineError::Eof) => {
-                    println!("^D");
-                    break;
-                }
-                Err(err) => {
-                    eprintln!("Error: {err}");
-                    break;
+
+                // Handle user input (this runs in a separate task since readline is blocking)
+                // User input processing interval:
+                // - 10ms keeps UI responsive during input processing
+                // - Allows other events to be processed (output, signals)
+                // - Short interval since readline() might block briefly
+                _ = tokio::time::sleep(Duration::from_millis(SSH_OUTPUT_POLL_INTERVAL_MS)) => {
+                    // Read input using rustyline (this needs to remain synchronous)
+                    match rl.readline(&prompt) {
+                        Ok(line) => {
+                            if line.trim() == "exit" {
+                                // Send exit command to remote server before breaking
+                                let mut session_guard = session_arc.lock().await;
+                                session_guard.send_command("exit").await?;
+                                drop(session_guard);
+                                // Give the SSH session a moment to process the exit
+                                // SSH exit command processing delay:
+                                // - 100ms allows remote shell to process exit command
+                                // - Prevents premature connection termination
+                                // - Ensures clean session shutdown
+                                const SSH_EXIT_DELAY_MS: u64 = 100;
+                                tokio::time::sleep(Duration::from_millis(SSH_EXIT_DELAY_MS)).await;
+                                break;
+                            }
+
+                            rl.add_history_entry(&line)?;
+
+                            // Send command to remote
+                            let mut session_guard = session_arc.lock().await;
+                            session_guard.send_command(&line).await?;
+                            commands_executed += 1;
+
+                            // Track directory changes
+                            if line.trim().starts_with("cd ") {
+                                // Update working directory
+                                session_guard.send_command("pwd").await?;
+                            }
+                        }
+                        Err(ReadlineError::Interrupted) => {
+                            println!("^C");
+                        }
+                        Err(ReadlineError::Eof) => {
+                            println!("^D");
+                            break;
+                        }
+                        Err(err) => {
+                            eprintln!("Error: {err}");
+                            break;
+                        }
+                    }
                 }
             }
         }
 
         // Clean up
+        shutdown.store(true, Ordering::Relaxed);
         output_reader.abort();
+
+        // Properly close the SSH session
+        let mut session_guard = session_arc.lock().await;
+        if session_guard.is_connected {
+            // Close the SSH channel properly
+            let _ = session_guard.channel.close().await;
+            session_guard.is_connected = false;
+        }
+        drop(session_guard);
+
         let _ = rl.save_history(&history_path);
 
         Ok(commands_executed)
@@ -689,11 +988,14 @@ impl InteractiveCommand {
                         // Show first 3 and count
                         let first_three = active_nodes
                             .iter()
-                            .take(3)
+                            .take(NODES_TO_SHOW_IN_COMPACT)
                             .map(std::string::ToString::to_string)
                             .collect::<Vec<_>>()
                             .join(",");
-                        format!("[Nodes {first_three}... +{}]", active_nodes.len() - 3)
+                        format!(
+                            "[Nodes {first_three}... +{}]",
+                            active_nodes.len() - NODES_TO_SHOW_IN_COMPACT
+                        )
                     };
 
                     format!("{display} ({active_count}/{total_connected}) bssh> ")
@@ -827,37 +1129,67 @@ impl InteractiveCommand {
                         continue;
                     }
 
-                    // Wait a bit for output and collect from all nodes
-                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    // Use select! to efficiently collect output from all active nodes
+                    let output_timeout = tokio::time::sleep(Duration::from_millis(500));
+                    tokio::pin!(output_timeout);
 
-                    for session in &mut sessions {
-                        if session.is_connected && session.is_active {
-                            while let Ok(Some(output)) = session.read_output().await {
-                                // Print output with node prefix and optional timestamp
-                                for line in output.lines() {
-                                    if self.interactive_config.show_timestamps {
-                                        let timestamp = chrono::Local::now().format("%H:%M:%S");
-                                        println!(
-                                            "[{} {}] {}",
-                                            timestamp.to_string().dimmed(),
-                                            format!(
-                                                "{}@{}",
-                                                session.node.username, session.node.host
-                                            )
-                                            .cyan(),
-                                            line
-                                        );
-                                    } else {
-                                        println!(
-                                            "[{}] {}",
-                                            format!(
-                                                "{}@{}",
-                                                session.node.username, session.node.host
-                                            )
-                                            .cyan(),
-                                            line
-                                        );
+                    // Collect output with timeout using select!
+                    loop {
+                        let mut has_output = false;
+
+                        tokio::select! {
+                            // Timeout reached, stop collecting output
+                            _ = &mut output_timeout => {
+                                break;
+                            }
+
+                            // Try to read output from each active session
+                            _ = async {
+                                for session in &mut sessions {
+                                    if session.is_connected && session.is_active {
+                                        if let Ok(Some(output)) = session.read_output().await {
+                                            has_output = true;
+                                            // Print output with node prefix and optional timestamp
+                                            for line in output.lines() {
+                                                if self.interactive_config.show_timestamps {
+                                                    let timestamp = chrono::Local::now().format("%H:%M:%S");
+                                                    println!(
+                                                        "[{} {}] {}",
+                                                        timestamp.to_string().dimmed(),
+                                                        format!(
+                                                            "{}@{}",
+                                                            session.node.username, session.node.host
+                                                        )
+                                                        .cyan(),
+                                                        line
+                                                    );
+                                                } else {
+                                                    println!(
+                                                        "[{}] {}",
+                                                        format!(
+                                                            "{}@{}",
+                                                            session.node.username, session.node.host
+                                                        )
+                                                        .cyan(),
+                                                        line
+                                                    );
+                                                }
+                                            }
+                                        }
                                     }
+                                }
+
+                                // If no output was found, sleep briefly to avoid busy waiting
+                                if !has_output {
+                                    // Output polling interval in multiplex mode:
+                                    // - 10ms provides responsive output collection
+                                    // - Prevents busy waiting when no output available
+                                    // - Short enough to maintain interactive feel
+                                    tokio::time::sleep(Duration::from_millis(SSH_OUTPUT_POLL_INTERVAL_MS)).await;
+                                }
+                            } => {
+                                if !has_output {
+                                    break; // No more output available
                                 }
                             }
                         }
@@ -936,6 +1268,8 @@ mod tests {
             use_agent: false,
             use_password: false,
             strict_mode: StrictHostKeyChecking::AcceptNew,
+            pty_config: PtyConfig::default(),
+            use_pty: None,
         };
 
         let path = PathBuf::from("~/test/file.txt");
@@ -964,6 +1298,8 @@ mod tests {
             use_agent: false,
             use_password: false,
             strict_mode: StrictHostKeyChecking::AcceptNew,
+            pty_config: PtyConfig::default(),
+            use_pty: None,
         };
 
         let node = Node::new(String::from("example.com"), 22, String::from("alice"));

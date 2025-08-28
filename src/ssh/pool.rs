@@ -65,14 +65,32 @@ impl ConnectionPool {
     }
 
     pub fn disabled() -> Self {
-        Self::new(Duration::from_secs(0), 0, false)
+        // Create a disabled pool with zero timeout and capacity
+        const DISABLED_POOL_TTL_SECS: u64 = 0;
+        const DISABLED_POOL_CAPACITY: usize = 0;
+        Self::new(
+            Duration::from_secs(DISABLED_POOL_TTL_SECS),
+            DISABLED_POOL_CAPACITY,
+            false,
+        )
     }
 
     pub fn with_defaults() -> Self {
+        // Default connection pool configuration
+        // Connection pool timeout design:
+        // - 5 minutes (300s) TTL balances reuse with resource cleanup
+        // - Long enough to reuse connections for typical workflows
+        // - Short enough to prevent stale connections and resource leaks
+        const DEFAULT_POOL_TTL_SECS: u64 = 300;
+        // Connection pool capacity design:
+        // - 50 connections handles concurrent operations on many nodes
+        // - Reasonable memory usage (each connection ~1KB metadata)
+        // - Prevents resource exhaustion under high concurrency
+        const DEFAULT_POOL_CAPACITY: usize = 50;
         Self::new(
-            Duration::from_secs(300), // 5 minutes TTL
-            50,                       // max 50 connections
-            false,                    // disabled by default
+            Duration::from_secs(DEFAULT_POOL_TTL_SECS),
+            DEFAULT_POOL_CAPACITY,
+            false, // disabled by default due to russh session limitations
         )
     }
 

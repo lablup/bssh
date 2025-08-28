@@ -17,6 +17,7 @@ pub mod commands;
 pub mod config;
 pub mod executor;
 pub mod node;
+pub mod pty;
 pub mod ssh;
 pub mod ui;
 pub mod utils;

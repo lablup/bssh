@@ -12,10 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub mod buffer_pool;
 pub mod fs;
 pub mod logging;
 pub mod output;
 
+pub use buffer_pool::{global_buffer_pool, BufferPool, PooledBuffer};
 pub use fs::{format_bytes, resolve_source_files, walk_directory};
 pub use logging::init_logging;
 pub use output::save_outputs_to_files;

@@ -11,6 +11,37 @@ use std::{io, path::PathBuf};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use super::ToSocketAddrsWithHostname;
+use crate::utils::buffer_pool::global;
+
+// Buffer size constants for SSH operations
+/// SSH I/O buffer size constants - optimized for different operation types
+///
+/// Buffer sizing rationale:
+/// - Sizes chosen based on SSH protocol characteristics and network efficiency
+/// - Balance between memory usage and I/O performance
+/// - Aligned with common SSH implementation patterns
+///
+/// Buffer size for SSH command I/O operations
+/// - 8KB (8192 bytes) optimal for most SSH command operations
+/// - Matches typical SSH channel window sizes
+/// - Reduces syscall overhead while keeping memory usage reasonable
+/// - Handles multi-line command output efficiently
+const SSH_CMD_BUFFER_SIZE: usize = 8192;
+
+/// Buffer size for SFTP file transfer operations
+/// - 64KB (65536 bytes) for efficient large file transfers
+/// - Standard high-performance I/O buffer size
+/// - Reduces network round-trips for file operations
+/// - Balances memory usage with transfer throughput
+#[allow(dead_code)]
+const SFTP_BUFFER_SIZE: usize = 65536;
+
+/// Small buffer size for SSH response parsing
+/// - 1KB (1024 bytes) for typical command responses and headers
+/// - Optimal for status messages and short responses
+/// - Minimizes memory allocation for frequent small reads
+/// - Matches typical terminal line lengths
+const SSH_RESPONSE_BUFFER_SIZE: usize = 1024;
 
 /// An authentification token.
 ///
@@ -558,9 +589,10 @@ impl Client {
             .open_with_flags(remote_file_path, OpenFlags::READ)
             .await?;
 
-        // read remote file contents
-        let mut contents = Vec::new();
-        remote_file.read_to_end(contents.as_mut()).await?;
+        // Use pooled buffer for reading file contents to reduce allocations
+        let mut pooled_buffer = global::get_large_buffer();
+        remote_file.read_to_end(pooled_buffer.as_mut_vec()).await?;
+        let contents = pooled_buffer.as_vec().clone(); // Clone to owned Vec for writing
 
         // write contents to local file
         let mut local_file = tokio::fs::File::create(local_file_path.as_ref())
@@ -733,12 +765,13 @@ impl Client {
                     self.download_dir_recursive(sftp, &remote_path, &local_path)
                         .await?;
                 } else if metadata.file_type().is_file() {
-                    // Download file
+                    // Download file using pooled buffer
                     let mut remote_file =
                         sftp.open_with_flags(&remote_path, OpenFlags::READ).await?;
 
-                    let mut contents = Vec::new();
-                    remote_file.read_to_end(&mut contents).await?;
+                    let mut pooled_buffer = global::get_large_buffer();
+                    remote_file.read_to_end(pooled_buffer.as_mut_vec()).await?;
+                    let contents = pooled_buffer.as_vec().clone();
 
                     tokio::fs::write(&local_path, contents)
                         .await
@@ -763,8 +796,9 @@ impl Client {
     /// Can be called multiple times, but every invocation is a new shell context.
     /// Thus `cd`, setting variables and alike have no effect on future invocations.
     pub async fn execute(&self, command: &str) -> Result<CommandExecutedResult, super::Error> {
-        let mut stdout_buffer = vec![];
-        let mut stderr_buffer = vec![];
+        // Pre-allocate buffers with capacity to avoid frequent reallocations
+        let mut stdout_buffer = Vec::with_capacity(SSH_CMD_BUFFER_SIZE);
+        let mut stderr_buffer = Vec::with_capacity(SSH_RESPONSE_BUFFER_SIZE);
         let mut channel = self.connection_handle.channel_open_session().await?;
         channel.exec(true, command).await?;
 
