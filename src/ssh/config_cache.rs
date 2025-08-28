@@ -138,7 +138,7 @@ impl SshConfigCache {
     pub fn with_config(config: CacheConfig) -> Self {
         let cache_size = std::num::NonZeroUsize::new(config.max_entries)
             .unwrap_or(std::num::NonZeroUsize::new(100).unwrap());
-        
+
         let mut stats = CacheStats::default();
         stats.max_entries = config.max_entries;
 
@@ -156,14 +156,16 @@ impl SshConfigCache {
         }
 
         let path_ref = path.as_ref();
-        let path = path_ref.canonicalize()
+        let path = path_ref
+            .canonicalize()
             .with_context(|| format!("Failed to canonicalize path: {}", path_ref.display()))?;
 
         // Check if file exists and get its modification time
         let file_metadata = std::fs::metadata(&path)
             .with_context(|| format!("Failed to read file metadata: {}", path.display()))?;
-        
-        let current_mtime = file_metadata.modified()
+
+        let current_mtime = file_metadata
+            .modified()
             .with_context(|| format!("Failed to get modification time: {}", path.display()))?;
 
         // Try to get from cache first
@@ -191,13 +193,13 @@ impl SshConfigCache {
     /// Try to get a cached entry, checking for expiration and staleness
     fn try_get_cached(&self, path: &Path, current_mtime: SystemTime) -> Result<Option<SshConfig>> {
         let mut cache = self.cache.write().unwrap();
-        
+
         if let Some(entry) = cache.get_mut(path) {
             // Check if entry is expired
             if entry.is_expired(self.config.ttl) {
                 debug!("SSH config cache entry expired: {}", path.display());
                 cache.pop(path);
-                
+
                 let mut stats = self.stats.write().unwrap();
                 stats.ttl_evictions += 1;
                 return Ok(None);
@@ -207,7 +209,7 @@ impl SshConfigCache {
             if entry.is_stale(current_mtime) {
                 debug!("SSH config cache entry stale: {}", path.display());
                 cache.pop(path);
-                
+
                 let mut stats = self.stats.write().unwrap();
                 stats.stale_evictions += 1;
                 return Ok(None);
@@ -215,7 +217,7 @@ impl SshConfigCache {
 
             // Entry is valid - access it and return
             let config = entry.access().clone();
-            
+
             // Update statistics
             {
                 let mut stats = self.stats.write().unwrap();
@@ -232,10 +234,10 @@ impl SshConfigCache {
     /// Put an entry in the cache
     fn put(&self, path: PathBuf, config: SshConfig, file_mtime: SystemTime) {
         let mut cache = self.cache.write().unwrap();
-        
+
         // Check if we're evicting an entry due to LRU policy
         let will_evict = cache.len() >= cache.cap().get();
-        
+
         let entry = CacheEntry::new(config, file_mtime);
         cache.put(path.clone(), entry);
 
@@ -279,7 +281,7 @@ impl SshConfigCache {
     pub fn clear(&self) {
         let mut cache = self.cache.write().unwrap();
         cache.clear();
-        
+
         let mut stats = self.stats.write().unwrap();
         stats.current_entries = 0;
     }
@@ -290,10 +292,10 @@ impl SshConfigCache {
         if let Ok(canonical_path) = path.canonicalize() {
             let mut cache = self.cache.write().unwrap();
             let entry = cache.pop(&canonical_path)?;
-            
+
             let mut stats = self.stats.write().unwrap();
             stats.current_entries = cache.len();
-            
+
             Some(entry.config)
         } else {
             None
@@ -316,14 +318,14 @@ impl SshConfigCache {
             // Need to recreate cache with new size
             let cache_size = std::num::NonZeroUsize::new(new_config.max_entries)
                 .unwrap_or(std::num::NonZeroUsize::new(100).unwrap());
-            
+
             self.cache = Arc::new(RwLock::new(LruCache::new(cache_size)));
-            
+
             let mut stats = self.stats.write().unwrap();
             stats.max_entries = new_config.max_entries;
             stats.current_entries = 0;
         }
-        
+
         self.config = new_config;
     }
 
@@ -386,23 +388,23 @@ impl SshConfigCache {
     pub fn debug_info(&self) -> HashMap<PathBuf, String> {
         let cache = self.cache.read().unwrap();
         let mut info = HashMap::new();
-        
+
         for (path, entry) in cache.iter() {
             let age = entry.cached_at.elapsed();
             let is_expired = entry.is_expired(self.config.ttl);
             let last_accessed = entry.last_accessed.elapsed();
-            
+
             let status = if is_expired { "EXPIRED" } else { "VALID" };
-            
+
             info.insert(
                 path.clone(),
                 format!(
                     "Status: {}, Age: {:?}, Accesses: {}, Last accessed: {:?} ago",
                     status, age, entry.access_count, last_accessed
-                )
+                ),
             );
         }
-        
+
         info
     }
 }
@@ -427,16 +429,18 @@ pub static GLOBAL_CACHE: Lazy<SshConfigCache> = Lazy::new(|| {
             std::env::var("BSSH_CACHE_TTL")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(300)
+                .unwrap_or(300),
         ),
         enabled: std::env::var("BSSH_CACHE_ENABLED")
             .map(|s| s.to_lowercase() != "false" && s != "0")
             .unwrap_or(true),
     };
-    
-    debug!("Initializing SSH config cache with {} max entries, {:?} TTL, enabled: {}", 
-           config.max_entries, config.ttl, config.enabled);
-           
+
+    debug!(
+        "Initializing SSH config cache with {} max entries, {:?} TTL, enabled: {}",
+        config.max_entries, config.ttl, config.enabled
+    );
+
     SshConfigCache::with_config(config)
 });
 
@@ -475,7 +479,7 @@ mod tests {
         let new_mtime = SystemTime::now();
 
         let entry = CacheEntry::new(config, old_mtime);
-        
+
         assert!(!entry.is_stale(old_mtime));
         assert!(entry.is_stale(new_mtime));
     }
@@ -483,26 +487,26 @@ mod tests {
     #[test]
     fn test_cache_basic_operations() {
         let cache = SshConfigCache::new();
-        
+
         // Create a temporary SSH config file
         let mut temp_file = NamedTempFile::new().unwrap();
         writeln!(temp_file, "Host example").unwrap();
         writeln!(temp_file, "    HostName example.com").unwrap();
-        
+
         let path = temp_file.path().to_path_buf();
-        
+
         // First load should be a cache miss
         let config1 = cache.get_or_load(&path).unwrap();
         assert_eq!(config1.hosts.len(), 1);
-        
+
         let stats = cache.stats();
         assert_eq!(stats.misses, 1);
         assert_eq!(stats.hits, 0);
-        
+
         // Second load should be a cache hit
         let config2 = cache.get_or_load(&path).unwrap();
         assert_eq!(config2.hosts.len(), 1);
-        
+
         let stats = cache.stats();
         assert_eq!(stats.misses, 1);
         assert_eq!(stats.hits, 1);
@@ -512,28 +516,28 @@ mod tests {
     #[test]
     fn test_cache_file_modification_detection() {
         let cache = SshConfigCache::new();
-        
+
         let mut temp_file = NamedTempFile::new().unwrap();
         writeln!(temp_file, "Host example").unwrap();
         writeln!(temp_file, "    HostName example.com").unwrap();
         temp_file.flush().unwrap();
-        
+
         let path = temp_file.path().to_path_buf();
-        
+
         // Load initial config
         let config1 = cache.get_or_load(&path).unwrap();
         assert_eq!(config1.hosts.len(), 1);
-        
+
         // Modify the file
         std::thread::sleep(Duration::from_millis(10)); // Ensure different mtime
         writeln!(temp_file, "Host another").unwrap();
         writeln!(temp_file, "    HostName another.com").unwrap();
         temp_file.flush().unwrap();
-        
+
         // Should detect file modification and reload
         let config2 = cache.get_or_load(&path).unwrap();
         assert_eq!(config2.hosts.len(), 2);
-        
+
         let stats = cache.stats();
         assert_eq!(stats.stale_evictions, 1);
     }
@@ -546,22 +550,22 @@ mod tests {
             enabled: true,
         };
         let cache = SshConfigCache::with_config(config);
-        
+
         let mut temp_file = NamedTempFile::new().unwrap();
         writeln!(temp_file, "Host example").unwrap();
         writeln!(temp_file, "    HostName example.com").unwrap();
-        
+
         let path = temp_file.path().to_path_buf();
-        
+
         // Load initial config
         let _config1 = cache.get_or_load(&path).unwrap();
-        
+
         // Wait for TTL to expire
         std::thread::sleep(Duration::from_millis(100));
-        
+
         // Should reload due to TTL expiration
         let _config2 = cache.get_or_load(&path).unwrap();
-        
+
         let stats = cache.stats();
         assert_eq!(stats.ttl_evictions, 1);
     }
@@ -569,26 +573,26 @@ mod tests {
     #[test]
     fn test_cache_clear_and_remove() {
         let cache = SshConfigCache::new();
-        
+
         let mut temp_file = NamedTempFile::new().unwrap();
         writeln!(temp_file, "Host example").unwrap();
         writeln!(temp_file, "    HostName example.com").unwrap();
-        
+
         let path = temp_file.path().to_path_buf();
-        
+
         // Load config
         let _config = cache.get_or_load(&path).unwrap();
         assert_eq!(cache.stats().current_entries, 1);
-        
+
         // Remove specific entry
         let removed_config = cache.remove(&path);
         assert!(removed_config.is_some());
         assert_eq!(cache.stats().current_entries, 0);
-        
+
         // Load again and clear all
         let _config = cache.get_or_load(&path).unwrap();
         assert_eq!(cache.stats().current_entries, 1);
-        
+
         cache.clear();
         assert_eq!(cache.stats().current_entries, 0);
     }
@@ -601,20 +605,20 @@ mod tests {
             enabled: true,
         };
         let cache = SshConfigCache::with_config(config);
-        
+
         let mut temp_file = NamedTempFile::new().unwrap();
         writeln!(temp_file, "Host example").unwrap();
         writeln!(temp_file, "    HostName example.com").unwrap();
-        
+
         let path = temp_file.path().to_path_buf();
-        
+
         // Load config
         let _config = cache.get_or_load(&path).unwrap();
         assert_eq!(cache.stats().current_entries, 1);
-        
+
         // Wait for expiration
         std::thread::sleep(Duration::from_millis(100));
-        
+
         // Run maintenance
         let removed = cache.maintain();
         assert_eq!(removed, 1);
@@ -629,17 +633,17 @@ mod tests {
             enabled: false,
         };
         let cache = SshConfigCache::with_config(config);
-        
+
         let mut temp_file = NamedTempFile::new().unwrap();
         writeln!(temp_file, "Host example").unwrap();
         writeln!(temp_file, "    HostName example.com").unwrap();
-        
+
         let path = temp_file.path().to_path_buf();
-        
+
         // Should not use cache when disabled
         let _config1 = cache.get_or_load(&path).unwrap();
         let _config2 = cache.get_or_load(&path).unwrap();
-        
+
         let stats = cache.stats();
         assert_eq!(stats.hits, 0);
         assert_eq!(stats.misses, 0);
@@ -650,7 +654,7 @@ mod tests {
     fn test_cache_stats() {
         let cache = SshConfigCache::new();
         let stats = cache.stats();
-        
+
         assert_eq!(stats.hits, 0);
         assert_eq!(stats.misses, 0);
         assert_eq!(stats.hit_rate(), 0.0);

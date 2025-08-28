@@ -145,7 +145,12 @@ async fn main() -> Result<()> {
     }
 
     // Handle cache-stats command (doesn't need nodes)
-    if let Some(Commands::CacheStats { detailed, clear, maintain }) = &cli.command {
+    if let Some(Commands::CacheStats {
+        detailed,
+        clear,
+        maintain,
+    }) = &cli.command
+    {
         handle_cache_stats(*detailed, *clear, *maintain);
         return Ok(());
     }
@@ -664,45 +669,61 @@ fn handle_cache_stats(detailed: bool, clear: bool, maintain: bool) {
 
     // Basic statistics
     println!("\n{}", "Cache Configuration:".bright_blue());
-    println!("  Enabled: {}", if config.enabled { 
-        format!("{}", "Yes".green()) 
-    } else { 
-        format!("{}", "No".red()) 
-    });
+    println!(
+        "  Enabled: {}",
+        if config.enabled {
+            format!("{}", "Yes".green())
+        } else {
+            format!("{}", "No".red())
+        }
+    );
     println!("  Max Entries: {}", config.max_entries.to_string().cyan());
     println!("  TTL: {}", format!("{:?}", config.ttl).cyan());
 
     println!("\n{}", "Cache Statistics:".bright_blue());
-    println!("  Current Entries: {}/{}", 
-             stats.current_entries.to_string().cyan(), 
-             stats.max_entries.to_string().yellow());
-    
+    println!(
+        "  Current Entries: {}/{}",
+        stats.current_entries.to_string().cyan(),
+        stats.max_entries.to_string().yellow()
+    );
+
     let total_requests = stats.hits + stats.misses;
     if total_requests > 0 {
-        println!("  Hit Rate: {:.1}% ({}/{} requests)", 
-                 (stats.hit_rate() * 100.0).to_string().green(),
-                 stats.hits.to_string().green(),
-                 total_requests.to_string().cyan());
-        println!("  Miss Rate: {:.1}% ({} misses)", 
-                 (stats.miss_rate() * 100.0).to_string().yellow(),
-                 stats.misses.to_string().yellow());
+        println!(
+            "  Hit Rate: {:.1}% ({}/{} requests)",
+            (stats.hit_rate() * 100.0).to_string().green(),
+            stats.hits.to_string().green(),
+            total_requests.to_string().cyan()
+        );
+        println!(
+            "  Miss Rate: {:.1}% ({} misses)",
+            (stats.miss_rate() * 100.0).to_string().yellow(),
+            stats.misses.to_string().yellow()
+        );
     } else {
         println!("  No cache requests yet");
     }
 
     println!("\n{}", "Eviction Statistics:".bright_blue());
-    println!("  TTL Evictions: {}", stats.ttl_evictions.to_string().yellow());
-    println!("  Stale Evictions: {}", stats.stale_evictions.to_string().yellow());
-    println!("  LRU Evictions: {}", stats.lru_evictions.to_string().yellow());
+    println!(
+        "  TTL Evictions: {}",
+        stats.ttl_evictions.to_string().yellow()
+    );
+    println!(
+        "  Stale Evictions: {}",
+        stats.stale_evictions.to_string().yellow()
+    );
+    println!(
+        "  LRU Evictions: {}",
+        stats.lru_evictions.to_string().yellow()
+    );
 
     if detailed && stats.current_entries > 0 {
         println!("\n{}", "Detailed Entry Information:".bright_blue());
         let debug_info = GLOBAL_CACHE.debug_info();
-        
+
         for (path, info) in debug_info {
-            println!("  {}: {}", 
-                     path.display().to_string().cyan(), 
-                     info);
+            println!("  {}: {}", path.display().to_string().cyan(), info);
         }
     }
 
@@ -715,9 +736,18 @@ fn handle_cache_stats(detailed: bool, clear: bool, maintain: bool) {
     }
 
     println!("\n{}", "Environment Variables:".bright_blue());
-    println!("  BSSH_CACHE_ENABLED={}", std::env::var("BSSH_CACHE_ENABLED").unwrap_or_else(|_| "true (default)".to_string()));
-    println!("  BSSH_CACHE_SIZE={}", std::env::var("BSSH_CACHE_SIZE").unwrap_or_else(|_| "100 (default)".to_string()));
-    println!("  BSSH_CACHE_TTL={}", std::env::var("BSSH_CACHE_TTL").unwrap_or_else(|_| "300 (default)".to_string()));
+    println!(
+        "  BSSH_CACHE_ENABLED={}",
+        std::env::var("BSSH_CACHE_ENABLED").unwrap_or_else(|_| "true (default)".to_string())
+    );
+    println!(
+        "  BSSH_CACHE_SIZE={}",
+        std::env::var("BSSH_CACHE_SIZE").unwrap_or_else(|_| "100 (default)".to_string())
+    );
+    println!(
+        "  BSSH_CACHE_TTL={}",
+        std::env::var("BSSH_CACHE_TTL").unwrap_or_else(|_| "300 (default)".to_string())
+    );
 }
 
 /// Handle SSH query options (-Q)

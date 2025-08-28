@@ -1,0 +1,84 @@
+// Copyright 2025 Lablup Inc. and Jeongkyu Shin
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+//! Core data structures for SSH configuration
+
+use std::collections::HashMap;
+use std::fmt;
+use std::path::PathBuf;
+
+/// SSH configuration for a specific host
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SshHostConfig {
+    pub host_patterns: Vec<String>,
+    pub hostname: Option<String>,
+    pub user: Option<String>,
+    pub port: Option<u16>,
+    pub identity_files: Vec<PathBuf>,
+    pub proxy_jump: Option<String>,
+    pub proxy_command: Option<String>,
+    pub strict_host_key_checking: Option<String>,
+    pub user_known_hosts_file: Option<PathBuf>,
+    pub global_known_hosts_file: Option<PathBuf>,
+    pub forward_agent: Option<bool>,
+    pub forward_x11: Option<bool>,
+    pub server_alive_interval: Option<u32>,
+    pub server_alive_count_max: Option<u32>,
+    pub connect_timeout: Option<u32>,
+    pub connection_attempts: Option<u32>,
+    pub batch_mode: Option<bool>,
+    pub compression: Option<bool>,
+    pub tcp_keep_alive: Option<bool>,
+    pub preferred_authentications: Vec<String>,
+    pub pubkey_authentication: Option<bool>,
+    pub password_authentication: Option<bool>,
+    pub keyboard_interactive_authentication: Option<bool>,
+    pub gssapi_authentication: Option<bool>,
+    pub host_key_algorithms: Vec<String>,
+    pub kex_algorithms: Vec<String>,
+    pub ciphers: Vec<String>,
+    pub macs: Vec<String>,
+    pub send_env: Vec<String>,
+    pub set_env: HashMap<String, String>,
+    pub local_forward: Vec<String>,
+    pub remote_forward: Vec<String>,
+    pub dynamic_forward: Vec<String>,
+    pub request_tty: Option<String>,
+    pub escape_char: Option<String>,
+    pub log_level: Option<String>,
+    pub syslog_facility: Option<String>,
+    pub protocol: Vec<String>,
+    pub address_family: Option<String>,
+    pub bind_address: Option<String>,
+    pub clear_all_forwardings: Option<bool>,
+    pub control_master: Option<String>,
+    pub control_path: Option<String>,
+    pub control_persist: Option<String>,
+}
+
+impl fmt::Display for SshHostConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Host {}", self.host_patterns.join(" "))?;
+        if let Some(ref hostname) = self.hostname {
+            write!(f, " ({hostname})")?;
+        }
+        if let Some(ref user) = self.user {
+            write!(f, " user={user}")?;
+        }
+        if let Some(port) = self.port {
+            write!(f, " port={port}")?;
+        }
+        Ok(())
+    }
+}
