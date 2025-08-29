@@ -12,6 +12,7 @@ A high-performance SSH client with **SSH-compatible syntax** for both single-hos
 ## Features
 
 - **SSH Compatibility**: Drop-in replacement for SSH with compatible command-line syntax
+- **Jump Host Support**: Connect through bastion hosts using OpenSSH ProxyJump syntax (`-J`)
 - **Parallel Execution**: Execute commands across multiple nodes simultaneously
 - **Cluster Management**: Define and manage node clusters via configuration files
 - **Progress Tracking**: Real-time progress indicators for each node
@@ -96,6 +97,24 @@ bssh -o StrictHostKeyChecking=no user@host
 
 # Query SSH capabilities
 bssh -Q cipher
+```
+
+### Jump Host Support (ProxyJump)
+```bash
+# Connect through a single jump host (bastion)
+bssh -J jump@bastion.example.com user@internal-server
+
+# Multiple jump hosts (connection chain)
+bssh -J "jump1@proxy1,jump2@proxy2" user@final-destination
+
+# Jump host with custom port
+bssh -J admin@bastion:2222 user@internal-host
+
+# IPv6 jump host
+bssh -J "[2001:db8::1]:22" user@destination
+
+# Combine with cluster operations
+bssh -J bastion.example.com -C production "uptime"
 ```
 
 ### Multi-Server Mode (Cluster Operations)

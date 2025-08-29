@@ -252,6 +252,9 @@ pub struct Client {
     connection_handle: Arc<Handle<ClientHandler>>,
     username: String,
     address: SocketAddr,
+    /// Public access to the SSH session for jump host operations
+    #[allow(private_interfaces)]
+    pub session: Arc<Handle<ClientHandler>>,
 }
 
 impl Client {
@@ -313,11 +316,30 @@ impl Client {
 
         Self::authenticate(&mut handle, &username, auth).await?;
 
+        let connection_handle = Arc::new(handle);
         Ok(Self {
-            connection_handle: Arc::new(handle),
+            connection_handle: connection_handle.clone(),
             username,
             address,
+            session: connection_handle,
         })
+    }
+
+    /// Create a Client from an existing russh handle and address.
+    ///
+    /// This is used internally for jump host connections where we already have
+    /// an authenticated russh handle from connect_stream.
+    pub fn from_handle_and_address(
+        handle: Arc<Handle<ClientHandler>>,
+        username: String,
+        address: SocketAddr,
+    ) -> Self {
+        Self {
+            connection_handle: handle.clone(),
+            username,
+            address,
+            session: handle,
+        }
     }
 
     /// This takes a handle and performs authentification with the given method.
@@ -796,11 +818,15 @@ impl Client {
     /// Can be called multiple times, but every invocation is a new shell context.
     /// Thus `cd`, setting variables and alike have no effect on future invocations.
     pub async fn execute(&self, command: &str) -> Result<CommandExecutedResult, super::Error> {
+        // Sanitize command to prevent injection attacks
+        let sanitized_command = crate::utils::sanitize_command(command)
+            .map_err(|e| super::Error::CommandValidationFailed(e.to_string()))?;
+
         // Pre-allocate buffers with capacity to avoid frequent reallocations
         let mut stdout_buffer = Vec::with_capacity(SSH_CMD_BUFFER_SIZE);
         let mut stderr_buffer = Vec::with_capacity(SSH_RESPONSE_BUFFER_SIZE);
         let mut channel = self.connection_handle.channel_open_session().await?;
-        channel.exec(true, command).await?;
+        channel.exec(true, sanitized_command.as_str()).await?;
 
         let mut result: Option<u32> = None;
 
@@ -943,10 +969,20 @@ pub struct CommandExecutedResult {
 }
 
 #[derive(Debug, Clone)]
-struct ClientHandler {
+pub struct ClientHandler {
     hostname: String,
     host: SocketAddr,
     server_check: ServerCheckMethod,
+}
+
+impl ClientHandler {
+    pub fn new(hostname: String, host: SocketAddr, server_check: ServerCheckMethod) -> Self {
+        Self {
+            hostname,
+            host,
+            server_check,
+        }
+    }
 }
 
 impl Handler for ClientHandler {

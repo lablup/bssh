@@ -21,7 +21,22 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 
 use crate::node::Node;
-use crate::ssh::{client::CommandResult, known_hosts::StrictHostKeyChecking, SshClient};
+use crate::ssh::{
+    client::{CommandResult, ConnectionConfig},
+    known_hosts::StrictHostKeyChecking,
+    SshClient,
+};
+
+/// Configuration for node execution
+#[derive(Clone)]
+struct ExecutionConfig<'a> {
+    key_path: Option<&'a str>,
+    strict_mode: StrictHostKeyChecking,
+    use_agent: bool,
+    use_password: bool,
+    timeout: Option<u64>,
+    jump_hosts: Option<&'a str>,
+}
 use crate::ui::OutputFormatter;
 
 pub struct ParallelExecutor {
@@ -32,6 +47,7 @@ pub struct ParallelExecutor {
     use_agent: bool,
     use_password: bool,
     timeout: Option<u64>,
+    jump_hosts: Option<String>,
 }
 
 impl ParallelExecutor {
@@ -58,6 +74,7 @@ impl ParallelExecutor {
             use_agent: false,
             use_password: false,
             timeout: None,
+            jump_hosts: None,
         }
     }
 
@@ -76,6 +93,7 @@ impl ParallelExecutor {
             use_agent,
             use_password: false,
             timeout: None,
+            jump_hosts: None,
         }
     }
 
@@ -95,11 +113,17 @@ impl ParallelExecutor {
             use_agent,
             use_password,
             timeout: None,
+            jump_hosts: None,
         }
     }
 
     pub fn with_timeout(mut self, timeout: Option<u64>) -> Self {
         self.timeout = timeout;
+        self
+    }
+
+    pub fn with_jump_hosts(mut self, jump_hosts: Option<String>) -> Self {
+        self.jump_hosts = jump_hosts;
         self
     }
 
@@ -123,6 +147,7 @@ impl ParallelExecutor {
                 let use_agent = self.use_agent;
                 let use_password = self.use_password;
                 let timeout = self.timeout;
+                let jump_hosts = self.jump_hosts.clone();
                 let semaphore = Arc::clone(&semaphore);
                 let pb = multi_progress.add(ProgressBar::new_spinner());
                 pb.set_style(style.clone());
@@ -145,16 +170,17 @@ impl ParallelExecutor {
 
                     pb.set_message(format!("{}", "Executing...".blue()));
 
-                    let result = execute_on_node(
-                        node.clone(),
-                        &command,
-                        key_path.as_deref(),
+                    let exec_config = ExecutionConfig {
+                        key_path: key_path.as_deref(),
                         strict_mode,
                         use_agent,
                         use_password,
                         timeout,
-                    )
-                    .await;
+                        jump_hosts: jump_hosts.as_deref(),
+                    };
+
+                    let result =
+                        execute_on_node_with_jump_hosts(node.clone(), &command, &exec_config).await;
 
                     match &result {
                         Ok(cmd_result) => {
@@ -505,28 +531,26 @@ impl ParallelExecutor {
     }
 }
 
-async fn execute_on_node(
+async fn execute_on_node_with_jump_hosts(
     node: Node,
     command: &str,
-    key_path: Option<&str>,
-    strict_mode: StrictHostKeyChecking,
-    use_agent: bool,
-    use_password: bool,
-    timeout: Option<u64>,
+    config: &ExecutionConfig<'_>,
 ) -> Result<CommandResult> {
     let mut client = SshClient::new(node.host.clone(), node.port, node.username.clone());
 
-    let key_path = key_path.map(Path::new);
+    let key_path = config.key_path.map(Path::new);
+
+    let connection_config = ConnectionConfig {
+        key_path,
+        strict_mode: Some(config.strict_mode),
+        use_agent: config.use_agent,
+        use_password: config.use_password,
+        timeout_seconds: config.timeout,
+        jump_hosts_spec: config.jump_hosts,
+    };
 
     client
-        .connect_and_execute_with_host_check(
-            command,
-            key_path,
-            Some(strict_mode),
-            use_agent,
-            use_password,
-            timeout,
-        )
+        .connect_and_execute_with_jump_hosts(command, &connection_config)
         .await
 }
 
