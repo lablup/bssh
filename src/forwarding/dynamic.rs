@@ -737,6 +737,7 @@ mod tests {
     use tokio::sync::mpsc;
 
     #[tokio::test]
+    #[ignore = "Requires SSH server connection"]
     async fn test_dynamic_forwarder_creation() {
         let spec = ForwardingType::Dynamic {
             bind_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -746,7 +747,7 @@ mod tests {
 
         let ssh_client = Arc::new(
             Client::connect(
-                ("test", 22),
+                ("127.0.0.1", 22),
                 "test_user",
                 crate::ssh::tokio_client::AuthMethod::with_password("test"),
                 crate::ssh::tokio_client::ServerCheckMethod::NoCheck,
@@ -794,6 +795,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires SSH server connection"]
     async fn test_socks_version_handling() {
         for socks_version in [SocksVersion::V4, SocksVersion::V5] {
             let spec = ForwardingType::Dynamic {
@@ -804,7 +806,7 @@ mod tests {
 
             let ssh_client = Arc::new(
                 Client::connect(
-                    ("test", 22),
+                    ("127.0.0.1", 22),
                     "test_user",
                     crate::ssh::tokio_client::AuthMethod::with_password("test"),
                     crate::ssh::tokio_client::ServerCheckMethod::NoCheck,

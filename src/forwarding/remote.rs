@@ -437,6 +437,7 @@ mod tests {
     use tokio::sync::mpsc;
 
     #[tokio::test]
+    #[ignore = "Requires SSH server connection"]
     async fn test_remote_forwarder_creation() {
         let spec = ForwardingType::Remote {
             bind_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -458,7 +459,7 @@ mod tests {
         // In Phase 2, implement proper SSH client mocking
         let ssh_client = Arc::new(
             Client::connect(
-                ("test", 22),
+                ("127.0.0.1", 22),
                 "test_user",
                 crate::ssh::tokio_client::AuthMethod::with_password("test"),
                 crate::ssh::tokio_client::ServerCheckMethod::NoCheck,
@@ -498,6 +499,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Requires SSH server connection"]
     async fn test_invalid_forwarding_type() {
         let spec = ForwardingType::Local {
             bind_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -508,7 +510,7 @@ mod tests {
 
         let ssh_client = Arc::new(
             Client::connect(
-                ("test", 22),
+                ("127.0.0.1", 22),
                 "test_user",
                 crate::ssh::tokio_client::AuthMethod::with_password("test"),
                 crate::ssh::tokio_client::ServerCheckMethod::NoCheck,
