@@ -68,7 +68,8 @@ Disable pseudo-terminal allocation
 
 .TP
 .BR \-J " " \fIdestination\fR
-Connect via jump host(s) (ProxyJump) [planned feature]
+Connect via jump host(s) (ProxyJump). Supports comma-separated list for multiple jump hosts.
+Example: -J jump1@proxy1,jump2@proxy2
 
 .TP
 .BR \-Q " " \fIquery_option\fR
@@ -85,6 +86,25 @@ Force use of IPv6 addresses only
 .TP
 .BR \-x
 Disable X11 forwarding
+
+.TP
+.BR \-L " " \fI[bind_address:]port:host:hostport\fR
+Local port forwarding. Binds a local port to forward connections to a remote destination via SSH.
+Multiple -L options can be specified for multiple forwards.
+Example: -L 8080:example.com:80 (localhost:8080 → example.com:80)
+
+.TP
+.BR \-R " " \fI[bind_address:]port:host:hostport\fR
+Remote port forwarding. Requests the SSH server to bind a port and forward connections to local destination.
+Multiple -R options can be specified for multiple forwards.
+Example: -R 8080:localhost:80 (remote:8080 → localhost:80)
+
+.TP
+.BR \-D " " \fI[bind_address:]port[/socks_version]\fR
+Dynamic port forwarding (SOCKS proxy). Creates a local SOCKS proxy that dynamically forwards connections via SSH.
+Supports SOCKS4 and SOCKS5 protocols. Default is SOCKS5.
+Multiple -D options can be specified for multiple SOCKS proxies.
+Example: -D 1080 (SOCKS5 proxy on localhost:1080), -D *:1080/4 (SOCKS4 on all interfaces)
 
 .SS Multi-Server Options
 .TP
@@ -295,6 +315,64 @@ Use SSH options:
 .TP
 Query SSH capabilities:
 .B bssh -Q cipher
+
+.SS Port Forwarding
+.TP
+Local port forwarding:
+.B bssh -L 8080:example.com:80 user@host
+.RS
+Forward local port 8080 to example.com:80 via SSH connection
+.RE
+
+.TP
+Remote port forwarding:
+.B bssh -R 8080:localhost:80 user@host
+.RS
+Forward remote port 8080 to localhost:80
+.RE
+
+.TP
+Dynamic port forwarding (SOCKS proxy):
+.B bssh -D 1080 user@host
+.RS
+Create SOCKS5 proxy on local port 1080
+.RE
+
+.TP
+Multiple port forwards:
+.B bssh -L 3306:db:3306 -R 80:web:80 -D 1080 user@host
+.RS
+Combine local, remote, and dynamic port forwarding
+.RE
+
+.TP
+SOCKS4 proxy on all interfaces:
+.B bssh -D *:1080/4 user@host
+.RS
+Create SOCKS4 proxy listening on all network interfaces
+.RE
+
+.TP
+Port forwarding with command execution:
+.B bssh -L 5432:postgres:5432 user@host "psql -h localhost"
+.RS
+Set up port forwarding and execute command
+.RE
+
+.SS Jump Host Support
+.TP
+Connect through jump host:
+.B bssh -J jump@bastion.example.com user@internal-server
+.RS
+Connect to internal-server via bastion jump host
+.RE
+
+.TP
+Multiple jump hosts:
+.B bssh -J "jump1@proxy1,jump2@proxy2" user@final-destination
+.RS
+Chain multiple jump hosts for connection
+.RE
 
 .SS Multi-Server Mode
 .TP

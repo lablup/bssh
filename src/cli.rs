@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use anyhow::Context;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -22,7 +23,7 @@ use std::path::PathBuf;
     before_help = "\n\nBroadcast SSH - Parallel command execution across cluster nodes",
     about = "Broadcast SSH - SSH-compatible parallel command execution tool",
     long_about = "bssh is a high-performance SSH client with parallel execution capabilities.\nIt can be used as a drop-in replacement for SSH (single host) or as a powerful cluster management tool (multiple hosts).\n\nThe tool provides secure file transfer using SFTP and supports SSH keys, SSH agent, and password authentication.\nIt automatically detects Backend.AI multi-node session environments.\n\nSSH Configuration Support:\n- Reads standard SSH config files (defaulting to ~/.ssh/config)\n- Supports Host patterns, HostName, User, Port, IdentityFile, StrictHostKeyChecking\n- ProxyJump, and many other SSH configuration directives\n- CLI arguments override SSH config values following SSH precedence rules",
-    after_help = "EXAMPLES:\n  SSH Mode:\n    bssh user@host                         # Interactive shell\n    bssh admin@server.com \"uptime\"         # Execute command\n    bssh -p 2222 -i ~/.ssh/key user@host   # Custom port and key\n    bssh -F ~/.ssh/myconfig webserver      # Use custom SSH config\n\n  Multi-Server Mode:\n    bssh -C production \"systemctl status\"  # Use cluster config\n    bssh -H \"web1,web2,web3\" \"df -h\"      # Direct hosts\n    bssh -F /etc/ssh/ssh_config -H web*    # SSH config with wildcards\n\n  File Operations:\n    bssh -C staging upload file.txt /tmp/  # Upload to cluster\n    bssh -H host1,host2 download /etc/hosts ./backups/\n\n  Other Commands:\n    bssh list                              # List configured clusters\n    bssh -C production ping                # Test connectivity\n\n  SSH Config Example (~/.ssh/config):\n    Host web*\n        HostName web.example.com\n        User webuser\n        Port 2222\n        IdentityFile ~/.ssh/web_key\n        StrictHostKeyChecking yes\n\nDeveloped and maintained as part of the Backend.AI project.\nFor more information: https://github.com/lablup/bssh"
+    after_help = "EXAMPLES:\n  SSH Mode:\n    bssh user@host                         # Interactive shell\n    bssh admin@server.com \"uptime\"         # Execute command\n    bssh -p 2222 -i ~/.ssh/key user@host   # Custom port and key\n    bssh -F ~/.ssh/myconfig webserver      # Use custom SSH config\n\n  Port Forwarding:\n    bssh -L 8080:example.com:80 user@host  # Local forward: localhost:8080 → example.com:80\n    bssh -R 8080:localhost:80 user@host    # Remote forward: remote:8080 → localhost:80\n    bssh -D 1080 user@host                 # SOCKS5 proxy on localhost:1080\n    bssh -L 3306:db:3306 -R 80:web:80 user@host  # Multiple forwards\n    bssh -D *:1080/4 user@host             # SOCKS4 proxy on all interfaces\n\n  Multi-Server Mode:\n    bssh -C production \"systemctl status\"  # Use cluster config\n    bssh -H \"web1,web2,web3\" \"df -h\"      # Direct hosts\n    bssh -F /etc/ssh/ssh_config -H web*    # SSH config with wildcards\n\n  File Operations:\n    bssh -C staging upload file.txt /tmp/  # Upload to cluster\n    bssh -H host1,host2 download /etc/hosts ./backups/\n\n  Other Commands:\n    bssh list                              # List configured clusters\n    bssh -C production ping                # Test connectivity\n\n  SSH Config Example (~/.ssh/config):\n    Host web*\n        HostName web.example.com\n        User webuser\n        Port 2222\n        IdentityFile ~/.ssh/web_key\n        StrictHostKeyChecking yes\n\nDeveloped and maintained as part of the Backend.AI project.\nFor more information: https://github.com/lablup/bssh"
 )]
 pub struct Cli {
     /// SSH destination in format: [user@]hostname[:port] or ssh://[user@]hostname[:port]
@@ -193,6 +194,34 @@ pub struct Cli {
         help = "Query SSH configuration options"
     )]
     pub query: Option<String>,
+
+    // Port forwarding options (SSH-compatible)
+    #[arg(
+        short = 'L',
+        long = "local-forward",
+        value_name = "local_forward_spec",
+        action = clap::ArgAction::Append,
+        help = "Local port forwarding [bind_address:]port:host:hostport\nBinds a local port to forward connections to a remote destination via SSH.\nMultiple -L options can be specified for multiple forwards.\nExample: -L 8080:example.com:80 (localhost:8080 → example.com:80)"
+    )]
+    pub local_forwards: Vec<String>,
+
+    #[arg(
+        short = 'R',
+        long = "remote-forward",
+        value_name = "remote_forward_spec",
+        action = clap::ArgAction::Append,
+        help = "Remote port forwarding [bind_address:]port:host:hostport\nRequests the SSH server to bind a port and forward connections to local destination.\nMultiple -R options can be specified for multiple forwards.\nExample: -R 8080:localhost:80 (remote:8080 → localhost:80)"
+    )]
+    pub remote_forwards: Vec<String>,
+
+    #[arg(
+        short = 'D',
+        long = "dynamic-forward",
+        value_name = "dynamic_forward_spec",
+        action = clap::ArgAction::Append,
+        help = "Dynamic port forwarding (SOCKS proxy) [bind_address:]port[/socks_version]\nCreates a local SOCKS proxy that dynamically forwards connections via SSH.\nMultiple -D options can be specified for multiple SOCKS proxies.\nExample: -D 1080 (SOCKS5 proxy on localhost:1080), -D *:1080/4 (SOCKS4 on all interfaces)"
+    )]
+    pub dynamic_forwards: Vec<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -417,5 +446,52 @@ impl Cli {
         }
 
         options
+    }
+
+    /// Parse port forwarding specifications into ForwardingType instances
+    ///
+    /// Returns a Result containing a vector of all parsed forwarding specifications
+    /// or an error if any specification is invalid.
+    pub fn parse_port_forwards(
+        &self,
+    ) -> Result<Vec<crate::forwarding::ForwardingType>, anyhow::Error> {
+        use crate::forwarding::spec::ForwardingSpec;
+
+        let mut forwards = Vec::new();
+
+        // Parse local forwards (-L options)
+        for spec in &self.local_forwards {
+            let forward = ForwardingSpec::parse_local(spec)
+                .with_context(|| format!("Invalid local forwarding specification: {spec}"))?;
+            forwards.push(forward);
+        }
+
+        // Parse remote forwards (-R options)
+        for spec in &self.remote_forwards {
+            let forward = ForwardingSpec::parse_remote(spec)
+                .with_context(|| format!("Invalid remote forwarding specification: {spec}"))?;
+            forwards.push(forward);
+        }
+
+        // Parse dynamic forwards (-D options)
+        for spec in &self.dynamic_forwards {
+            let forward = ForwardingSpec::parse_dynamic(spec)
+                .with_context(|| format!("Invalid dynamic forwarding specification: {spec}"))?;
+            forwards.push(forward);
+        }
+
+        Ok(forwards)
+    }
+
+    /// Check if any port forwarding options are specified
+    pub fn has_port_forwards(&self) -> bool {
+        !self.local_forwards.is_empty()
+            || !self.remote_forwards.is_empty()
+            || !self.dynamic_forwards.is_empty()
+    }
+
+    /// Get count of total port forwarding specifications
+    pub fn port_forward_count(&self) -> usize {
+        self.local_forwards.len() + self.remote_forwards.len() + self.dynamic_forwards.len()
     }
 }
