@@ -2,33 +2,49 @@
 
 ## Overview
 
-bssh (Backend.AI SSH) is a high-performance parallel SSH command execution tool designed for managing Backend.AI clusters. This document describes the detailed architecture, implementation decisions, and design patterns used in the project.
+bssh (Backend.AI SSH / Broadcast SSH) is a high-performance parallel SSH command execution tool with SSH-compatible interface. This document describes the detailed architecture, implementation decisions, and design patterns used in the project.
+
+### Core Capabilities
+- Parallel command execution across multiple nodes
+- SSH-compatible command-line interface (drop-in replacement)
+- SSH port forwarding (-L, -R, -D/SOCKS proxy)
+- SSH jump host support (-J)
+- SSH configuration file parsing (-F)
+- Interactive PTY sessions with single/multiplex modes
+- SFTP file transfers (upload/download)
+- Backend.AI cluster auto-detection
 
 ## System Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                     CLI Interface                       │
-│                       (main.rs)                         │
-│              (-L, -R, -D forwarding options)            │
-└─────────────────────┬───────────────────────────────────┘
-                      │
-        ┌─────────────┼───────────────┬────────────┐
-        ▼             ▼               ▼            ▼
-┌──────────────┐ ┌───────────┐ ┌─────────────┐ ┌──────────────┐
-│   Commands   │ │  Config   │ │    Utils    │ │  Forwarding  │
-│   Module     │ │  Manager  │ │   Module    │ │   Manager    │
-│ (commands/*) │ │(config.rs)│ │  (utils/*)  │ │(forwarding/*)│
-└──────┬───────┘ └───────────┘ └─────────────┘ └──────┬───────┘
-        │                                               │
-        ▼                                               ▼
-┌──────────────┐           ┌──────────────┐  ┌──────────────────┐
-│   Executor   │◄──────────┤     Node     │  │ Port Forwarders  │
-│  (Parallel)  │           │    Parser    │  │  (L/R/D modes)   │
-│(executor.rs) │           │  (node.rs)   │  │    + Tunnels     │
-└──────┬───────┘           └──────────────┘  └────────┬─────────┘
-       │                                               │
-       ├──────────┬────────────┬──────────────────────┘
+        ┌─────────────────────────────────────────────────────────┐
+        │                     CLI Interface                       │
+        │                       (main.rs)                         │
+        │        (-L, -R, -D, -J, -F, -t/T, SSH-compatible)       │
+        └────────────────────────────┬────────────────────────────┘
+                                     │
+        ┌─────────────┬──────────────┼──────────────┬─────────────┐
+        ▼             ▼              ▼              ▼             ▼
+┌──────────────┐ ┌───────────┐ ┌───────────┐ ┌───────────┐ ┌──────────┐
+│   Commands   │ │  Config   │ │  Utils    │ │Forwarding │ │   Jump   │
+│   Module     │ │  Manager  │ │  Module   │ │  Manager  │ │   Host   │
+│ (commands/*) │ │(config.rs)│ │ (utils/*) │ │(forward/*)│ │ (jump/*) │
+└──────┬───────┘ └─────┬─────┘ └───────────┘ └───┬───────┘ └───┬──────┘
+       │               │                         │             │
+       │               ▼                         │             │
+       │       ┌──────────────┐                  │             │
+       │       │ SSH Config   │                  │             │
+       │       │    Parser    │                  │             │
+       │       │(ssh_config/*)│                  │             │
+       │       └──────────────┘                  │             │
+       ▼                                         ▼             ▼
+┌──────────────┐                         ┌──────────────┐ ┌──────────────────┐
+│   Executor   │◄────────────────────────┤     Node     │ │ Port Forwarders  │
+│  (Parallel)  │                         │    Parser    │ │  (L/R/D modes)   │
+│(executor.rs) │                         │  (node.rs)   │ │    + Tunnels     │
+└──────┬───────┘                         └──────────────┘ └────────┬─────────┘
+       │                                                           │
+       ├──────────┬────────────┬───────────────────────────────────┘
        ▼          ▼            ▼
 ┌──────────┐ ┌──────────┐ ┌──────────┐
 │   SSH    │ │   SSH    │ │   SSH    │
@@ -49,7 +65,7 @@ The codebase has been restructured for better maintainability and scalability:
 2. **Command Modules (`commands/`):**
    - `exec.rs`: Command execution with output management
    - `ping.rs`: Connectivity testing
-   - `interactive.rs`: Interactive shell sessions (Phase 1 completed)
+   - `interactive.rs`: Interactive shell sessions with PTY support
    - `list.rs`: Cluster listing
    - `upload.rs`: File upload operations
    - `download.rs`: File download operations
@@ -163,30 +179,28 @@ let tasks: Vec<JoinHandle<Result<ExecutionResult>>> = nodes
 - Buffered I/O for output collection
 - Early termination on critical failures
 
-### 4. SSH Client (`ssh/client.rs`)
+### 4. SSH Client (`ssh/client.rs`, `ssh/tokio_client/*`)
 
-**Library Choice: async-ssh2-tokio**
-- **Why not thrussh:** async-ssh2-tokio provides simpler API and better OpenSSH compatibility
-- **Why not openssh:** Need fine-grained control over connections
-- **Why not ssh2:** Need async/await support for concurrent operations
+**Library Choice: russh and russh-sftp**
+- Native Rust SSH implementation with full async support
+- SFTP support via russh-sftp for file operations
+- Custom tokio_client wrapper providing high-level API
+- Better control over SSH protocol implementation
 
 **Implementation Details:**
-- Async/await pattern for non-blocking I/O
-- Support for both key-based and agent authentication
+- Custom tokio_client wrapper for simplified API
+- Support for SSH agent, key-based, and password authentication
 - Configurable timeouts and retry logic
+- Full SFTP support for file transfers
 
-**Security Implementation (Phase 1 - Completed 2025-08-21):**
-- ✅ Host key verification with three modes:
+**Security Implementation:**
+- Host key verification with three modes:
   - `StrictHostKeyChecking::Yes` - Strict verification using known_hosts
-  - `StrictHostKeyChecking::No` - Skip all verification
-  - `StrictHostKeyChecking::AcceptNew` - TOFU mode (limited by library)
-- ✅ CLI flag `--strict-host-key-checking` with default "accept-new"
-- ✅ Uses system known_hosts file (~/.ssh/known_hosts)
-
-**Remaining Limitations:**
-- Missing SFTP support for file operations
-- Accept-new mode falls back to NoCheck due to library limitations
-- Connection reuse not possible with async-ssh2-tokio (see Connection Pooling section)
+  - `StrictHostKeyChecking::No` - Skip all verification  
+  - `StrictHostKeyChecking::AcceptNew` - TOFU mode
+- CLI flag `--strict-host-key-checking` with default "accept-new"
+- Uses system known_hosts file (~/.ssh/known_hosts)
+- SSH agent authentication with auto-detection
 
 ### 5. Connection Pooling (`ssh/pool.rs`)
 
@@ -198,7 +212,7 @@ After thorough analysis, connection pooling was determined to be **not beneficia
 **Analysis Results:**
 - **Current Usage Pattern:** Each CLI invocation executes exactly one operation per host then terminates
 - **No Reuse Scenarios:** There are no cases where connections would be reused within a single bssh execution
-- **Library Limitation:** async-ssh2-tokio's `Client` type doesn't support cloning or connection reuse
+- **Library Limitation:** russh sessions are not reusable across operations
 - **Performance Impact:** Zero benefit for current one-shot command execution model
 
 **When Pooling Would Be Beneficial:**
@@ -231,9 +245,22 @@ Focus on more impactful optimizations like:
 - Early termination on critical failures
 - Parallel DNS resolution
 
-### 6. SSH Configuration Caching (`ssh/config_cache.rs`)
+### 6. SSH Configuration File Support (`ssh/ssh_config/*`)
 
-**Status:** Implemented (Phase 4, 2025-08-28)
+**Status:** Fully Implemented (2025-08-28)
+
+**Features:**
+- Complete SSH config file parsing with `-F` option
+- Auto-loads from `~/.ssh/config` by default
+- Supports 40+ SSH directives (Host, HostName, User, Port, IdentityFile, ProxyJump, etc.)
+- Wildcard pattern matching (`*`, `?`) and negation (`!`)
+- Environment variable expansion in paths
+- First-match-wins resolution (SSH-compatible)
+- CLI arguments override config values
+
+### 7. SSH Configuration Caching (`ssh/config_cache.rs`)
+
+**Status:** Implemented (2025-08-28)
 
 **Design Motivation:**
 SSH configuration files are frequently accessed and parsed during bssh operations, especially for multi-node commands. Caching eliminates redundant file I/O and parsing overhead, providing significant performance improvements for repeated operations.
@@ -311,7 +338,7 @@ bssh cache-stats --maintain        # Remove expired entries
 - TTL expiration and LRU eviction testing
 - Thread safety and concurrent access testing
 
-### 7. Node Management (`node.rs`)
+### 8. Node Management (`node.rs`)
 
 **Design Decisions:**
 - Flexible parsing supporting multiple formats
@@ -408,26 +435,37 @@ if let Ok(Some(home)) = GLOBAL_ENV_CACHE.get_env_var("HOME") {
 
 ## Interactive Mode Architecture
 
-### Overview
+### Status: Fully Implemented (2025-08-22)
 
-Interactive mode provides persistent shell sessions with single-node or multiplexed multi-node support. This feature enables real-time interaction with cluster nodes, maintaining stateful connections for extended operations.
+Interactive mode provides persistent shell sessions with single-node or multiplexed multi-node support, enabling real-time interaction with cluster nodes.
 
-### Design Decisions
+### Implemented Features
 
-1. **PTY Support:** 
-   - Full pseudo-terminal allocation for proper shell interaction
-   - Terminal size detection and dynamic resizing
+1. **PTY Support:**
+   - Full pseudo-terminal allocation with crossterm
+   - Terminal size detection and dynamic resizing (SIGWINCH)
    - ANSI escape sequence support for colored output
+   - Raw mode terminal handling
 
 2. **Session Management:**
    - Persistent SSH connections with keep-alive
    - Graceful reconnection on connection drops
    - Session state tracking (working directory, environment)
+   - Command history with rustyline
 
-3. **Input/Output Multiplexing:**
-   - Commands broadcast to all nodes simultaneously
-   - Node-prefixed output with color coding
-   - Visual status indicators (● connected, ○ disconnected)
+3. **Multi-Node Features:**
+   - Single-node mode (`--single-node`)
+   - Multiplex mode (default) for parallel execution
+   - Node switching commands (`!node1`, `!node2`, etc.)
+   - Broadcast command (`!broadcast <cmd>`)
+   - Visual status indicators (● active, ○ inactive)
+   - Smart prompt scaling for many nodes
+
+4. **Configuration Management:**
+   - Global and per-cluster interactive settings
+   - Customizable prompts and prefixes
+   - Color schemes and timestamps
+   - CLI arguments override config values
 
 ## PTY Implementation Design
 
@@ -587,9 +625,8 @@ struct NodeSession {
    - Synchronized output display
    - Node status tracking
 
-### Future Enhancements (Phase 2-3)
+### Future Enhancements
 
-- Node switching with `!node1`, `!node2` commands
 - Session persistence and detach/reattach
 - Full TUI with ratatui (split panes, monitoring)
 - File manager integration
@@ -749,71 +786,96 @@ impl NodeStatus {
 - SSH client: >80%
 - Overall: >85%
 
-## Future Improvements
+## Implementation Status Summary
 
-### Short-term (v0.2)
+### Completed Features
 
-- [ ] Implement proper host key verification
-- [ ] Add connection pooling
-- [ ] Complete file copy functionality
-- [ ] Add dry-run mode
-- [ ] Implement output filtering
+#### Core SSH Functionality
+- Parallel command execution with semaphore-based concurrency
+- SSH client using russh and russh-sftp
+- Host key verification (strict/accept-new/no-check modes)
+- SSH agent authentication with auto-detection
+- SSH key and password authentication
+- SFTP file transfers (upload/download with glob support)
 
-### Medium-term (v0.3)
+#### SSH Compatibility
+- SSH-compatible CLI interface (drop-in replacement)
+- SSH configuration file parsing (-F option, ~/.ssh/config)
+- Port forwarding (-L local, -R remote, -D SOCKS proxy)
+- Jump host infrastructure (-J option)
+- PTY allocation for interactive sessions (-t/-T)
 
-- [ ] SFTP support for efficient file transfers
-- [ ] Interactive session support (PTY)
-- [ ] Command templates and scripts
-- [ ] Result caching
-- [ ] Parallel file distribution
+#### Interactive Mode
+- Single-node and multiplex modes
+- Full PTY support with crossterm
+- Node switching and broadcast commands
+- Command history with rustyline
+- Configuration management (global and per-cluster)
 
-### Long-term (v1.0)
+#### Backend.AI Integration
+- Automatic cluster detection from environment
+- Cluster SSH key configuration
+- Multi-node session support
 
-- [ ] Web UI dashboard
-- [ ] REST API server mode
-- [ ] Kubernetes operator integration
-- [ ] Metrics and monitoring
-- [ ] Plugin system
+#### Infrastructure
+- XDG Base Directory compliance
+- Environment variable expansion in configs
+- Configuration and environment caching
+- Modular command architecture
+- Modern UI with semantic colors
+- CI/CD pipelines (GitHub Actions)
+
+### Pending Features
+
+#### Technical Debt
+- Connection pooling (infrastructure exists, not beneficial for current usage)
+- Jump host tunneling (requires russh direct-tcpip enhancements)
+- Comprehensive test suites
+- Usage examples and tutorials
+
+#### Future Enhancements
+- Session persistence and detach/reattach
+- Full TUI with ratatui
+- Web UI dashboard
+- REST API server mode
+- Metrics and monitoring integration
 
 ## Technical Debt
 
-1. ~~**Host Key Verification:** Currently disabled, security risk~~ ✅ Fixed in Phase 1
-2. **Test Coverage:** Integration tests missing
-3. **Error Messages:** Need better context and suggestions
-4. **Documentation:** API docs incomplete
+1. **Test Coverage:** Integration tests need expansion
+2. **Error Messages:** Could provide better context and recovery suggestions
+3. **Documentation:** API documentation needs completion
+4. **Performance:** Connection establishment could be optimized with better DNS caching
 
-## Change Log
+## Development Timeline
 
-### Phase 1 - Critical Fixes (2025-08-21)
+### 2025-08-21: Foundation
+- Host key verification implementation
+- Environment variable expansion
+- Connection pooling analysis
+- SFTP file transfers
 
-**Completed:**
-1. **Host Key Verification:** Implemented three modes of verification with CLI flag
-2. **List Command Bug:** Fixed logic to allow list without host specification
-3. **Environment Variables:** Added expansion support for YAML configuration
+### 2025-08-22: Core Features
+- Code structure refactoring (modular architecture)
+- Interactive mode with PTY support
+- Modern UI with semantic colors
+- Password authentication support
 
-**Impact:**
-- Security improved with proper host key checking
-- Better UX with fixed list command
-- More flexible configuration with env var support
+### 2025-08-27: SSH Compatibility
+- SSH-compatible CLI interface
+- Configuration file improvements
+- Authentication alignment
 
-### Phase 3 - Connection Pooling Analysis (2025-08-21)
+### 2025-08-28: Advanced SSH Features
+- SSH configuration file parsing (-F)
+- True PTY allocation
+- Configuration caching
 
-**Completed:**
-1. **Connection Pool Module:** Implemented placeholder connection pool infrastructure
-2. **Performance Analysis:** Determined pooling provides no benefit for current usage pattern
-3. **Architecture Documentation:** Documented design decision and rationale
+### 2025-08-30: Network Features
+- SSH jump host infrastructure (-J)
+- Complete port forwarding (-L, -R, -D)
 
-**Key Findings:**
-- Current one-shot execution model doesn't benefit from connection pooling
-- async-ssh2-tokio Client doesn't support connection reuse or cloning
-- Pooling would only benefit future features like interactive mode or watch mode
-
-**Recommendation:**
-- Keep placeholder implementation for future use
-- Focus on other performance optimizations with immediate impact
-- Revisit when implementing persistent/interactive features
-
-### Phase 4 - Code Structure Refactoring (2025-01-22)
+### Code Structure Refactoring (2025-08-22)
 
 **Completed:**
 1. **Modular Command Structure:** Separated commands into individual modules
@@ -849,7 +911,70 @@ src/
 - Total modules created: 9 new files
 - No functionality changes, only structural improvements
 
-## SSH Port Forwarding (Added 2025-01-30)
+## SSH Jump Host Support
+
+### Status: Infrastructure Implemented (2025-08-30)
+
+**Overview:**
+SSH jump host support enables connections through intermediate bastion hosts using OpenSSH-compatible `-J` syntax. The infrastructure is fully implemented with comprehensive parsing and connection chain management.
+
+### Architecture
+
+```
+┌──────────────────────────────────────┐
+│         CLI (-J option)              │
+└────────────┬─────────────────────────┘
+             │
+             ▼
+┌──────────────────────────────────────┐
+│      Jump Host Parser                │
+│    (jump/parser.rs)                  │
+│  Parses: user@host:port,host2:port2  │
+└────────────┬─────────────────────────┘
+             │
+             ▼
+┌──────────────────────────────────────┐
+│      Jump Host Chain                 │
+│     (jump/chain.rs)                  │
+│   Manages multi-hop connections      │
+└────────────┬─────────────────────────┘
+             │
+             ▼
+┌──────────────────────────────────────┐
+│    Connection Manager                │
+│   (jump/connection.rs)               │
+│  Establishes SSH tunnels             │
+└──────────────────────────────────────┘
+```
+
+### Implementation Details
+
+**Parser Features:**
+- OpenSSH ProxyJump format parsing
+- Multiple jump hosts support (comma-separated)
+- IPv6 address handling with bracket notation
+- User and port specifications
+- Comprehensive validation and error handling
+
+**CLI Integration:**
+```bash
+# Single jump host
+bssh -J jump@bastion.example.com -H target@internal "uptime"
+
+# Multiple jump hosts
+bssh -J "jump1@host1,jump2@host2" -H target "command"
+
+# IPv6 support
+bssh -J "user@[::1]:2222" -H target "command"
+```
+
+**Current Limitations:**
+- Actual SSH tunneling through jump hosts requires deeper russh integration
+- Connection chaining implementation pending russh direct-tcpip channel support
+
+## SSH Port Forwarding
+
+### Status: Fully Implemented (2025-08-30)
 
 ### Overview
 
@@ -858,40 +983,40 @@ The port forwarding implementation provides full SSH-compatible port forwarding 
 ### Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    CLI Interface                        │
-│                  (Port Forwarding Options)              │
-│                    -L, -R, -D flags                     │
-└────────────────────────┬────────────────────────────────┘
+┌────────────────────────────────────────────────┐
+│                  CLI Interface                 │
+│             (Port Forwarding Options)          │
+│                 -L, -R, -D flags               │
+└────────────────────────┬───────────────────────┘
                          │
                          ▼
-┌─────────────────────────────────────────────────────────┐
-│               ForwardingManager                         │
-│         (Lifecycle & Session Management)                │
-│                src/forwarding/manager.rs                │
-└──────┬──────────────────┬──────────────────┬────────────┘
-       │                  │                  │
-       ▼                  ▼                  ▼
+┌────────────────────────────────────────────────┐
+│               ForwardingManager                │
+│         (Lifecycle & Session Management)       │
+│                src/forwarding/manager.rs       │
+└──────┬────────────────┬────────────────┬───────┘
+       │                │                │
+       ▼                ▼                ▼
 ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
 │    Local     │ │    Remote    │ │   Dynamic    │
 │  Forwarder   │ │  Forwarder   │ │  Forwarder   │
 │   (-L mode)  │ │   (-R mode)  │ │  (-D/SOCKS)  │
 └──────┬───────┘ └──────┬───────┘ └──────┬───────┘
-       │                 │                 │
-       └─────────────────┼─────────────────┘
-                         │
-                         ▼
-                ┌─────────────────┐
-                │     Tunnel      │
-                │  (Bidirectional │
-                │  Data Transfer) │
-                └────────┬────────┘
-                         │
-                         ▼
-                ┌─────────────────┐
-                │   SSH Client    │
-                │    (russh)      │
-                └─────────────────┘
+       │                │                │
+       └────────────────┼────────────────┘
+                        │
+                        ▼
+               ┌─────────────────┐
+               │     Tunnel      │
+               │  (Bidirectional │
+               │  Data Transfer) │
+               └────────┬────────┘
+                        │
+                        ▼
+               ┌─────────────────┐
+               │   SSH Client    │
+               │    (russh)      │
+               └─────────────────┘
 ```
 
 ### Module Structure
@@ -993,10 +1118,11 @@ The port forwarding functionality is organized into the following modules:
 5. Connect to localhost:80 and relay data
 ```
 
-**Current Limitations:**
-- Requires SSH server support for port forwarding
-- russh library currently lacks full global request API
-- Scaffolding in place for future implementation
+**Implementation Status:**
+- Full implementation with SSH global request handling
+- Handles "tcpip-forward" and "cancel-tcpip-forward" requests
+- Processes incoming "forwarded-tcpip" channels
+- Automatic retry with exponential backoff
 
 #### Dynamic Port Forwarding (-D/SOCKS)
 
@@ -1020,9 +1146,9 @@ The port forwarding functionality is organized into the following modules:
 
 | Forwarding Type | Throughput | Latency Overhead | Memory Usage |
 |-----------------|------------|------------------|--------------|
-| Local (-L)      | ~950 Mbps  | <1ms            | ~10MB/conn   |
-| Remote (-R)     | ~900 Mbps  | <2ms            | ~10MB/conn   |
-| Dynamic (-D)    | ~850 Mbps  | <3ms            | ~15MB/conn   |
+| Local (-L)      | ~950 Mbps  | <1ms             | ~10MB/conn   |
+| Remote (-R)     | ~900 Mbps  | <2ms             | ~10MB/conn   |
+| Dynamic (-D)    | ~850 Mbps  | <3ms             | ~15MB/conn   |
 
 *Tested on localhost with 1Gbps connection*
 
