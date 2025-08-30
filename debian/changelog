@@ -1,33 +1,39 @@
-bssh (0.6.1-1~jammy1) jammy; urgency=medium
+bssh (0.7.0-1~jammy1) jammy; urgency=medium
 
-  * v0.6.1
+  * v0.7.0
   ### New Features
-  None
+  - **SSH Jump Host Support**: Added infrastructure and CLI integration for SSH jump hosts using OpenSSH-compatible -J syntax (#30)
+    - Robust parsing of OpenSSH ProxyJump format (e.g., `user@host:port,user2@host2:port2`)
+    - Support for single and multiple jump hosts in chain
+    - IPv6 address handling with bracket notation
+    - Comprehensive input validation and error handling
+    - Full integration with all commands (exec, ping, upload, download)
   
   ### Improvements
-  - **Branding Update**: Rebranded from 'Backend.AI SSH' to 'Broadcast SSH' to better reflect the tool's core functionality of broadcast/parallel command execution
-  - **Documentation**: Updated all help text, manpages, and package descriptions with the new branding
+  - **Ubuntu PPA**: Improved Ubuntu PPA build process and package generation
+  - **Debian Packaging**: Enhanced Cargo vendor support for older distribution compatibility
   
   ### Bug Fixes
-  None
+  - Fixed Ubuntu PPA update issues
+  - Fixed deprecated GitHub Actions by replacing actions-rs/toolchain with dtolnay/rust-toolchain
   
   ### CI/CD Improvements
-  None
+  - Modernized GitHub Actions workflow by removing deprecated actions
+  - Improved build process for Debian-based distributions
   
   ### Technical Details
-  - Maintained Backend.AI project association in documentation while emphasizing the tool's broader utility
-  - Updated project branding across CLI help output, UI banners, man pages, and Debian package metadata
+  - Jump host parser implementation with comprehensive error handling
+  - OpenSSH-compatible command-line syntax for ProxyJump functionality
+  - Enhanced logging for jump host connection debugging
   
   ### Dependencies
-  None
+  - No major dependency changes in this release
   
   ### Breaking Changes
   None
   
   ### Known Issues
   None
-  
-  **Full Changelog**: https://github.com/lablup/bssh/compare/v0.6.0...v0.6.1
 
- -- Jeongkyu Shin <inureyes@gmail.com>  Thu, 28 Aug 2025 13:57:13 +0900
+ -- Jeongkyu Shin <inureyes@gmail.com>  Sat, 30 Aug 2025 08:48:19 +0900
 
