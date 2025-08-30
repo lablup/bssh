@@ -41,14 +41,15 @@ use super::{
     SocksVersion,
 };
 use crate::ssh::tokio_client::Client;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, Semaphore};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
 
 /// Dynamic port forwarder implementation (SOCKS proxy)
@@ -157,12 +158,12 @@ impl DynamicForwarder {
             .await;
 
         info!(
-            "Starting dynamic forwarding: SOCKS{:?} proxy on {} (Phase 2 placeholder)",
+            "Starting dynamic forwarding: SOCKS{:?} proxy on {}",
             forwarder.socks_version, forwarder.bind_addr
         );
 
-        // **Phase 2 TODO**: Implement full SOCKS proxy
-        match forwarder.run_placeholder().await {
+        // Run the complete SOCKS proxy implementation
+        match forwarder.run_with_retry().await {
             Ok(_) => {
                 forwarder
                     .send_status_update(ForwardingStatus::Stopped)
@@ -179,70 +180,154 @@ impl DynamicForwarder {
         }
     }
 
-    /// Placeholder implementation for Phase 2
-    ///
-    /// **Phase 2 Implementation Plan:**
-    /// 1. Create TCP listener for SOCKS proxy
-    /// 2. For each connection, parse SOCKS protocol request
-    /// 3. Extract destination host/port from SOCKS request
-    /// 4. Create SSH channel to destination
-    /// 5. Handle SOCKS authentication if required
-    /// 6. Use Tunnel for bidirectional data transfer
-    async fn run_placeholder(&mut self) -> Result<()> {
-        // **Phase 2 TODO**: Create actual TCP listener
-        // let listener = TcpListener::bind(self.bind_addr).await?;
+    /// Run SOCKS proxy with automatic retry on failures
+    async fn run_with_retry(&mut self) -> Result<()> {
+        let mut retry_count = 0u32;
+        let mut retry_delay = Duration::from_millis(self.config.reconnect_delay_ms);
 
-        // For placeholder, simulate listener creation
-        warn!(
-            "SOCKS{:?} proxy on {} - Phase 2 placeholder active",
-            self.socks_version, self.bind_addr
-        );
+        loop {
+            // Check if we should stop
+            if self.cancel_token.is_cancelled() {
+                info!("SOCKS proxy cancelled");
+                break;
+            }
 
-        // Update status to active (simulated)
-        self.send_status_update(ForwardingStatus::Active).await;
+            // Check retry limits
+            if self.config.max_reconnect_attempts > 0
+                && retry_count >= self.config.max_reconnect_attempts
+            {
+                return Err(anyhow::anyhow!(
+                    "Maximum retry attempts ({}) exceeded",
+                    self.config.max_reconnect_attempts
+                ));
+            }
 
-        // **Phase 2 TODO**: Accept SOCKS connections
-        // let connection_semaphore = Arc::new(Semaphore::new(self.config.max_connections));
-        //
-        // loop {
-        //     tokio::select! {
-        //         result = listener.accept() => {
-        //             match result {
-        //                 Ok((stream, peer_addr)) => {
-        //                     self.spawn_socks_handler(stream, peer_addr, Arc::clone(&connection_semaphore));
-        //                 }
-        //                 Err(e) => {
-        //                     error!("Failed to accept SOCKS connection: {}", e);
-        //                 }
-        //             }
-        //         }
-        //         _ = self.cancel_token.cancelled() => {
-        //             break;
-        //         }
-        //     }
-        // }
+            // Update status based on retry state
+            if retry_count == 0 {
+                self.send_status_update(ForwardingStatus::Initializing)
+                    .await;
+            } else {
+                self.send_status_update(ForwardingStatus::Reconnecting)
+                    .await;
 
-        // For now, just wait for cancellation
-        self.cancel_token.cancelled().await;
+                // Wait before retrying
+                tokio::select! {
+                    _ = tokio::time::sleep(retry_delay) => {}
+                    _ = self.cancel_token.cancelled() => {
+                        info!("SOCKS proxy cancelled during retry delay");
+                        break;
+                    }
+                }
+            }
 
-        info!("Dynamic forwarding placeholder stopped");
+            info!(
+                "Starting SOCKS{:?} proxy on {} (attempt {})",
+                self.socks_version,
+                self.bind_addr,
+                retry_count + 1
+            );
+
+            // Attempt to start SOCKS proxy
+            match self.run_socks_proxy_loop().await {
+                Ok(_) => {
+                    // Successful completion (probably cancelled)
+                    break;
+                }
+                Err(e) => {
+                    error!("SOCKS proxy attempt {} failed: {}", retry_count + 1, e);
+
+                    retry_count += 1;
+
+                    if !self.config.auto_reconnect {
+                        return Err(e);
+                    }
+
+                    // Exponential backoff with jitter
+                    retry_delay = std::cmp::min(
+                        retry_delay.mul_f64(1.5),
+                        Duration::from_millis(self.config.max_reconnect_delay_ms),
+                    );
+
+                    // Add jitter to avoid thundering herd
+                    let jitter = Duration::from_millis(fastrand::u64(
+                        0..=retry_delay.as_millis() as u64 / 4,
+                    ));
+                    retry_delay += jitter;
+                }
+            }
+        }
+
         Ok(())
     }
 
-    /// **Phase 2 TODO**: Spawn SOCKS connection handler
+    /// Main SOCKS proxy loop - create listener and handle connections
+    async fn run_socks_proxy_loop(&mut self) -> Result<()> {
+        use tokio::net::TcpListener;
+
+        // Create TCP listener for SOCKS proxy
+        let listener = TcpListener::bind(self.bind_addr)
+            .await
+            .with_context(|| format!("Failed to bind SOCKS proxy to {}", self.bind_addr))?;
+
+        let local_addr = listener
+            .local_addr()
+            .with_context(|| "Failed to get local address for SOCKS proxy")?;
+
+        info!(
+            "SOCKS{:?} proxy listening on {}",
+            self.socks_version, local_addr
+        );
+
+        self.send_status_update(ForwardingStatus::Active).await;
+
+        // Create semaphore to limit concurrent connections
+        let connection_semaphore = Arc::new(Semaphore::new(self.config.max_connections));
+
+        loop {
+            tokio::select! {
+                // Accept new SOCKS connections
+                result = listener.accept() => {
+                    match result {
+                        Ok((stream, peer_addr)) => {
+                            trace!("Accepted SOCKS connection from {}", peer_addr);
+                            self.stats.socks_connections_accepted.fetch_add(1, Ordering::Relaxed);
+
+                            // Spawn SOCKS connection handler
+                            self.spawn_socks_handler(stream, peer_addr, Arc::clone(&connection_semaphore));
+                        }
+                        Err(e) => {
+                            error!("Failed to accept SOCKS connection: {}", e);
+                            self.stats.socks_connections_failed.fetch_add(1, Ordering::Relaxed);
+
+                            // Brief pause to avoid busy loop on persistent errors
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                    }
+                }
+                // Handle cancellation
+                _ = self.cancel_token.cancelled() => {
+                    info!("SOCKS proxy cancelled, stopping listener");
+                    break;
+                }
+            }
+        }
+
+        info!("SOCKS proxy stopped");
+        Ok(())
+    }
+
+    /// Spawn SOCKS connection handler
     ///
-    /// This will:
+    /// This handles the complete SOCKS protocol flow:
     /// 1. Parse SOCKS protocol handshake
     /// 2. Handle authentication if required (SOCKS5)
     /// 3. Parse connection request (CONNECT command)
-    /// 4. Resolve destination address if needed
-    /// 5. Create SSH channel to destination
-    /// 6. Send SOCKS response
-    /// 7. Start bidirectional tunnel
-    #[allow(dead_code)]
+    /// 4. Create SSH channel to destination
+    /// 5. Send SOCKS response
+    /// 6. Start bidirectional tunnel
     fn spawn_socks_handler(
         &self,
-        _tcp_stream: TcpStream,
+        tcp_stream: TcpStream,
         peer_addr: SocketAddr,
         connection_semaphore: Arc<Semaphore>,
     ) {
@@ -251,8 +336,10 @@ impl DynamicForwarder {
         let ssh_client = Arc::clone(&self.ssh_client);
         let stats = Arc::clone(&self.stats);
         let cancel_token = self.cancel_token.clone();
+        let buffer_size = self.config.buffer_size;
 
         tokio::spawn(async move {
+            // Acquire connection semaphore permit
             let _permit = match connection_semaphore.acquire().await {
                 Ok(permit) => permit,
                 Err(_) => {
@@ -265,9 +352,6 @@ impl DynamicForwarder {
             };
 
             stats.active_connections.fetch_add(1, Ordering::Relaxed);
-            stats
-                .socks_connections_accepted
-                .fetch_add(1, Ordering::Relaxed);
 
             match socks_version {
                 SocksVersion::V4 => stats.socks4_requests.fetch_add(1, Ordering::Relaxed),
@@ -279,27 +363,30 @@ impl DynamicForwarder {
                 socks_version, peer_addr
             );
 
-            // **Phase 2 TODO**: Implement SOCKS protocol handling
+            // Handle the SOCKS connection
             let result = Self::handle_socks_connection(
-                _tcp_stream,
+                tcp_stream,
                 peer_addr,
                 socks_version,
                 &ssh_client,
                 cancel_token,
+                buffer_size,
             )
             .await;
 
+            // Update statistics
             stats.active_connections.fetch_sub(1, Ordering::Relaxed);
 
             match result {
-                Ok(bytes_transferred) => {
+                Ok(tunnel_stats) => {
                     debug!(
                         "SOCKS connection from {} completed: {} bytes transferred",
-                        peer_addr, bytes_transferred
+                        peer_addr,
+                        tunnel_stats.total_bytes()
                     );
                     stats
                         .total_bytes_transferred
-                        .fetch_add(bytes_transferred, Ordering::Relaxed);
+                        .fetch_add(tunnel_stats.total_bytes(), Ordering::Relaxed);
                 }
                 Err(e) => {
                     error!("SOCKS connection from {} failed: {}", peer_addr, e);
@@ -311,47 +398,266 @@ impl DynamicForwarder {
         });
     }
 
-    /// **Phase 2 TODO**: Handle individual SOCKS connection
+    /// Handle individual SOCKS connection
     ///
-    /// SOCKS4 Protocol:
-    /// 1. Client connects and sends CONNECT request
-    /// 2. Parse request: version, command, dest_port, dest_ip, user_id
-    /// 3. Create SSH channel to destination
-    /// 4. Send response: version, status, dest_port, dest_ip
-    /// 5. Start tunnel if successful
-    ///
-    /// SOCKS5 Protocol:
-    /// 1. Client connects and sends authentication methods
-    /// 2. Server selects authentication method
-    /// 3. Perform authentication if required
-    /// 4. Client sends connection request
-    /// 5. Parse request: version, command, address_type, dest_addr, dest_port
-    /// 6. Resolve hostname if needed (through SSH)
-    /// 7. Create SSH channel to destination
-    /// 8. Send response with status
-    /// 9. Start tunnel if successful
-    #[allow(dead_code)]
+    /// This implements the SOCKS protocol handling:
+    /// - SOCKS5: Full implementation with authentication negotiation
+    /// - SOCKS4: Basic implementation for compatibility
     async fn handle_socks_connection(
-        _tcp_stream: TcpStream,
+        tcp_stream: TcpStream,
         peer_addr: SocketAddr,
         socks_version: SocksVersion,
-        _ssh_client: &Client,
-        _cancel_token: CancellationToken,
-    ) -> Result<u64> {
-        // **Phase 2 TODO**: Implement full SOCKS protocol handling
-
+        ssh_client: &Client,
+        cancel_token: CancellationToken,
+        _buffer_size: usize,
+    ) -> Result<super::tunnel::TunnelStats> {
         match socks_version {
             SocksVersion::V4 => {
-                // TODO: Implement SOCKS4 protocol
-                warn!("SOCKS4 protocol not yet implemented for {}", peer_addr);
-                Err(anyhow::anyhow!("SOCKS4 not implemented"))
+                Self::handle_socks4_connection(tcp_stream, peer_addr, ssh_client, cancel_token)
+                    .await
             }
             SocksVersion::V5 => {
-                // TODO: Implement SOCKS5 protocol
-                warn!("SOCKS5 protocol not yet implemented for {}", peer_addr);
-                Err(anyhow::anyhow!("SOCKS5 not implemented"))
+                Self::handle_socks5_connection(tcp_stream, peer_addr, ssh_client, cancel_token)
+                    .await
             }
         }
+    }
+
+    /// Handle SOCKS4 connection protocol
+    async fn handle_socks4_connection(
+        mut tcp_stream: TcpStream,
+        peer_addr: SocketAddr,
+        ssh_client: &Client,
+        cancel_token: CancellationToken,
+    ) -> Result<super::tunnel::TunnelStats> {
+        use super::tunnel::Tunnel;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        debug!("Handling SOCKS4 connection from {}", peer_addr);
+
+        // Read SOCKS4 request: VER(1) + CMD(1) + DSTPORT(2) + DSTIP(4) + USERID(variable) + NULL(1)
+        let mut request_header = [0u8; 8]; // First 8 bytes (VER + CMD + DSTPORT + DSTIP)
+        tcp_stream.read_exact(&mut request_header).await?;
+
+        let version = request_header[0];
+        let command = request_header[1];
+        let dest_port = u16::from_be_bytes([request_header[2], request_header[3]]);
+        let dest_ip = std::net::Ipv4Addr::from([
+            request_header[4],
+            request_header[5],
+            request_header[6],
+            request_header[7],
+        ]);
+
+        // Verify SOCKS4 version
+        if version != 4 {
+            debug!("Invalid SOCKS4 version: {} from {}", version, peer_addr);
+            // Send failure response
+            let response = [0, 0x5B, 0, 0, 0, 0, 0, 0]; // 0x5B = request rejected
+            tcp_stream.write_all(&response).await?;
+            return Err(anyhow::anyhow!("Invalid SOCKS4 version: {}", version));
+        }
+
+        // Only support CONNECT command (0x01)
+        if command != 0x01 {
+            debug!("Unsupported SOCKS4 command: {} from {}", command, peer_addr);
+            let response = [0, 0x5C, 0, 0, 0, 0, 0, 0]; // 0x5C = request failed
+            tcp_stream.write_all(&response).await?;
+            return Err(anyhow::anyhow!("Unsupported SOCKS4 command: {}", command));
+        }
+
+        // Read USERID (until NULL byte)
+        let mut userid = Vec::new();
+        loop {
+            let mut byte = [0u8; 1];
+            tcp_stream.read_exact(&mut byte).await?;
+            if byte[0] == 0 {
+                break; // NULL terminator
+            }
+            userid.push(byte[0]);
+            if userid.len() > 255 {
+                // Prevent excessive memory usage
+                let response = [0, 0x5B, 0, 0, 0, 0, 0, 0]; // Request rejected
+                tcp_stream.write_all(&response).await?;
+                return Err(anyhow::anyhow!("USERID too long"));
+            }
+        }
+
+        let destination = format!("{dest_ip}:{dest_port}");
+        debug!("SOCKS4 CONNECT to {} from {}", destination, peer_addr);
+
+        // Create SSH channel to destination
+        let ssh_channel = match ssh_client
+            .open_direct_tcpip_channel(destination.as_str(), None)
+            .await
+        {
+            Ok(channel) => channel,
+            Err(e) => {
+                debug!("Failed to create SSH channel to {}: {}", destination, e);
+                // Send failure response
+                let response = [0, 0x5B, 0, 0, 0, 0, 0, 0]; // Request rejected
+                tcp_stream.write_all(&response).await?;
+                return Err(e.into());
+            }
+        };
+
+        // Send success response: VER(1) + REP(1) + DSTPORT(2) + DSTIP(4)
+        let response = [
+            0,    // VER (should be 0 for response)
+            0x5A, // REP (0x5A = success)
+            (dest_port >> 8) as u8,
+            (dest_port & 0xff) as u8, // DSTPORT
+            dest_ip.octets()[0],
+            dest_ip.octets()[1],
+            dest_ip.octets()[2],
+            dest_ip.octets()[3], // DSTIP
+        ];
+        tcp_stream.write_all(&response).await?;
+
+        debug!("SOCKS4 tunnel established: {} ↔ {}", peer_addr, destination);
+
+        // Start bidirectional tunnel
+        Tunnel::run(tcp_stream, ssh_channel, cancel_token).await
+    }
+
+    /// Handle SOCKS5 connection protocol  
+    async fn handle_socks5_connection(
+        mut tcp_stream: TcpStream,
+        peer_addr: SocketAddr,
+        ssh_client: &Client,
+        cancel_token: CancellationToken,
+    ) -> Result<super::tunnel::TunnelStats> {
+        use super::tunnel::Tunnel;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        debug!("Handling SOCKS5 connection from {}", peer_addr);
+
+        // Phase 1: Authentication negotiation
+        // Read client's authentication methods: VER(1) + NMETHODS(1) + METHODS(1-255)
+        let mut auth_request = [0u8; 2];
+        tcp_stream.read_exact(&mut auth_request).await?;
+
+        let version = auth_request[0];
+        let nmethods = auth_request[1];
+
+        if version != 5 {
+            return Err(anyhow::anyhow!("Invalid SOCKS5 version: {}", version));
+        }
+
+        // Read authentication methods
+        let mut methods = vec![0u8; nmethods as usize];
+        tcp_stream.read_exact(&mut methods).await?;
+
+        // We only support "no authentication required" (0x00)
+        let selected_method = if methods.contains(&0x00) {
+            0x00 // No authentication required
+        } else {
+            0xFF // No acceptable methods
+        };
+
+        // Send authentication method selection response: VER(1) + METHOD(1)
+        let auth_response = [5, selected_method];
+        tcp_stream.write_all(&auth_response).await?;
+
+        if selected_method == 0xFF {
+            return Err(anyhow::anyhow!("No acceptable authentication method"));
+        }
+
+        // Phase 2: Connection request
+        // Read SOCKS5 request: VER(1) + CMD(1) + RSV(1) + ATYP(1) + DST.ADDR(variable) + DST.PORT(2)
+        let mut request_header = [0u8; 4];
+        tcp_stream.read_exact(&mut request_header).await?;
+
+        let version = request_header[0];
+        let command = request_header[1];
+        let _reserved = request_header[2];
+        let address_type = request_header[3];
+
+        if version != 5 {
+            return Err(anyhow::anyhow!(
+                "Invalid SOCKS5 request version: {}",
+                version
+            ));
+        }
+
+        // Only support CONNECT command (0x01)
+        if command != 0x01 {
+            // Send error response
+            let response = [5, 0x07, 0, 1, 0, 0, 0, 0, 0, 0]; // Command not supported
+            tcp_stream.write_all(&response).await?;
+            return Err(anyhow::anyhow!("Unsupported SOCKS5 command: {}", command));
+        }
+
+        // Parse destination address based on address type
+        let destination = match address_type {
+            0x01 => {
+                // IPv4 address: 4 bytes
+                let mut addr_bytes = [0u8; 4];
+                tcp_stream.read_exact(&mut addr_bytes).await?;
+                let mut port_bytes = [0u8; 2];
+                tcp_stream.read_exact(&mut port_bytes).await?;
+
+                let ip = std::net::Ipv4Addr::from(addr_bytes);
+                let port = u16::from_be_bytes(port_bytes);
+                format!("{ip}:{port}")
+            }
+            0x03 => {
+                // Domain name: 1 byte length + domain name + 2 bytes port
+                let mut len_byte = [0u8; 1];
+                tcp_stream.read_exact(&mut len_byte).await?;
+                let domain_len = len_byte[0] as usize;
+
+                let mut domain_bytes = vec![0u8; domain_len];
+                tcp_stream.read_exact(&mut domain_bytes).await?;
+                let domain = String::from_utf8_lossy(&domain_bytes);
+
+                let mut port_bytes = [0u8; 2];
+                tcp_stream.read_exact(&mut port_bytes).await?;
+                let port = u16::from_be_bytes(port_bytes);
+
+                format!("{domain}:{port}")
+            }
+            0x04 => {
+                // IPv6 address: 16 bytes + 2 bytes port (not fully implemented)
+                let response = [5, 0x08, 0, 1, 0, 0, 0, 0, 0, 0]; // Address type not supported
+                tcp_stream.write_all(&response).await?;
+                return Err(anyhow::anyhow!("IPv6 address type not yet supported"));
+            }
+            _ => {
+                let response = [5, 0x08, 0, 1, 0, 0, 0, 0, 0, 0]; // Address type not supported
+                tcp_stream.write_all(&response).await?;
+                return Err(anyhow::anyhow!(
+                    "Unsupported address type: {}",
+                    address_type
+                ));
+            }
+        };
+
+        debug!("SOCKS5 CONNECT to {} from {}", destination, peer_addr);
+
+        // Create SSH channel to destination
+        let ssh_channel = match ssh_client
+            .open_direct_tcpip_channel(destination.as_str(), None)
+            .await
+        {
+            Ok(channel) => channel,
+            Err(e) => {
+                debug!("Failed to create SSH channel to {}: {}", destination, e);
+                // Send failure response: VER + REP + RSV + ATYP + BND.ADDR + BND.PORT
+                let response = [5, 0x05, 0, 1, 0, 0, 0, 0, 0, 0]; // Connection refused
+                tcp_stream.write_all(&response).await?;
+                return Err(e.into());
+            }
+        };
+
+        // Send success response: VER(1) + REP(1) + RSV(1) + ATYP(1) + BND.ADDR(4) + BND.PORT(2)
+        let response = [5, 0x00, 0, 1, 0, 0, 0, 0, 0, 0]; // Success, bound to 0.0.0.0:0
+        tcp_stream.write_all(&response).await?;
+
+        debug!("SOCKS5 tunnel established: {} ↔ {}", peer_addr, destination);
+
+        // Start bidirectional tunnel
+        Tunnel::run(tcp_stream, ssh_channel, cancel_token).await
     }
 
     /// Send status update to ForwardingManager

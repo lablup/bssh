@@ -501,6 +501,12 @@ async fn main() -> Result<()> {
                     output_dir: cli.output_dir.as_deref(),
                     timeout,
                     jump_hosts: cli.jump_hosts.as_deref(),
+                    // Pass port forwarding specifications to exec command
+                    port_forwards: if cli.has_port_forwards() {
+                        Some(cli.parse_port_forwards()?)
+                    } else {
+                        None
+                    },
                 };
                 execute_command(params).await
             }

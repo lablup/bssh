@@ -43,4 +43,12 @@ pub enum Error {
     IoError(#[from] io::Error),
     #[error("Command validation failed: {0}")]
     CommandValidationFailed(String),
+    #[error("Port forwarding request failed: {0}")]
+    PortForwardRequestFailed(String),
+    #[error("Remote port forwarding setup failed: {0}")]
+    RemotePortForwardFailed(String),
+    #[error("Port forwarding is not supported by the SSH server")]
+    PortForwardingNotSupported,
+    #[error("Global request failed: {0}")]
+    GlobalRequestFailed(String),
 }
