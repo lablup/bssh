@@ -177,6 +177,33 @@ async fn main() -> Result<()> {
         );
     }
 
+    // Parse jump hosts if specified
+    let jump_hosts = if let Some(ref jump_spec) = cli.jump_hosts {
+        use bssh::jump::parse_jump_hosts;
+        Some(
+            parse_jump_hosts(jump_spec)
+                .with_context(|| format!("Invalid jump host specification: '{jump_spec}'"))?,
+        )
+    } else {
+        None
+    };
+
+    // Display jump host information if present
+    if let Some(ref jumps) = jump_hosts {
+        if jumps.len() == 1 {
+            tracing::info!("Using jump host: {}", jumps[0]);
+        } else {
+            tracing::info!(
+                "Using jump host chain: {}",
+                jumps
+                    .iter()
+                    .map(|j| j.to_string())
+                    .collect::<Vec<_>>()
+                    .join(" -> ")
+            );
+        }
+    }
+
     // Parse strict host key checking mode with SSH config integration
     let hostname = if cli.is_ssh_mode() {
         cli.parse_destination().map(|(_, host, _)| host)
@@ -473,6 +500,7 @@ async fn main() -> Result<()> {
                     use_password: cli.password,
                     output_dir: cli.output_dir.as_deref(),
                     timeout,
+                    jump_hosts: cli.jump_hosts.as_deref(),
                 };
                 execute_command(params).await
             }

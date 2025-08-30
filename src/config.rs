@@ -720,11 +720,22 @@ mod tests {
 
     #[test]
     fn test_expand_tilde() {
-        unsafe {
-            std::env::set_var("HOME", "/home/user");
-        }
+        // Save original HOME value
+        let original_home = std::env::var("HOME").ok();
+
+        // Set test HOME value
+        std::env::set_var("HOME", "/home/user");
+
         let path = Path::new("~/.ssh/config");
         let expanded = expand_tilde(path);
+
+        // Restore original HOME value
+        if let Some(home) = original_home {
+            std::env::set_var("HOME", home);
+        } else {
+            std::env::remove_var("HOME");
+        }
+
         assert_eq!(expanded, PathBuf::from("/home/user/.ssh/config"));
     }
 

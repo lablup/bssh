@@ -83,6 +83,13 @@ pub struct Cli {
     pub password: bool,
 
     #[arg(
+        short = 'J',
+        long = "jump-host",
+        help = "Comma-separated list of jump hosts (ProxyJump)\nSpecify in [user@]hostname[:port] format, e.g.: 'jump1.example.com' or 'user@jump1:2222,jump2'\nSupports multiple hops for complex network topologies"
+    )]
+    pub jump_hosts: Option<String>,
+
+    #[arg(
         long = "parallel",
         default_value = "10",
         help = "Maximum parallel connections (multi-server mode)"
@@ -159,14 +166,6 @@ pub struct Cli {
         help = "Disable pseudo-terminal allocation"
     )]
     pub no_tty: bool,
-
-    #[arg(
-        short = 'J',
-        long = "jump",
-        value_name = "destination",
-        help = "Connect via jump host(s) (ProxyJump)"
-    )]
-    pub jump_hosts: Option<String>,
 
     #[arg(short = 'x', long = "no-x11", help = "Disable X11 forwarding")]
     pub no_x11: bool,

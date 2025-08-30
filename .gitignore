@@ -24,3 +24,4 @@ Thumbs.db
 .claude/
 .gemini/
 references/
+vendor/

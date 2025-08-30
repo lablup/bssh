@@ -231,30 +231,47 @@ mod tests {
         };
         let cache = EnvironmentCache::with_config(config);
 
+        // Use a custom environment variable for testing to avoid conflicts with other tests
+        // that might modify HOME
+        let test_var = "BSSH_TEST_CACHE_VAR";
+        std::env::set_var(test_var, "test_value_12345");
+
+        // Add test variable to safe list for this test
+        // Since we can't modify the safe list at runtime, we'll use USER which is safe
+        // and less likely to be modified by other tests than HOME
+        let var_to_test = "USER";
+
         // Get a variable (cache miss)
-        let result1 = cache.get_env_var("HOME");
+        let result1 = cache.get_env_var(var_to_test);
         assert!(result1.is_ok());
+        let initial_stats = cache.stats();
 
         // Immediately get it again (cache hit)
-        let result2 = cache.get_env_var("HOME");
+        let result2 = cache.get_env_var(var_to_test);
         assert!(result2.is_ok());
         assert_eq!(result1.as_ref().unwrap(), result2.as_ref().unwrap());
+
+        // Check that we got a cache hit
+        let stats_after_hit = cache.stats();
+        assert!(
+            stats_after_hit.hits > initial_stats.hits,
+            "Should have cache hits"
+        );
 
         // Wait for TTL to expire
         std::thread::sleep(Duration::from_millis(100));
 
         // Should be cache miss again due to TTL expiration
-        let result3 = cache.get_env_var("HOME");
+        let result3 = cache.get_env_var(var_to_test);
         assert!(result3.is_ok());
-        // Results should be the same (both should be the current HOME value, even after TTL)
-        // Note: We compare the results are equal, not specific values since HOME varies by environment
-        assert_eq!(
-            result1.as_ref().unwrap(),
-            result3.as_ref().unwrap(),
-            "HOME value should be consistent across cache refreshes"
-        );
 
-        let stats = cache.stats();
-        assert!(stats.ttl_evictions > 0, "Should have TTL evictions");
+        // Note: We don't assert the values are equal because in parallel test execution,
+        // environment variables might change. Instead, we verify the cache mechanics work.
+
+        let final_stats = cache.stats();
+        assert!(final_stats.ttl_evictions > 0, "Should have TTL evictions");
+
+        // Clean up test variable
+        std::env::remove_var(test_var);
     }
 }

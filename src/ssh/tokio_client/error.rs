@@ -41,4 +41,6 @@ pub enum Error {
     SftpError(#[from] russh_sftp::client::error::Error),
     #[error("I/O error")]
     IoError(#[from] io::Error),
+    #[error("Command validation failed: {0}")]
+    CommandValidationFailed(String),
 }

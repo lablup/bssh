@@ -13,10 +13,22 @@
 // limitations under the License.
 
 use super::tokio_client::{AuthMethod, Client};
+use crate::jump::{parse_jump_hosts, JumpHostChain};
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::time::Duration;
 use zeroize::Zeroizing;
+
+/// Configuration for SSH connection and command execution
+#[derive(Clone)]
+pub struct ConnectionConfig<'a> {
+    pub key_path: Option<&'a Path>,
+    pub strict_mode: Option<StrictHostKeyChecking>,
+    pub use_agent: bool,
+    pub use_password: bool,
+    pub timeout_seconds: Option<u64>,
+    pub jump_hosts_spec: Option<&'a str>,
+}
 
 use super::known_hosts::StrictHostKeyChecking;
 
@@ -54,39 +66,78 @@ impl SshClient {
         use_password: bool,
         timeout_seconds: Option<u64>,
     ) -> Result<CommandResult> {
-        let addr = (self.host.as_str(), self.port);
+        let config = ConnectionConfig {
+            key_path,
+            strict_mode,
+            use_agent,
+            use_password,
+            timeout_seconds,
+            jump_hosts_spec: None, // No jump hosts
+        };
+
+        self.connect_and_execute_with_jump_hosts(command, &config)
+            .await
+    }
+
+    pub async fn connect_and_execute_with_jump_hosts(
+        &mut self,
+        command: &str,
+        config: &ConnectionConfig<'_>,
+    ) -> Result<CommandResult> {
         tracing::debug!("Connecting to {}:{}", self.host, self.port);
 
         // Determine authentication method based on parameters
-        let auth_method = self.determine_auth_method(key_path, use_agent, use_password)?;
+        let auth_method =
+            self.determine_auth_method(config.key_path, config.use_agent, config.use_password)?;
 
-        // Set up host key checking
-        let check_method = if let Some(mode) = strict_mode {
-            super::known_hosts::get_check_method(mode)
+        let strict_mode = config
+            .strict_mode
+            .unwrap_or(StrictHostKeyChecking::AcceptNew);
+
+        // Create client connection - either direct or through jump hosts
+        let client = if let Some(jump_spec) = config.jump_hosts_spec {
+            // Parse jump hosts
+            let jump_hosts = parse_jump_hosts(jump_spec).with_context(|| {
+                format!("Failed to parse jump host specification: '{jump_spec}'")
+            })?;
+
+            if jump_hosts.is_empty() {
+                tracing::debug!("No valid jump hosts found, using direct connection");
+                self.connect_direct(&auth_method, strict_mode).await?
+            } else {
+                tracing::info!(
+                    "Connecting to {}:{} via {} jump host(s): {}",
+                    self.host,
+                    self.port,
+                    jump_hosts.len(),
+                    jump_hosts
+                        .iter()
+                        .map(|j| j.to_string())
+                        .collect::<Vec<_>>()
+                        .join(" -> ")
+                );
+
+                self.connect_via_jump_hosts(
+                    &jump_hosts,
+                    &auth_method,
+                    strict_mode,
+                    config.key_path,
+                    config.use_agent,
+                    config.use_password,
+                )
+                .await?
+            }
         } else {
-            super::known_hosts::get_check_method(StrictHostKeyChecking::AcceptNew)
+            // Direct connection
+            tracing::debug!("Using direct connection (no jump hosts)");
+            self.connect_direct(&auth_method, strict_mode).await?
         };
-
-        // Connect and authenticate with timeout
-        // SSH connection timeout design:
-        // - 30 seconds accommodates slow networks and SSH negotiation
-        // - Industry standard for SSH client connections
-        // - Balances user patience with reliability on poor networks
-        const SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
-        let connect_timeout = Duration::from_secs(SSH_CONNECT_TIMEOUT_SECS);
-        let client = tokio::time::timeout(
-            connect_timeout,
-            Client::connect(addr, &self.username, auth_method, check_method)
-        )
-        .await
-        .with_context(|| format!("Connection timeout: Failed to connect to {}:{} after 30 seconds. Please check if the host is reachable and SSH service is running.", self.host, self.port))?
-        .with_context(|| format!("SSH connection failed to {}:{}. Please verify the hostname, port, and authentication credentials.", self.host, self.port))?;
 
         tracing::debug!("Connected and authenticated successfully");
         tracing::debug!("Executing command: {}", command);
 
         // Execute command with timeout
-        let result = if let Some(timeout_secs) = timeout_seconds {
+        let result = if let Some(timeout_secs) = config.timeout_seconds {
             if timeout_secs == 0 {
                 // No timeout (unlimited)
                 tracing::debug!("Executing command with no timeout (unlimited)");
@@ -136,6 +187,74 @@ impl SshClient {
             stderr: result.stderr.into_bytes(),
             exit_status: result.exit_status,
         })
+    }
+
+    /// Create a direct SSH connection (no jump hosts)
+    async fn connect_direct(
+        &self,
+        auth_method: &AuthMethod,
+        strict_mode: StrictHostKeyChecking,
+    ) -> Result<Client> {
+        let addr = (self.host.as_str(), self.port);
+        let check_method = super::known_hosts::get_check_method(strict_mode);
+
+        // SSH connection timeout design:
+        // - 30 seconds accommodates slow networks and SSH negotiation
+        // - Industry standard for SSH client connections
+        // - Balances user patience with reliability on poor networks
+        const SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
+        let connect_timeout = Duration::from_secs(SSH_CONNECT_TIMEOUT_SECS);
+
+        tokio::time::timeout(
+            connect_timeout,
+            Client::connect(addr, &self.username, auth_method.clone(), check_method)
+        )
+        .await
+        .with_context(|| format!("Connection timeout: Failed to connect to {}:{} after 30 seconds. Please check if the host is reachable and SSH service is running.", self.host, self.port))?
+        .with_context(|| format!("SSH connection failed to {}:{}. Please verify the hostname, port, and authentication credentials.", self.host, self.port))
+    }
+
+    /// Create an SSH connection through jump hosts
+    async fn connect_via_jump_hosts(
+        &self,
+        jump_hosts: &[crate::jump::parser::JumpHost],
+        auth_method: &AuthMethod,
+        strict_mode: StrictHostKeyChecking,
+        key_path: Option<&Path>,
+        use_agent: bool,
+        use_password: bool,
+    ) -> Result<Client> {
+        // Create jump host chain
+        let chain = JumpHostChain::new(jump_hosts.to_vec())
+            .with_connect_timeout(Duration::from_secs(30))
+            .with_command_timeout(Duration::from_secs(300));
+
+        // Connect through the chain
+        let connection = chain
+            .connect(
+                &self.host,
+                self.port,
+                &self.username,
+                auth_method.clone(),
+                key_path,
+                Some(strict_mode),
+                use_agent,
+                use_password,
+            )
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to establish jump host connection to {}:{}",
+                    self.host, self.port
+                )
+            })?;
+
+        tracing::info!(
+            "Jump host connection established: {}",
+            connection.jump_info.path_description()
+        );
+
+        Ok(connection.client)
     }
 
     pub async fn upload_file(
@@ -751,6 +870,10 @@ mod tests {
 
     #[test]
     fn test_determine_auth_method_fallback_to_default() {
+        // Save original environment variables
+        let original_home = std::env::var("HOME").ok();
+        let original_ssh_auth_sock = std::env::var("SSH_AUTH_SOCK").ok();
+
         // Create a fake home directory with default key
         let temp_dir = TempDir::new().unwrap();
         let ssh_dir = temp_dir.path().join(".ssh");
@@ -758,13 +881,22 @@ mod tests {
         let default_key = ssh_dir.join("id_rsa");
         std::fs::write(&default_key, "fake key").unwrap();
 
-        unsafe {
-            std::env::set_var("HOME", temp_dir.path().to_str().unwrap());
-            std::env::remove_var("SSH_AUTH_SOCK");
-        }
+        // Set test environment
+        std::env::set_var("HOME", temp_dir.path().to_str().unwrap());
+        std::env::remove_var("SSH_AUTH_SOCK");
 
         let client = SshClient::new("test.com".to_string(), 22, "user".to_string());
         let auth = client.determine_auth_method(None, false, false).unwrap();
+
+        // Restore original environment variables
+        if let Some(home) = original_home {
+            std::env::set_var("HOME", home);
+        } else {
+            std::env::remove_var("HOME");
+        }
+        if let Some(sock) = original_ssh_auth_sock {
+            std::env::set_var("SSH_AUTH_SOCK", sock);
+        }
 
         match auth {
             AuthMethod::PrivateKeyFile { key_file_path, .. } => {

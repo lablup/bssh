@@ -32,6 +32,7 @@ pub struct ExecuteCommandParams<'a> {
     pub use_password: bool,
     pub output_dir: Option<&'a Path>,
     pub timeout: Option<u64>,
+    pub jump_hosts: Option<&'a str>,
 }
 
 pub async fn execute_command(params: ExecuteCommandParams<'_>) -> Result<()> {
@@ -49,7 +50,8 @@ pub async fn execute_command(params: ExecuteCommandParams<'_>) -> Result<()> {
         params.use_agent,
         params.use_password,
     )
-    .with_timeout(params.timeout);
+    .with_timeout(params.timeout)
+    .with_jump_hosts(params.jump_hosts.map(|s| s.to_string()));
 
     let results = executor.execute(params.command).await?;
 
