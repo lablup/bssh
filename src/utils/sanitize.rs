@@ -102,13 +102,21 @@ pub fn sanitize_hostname(hostname: &str) -> Result<String> {
     }
 
     // Check for invalid characters in hostname
-    // Valid: alphanumeric, dots, hyphens, underscores (for some systems), and brackets for IPv6
-    let is_ipv6 = hostname.starts_with('[') && hostname.ends_with(']');
+    // Valid: alphanumeric, dots, hyphens, underscores (for some systems), colons for IPv6
 
-    if is_ipv6 {
-        // For IPv6, validate the content between brackets
+    // Check if it's an IPv6 address (with or without brackets)
+    let is_ipv6_bracketed = hostname.starts_with('[') && hostname.ends_with(']');
+    let is_ipv6_raw = !is_ipv6_bracketed && hostname.contains(':');
+
+    if is_ipv6_bracketed {
+        // For IPv6 with brackets, validate the content between brackets
         let ipv6_addr = &hostname[1..hostname.len() - 1];
         if !ipv6_addr.chars().all(|c| c.is_ascii_hexdigit() || c == ':') {
+            bail!("Invalid IPv6 address format: {}", hostname);
+        }
+    } else if is_ipv6_raw {
+        // For IPv6 without brackets, validate the entire string
+        if !hostname.chars().all(|c| c.is_ascii_hexdigit() || c == ':') {
             bail!("Invalid IPv6 address format: {}", hostname);
         }
     } else {
@@ -199,6 +207,9 @@ mod tests {
         assert!(sanitize_hostname("192.168.1.1").is_ok());
         assert!(sanitize_hostname("[::1]").is_ok());
         assert!(sanitize_hostname("[2001:db8::1]").is_ok());
+        assert!(sanitize_hostname("::1").is_ok()); // IPv6 without brackets
+        assert!(sanitize_hostname("2001:db8::1").is_ok()); // IPv6 without brackets
+        assert!(sanitize_hostname("fe80::1").is_ok()); // IPv6 without brackets
         assert!(sanitize_hostname("my-server.local").is_ok());
     }
 

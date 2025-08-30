@@ -870,6 +870,10 @@ mod tests {
 
     #[test]
     fn test_determine_auth_method_fallback_to_default() {
+        // Save original environment variables
+        let original_home = std::env::var("HOME").ok();
+        let original_ssh_auth_sock = std::env::var("SSH_AUTH_SOCK").ok();
+
         // Create a fake home directory with default key
         let temp_dir = TempDir::new().unwrap();
         let ssh_dir = temp_dir.path().join(".ssh");
@@ -877,13 +881,22 @@ mod tests {
         let default_key = ssh_dir.join("id_rsa");
         std::fs::write(&default_key, "fake key").unwrap();
 
-        unsafe {
-            std::env::set_var("HOME", temp_dir.path().to_str().unwrap());
-            std::env::remove_var("SSH_AUTH_SOCK");
-        }
+        // Set test environment
+        std::env::set_var("HOME", temp_dir.path().to_str().unwrap());
+        std::env::remove_var("SSH_AUTH_SOCK");
 
         let client = SshClient::new("test.com".to_string(), 22, "user".to_string());
         let auth = client.determine_auth_method(None, false, false).unwrap();
+
+        // Restore original environment variables
+        if let Some(home) = original_home {
+            std::env::set_var("HOME", home);
+        } else {
+            std::env::remove_var("HOME");
+        }
+        if let Some(sock) = original_ssh_auth_sock {
+            std::env::set_var("SSH_AUTH_SOCK", sock);
+        }
 
         match auth {
             AuthMethod::PrivateKeyFile { key_file_path, .. } => {
