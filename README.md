@@ -12,6 +12,7 @@ A high-performance SSH client with **SSH-compatible syntax** for both single-hos
 ## Features
 
 - **SSH Compatibility**: Drop-in replacement for SSH with compatible command-line syntax
+- **Port Forwarding**: Full support for local (-L), remote (-R), and dynamic (-D) SSH port forwarding
 - **Jump Host Support**: Connect through bastion hosts using OpenSSH ProxyJump syntax (`-J`)
 - **Parallel Execution**: Execute commands across multiple nodes simultaneously
 - **Cluster Management**: Define and manage node clusters via configuration files
@@ -97,6 +98,38 @@ bssh -o StrictHostKeyChecking=no user@host
 
 # Query SSH capabilities
 bssh -Q cipher
+```
+
+### Port Forwarding
+```bash
+# Local port forwarding (-L)
+# Forward local port 8080 to example.com:80 via SSH
+bssh -L 8080:example.com:80 user@host
+
+# Remote port forwarding (-R)  
+# Forward remote port 8080 to localhost:80
+bssh -R 8080:localhost:80 user@host
+
+# Dynamic port forwarding / SOCKS proxy (-D)
+# Create SOCKS5 proxy on local port 1080
+bssh -D 1080 user@host
+
+# Multiple port forwards
+bssh -L 3306:db:3306 -R 80:web:80 -D 1080 user@host
+
+# Bind to specific address
+bssh -L 127.0.0.1:8080:web:80 user@host           # Local only
+bssh -L *:8080:web:80 user@host                   # All interfaces
+
+# SOCKS4 proxy (specify version)
+bssh -D 1080/4 user@host                          # SOCKS4
+bssh -D *:1080/5 user@host                        # SOCKS5 on all interfaces
+
+# Port forwarding with command execution
+bssh -L 5432:postgres:5432 user@host "psql -h localhost"
+
+# Port forwarding with cluster operations
+bssh -C production -L 8080:internal:80 "curl http://localhost:8080"
 ```
 
 ### Jump Host Support (ProxyJump)
@@ -297,6 +330,10 @@ Options:
   -i, --identity <IDENTITY>               SSH private key file path (prompts for passphrase if encrypted)
   -A, --use-agent                         Use SSH agent for authentication (Unix/Linux/macOS only)
   -P, --password                          Use password authentication (will prompt for password)
+  -J, --jump-host <JUMP_HOSTS>            Comma-separated list of jump hosts (ProxyJump)
+  -L, --local-forward <SPEC>              Local port forwarding [bind_address:]port:host:hostport
+  -R, --remote-forward <SPEC>             Remote port forwarding [bind_address:]port:host:hostport
+  -D, --dynamic-forward <SPEC>            Dynamic port forwarding (SOCKS) [bind_address:]port[/version]
   --strict-host-key-checking <MODE>       Host key checking mode (yes/no/accept-new) [default: accept-new]
   -p, --parallel <PARALLEL>               Maximum parallel connections [default: 10]
   --timeout <TIMEOUT>                     Command timeout in seconds (0 for unlimited) [default: 300]
