@@ -565,6 +565,7 @@ See the [LICENSE](./LICENSE) file for details.
 ## Changelog
 
 ### Recent Updates
+- **v0.7.0 (2025/08/30):** Add SSH jump host (-J) infrastructure and CLI integration, improve Ubuntu PPA support and fix deprecated GitHub Actions
 - **v0.6.1 (2025/08/28):** Rebrand from 'Backend.AI SSH' to 'Broadcast SSH' to emphasize the tool's core broadcast/parallel functionality
 - **v0.6.0 (2025/08/28):** Add SSH config file support (-F), PTY allocation, security enhancements, performance improvements, and SSH-compatible command-line interface
 - **v0.5.4 (2025/08/27):** Fix parallel config value handling and align interactive mode authentication with exec mode
