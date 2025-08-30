@@ -19,6 +19,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant, SystemTime};
+use tokio::time::timeout;
 use tracing::{debug, trace};
 
 /// Configuration options for the SSH config cache
@@ -136,8 +137,9 @@ impl SshConfigCache {
 
     /// Create a new SSH config cache with custom configuration
     pub fn with_config(config: CacheConfig) -> Self {
-        let cache_size = std::num::NonZeroUsize::new(config.max_entries)
-            .unwrap_or(std::num::NonZeroUsize::new(100).unwrap());
+        let cache_size = std::num::NonZeroUsize::new(config.max_entries).unwrap_or_else(|| {
+            std::num::NonZeroUsize::new(100).expect("NonZeroUsize::new(100) should never fail")
+        });
 
         let stats = CacheStats {
             max_entries: config.max_entries,
@@ -183,11 +185,20 @@ impl SshConfigCache {
             .with_context(|| format!("Failed to load SSH config from file: {}", path.display()))?;
 
         // Store in cache
-        self.put(path, config.clone(), current_mtime);
+        if let Err(e) = self.put(path, config.clone(), current_mtime) {
+            // Log cache put error but don't fail the operation
+            tracing::warn!("Failed to cache SSH config: {}", e);
+        }
 
         // Update statistics
         {
-            let mut stats = self.stats.write().unwrap();
+            let mut stats = timeout(Duration::from_secs(1), async {
+                tokio::task::yield_now().await;
+                self.stats.write()
+            })
+            .await
+            .map_err(|_| anyhow::anyhow!("Timeout acquiring stats write lock"))?
+            .map_err(|e| anyhow::anyhow!("Stats lock poisoned: {}", e))?;
             stats.misses += 1;
         }
 
@@ -196,7 +207,10 @@ impl SshConfigCache {
 
     /// Try to get a cached entry, checking for expiration and staleness
     fn try_get_cached(&self, path: &Path, current_mtime: SystemTime) -> Result<Option<SshConfig>> {
-        let mut cache = self.cache.write().unwrap();
+        let mut cache = self
+            .cache
+            .write()
+            .map_err(|e| anyhow::anyhow!("Cache write lock poisoned: {}", e))?;
 
         if let Some(entry) = cache.get_mut(path) {
             // Check if entry is expired
@@ -204,7 +218,9 @@ impl SshConfigCache {
                 debug!("SSH config cache entry expired: {}", path.display());
                 cache.pop(path);
 
-                let mut stats = self.stats.write().unwrap();
+                let mut stats = self.stats.write().map_err(|e| {
+                    anyhow::anyhow!("Stats write lock poisoned during TTL eviction: {}", e)
+                })?;
                 stats.ttl_evictions += 1;
                 return Ok(None);
             }
@@ -214,7 +230,9 @@ impl SshConfigCache {
                 debug!("SSH config cache entry stale: {}", path.display());
                 cache.pop(path);
 
-                let mut stats = self.stats.write().unwrap();
+                let mut stats = self.stats.write().map_err(|e| {
+                    anyhow::anyhow!("Stats write lock poisoned during stale eviction: {}", e)
+                })?;
                 stats.stale_evictions += 1;
                 return Ok(None);
             }
@@ -224,7 +242,9 @@ impl SshConfigCache {
 
             // Update statistics
             {
-                let mut stats = self.stats.write().unwrap();
+                let mut stats = self.stats.write().map_err(|e| {
+                    anyhow::anyhow!("Stats write lock poisoned during cache hit: {}", e)
+                })?;
                 stats.hits += 1;
             }
 
@@ -236,8 +256,11 @@ impl SshConfigCache {
     }
 
     /// Put an entry in the cache
-    fn put(&self, path: PathBuf, config: SshConfig, file_mtime: SystemTime) {
-        let mut cache = self.cache.write().unwrap();
+    fn put(&self, path: PathBuf, config: SshConfig, file_mtime: SystemTime) -> Result<()> {
+        let mut cache = self
+            .cache
+            .write()
+            .map_err(|e| anyhow::anyhow!("Cache write lock poisoned in put: {}", e))?;
 
         // Check if we're evicting an entry due to LRU policy
         let will_evict = cache.len() >= cache.cap().get();
@@ -247,7 +270,10 @@ impl SshConfigCache {
 
         // Update statistics
         {
-            let mut stats = self.stats.write().unwrap();
+            let mut stats = self
+                .stats
+                .write()
+                .map_err(|e| anyhow::anyhow!("Stats write lock poisoned in put: {}", e))?;
             if will_evict {
                 stats.lru_evictions += 1;
             }
@@ -255,6 +281,7 @@ impl SshConfigCache {
         }
 
         trace!("SSH config cached: {}", path.display());
+        Ok(())
     }
 
     /// Load SSH config from default locations with caching
@@ -282,33 +309,51 @@ impl SshConfigCache {
     }
 
     /// Clear all entries from the cache
-    pub fn clear(&self) {
-        let mut cache = self.cache.write().unwrap();
+    pub fn clear(&self) -> Result<()> {
+        let mut cache = self
+            .cache
+            .write()
+            .map_err(|e| anyhow::anyhow!("Cache write lock poisoned in clear: {}", e))?;
         cache.clear();
 
-        let mut stats = self.stats.write().unwrap();
+        let mut stats = self
+            .stats
+            .write()
+            .map_err(|e| anyhow::anyhow!("Stats write lock poisoned in clear: {}", e))?;
         stats.current_entries = 0;
+        Ok(())
     }
 
     /// Remove a specific entry from the cache
-    pub async fn remove<P: AsRef<Path>>(&self, path: P) -> Option<SshConfig> {
+    pub async fn remove<P: AsRef<Path>>(&self, path: P) -> Result<Option<SshConfig>> {
         let path = path.as_ref();
         if let Ok(canonical_path) = tokio::fs::canonicalize(path).await {
-            let mut cache = self.cache.write().unwrap();
-            let entry = cache.pop(&canonical_path)?;
+            let mut cache = self
+                .cache
+                .write()
+                .map_err(|e| anyhow::anyhow!("Cache write lock poisoned in remove: {}", e))?;
+            let entry = cache.pop(&canonical_path);
 
-            let mut stats = self.stats.write().unwrap();
-            stats.current_entries = cache.len();
+            if entry.is_some() {
+                let mut stats = self
+                    .stats
+                    .write()
+                    .map_err(|e| anyhow::anyhow!("Stats write lock poisoned in remove: {}", e))?;
+                stats.current_entries = cache.len();
+            }
 
-            Some(entry.config)
+            Ok(entry.map(|e| e.config))
         } else {
-            None
+            Ok(None)
         }
     }
 
-    /// Get current cache statistics
-    pub fn stats(&self) -> CacheStats {
-        self.stats.read().unwrap().clone()
+    /// Get current cache statistics  
+    pub fn stats(&self) -> Result<CacheStats> {
+        self.stats
+            .read()
+            .map_err(|e| anyhow::anyhow!("Stats read lock poisoned: {}", e))
+            .map(|stats| stats.clone())
     }
 
     /// Get cache configuration
@@ -320,23 +365,29 @@ impl SshConfigCache {
     pub fn update_config(&mut self, new_config: CacheConfig) {
         if new_config.max_entries != self.config.max_entries {
             // Need to recreate cache with new size
-            let cache_size = std::num::NonZeroUsize::new(new_config.max_entries)
-                .unwrap_or(std::num::NonZeroUsize::new(100).unwrap());
+            let cache_size =
+                std::num::NonZeroUsize::new(new_config.max_entries).unwrap_or_else(|| {
+                    std::num::NonZeroUsize::new(100)
+                        .expect("NonZeroUsize::new(100) should never fail")
+                });
 
             self.cache = Arc::new(RwLock::new(LruCache::new(cache_size)));
 
-            let mut stats = self.stats.write().unwrap();
-            stats.max_entries = new_config.max_entries;
-            stats.current_entries = 0;
+            // Update stats - if this fails, the cache has already been recreated
+            // so we continue with the new config
+            if let Ok(mut stats) = self.stats.write() {
+                stats.max_entries = new_config.max_entries;
+                stats.current_entries = 0;
+            }
         }
 
         self.config = new_config;
     }
 
     /// Perform cache maintenance (remove expired and stale entries)
-    pub async fn maintain(&self) -> usize {
+    pub async fn maintain(&self) -> Result<usize> {
         if !self.config.enabled {
-            return 0;
+            return Ok(0);
         }
 
         let mut to_remove = Vec::new();
@@ -349,7 +400,10 @@ impl SshConfigCache {
 
         {
             // Scope the lock to release it before awaiting
-            let cache = self.cache.write().unwrap();
+            let cache = self
+                .cache
+                .write()
+                .map_err(|e| anyhow::anyhow!("Cache write lock poisoned in maintain: {}", e))?;
 
             for (path, entry) in cache.iter() {
                 if entry.is_expired(self.config.ttl) {
@@ -386,7 +440,12 @@ impl SshConfigCache {
 
         // Remove expired and stale entries
         {
-            let mut cache = self.cache.write().unwrap();
+            let mut cache = self.cache.write().map_err(|e| {
+                anyhow::anyhow!(
+                    "Cache write lock poisoned during maintenance cleanup: {}",
+                    e
+                )
+            })?;
             for path in &to_remove {
                 cache.pop(path);
             }
@@ -396,8 +455,12 @@ impl SshConfigCache {
 
         // Update statistics
         {
-            let cache = self.cache.read().unwrap();
-            let mut stats = self.stats.write().unwrap();
+            let cache = self.cache.read().map_err(|e| {
+                anyhow::anyhow!("Cache read lock poisoned during maintenance stats: {}", e)
+            })?;
+            let mut stats = self.stats.write().map_err(|e| {
+                anyhow::anyhow!("Stats write lock poisoned during maintenance: {}", e)
+            })?;
             stats.ttl_evictions += expired_count as u64;
             stats.stale_evictions += stale_count as u64;
             stats.current_entries = cache.len();
@@ -410,12 +473,15 @@ impl SshConfigCache {
             );
         }
 
-        removed_count
+        Ok(removed_count)
     }
 
     /// Get detailed information about cache entries (for debugging)
-    pub fn debug_info(&self) -> HashMap<PathBuf, String> {
-        let cache = self.cache.read().unwrap();
+    pub fn debug_info(&self) -> Result<HashMap<PathBuf, String>> {
+        let cache = self
+            .cache
+            .read()
+            .map_err(|e| anyhow::anyhow!("Cache read lock poisoned in debug_info: {}", e))?;
         let mut info = HashMap::new();
 
         for (path, entry) in cache.iter() {
@@ -434,7 +500,7 @@ impl SshConfigCache {
             );
         }
 
-        info
+        Ok(info)
     }
 }
 
@@ -528,7 +594,7 @@ mod tests {
         let config1 = tokio_test::block_on(cache.get_or_load(&path)).unwrap();
         assert_eq!(config1.hosts.len(), 1);
 
-        let stats = cache.stats();
+        let stats = cache.stats().unwrap();
         assert_eq!(stats.misses, 1);
         assert_eq!(stats.hits, 0);
 
@@ -536,7 +602,7 @@ mod tests {
         let config2 = tokio_test::block_on(cache.get_or_load(&path)).unwrap();
         assert_eq!(config2.hosts.len(), 1);
 
-        let stats = cache.stats();
+        let stats = cache.stats().unwrap();
         assert_eq!(stats.misses, 1);
         assert_eq!(stats.hits, 1);
         assert_eq!(stats.hit_rate(), 0.5);
@@ -567,7 +633,7 @@ mod tests {
         let config2 = tokio_test::block_on(cache.get_or_load(&path)).unwrap();
         assert_eq!(config2.hosts.len(), 2);
 
-        let stats = cache.stats();
+        let stats = cache.stats().unwrap();
         assert_eq!(stats.stale_evictions, 1);
     }
 
@@ -595,7 +661,7 @@ mod tests {
         // Should reload due to TTL expiration
         let _config2 = tokio_test::block_on(cache.get_or_load(&path)).unwrap();
 
-        let stats = cache.stats();
+        let stats = cache.stats().unwrap();
         assert_eq!(stats.ttl_evictions, 1);
     }
 
@@ -611,19 +677,19 @@ mod tests {
 
         // Load config
         let _config = tokio_test::block_on(cache.get_or_load(&path)).unwrap();
-        assert_eq!(cache.stats().current_entries, 1);
+        assert_eq!(cache.stats().unwrap().current_entries, 1);
 
         // Remove specific entry
-        let removed_config = tokio_test::block_on(cache.remove(&path));
+        let removed_config = tokio_test::block_on(cache.remove(&path)).unwrap();
         assert!(removed_config.is_some());
-        assert_eq!(cache.stats().current_entries, 0);
+        assert_eq!(cache.stats().unwrap().current_entries, 0);
 
         // Load again and clear all
         let _config = tokio_test::block_on(cache.get_or_load(&path)).unwrap();
-        assert_eq!(cache.stats().current_entries, 1);
+        assert_eq!(cache.stats().unwrap().current_entries, 1);
 
-        cache.clear();
-        assert_eq!(cache.stats().current_entries, 0);
+        cache.clear().unwrap();
+        assert_eq!(cache.stats().unwrap().current_entries, 0);
     }
 
     #[test]
@@ -643,15 +709,15 @@ mod tests {
 
         // Load config
         let _config = tokio_test::block_on(cache.get_or_load(&path)).unwrap();
-        assert_eq!(cache.stats().current_entries, 1);
+        assert_eq!(cache.stats().unwrap().current_entries, 1);
 
         // Wait for expiration
         std::thread::sleep(Duration::from_millis(100));
 
         // Run maintenance
-        let removed = tokio_test::block_on(cache.maintain());
+        let removed = tokio_test::block_on(cache.maintain()).unwrap();
         assert_eq!(removed, 1);
-        assert_eq!(cache.stats().current_entries, 0);
+        assert_eq!(cache.stats().unwrap().current_entries, 0);
     }
 
     #[test]
@@ -673,7 +739,7 @@ mod tests {
         let _config1 = tokio_test::block_on(cache.get_or_load(&path)).unwrap();
         let _config2 = tokio_test::block_on(cache.get_or_load(&path)).unwrap();
 
-        let stats = cache.stats();
+        let stats = cache.stats().unwrap();
         assert_eq!(stats.hits, 0);
         assert_eq!(stats.misses, 0);
         assert_eq!(stats.current_entries, 0);
@@ -682,7 +748,7 @@ mod tests {
     #[test]
     fn test_cache_stats() {
         let cache = SshConfigCache::new();
-        let stats = cache.stats();
+        let stats = cache.stats().unwrap();
 
         assert_eq!(stats.hits, 0);
         assert_eq!(stats.misses, 0);

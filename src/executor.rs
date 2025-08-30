@@ -133,7 +133,7 @@ impl ParallelExecutor {
 
         let style = ProgressStyle::default_bar()
             .template("{prefix:.bold} {spinner:.cyan} {msg}")
-            .unwrap()
+            .map_err(|e| anyhow::anyhow!("Failed to create progress bar template: {}", e))?
             .tick_chars("⣾⣽⣻⢿⡿⣟⣯⣷ ");
 
         let tasks: Vec<_> = self
@@ -166,7 +166,20 @@ impl ParallelExecutor {
                 pb.enable_steady_tick(std::time::Duration::from_millis(PROGRESS_BAR_TICK_RATE_MS));
 
                 tokio::spawn(async move {
-                    let _permit = semaphore.acquire().await.unwrap();
+                    let _permit = match semaphore.acquire().await {
+                        Ok(permit) => permit,
+                        Err(e) => {
+                            pb.finish_with_message(format!(
+                                "{} {}",
+                                "●".red(),
+                                "Semaphore closed".red()
+                            ));
+                            return ExecutionResult {
+                                node,
+                                result: Err(anyhow::anyhow!("Semaphore acquisition failed: {}", e)),
+                            };
+                        }
+                    };
 
                     pb.set_message(format!("{}", "Executing...".blue()));
 
@@ -240,7 +253,9 @@ impl ParallelExecutor {
 
         let style = ProgressStyle::default_bar()
             .template("{prefix:.bold} {spinner:.cyan} {msg}")
-            .unwrap()
+            .map_err(|e| {
+                anyhow::anyhow!("Failed to create progress bar template for upload: {}", e)
+            })?
             .tick_chars("⣾⣽⣻⢿⡿⣟⣯⣷ ");
 
         let tasks: Vec<_> = self
@@ -272,7 +287,20 @@ impl ParallelExecutor {
                 pb.enable_steady_tick(std::time::Duration::from_millis(PROGRESS_BAR_TICK_RATE_MS));
 
                 tokio::spawn(async move {
-                    let _permit = semaphore.acquire().await.unwrap();
+                    let _permit = match semaphore.acquire().await {
+                        Ok(permit) => permit,
+                        Err(e) => {
+                            pb.finish_with_message(format!(
+                                "{} {}",
+                                "●".red(),
+                                "Semaphore closed".red()
+                            ));
+                            return UploadResult {
+                                node,
+                                result: Err(anyhow::anyhow!("Semaphore acquisition failed: {}", e)),
+                            };
+                        }
+                    };
 
                     pb.set_message(format!("{}", "Uploading (SFTP)...".blue()));
 
@@ -337,7 +365,9 @@ impl ParallelExecutor {
 
         let style = ProgressStyle::default_bar()
             .template("{prefix:.bold} {spinner:.cyan} {msg}")
-            .unwrap()
+            .map_err(|e| {
+                anyhow::anyhow!("Failed to create progress bar template for download: {}", e)
+            })?
             .tick_chars("⣾⣽⣻⢿⡿⣟⣯⣷ ");
 
         let tasks: Vec<_> = self
@@ -369,7 +399,20 @@ impl ParallelExecutor {
                 pb.enable_steady_tick(std::time::Duration::from_millis(PROGRESS_BAR_TICK_RATE_MS));
 
                 tokio::spawn(async move {
-                    let _permit = semaphore.acquire().await.unwrap();
+                    let _permit = match semaphore.acquire().await {
+                        Ok(permit) => permit,
+                        Err(e) => {
+                            pb.finish_with_message(format!(
+                                "{} {}",
+                                "●".red(),
+                                "Semaphore closed".red()
+                            ));
+                            return DownloadResult {
+                                node,
+                                result: Err(anyhow::anyhow!("Semaphore acquisition failed: {}", e)),
+                            };
+                        }
+                    };
 
                     pb.set_message(format!("{}", "Downloading (SFTP)...".blue()));
 
@@ -439,7 +482,12 @@ impl ParallelExecutor {
 
         let style = ProgressStyle::default_bar()
             .template("{prefix:.bold} {spinner:.cyan} {msg}")
-            .unwrap()
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "Failed to create progress bar template for multi-download: {}",
+                    e
+                )
+            })?
             .tick_chars("⣾⣽⣻⢿⡿⣟⣯⣷ ");
 
         let mut all_results = Vec::new();
@@ -471,7 +519,23 @@ impl ParallelExecutor {
                     ));
 
                     tokio::spawn(async move {
-                        let _permit = semaphore.acquire().await.unwrap();
+                        let _permit = match semaphore.acquire().await {
+                            Ok(permit) => permit,
+                            Err(e) => {
+                                pb.finish_with_message(format!(
+                                    "{} {}",
+                                    "●".red(),
+                                    "Semaphore closed".red()
+                                ));
+                                return DownloadResult {
+                                    node,
+                                    result: Err(anyhow::anyhow!(
+                                        "Semaphore acquisition failed: {}",
+                                        e
+                                    )),
+                                };
+                            }
+                        };
 
                         // Generate unique filename for each node and file
                         let filename = if let Some(file_name) = Path::new(&remote_path).file_name()
