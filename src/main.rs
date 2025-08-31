@@ -683,20 +683,34 @@ async fn handle_cache_stats(detailed: bool, clear: bool, maintain: bool) {
     use owo_colors::OwoColorize;
 
     if clear {
-        GLOBAL_CACHE.clear();
+        if let Err(e) = GLOBAL_CACHE.clear() {
+            eprintln!("Failed to clear cache: {e}");
+            return;
+        }
         println!("{}", "Cache cleared".green());
     }
 
     if maintain {
-        let removed = GLOBAL_CACHE.maintain().await;
-        println!(
-            "{}: Removed {} expired/stale entries",
-            "Cache maintenance".yellow(),
-            removed
-        );
+        match GLOBAL_CACHE.maintain().await {
+            Ok(removed) => println!(
+                "{}: Removed {} expired/stale entries",
+                "Cache maintenance".yellow(),
+                removed
+            ),
+            Err(e) => {
+                eprintln!("Failed to maintain cache: {e}");
+                return;
+            }
+        }
     }
 
-    let stats = GLOBAL_CACHE.stats();
+    let stats = match GLOBAL_CACHE.stats() {
+        Ok(stats) => stats,
+        Err(e) => {
+            eprintln!("Failed to get cache stats: {e}");
+            return;
+        }
+    };
     let config = GLOBAL_CACHE.config();
 
     println!("\n{}", "SSH Configuration Cache Statistics".cyan().bold());
@@ -755,10 +769,15 @@ async fn handle_cache_stats(detailed: bool, clear: bool, maintain: bool) {
 
     if detailed && stats.current_entries > 0 {
         println!("\n{}", "Detailed Entry Information:".bright_blue());
-        let debug_info = GLOBAL_CACHE.debug_info();
-
-        for (path, info) in debug_info {
-            println!("  {}: {}", path.display().to_string().cyan(), info);
+        match GLOBAL_CACHE.debug_info() {
+            Ok(debug_info) => {
+                for (path, info) in debug_info {
+                    println!("  {}: {}", path.display().to_string().cyan(), info);
+                }
+            }
+            Err(e) => {
+                eprintln!("Failed to get debug info: {e}");
+            }
         }
     }
 

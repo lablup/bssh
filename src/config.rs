@@ -530,7 +530,10 @@ impl Config {
                 if cluster.interactive.is_none() {
                     cluster.interactive = Some(InteractiveConfig::default());
                 }
-                cluster.interactive.as_mut().unwrap()
+                cluster
+                    .interactive
+                    .as_mut()
+                    .expect("interactive config should exist after initialization")
             } else {
                 // Update global config
                 &mut self.interactive
@@ -667,10 +670,23 @@ fn expand_env_vars(input: &str) -> String {
             }
 
             if i > start + 1 {
-                let var_name = std::str::from_utf8(&bytes[start + 1..i]).unwrap();
+                let var_name = match std::str::from_utf8(&bytes[start + 1..i]) {
+                    Ok(name) => name,
+                    Err(_) => {
+                        // Invalid UTF-8 in environment variable name, skip
+                        new_result.push('$');
+                        continue;
+                    }
+                };
                 let replacement = std::env::var(var_name).unwrap_or_else(|_| {
                     tracing::debug!("Environment variable {} not found", var_name);
-                    String::from_utf8(bytes[start..i].to_vec()).unwrap()
+                    match String::from_utf8(bytes[start..i].to_vec()) {
+                        Ok(original) => original,
+                        Err(_) => {
+                            // Invalid UTF-8, use placeholder
+                            format!("$INVALID_UTF8_{start}")
+                        }
+                    }
                 });
                 new_result.push_str(&replacement);
             } else {
