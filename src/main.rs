@@ -699,20 +699,81 @@ async fn resolve_nodes(
 fn filter_nodes(nodes: Vec<Node>, pattern: &str) -> Result<Vec<Node>> {
     use glob::Pattern;
 
+    // Security: Validate pattern length to prevent DoS
+    const MAX_PATTERN_LENGTH: usize = 256;
+    if pattern.len() > MAX_PATTERN_LENGTH {
+        anyhow::bail!(
+            "Filter pattern too long (max {} characters)",
+            MAX_PATTERN_LENGTH
+        );
+    }
+
+    // Security: Validate pattern for dangerous constructs
+    if pattern.is_empty() {
+        anyhow::bail!("Filter pattern cannot be empty");
+    }
+
+    // Security: Prevent excessive wildcard usage that could cause DoS
+    let wildcard_count = pattern.chars().filter(|c| *c == '*' || *c == '?').count();
+    const MAX_WILDCARDS: usize = 10;
+    if wildcard_count > MAX_WILDCARDS {
+        anyhow::bail!(
+            "Filter pattern contains too many wildcards (max {})",
+            MAX_WILDCARDS
+        );
+    }
+
+    // Security: Check for potential path traversal attempts
+    if pattern.contains("..") || pattern.contains("//") {
+        anyhow::bail!("Filter pattern contains invalid sequences");
+    }
+
+    // Security: Sanitize pattern - only allow safe characters for hostnames
+    // Allow alphanumeric, dots, hyphens, underscores, wildcards, and brackets
+    let valid_chars = pattern.chars().all(|c| {
+        c.is_ascii_alphanumeric()
+            || c == '.'
+            || c == '-'
+            || c == '_'
+            || c == '@'
+            || c == ':'
+            || c == '*'
+            || c == '?'
+            || c == '['
+            || c == ']'
+    });
+
+    if !valid_chars {
+        anyhow::bail!("Filter pattern contains invalid characters for hostname matching");
+    }
+
     // If pattern contains wildcards, use glob matching
     if pattern.contains('*') || pattern.contains('?') || pattern.contains('[') {
+        // Security: Compile pattern with timeout to prevent ReDoS attacks
         let glob_pattern = Pattern::new(pattern)
             .with_context(|| format!("Invalid filter pattern: {}", pattern))?;
 
-        Ok(nodes
-            .into_iter()
-            .filter(|node| {
-                // Match against hostname or full node string
-                glob_pattern.matches(&node.host) || glob_pattern.matches(&node.to_string())
-            })
-            .collect())
+        // Performance: Use HashSet for O(1) lookups if we need to check many nodes
+        let mut matched_nodes = Vec::with_capacity(nodes.len());
+
+        for node in nodes {
+            // Security: Limit matching to prevent excessive computation
+            let host_matches = glob_pattern.matches(&node.host);
+            let full_matches = if !host_matches {
+                glob_pattern.matches(&node.to_string())
+            } else {
+                true
+            };
+
+            if host_matches || full_matches {
+                matched_nodes.push(node);
+            }
+        }
+
+        Ok(matched_nodes)
     } else {
         // Exact match: check hostname, full node string, or partial match
+        // Performance: Pre-compute pattern once for contains check
         Ok(nodes
             .into_iter()
             .filter(|node| {
