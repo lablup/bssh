@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use owo_colors::OwoColorize;
 use std::path::Path;
 
@@ -37,15 +37,23 @@ pub async fn upload_file(
     source: &Path,
     destination: &str,
 ) -> Result<()> {
+    // Security: Validate the local source path
+    let validated_source = crate::security::validate_local_path(source)
+        .with_context(|| format!("Invalid source path: {:?}", source))?;
+
+    // Security: Validate the remote destination path
+    let validated_destination = crate::security::validate_remote_path(destination)
+        .with_context(|| format!("Invalid destination path: {}", destination))?;
+
     // Collect all files matching the pattern
-    let files = resolve_source_files(source, params.recursive)?;
+    let files = resolve_source_files(&validated_source, params.recursive)?;
 
     if files.is_empty() {
         anyhow::bail!("No files found matching pattern: {:?}", source);
     }
 
     // Determine destination handling based on file count
-    let is_dir_destination = destination.ends_with('/') || files.len() > 1;
+    let is_dir_destination = validated_destination.ends_with('/') || files.len() > 1;
 
     // Display upload summary
     println!(
@@ -61,7 +69,11 @@ pub async fn upload_file(
             .map_or_else(|_| "unknown".to_string(), |m| format_bytes(m.len()));
         println!("  {} {} ({})", "•".dimmed(), file.display(), size.yellow());
     }
-    println!("{} {}\n", "Destination:".bold(), destination.green());
+    println!(
+        "{} {}\n",
+        "Destination:".bold(),
+        validated_destination.green()
+    );
 
     let key_path_str = params.key_path.map(|p| p.to_string_lossy().to_string());
     let executor = ParallelExecutor::new_with_all_options(
@@ -99,10 +111,10 @@ pub async fn upload_file(
                     // Create remote directory structure if needed
                     if let Some(parent) = relative_path.parent() {
                         if !parent.as_os_str().is_empty() {
-                            let remote_dir = if destination.ends_with('/') {
-                                format!("{destination}{}", parent.display())
+                            let remote_dir = if validated_destination.ends_with('/') {
+                                format!("{}{}", validated_destination, parent.display())
                             } else {
-                                format!("{destination}/{}", parent.display())
+                                format!("{}/{}", validated_destination, parent.display())
                             };
                             // Create remote directory using SSH command
                             let mkdir_cmd = format!("mkdir -p '{remote_dir}'");
@@ -110,10 +122,10 @@ pub async fn upload_file(
                         }
                     }
 
-                    if destination.ends_with('/') {
-                        format!("{destination}{remote_relative}")
+                    if validated_destination.ends_with('/') {
+                        format!("{}{remote_relative}", validated_destination)
                     } else {
-                        format!("{destination}/{remote_relative}")
+                        format!("{}/{remote_relative}", validated_destination)
                     }
                 } else {
                     // No base dir, just use filename
@@ -121,10 +133,10 @@ pub async fn upload_file(
                         .file_name()
                         .ok_or_else(|| anyhow::anyhow!("Failed to get filename from {:?}", file))?
                         .to_string_lossy();
-                    if destination.ends_with('/') {
-                        format!("{destination}{filename}")
+                    if validated_destination.ends_with('/') {
+                        format!("{}{filename}", validated_destination)
                     } else {
-                        format!("{destination}/{filename}")
+                        format!("{}/{filename}", validated_destination)
                     }
                 }
             } else {
@@ -133,15 +145,15 @@ pub async fn upload_file(
                     .file_name()
                     .ok_or_else(|| anyhow::anyhow!("Failed to get filename from {:?}", file))?
                     .to_string_lossy();
-                if destination.ends_with('/') {
-                    format!("{destination}{filename}")
+                if validated_destination.ends_with('/') {
+                    format!("{}{filename}", validated_destination)
                 } else {
-                    format!("{destination}/{filename}")
+                    format!("{}/{filename}", validated_destination)
                 }
             }
         } else {
             // Single file to specific destination
-            destination.to_string()
+            validated_destination.clone()
         };
 
         println!(

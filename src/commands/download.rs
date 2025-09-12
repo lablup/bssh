@@ -28,14 +28,24 @@ pub async fn download_file(
     source: &str,
     destination: &Path,
 ) -> Result<()> {
+    // Security: Validate the remote source path
+    let validated_source = crate::security::validate_remote_path(source)
+        .with_context(|| format!("Invalid source path: {}", source))?;
+
+    // Security: Validate the local destination path
+    let validated_destination = crate::security::validate_local_path(destination)
+        .with_context(|| format!("Invalid destination path: {:?}", destination))?;
+
     // Create destination directory if it doesn't exist
-    if !destination.exists() {
-        fs::create_dir_all(destination).await.with_context(|| {
-            format!(
-                "Failed to create destination directory: {}",
-                destination.display()
-            )
-        })?;
+    if !validated_destination.exists() {
+        fs::create_dir_all(&validated_destination)
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to create destination directory: {}",
+                    validated_destination.display()
+                )
+            })?;
     }
 
     let key_path_str = params.key_path.map(|p| p.to_string_lossy().to_string());
@@ -49,12 +59,17 @@ pub async fn download_file(
     );
 
     // Check if source contains glob pattern
-    let has_glob = source.contains('*') || source.contains('?') || source.contains('[');
+    let has_glob = validated_source.contains('*')
+        || validated_source.contains('?')
+        || validated_source.contains('[');
 
     // Check if source is a directory (for recursive download)
     let is_directory = if params.recursive && !has_glob {
         // Use a test command to check if source is a directory
-        let test_cmd = format!("test -d '{source}' && echo 'dir' || echo 'file'");
+        let test_cmd = format!(
+            "test -d '{}' && echo 'dir' || echo 'file'",
+            validated_source
+        );
         let test_results = executor.execute(&test_cmd).await?;
         test_results.iter().any(|r| {
             r.result
@@ -71,7 +86,7 @@ pub async fn download_file(
             "\n{} {} {} {} from {} nodes {}\n",
             "▶".cyan(),
             "Recursively downloading directory".cyan().bold(),
-            source.green(),
+            validated_source.green(),
             "from".dimmed(),
             params.nodes.len().to_string().yellow(),
             "(SFTP)".dimmed()
@@ -82,7 +97,7 @@ pub async fn download_file(
 
         // Download the entire directory from each node
         for node in &params.nodes {
-            let node_dir = destination.join(node.to_string());
+            let node_dir = validated_destination.join(node.to_string());
 
             println!(
                 "\n{} {} {} {} {:?}",
@@ -96,7 +111,7 @@ pub async fn download_file(
             // Use the download_dir_from_node function directly
             let result = executor::download_dir_from_node(
                 node.clone(),
-                source,
+                &validated_source,
                 &node_dir,
                 key_path_str.as_deref(),
                 params.strict_mode,
@@ -150,7 +165,7 @@ pub async fn download_file(
             .nodes
             .first()
             .ok_or_else(|| anyhow::anyhow!("No nodes available"))?;
-        let glob_command = format!("ls -1 {source} 2>/dev/null || true");
+        let glob_command = format!("ls -1 {} 2>/dev/null || true", validated_source);
 
         let mut test_client = SshClient::new(
             test_node.host.clone(),
@@ -176,7 +191,7 @@ pub async fn download_file(
             .collect();
 
         if remote_files.is_empty() {
-            anyhow::bail!("No files found matching pattern: {}", source);
+            anyhow::bail!("No files found matching pattern: {}", validated_source);
         }
 
         println!(
@@ -188,11 +203,15 @@ pub async fn download_file(
         for file in &remote_files {
             println!("  {} {}", "•".dimmed(), file.cyan());
         }
-        println!("{} {}\n", "Destination:".bold(), destination.display());
+        println!(
+            "{} {}\n",
+            "Destination:".bold(),
+            validated_destination.display()
+        );
 
         // Download each file
         let results = executor
-            .download_files(remote_files.clone(), destination)
+            .download_files(remote_files.clone(), &validated_destination)
             .await?;
 
         // Print results
@@ -226,13 +245,15 @@ pub async fn download_file(
             "\n{} {} {} from {} nodes to {} {}\n",
             "▶".cyan(),
             "Downloading".cyan().bold(),
-            source.green(),
+            validated_source.green(),
             params.nodes.len().to_string().yellow(),
-            destination.display(),
+            validated_destination.display(),
             "(SFTP)".dimmed()
         );
 
-        let results = executor.download_file(source, destination).await?;
+        let results = executor
+            .download_file(&validated_source, &validated_destination)
+            .await?;
 
         // Print results
         for result in &results {

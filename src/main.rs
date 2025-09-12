@@ -526,6 +526,22 @@ async fn main() -> Result<()> {
 
 /// Parse a node string with SSH config integration
 fn parse_node_with_ssh_config(node_str: &str, ssh_config: &SshConfig) -> Result<Node> {
+    // Security: Validate the node string to prevent injection attacks
+    if node_str.is_empty() {
+        anyhow::bail!("Node string cannot be empty");
+    }
+
+    // Check for dangerous characters that could cause issues
+    if node_str.contains(';')
+        || node_str.contains('&')
+        || node_str.contains('|')
+        || node_str.contains('`')
+        || node_str.contains('$')
+        || node_str.contains('\n')
+    {
+        anyhow::bail!("Node string contains invalid characters");
+    }
+
     // First parse the raw node string to extract user, host, port from CLI
     let (user_part, host_part) = if let Some(at_pos) = node_str.find('@') {
         let user = &node_str[..at_pos];
@@ -544,8 +560,18 @@ fn parse_node_with_ssh_config(node_str: &str, ssh_config: &SshConfig) -> Result<
         (host_part, None)
     };
 
+    // Security: Validate hostname
+    let validated_host = bssh::security::validate_hostname(raw_host)
+        .with_context(|| format!("Invalid hostname in node: {}", raw_host))?;
+
+    // Security: Validate username if provided
+    if let Some(user) = user_part {
+        bssh::security::validate_username(user)
+            .with_context(|| format!("Invalid username in node: {}", user))?;
+    }
+
     // Now resolve using SSH config with CLI taking precedence
-    let effective_hostname = ssh_config.get_effective_hostname(raw_host);
+    let effective_hostname = ssh_config.get_effective_hostname(&validated_host);
     let effective_user = if let Some(user) = user_part {
         user.to_string()
     } else if let Some(ssh_user) = ssh_config.get_effective_user(raw_host, None) {
