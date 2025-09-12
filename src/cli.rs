@@ -23,12 +23,12 @@ use std::path::PathBuf;
     before_help = "\n\nBroadcast SSH - Parallel command execution across cluster nodes",
     about = "Broadcast SSH - SSH-compatible parallel command execution tool",
     long_about = "bssh is a high-performance SSH client with parallel execution capabilities.\nIt can be used as a drop-in replacement for SSH (single host) or as a powerful cluster management tool (multiple hosts).\n\nThe tool provides secure file transfer using SFTP and supports SSH keys, SSH agent, and password authentication.\nIt automatically detects Backend.AI multi-node session environments.\n\nSSH Configuration Support:\n- Reads standard SSH config files (defaulting to ~/.ssh/config)\n- Supports Host patterns, HostName, User, Port, IdentityFile, StrictHostKeyChecking\n- ProxyJump, and many other SSH configuration directives\n- CLI arguments override SSH config values following SSH precedence rules",
-    after_help = "EXAMPLES:\n  SSH Mode:\n    bssh user@host                         # Interactive shell\n    bssh admin@server.com \"uptime\"         # Execute command\n    bssh -p 2222 -i ~/.ssh/key user@host   # Custom port and key\n    bssh -F ~/.ssh/myconfig webserver      # Use custom SSH config\n\n  Port Forwarding:\n    bssh -L 8080:example.com:80 user@host  # Local forward: localhost:8080 → example.com:80\n    bssh -R 8080:localhost:80 user@host    # Remote forward: remote:8080 → localhost:80\n    bssh -D 1080 user@host                 # SOCKS5 proxy on localhost:1080\n    bssh -L 3306:db:3306 -R 80:web:80 user@host  # Multiple forwards\n    bssh -D *:1080/4 user@host             # SOCKS4 proxy on all interfaces\n\n  Multi-Server Mode:\n    bssh -C production \"systemctl status\"  # Use cluster config\n    bssh -H \"web1,web2,web3\" \"df -h\"      # Direct hosts\n    bssh -F /etc/ssh/ssh_config -H web*    # SSH config with wildcards\n\n  File Operations:\n    bssh -C staging upload file.txt /tmp/  # Upload to cluster\n    bssh -H host1,host2 download /etc/hosts ./backups/\n\n  Other Commands:\n    bssh list                              # List configured clusters\n    bssh -C production ping                # Test connectivity\n\n  SSH Config Example (~/.ssh/config):\n    Host web*\n        HostName web.example.com\n        User webuser\n        Port 2222\n        IdentityFile ~/.ssh/web_key\n        StrictHostKeyChecking yes\n\nDeveloped and maintained as part of the Backend.AI project.\nFor more information: https://github.com/lablup/bssh"
+    after_help = "EXAMPLES:\n  SSH Mode:\n    bssh user@host                         # Interactive shell\n    bssh admin@server.com \"uptime\"         # Execute command\n    bssh -p 2222 -i ~/.ssh/key user@host   # Custom port and key\n    bssh -F ~/.ssh/myconfig webserver      # Use custom SSH config\n\n  Port Forwarding:\n    bssh -L 8080:example.com:80 user@host  # Local forward: localhost:8080 → example.com:80\n    bssh -R 8080:localhost:80 user@host    # Remote forward: remote:8080 → localhost:80\n    bssh -D 1080 user@host                 # SOCKS5 proxy on localhost:1080\n    bssh -L 3306:db:3306 -R 80:web:80 user@host  # Multiple forwards\n    bssh -D *:1080/4 user@host             # SOCKS4 proxy on all interfaces\n\n  Multi-Server Mode:\n    bssh -C production \"systemctl status\"  # Execute on cluster\n    bssh -H \"web1,web2,web3\" \"df -h\"      # Execute on multiple hosts\n    bssh -H \"web1,web2,web3\" -f \"web1\" \"df -h\"  # Filter to web1 only\n    bssh -C production -f \"web*\" \"uptime\"  # Filter cluster nodes\n    bssh --parallel 20 -H web* \"apt update\" # Increase parallelism\n\n  File Operations:\n    bssh -C staging upload file.txt /tmp/  # Upload to cluster\n    bssh -H host1,host2 download /etc/hosts ./backups/\n\n  Other Commands:\n    bssh list                              # List configured clusters\n    bssh -C production ping                # Test connectivity\n    bssh -H hosts interactive              # Interactive mode\n\n  SSH Config Example (~/.ssh/config):\n    Host web*\n        HostName web.example.com\n        User webuser\n        Port 2222\n        IdentityFile ~/.ssh/web_key\n        StrictHostKeyChecking yes\n\nDeveloped and maintained as part of the Backend.AI project.\nFor more information: https://github.com/lablup/bssh"
 )]
 pub struct Cli {
     /// SSH destination in format: [user@]hostname[:port] or ssh://[user@]hostname[:port]
     /// Used for SSH compatibility mode (single host connection)
-    #[arg(value_name = "destination", conflicts_with_all = ["cluster", "hosts"])]
+    #[arg(value_name = "destination")]
     pub destination: Option<String>,
 
     #[command(subcommand)]
@@ -41,6 +41,13 @@ pub struct Cli {
         help = "Comma-separated list of hosts in [user@]hostname[:port] format\nExamples: 'host1,host2' or 'user1@host1:2222,user2@host2'\nDefault user and port from config or current environment will be used if not specified"
     )]
     pub hosts: Option<Vec<String>>,
+
+    #[arg(
+        short = 'f',
+        long = "filter",
+        help = "Filter hosts by pattern (supports wildcards like 'web*')\nUse with -H or -C to execute on a subset of hosts\nExamples: 'web*' matches web01, web02, etc."
+    )]
+    pub filter: Option<String>,
 
     #[arg(
         short = 'C',
@@ -133,7 +140,11 @@ pub struct Cli {
     )]
     pub timeout: u64,
 
-    #[arg(trailing_var_arg = true, help = "Command to execute on remote hosts")]
+    #[arg(
+        trailing_var_arg = true,
+        help = "Command to execute on remote hosts",
+        allow_hyphen_values = true
+    )]
     pub command_args: Vec<String>,
 
     // SSH-compatible options
@@ -226,16 +237,6 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
-    #[command(
-        about = "Execute a command on specified hosts",
-        long_about = "Executes the specified command on all target hosts simultaneously.\nOutput is streamed in real-time with host prefixes for identification.\nSupports command timeout, output redirection, and partial failure handling.\n\nExit codes: 0 (all succeed), 1 (any failures)",
-        after_help = "Examples:\n  bssh exec \"uptime\"                    # Execute on auto-detected or default hosts\n  bssh -c prod exec \"systemctl status\"  # Execute on cluster 'prod'\n  bssh -p 20 exec \"apt update\"          # Increase parallelism to 20\n  bssh --output-dir logs exec \"df -h\"   # Save outputs to files"
-    )]
-    Exec {
-        #[arg(trailing_var_arg = true)]
-        command: Vec<String>,
-    },
-
     #[command(
         about = "List available clusters",
         long_about = "Displays all clusters defined in configuration files.\nShows cluster names, node counts, and configuration sources.\nIncludes auto-detected Backend.AI clusters if present.\n\nConfiguration sources checked (in order):\n  - Backend.AI environment variables\n  - Current directory (./config.yaml)\n  - User config (~/.config/bssh/config.yaml)"
@@ -347,23 +348,63 @@ pub enum Commands {
 
 impl Cli {
     pub fn get_command(&self) -> String {
-        if !self.command_args.is_empty() {
+        // In multi-server mode with destination, treat destination as first command arg
+        if self.is_multi_server_mode() && self.destination.is_some() {
+            let mut all_args = vec![self.destination.as_ref().unwrap().clone()];
+            all_args.extend(self.command_args.clone());
+            all_args.join(" ")
+        } else if !self.command_args.is_empty() {
             self.command_args.join(" ")
-        } else if let Some(Commands::Exec { command }) = &self.command {
-            command.join(" ")
         } else {
             String::new()
         }
     }
 
+    /// Check if the first command arg is a known subcommand
+    pub fn is_known_subcommand(arg: &str) -> bool {
+        matches!(
+            arg,
+            "list" | "ping" | "upload" | "download" | "interactive" | "cache-stats"
+        )
+    }
+
+    /// Determine if we should auto-execute a command
+    pub fn should_auto_exec(&self) -> bool {
+        // If in multi-server mode with destination or command_args, treat as exec
+        if self.is_multi_server_mode() {
+            // Check if destination is a known subcommand
+            if let Some(dest) = &self.destination {
+                if Self::is_known_subcommand(dest) {
+                    return false; // It's a subcommand, not auto-exec
+                }
+                return true; // Has destination that's not a subcommand
+            }
+            // Check command_args
+            if !self.command_args.is_empty() {
+                if Self::is_known_subcommand(&self.command_args[0]) {
+                    return false;
+                }
+                return true;
+            }
+        }
+        false
+    }
+
     /// Check if running in SSH compatibility mode (single host)
     pub fn is_ssh_mode(&self) -> bool {
+        // Only SSH mode if destination is provided and no cluster/hosts
+        // If hosts/cluster is present, destination should be treated as first command arg
         self.destination.is_some() && self.cluster.is_none() && self.hosts.is_none()
     }
 
     /// Check if running in multi-server mode
     pub fn is_multi_server_mode(&self) -> bool {
         self.cluster.is_some() || self.hosts.is_some()
+    }
+
+    /// Get the host filter pattern if specified
+    pub fn get_host_filter(&self) -> Option<&str> {
+        self.filter.as_deref()
     }
 
     /// Parse destination string into components (user, host, port)

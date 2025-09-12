@@ -42,7 +42,7 @@ fn show_usage() {
     println!("           [--output-dir dir] [--timeout seconds] [--use-agent]");
     println!("           destination [command [argument ...]]");
     println!("       bssh [-Q query_option]");
-    println!("       bssh [exec|list|ping|upload|download|interactive] ...");
+    println!("       bssh [list|ping|upload|download|interactive] ...");
     println!();
     println!("SSH Config Support:");
     println!("  -F ssh_configfile    Use alternative SSH configuration file");
@@ -140,7 +140,9 @@ async fn main() -> Result<()> {
     };
 
     // Handle list command first (doesn't need nodes)
-    if matches!(cli.command, Some(Commands::List)) {
+    if matches!(cli.command, Some(Commands::List))
+        || (cli.is_multi_server_mode() && cli.destination.as_deref() == Some("list"))
+    {
         list_clusters(&config);
         return Ok(());
     }
@@ -215,10 +217,10 @@ async fn main() -> Result<()> {
     // Get command to execute
     let command = cli.get_command();
 
-    // Check if command is required (not for subcommands like ping, copy)
-    // In SSH mode without a command, we start an interactive session
-    let needs_command =
-        matches!(cli.command, None | Some(Commands::Exec { .. })) && !cli.is_ssh_mode();
+    // Check if command is required
+    // Auto-exec happens when in multi-server mode with command_args
+    let is_auto_exec = cli.should_auto_exec();
+    let needs_command = (cli.command.is_none() || is_auto_exec) && !cli.is_ssh_mode();
     if command.is_empty() && needs_command && !cli.force_tty {
         anyhow::bail!(
             "No command specified. Please provide a command to execute.\nExample: bssh -H host1,host2 'ls -la'"
@@ -233,6 +235,14 @@ async fn main() -> Result<()> {
     };
 
     // Handle remaining commands
+    // Check if destination is a subcommand in multi-server mode
+    // Check if destination is a subcommand in multi-server mode
+    let _dest_as_subcommand = if cli.is_multi_server_mode() {
+        cli.destination.as_deref()
+    } else {
+        None
+    };
+
     match cli.command {
         Some(Commands::Ping) => {
             // Determine SSH key path with SSH config integration
@@ -402,7 +412,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         _ => {
-            // Execute command (default or Exec subcommand) or interactive shell
+            // Execute command (auto-exec or interactive shell)
             // In SSH mode without command, start interactive session
             if cli.is_ssh_mode() && command.is_empty() {
                 // SSH mode interactive session (like ssh user@host)
@@ -674,7 +684,42 @@ async fn resolve_nodes(
         }
     }
 
+    // Apply host filter if destination is used as a filter pattern
+    if let Some(filter) = cli.get_host_filter() {
+        nodes = filter_nodes(nodes, filter)?;
+        if nodes.is_empty() {
+            anyhow::bail!("No hosts matched the filter pattern: {}", filter);
+        }
+    }
+
     Ok((nodes, cluster_name))
+}
+
+/// Filter nodes based on a pattern (supports wildcards)
+fn filter_nodes(nodes: Vec<Node>, pattern: &str) -> Result<Vec<Node>> {
+    use glob::Pattern;
+
+    // If pattern contains wildcards, use glob matching
+    if pattern.contains('*') || pattern.contains('?') || pattern.contains('[') {
+        let glob_pattern = Pattern::new(pattern)
+            .with_context(|| format!("Invalid filter pattern: {}", pattern))?;
+
+        Ok(nodes
+            .into_iter()
+            .filter(|node| {
+                // Match against hostname or full node string
+                glob_pattern.matches(&node.host) || glob_pattern.matches(&node.to_string())
+            })
+            .collect())
+    } else {
+        // Exact match: check hostname, full node string, or partial match
+        Ok(nodes
+            .into_iter()
+            .filter(|node| {
+                node.host == pattern || node.to_string() == pattern || node.host.contains(pattern)
+            })
+            .collect())
+    }
 }
 
 /// Handle cache statistics command

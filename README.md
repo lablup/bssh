@@ -152,11 +152,15 @@ bssh -J bastion.example.com -C production "uptime"
 
 ### Multi-Server Mode (Cluster Operations)
 ```bash
-# Using direct host specification
+# Execute commands on multiple hosts (automatic command execution)
 bssh -H "user1@host1.com,user2@host2.com:2222" "uptime"
 
 # Using cluster from config
 bssh -C production "df -h"
+
+# Filter specific hosts with pattern matching
+bssh -H "web1,web2,db1,db2" -f "web*" "systemctl status nginx"
+bssh -C production -f "db*" "pg_dump --version"
 
 # With custom SSH key
 bssh -C staging -i ~/.ssh/custom_key "systemctl status nginx"
@@ -180,14 +184,22 @@ bssh -C production --timeout 10 "quick-check"
 bssh -C staging --timeout 0 "long-running-backup"
 ```
 
-### Test connectivity
+### Built-in Commands
 ```bash
+# Test connectivity to hosts
 bssh -C production ping
-```
+bssh -H "host1,host2" ping
 
-### List configured clusters
-```bash
+# List configured clusters
 bssh list
+
+# Interactive mode (single or multiplexed)
+bssh -C production interactive
+bssh -H "host1,host2" interactive
+
+# File transfer operations
+bssh -C production upload local.txt /tmp/
+bssh -H "host1,host2" download /etc/hosts ./backups/
 ```
 
 ## Authentication
