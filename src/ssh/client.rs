@@ -216,16 +216,13 @@ impl SshClient {
                 // Specific error from the SSH connection attempt
                 let error_msg = match &e {
                     super::tokio_client::Error::KeyAuthFailed => {
-                        format!("Authentication failed for user '{}' on {}:{}. The private key was rejected by the server.", 
-                                self.username, self.host, self.port)
+                        "Authentication failed. The private key was rejected by the server.".to_string()
                     }
                     super::tokio_client::Error::PasswordWrong => {
-                        format!("Password authentication failed for user '{}' on {}:{}", 
-                                self.username, self.host, self.port)
+                        "Password authentication failed.".to_string()
                     }
                     super::tokio_client::Error::ServerCheckFailed => {
-                        format!("Host key verification failed for {}:{}. The server's host key was not recognized or has changed.", 
-                                self.host, self.port)
+                        "Host key verification failed. The server's host key was not recognized or has changed.".to_string()
                     }
                     super::tokio_client::Error::KeyInvalid(key_err) => {
                         format!("Failed to load SSH key: {}. Please check the key file format and passphrase.", key_err)
@@ -237,23 +234,20 @@ impl SshClient {
                         "SSH agent has no identities. Please add your key to the agent using 'ssh-add'.".to_string()
                     }
                     super::tokio_client::Error::AgentAuthenticationFailed => {
-                        format!("SSH agent authentication failed for user '{}' on {}:{}", 
-                                self.username, self.host, self.port)
+                        "SSH agent authentication failed.".to_string()
                     }
                     super::tokio_client::Error::SshError(ssh_err) => {
-                        format!("SSH connection error to {}:{}: {}", self.host, self.port, ssh_err)
+                        format!("SSH connection error: {}", ssh_err)
                     }
                     _ => {
-                        format!("Failed to connect to {}:{}: {}", self.host, self.port, e)
+                        format!("Failed to connect: {}", e)
                     }
                 };
                 Err(anyhow::anyhow!(error_msg).context(e))
             }
             Err(_) => Err(anyhow::anyhow!(
-                "Connection timeout: Failed to connect to {}:{} after {} seconds. \
+                "Connection timeout after {} seconds. \
                      Please check if the host is reachable and SSH service is running.",
-                self.host,
-                self.port,
                 SSH_CONNECT_TIMEOUT_SECS
             )),
         }
@@ -342,7 +336,10 @@ impl SshClient {
                 let context = format!("SSH connection to {}:{}", self.host, self.port);
                 let detailed = match &e {
                     super::tokio_client::Error::KeyAuthFailed => {
-                        format!("{} failed: Authentication rejected for user '{}' with provided SSH key", context, self.username)
+                        format!(
+                            "{} failed: Authentication rejected with provided SSH key",
+                            context
+                        )
                     }
                     super::tokio_client::Error::KeyInvalid(err) => {
                         format!("{} failed: Invalid SSH key - {}", context, err)
@@ -351,10 +348,7 @@ impl SshClient {
                         format!("{} failed: Host key verification failed. The server's host key is not trusted.", context)
                     }
                     super::tokio_client::Error::PasswordWrong => {
-                        format!(
-                            "{} failed: Password authentication rejected for user '{}'",
-                            context, self.username
-                        )
+                        format!("{} failed: Password authentication rejected", context)
                     }
                     super::tokio_client::Error::AgentConnectionFailed => {
                         format!(
@@ -369,10 +363,7 @@ impl SshClient {
                         )
                     }
                     super::tokio_client::Error::AgentAuthenticationFailed => {
-                        format!(
-                            "{} failed: SSH agent authentication rejected for user '{}'",
-                            context, self.username
-                        )
+                        format!("{} failed: SSH agent authentication rejected", context)
                     }
                     _ => format!("{} failed: {}", context, e),
                 };
@@ -380,8 +371,8 @@ impl SshClient {
             }
             Err(_) => {
                 return Err(anyhow::anyhow!(
-                    "Connection timeout after {} seconds to {}:{}. Host may be unreachable or SSH service not running.",
-                    SSH_CONNECT_TIMEOUT_SECS, self.host, self.port
+                    "Connection timeout after {} seconds. Host may be unreachable or SSH service not running.",
+                    SSH_CONNECT_TIMEOUT_SECS
                 ));
             }
         };
@@ -480,7 +471,10 @@ impl SshClient {
                 let context = format!("SSH connection to {}:{}", self.host, self.port);
                 let detailed = match &e {
                     super::tokio_client::Error::KeyAuthFailed => {
-                        format!("{} failed: Authentication rejected for user '{}' with provided SSH key", context, self.username)
+                        format!(
+                            "{} failed: Authentication rejected with provided SSH key",
+                            context
+                        )
                     }
                     super::tokio_client::Error::KeyInvalid(err) => {
                         format!("{} failed: Invalid SSH key - {}", context, err)
@@ -489,10 +483,7 @@ impl SshClient {
                         format!("{} failed: Host key verification failed. The server's host key is not trusted.", context)
                     }
                     super::tokio_client::Error::PasswordWrong => {
-                        format!(
-                            "{} failed: Password authentication rejected for user '{}'",
-                            context, self.username
-                        )
+                        format!("{} failed: Password authentication rejected", context)
                     }
                     super::tokio_client::Error::AgentConnectionFailed => {
                         format!(
@@ -507,10 +498,7 @@ impl SshClient {
                         )
                     }
                     super::tokio_client::Error::AgentAuthenticationFailed => {
-                        format!(
-                            "{} failed: SSH agent authentication rejected for user '{}'",
-                            context, self.username
-                        )
+                        format!("{} failed: SSH agent authentication rejected", context)
                     }
                     _ => format!("{} failed: {}", context, e),
                 };
@@ -518,8 +506,8 @@ impl SshClient {
             }
             Err(_) => {
                 return Err(anyhow::anyhow!(
-                    "Connection timeout after {} seconds to {}:{}. Host may be unreachable or SSH service not running.",
-                    SSH_CONNECT_TIMEOUT_SECS, self.host, self.port
+                    "Connection timeout after {} seconds. Host may be unreachable or SSH service not running.",
+                    SSH_CONNECT_TIMEOUT_SECS
                 ));
             }
         };
@@ -614,7 +602,10 @@ impl SshClient {
                 let context = format!("SSH connection to {}:{}", self.host, self.port);
                 let detailed = match &e {
                     super::tokio_client::Error::KeyAuthFailed => {
-                        format!("{} failed: Authentication rejected for user '{}' with provided SSH key", context, self.username)
+                        format!(
+                            "{} failed: Authentication rejected with provided SSH key",
+                            context
+                        )
                     }
                     super::tokio_client::Error::KeyInvalid(err) => {
                         format!("{} failed: Invalid SSH key - {}", context, err)
@@ -623,10 +614,7 @@ impl SshClient {
                         format!("{} failed: Host key verification failed. The server's host key is not trusted.", context)
                     }
                     super::tokio_client::Error::PasswordWrong => {
-                        format!(
-                            "{} failed: Password authentication rejected for user '{}'",
-                            context, self.username
-                        )
+                        format!("{} failed: Password authentication rejected", context)
                     }
                     _ => format!("{} failed: {}", context, e),
                 };
@@ -634,8 +622,8 @@ impl SshClient {
             }
             Err(_) => {
                 return Err(anyhow::anyhow!(
-                    "Connection timeout after {} seconds to {}:{}. Host may be unreachable or SSH service not running.",
-                    SSH_CONNECT_TIMEOUT_SECS, self.host, self.port
+                    "Connection timeout after {} seconds. Host may be unreachable or SSH service not running.",
+                    SSH_CONNECT_TIMEOUT_SECS
                 ));
             }
         };
@@ -733,7 +721,10 @@ impl SshClient {
                 let context = format!("SSH connection to {}:{}", self.host, self.port);
                 let detailed = match &e {
                     super::tokio_client::Error::KeyAuthFailed => {
-                        format!("{} failed: Authentication rejected for user '{}' with provided SSH key", context, self.username)
+                        format!(
+                            "{} failed: Authentication rejected with provided SSH key",
+                            context
+                        )
                     }
                     super::tokio_client::Error::KeyInvalid(err) => {
                         format!("{} failed: Invalid SSH key - {}", context, err)
@@ -742,10 +733,7 @@ impl SshClient {
                         format!("{} failed: Host key verification failed. The server's host key is not trusted.", context)
                     }
                     super::tokio_client::Error::PasswordWrong => {
-                        format!(
-                            "{} failed: Password authentication rejected for user '{}'",
-                            context, self.username
-                        )
+                        format!("{} failed: Password authentication rejected", context)
                     }
                     _ => format!("{} failed: {}", context, e),
                 };
@@ -753,8 +741,8 @@ impl SshClient {
             }
             Err(_) => {
                 return Err(anyhow::anyhow!(
-                    "Connection timeout after {} seconds to {}:{}. Host may be unreachable or SSH service not running.",
-                    SSH_CONNECT_TIMEOUT_SECS, self.host, self.port
+                    "Connection timeout after {} seconds. Host may be unreachable or SSH service not running.",
+                    SSH_CONNECT_TIMEOUT_SECS
                 ));
             }
         };

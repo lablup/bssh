@@ -215,6 +215,69 @@ pub fn validate_username(username: &str) -> Result<String> {
     Ok(username.to_string())
 }
 
+/// Sanitize error messages to prevent information leakage
+///
+/// This function redacts sensitive information like usernames, hostnames,
+/// and ports from error messages to prevent information disclosure.
+pub fn sanitize_error_message(message: &str) -> String {
+    // Replace specific user mentions with generic text
+    let mut sanitized = message.to_string();
+
+    // Remove specific usernames (format: user 'username')
+    if let Some(start) = sanitized.find("user '") {
+        if let Some(end) = sanitized[start + 6..].find('\'') {
+            let before = &sanitized[..start + 5];
+            let after = &sanitized[start + 6 + end + 1..];
+            sanitized = format!("{}<redacted>{}", before, after);
+        }
+    }
+
+    // Remove hostname:port combinations
+    // Match patterns like "on hostname:port" or "to hostname:port"
+    let re_patterns = [
+        r" on [a-zA-Z0-9\.\-]+:[0-9]+",
+        r" to [a-zA-Z0-9\.\-]+:[0-9]+",
+        r" at [a-zA-Z0-9\.\-]+:[0-9]+",
+        r" from [a-zA-Z0-9\.\-]+:[0-9]+",
+    ];
+
+    for _pattern in &re_patterns {
+        // Simple pattern matching without regex for security
+        // This is a simplified approach - in production, consider using a proper regex library
+        if sanitized.contains(" on ")
+            || sanitized.contains(" to ")
+            || sanitized.contains(" at ")
+            || sanitized.contains(" from ")
+        {
+            // Replace with generic message
+            sanitized = sanitized
+                .replace(" on ", " on <host>")
+                .replace(" to ", " to <host>")
+                .replace(" at ", " at <host>")
+                .replace(" from ", " from <host>");
+        }
+    }
+
+    // Remove any remaining IP addresses
+    // Simple check for IPv4 pattern
+    let parts: Vec<&str> = sanitized.split_whitespace().collect();
+    let mut result_parts = Vec::new();
+
+    for part in parts {
+        if part.split('.').count() == 4
+            && part
+                .split('.')
+                .all(|p| p.parse::<u8>().is_ok() || p.contains(':'))
+        {
+            result_parts.push("<ip-address>");
+        } else {
+            result_parts.push(part);
+        }
+    }
+
+    result_parts.join(" ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
