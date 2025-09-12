@@ -20,6 +20,7 @@ pub mod forwarding;
 pub mod jump;
 pub mod node;
 pub mod pty;
+pub mod security;
 pub mod ssh;
 pub mod ui;
 pub mod utils;

@@ -845,7 +845,7 @@ impl JumpHostChain {
         match auth_method {
             AuthMethod::Password(password) => {
                 let auth_result = handle
-                    .authenticate_password(username, password)
+                    .authenticate_password(username, &**password)
                     .await
                     .map_err(|e| anyhow::anyhow!("Password authentication failed: {}", e))?;
 
@@ -856,7 +856,7 @@ impl JumpHostChain {
 
             AuthMethod::PrivateKey { key_data, key_pass } => {
                 let private_key =
-                    russh::keys::decode_secret_key(key_data.as_str(), key_pass.as_deref())
+                    russh::keys::decode_secret_key(&key_data, key_pass.as_ref().map(|p| &***p))
                         .map_err(|e| anyhow::anyhow!("Failed to decode private key: {}", e))?;
 
                 let auth_result = handle
@@ -879,8 +879,11 @@ impl JumpHostChain {
                 key_file_path,
                 key_pass,
             } => {
-                let private_key = russh::keys::load_secret_key(key_file_path, key_pass.as_deref())
-                    .map_err(|e| anyhow::anyhow!("Failed to load private key from file: {}", e))?;
+                let private_key = russh::keys::load_secret_key(
+                    key_file_path,
+                    key_pass.as_ref().map(|p| &***p),
+                )
+                .map_err(|e| anyhow::anyhow!("Failed to load private key from file: {}", e))?;
 
                 let auth_result = handle
                     .authenticate_publickey(

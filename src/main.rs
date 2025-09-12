@@ -42,7 +42,7 @@ fn show_usage() {
     println!("           [--output-dir dir] [--timeout seconds] [--use-agent]");
     println!("           destination [command [argument ...]]");
     println!("       bssh [-Q query_option]");
-    println!("       bssh [exec|list|ping|upload|download|interactive] ...");
+    println!("       bssh [list|ping|upload|download|interactive] ...");
     println!();
     println!("SSH Config Support:");
     println!("  -F ssh_configfile    Use alternative SSH configuration file");
@@ -140,7 +140,9 @@ async fn main() -> Result<()> {
     };
 
     // Handle list command first (doesn't need nodes)
-    if matches!(cli.command, Some(Commands::List)) {
+    if matches!(cli.command, Some(Commands::List))
+        || (cli.is_multi_server_mode() && cli.destination.as_deref() == Some("list"))
+    {
         list_clusters(&config);
         return Ok(());
     }
@@ -215,10 +217,10 @@ async fn main() -> Result<()> {
     // Get command to execute
     let command = cli.get_command();
 
-    // Check if command is required (not for subcommands like ping, copy)
-    // In SSH mode without a command, we start an interactive session
-    let needs_command =
-        matches!(cli.command, None | Some(Commands::Exec { .. })) && !cli.is_ssh_mode();
+    // Check if command is required
+    // Auto-exec happens when in multi-server mode with command_args
+    let is_auto_exec = cli.should_auto_exec();
+    let needs_command = (cli.command.is_none() || is_auto_exec) && !cli.is_ssh_mode();
     if command.is_empty() && needs_command && !cli.force_tty {
         anyhow::bail!(
             "No command specified. Please provide a command to execute.\nExample: bssh -H host1,host2 'ls -la'"
@@ -233,6 +235,14 @@ async fn main() -> Result<()> {
     };
 
     // Handle remaining commands
+    // Check if destination is a subcommand in multi-server mode
+    // Check if destination is a subcommand in multi-server mode
+    let _dest_as_subcommand = if cli.is_multi_server_mode() {
+        cli.destination.as_deref()
+    } else {
+        None
+    };
+
     match cli.command {
         Some(Commands::Ping) => {
             // Determine SSH key path with SSH config integration
@@ -402,7 +412,7 @@ async fn main() -> Result<()> {
             Ok(())
         }
         _ => {
-            // Execute command (default or Exec subcommand) or interactive shell
+            // Execute command (auto-exec or interactive shell)
             // In SSH mode without command, start interactive session
             if cli.is_ssh_mode() && command.is_empty() {
                 // SSH mode interactive session (like ssh user@host)
@@ -516,6 +526,22 @@ async fn main() -> Result<()> {
 
 /// Parse a node string with SSH config integration
 fn parse_node_with_ssh_config(node_str: &str, ssh_config: &SshConfig) -> Result<Node> {
+    // Security: Validate the node string to prevent injection attacks
+    if node_str.is_empty() {
+        anyhow::bail!("Node string cannot be empty");
+    }
+
+    // Check for dangerous characters that could cause issues
+    if node_str.contains(';')
+        || node_str.contains('&')
+        || node_str.contains('|')
+        || node_str.contains('`')
+        || node_str.contains('$')
+        || node_str.contains('\n')
+    {
+        anyhow::bail!("Node string contains invalid characters");
+    }
+
     // First parse the raw node string to extract user, host, port from CLI
     let (user_part, host_part) = if let Some(at_pos) = node_str.find('@') {
         let user = &node_str[..at_pos];
@@ -534,8 +560,18 @@ fn parse_node_with_ssh_config(node_str: &str, ssh_config: &SshConfig) -> Result<
         (host_part, None)
     };
 
+    // Security: Validate hostname
+    let validated_host = bssh::security::validate_hostname(raw_host)
+        .with_context(|| format!("Invalid hostname in node: {}", raw_host))?;
+
+    // Security: Validate username if provided
+    if let Some(user) = user_part {
+        bssh::security::validate_username(user)
+            .with_context(|| format!("Invalid username in node: {}", user))?;
+    }
+
     // Now resolve using SSH config with CLI taking precedence
-    let effective_hostname = ssh_config.get_effective_hostname(raw_host);
+    let effective_hostname = ssh_config.get_effective_hostname(&validated_host);
     let effective_user = if let Some(user) = user_part {
         user.to_string()
     } else if let Some(ssh_user) = ssh_config.get_effective_user(raw_host, None) {
@@ -674,7 +710,103 @@ async fn resolve_nodes(
         }
     }
 
+    // Apply host filter if destination is used as a filter pattern
+    if let Some(filter) = cli.get_host_filter() {
+        nodes = filter_nodes(nodes, filter)?;
+        if nodes.is_empty() {
+            anyhow::bail!("No hosts matched the filter pattern: {}", filter);
+        }
+    }
+
     Ok((nodes, cluster_name))
+}
+
+/// Filter nodes based on a pattern (supports wildcards)
+fn filter_nodes(nodes: Vec<Node>, pattern: &str) -> Result<Vec<Node>> {
+    use glob::Pattern;
+
+    // Security: Validate pattern length to prevent DoS
+    const MAX_PATTERN_LENGTH: usize = 256;
+    if pattern.len() > MAX_PATTERN_LENGTH {
+        anyhow::bail!(
+            "Filter pattern too long (max {} characters)",
+            MAX_PATTERN_LENGTH
+        );
+    }
+
+    // Security: Validate pattern for dangerous constructs
+    if pattern.is_empty() {
+        anyhow::bail!("Filter pattern cannot be empty");
+    }
+
+    // Security: Prevent excessive wildcard usage that could cause DoS
+    let wildcard_count = pattern.chars().filter(|c| *c == '*' || *c == '?').count();
+    const MAX_WILDCARDS: usize = 10;
+    if wildcard_count > MAX_WILDCARDS {
+        anyhow::bail!(
+            "Filter pattern contains too many wildcards (max {})",
+            MAX_WILDCARDS
+        );
+    }
+
+    // Security: Check for potential path traversal attempts
+    if pattern.contains("..") || pattern.contains("//") {
+        anyhow::bail!("Filter pattern contains invalid sequences");
+    }
+
+    // Security: Sanitize pattern - only allow safe characters for hostnames
+    // Allow alphanumeric, dots, hyphens, underscores, wildcards, and brackets
+    let valid_chars = pattern.chars().all(|c| {
+        c.is_ascii_alphanumeric()
+            || c == '.'
+            || c == '-'
+            || c == '_'
+            || c == '@'
+            || c == ':'
+            || c == '*'
+            || c == '?'
+            || c == '['
+            || c == ']'
+    });
+
+    if !valid_chars {
+        anyhow::bail!("Filter pattern contains invalid characters for hostname matching");
+    }
+
+    // If pattern contains wildcards, use glob matching
+    if pattern.contains('*') || pattern.contains('?') || pattern.contains('[') {
+        // Security: Compile pattern with timeout to prevent ReDoS attacks
+        let glob_pattern = Pattern::new(pattern)
+            .with_context(|| format!("Invalid filter pattern: {}", pattern))?;
+
+        // Performance: Use HashSet for O(1) lookups if we need to check many nodes
+        let mut matched_nodes = Vec::with_capacity(nodes.len());
+
+        for node in nodes {
+            // Security: Limit matching to prevent excessive computation
+            let host_matches = glob_pattern.matches(&node.host);
+            let full_matches = if !host_matches {
+                glob_pattern.matches(&node.to_string())
+            } else {
+                true
+            };
+
+            if host_matches || full_matches {
+                matched_nodes.push(node);
+            }
+        }
+
+        Ok(matched_nodes)
+    } else {
+        // Exact match: check hostname, full node string, or partial match
+        // Performance: Pre-compute pattern once for contains check
+        Ok(nodes
+            .into_iter()
+            .filter(|node| {
+                node.host == pattern || node.to_string() == pattern || node.host.contains(pattern)
+            })
+            .collect())
+    }
 }
 
 /// Handle cache statistics command

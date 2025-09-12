@@ -69,7 +69,16 @@ pub async fn ping_nodes(
                 "Failed".red()
             );
             if let Err(e) = &result.result {
-                println!("    {} {}", "└".dimmed(), e.to_string().dimmed());
+                // Display the full error chain for better debugging
+                let error_chain = format!("{:#}", e);
+                // Split by newlines and indent each line
+                for (i, line) in error_chain.lines().enumerate() {
+                    if i == 0 {
+                        println!("    {} {}", "└".dimmed(), line.dimmed());
+                    } else {
+                        println!("      {}", line.dimmed());
+                    }
+                }
             }
         }
     }
