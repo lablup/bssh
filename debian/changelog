@@ -1,3 +1,43 @@
+bssh (0.8.0-1~jammy1) jammy; urgency=medium
+
+  * v0.8.0
+  ### New Features
+  - **SSH Port Forwarding**: Added comprehensive SSH port forwarding support with local (-L), remote (-R), and dynamic (-D) SOCKS5 forwarding (#31)
+    - Local port forwarding for accessing remote services through local ports
+    - Remote port forwarding for exposing local services to remote servers
+    - Dynamic port forwarding with SOCKS5 proxy support
+    - Multiple simultaneous port forwarding configurations
+    - Full integration with all authentication methods
+  
+  ### Improvements
+  - **Error Handling**: Removed dangerous unwrap() calls throughout the codebase for better stability (#35)
+  - **SSH Error Messages**: Improved error messages for SSH connection failures and authentication issues (#36)
+  - **Command Execution**: Enabled automatic command execution for better usability
+  
+  ### Bug Fixes
+  - Fixed potential panics from unwrap() calls in production code
+  - Improved error recovery and reporting for SSH operations
+  
+  ### CI/CD Improvements
+  None
+  
+  ### Technical Details
+  - Complete SSH port forwarding implementation with Phase 1 and Phase 2 features
+  - Comprehensive port forwarding architecture documentation
+  - Enhanced error handling with proper Result types and context
+  - Fixed DNS resolution errors in forwarding tests
+  
+  ### Dependencies
+  - No major dependency changes in this release
+  
+  ### Breaking Changes
+  None
+  
+  ### Known Issues
+  None
+
+ -- Jeongkyu Shin <inureyes@gmail.com>  Thu, 12 Sep 2025 00:00:00 +0900
+
 bssh (0.7.0-1~jammy1) jammy; urgency=medium
 
   * v0.7.0
