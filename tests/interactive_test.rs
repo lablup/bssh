@@ -194,7 +194,7 @@ mod auth_method_tests {
     fn test_auth_method_creation() {
         // Test password auth
         let auth = AuthMethod::with_password("test_password");
-        assert_eq!(auth, AuthMethod::Password(String::from("test_password")));
+        assert_eq!(auth, AuthMethod::with_password("test_password"));
 
         // Test key file auth
         let auth = AuthMethod::with_key_file("/path/to/key", Some("passphrase"));
@@ -204,7 +204,7 @@ mod auth_method_tests {
         } = auth
         {
             assert_eq!(key_file_path.to_str().unwrap(), "/path/to/key");
-            assert_eq!(key_pass, Some(String::from("passphrase")));
+            assert_eq!(key_pass.as_ref().map(|p| &***p), Some("passphrase"));
         } else {
             panic!("Wrong auth method type");
         }

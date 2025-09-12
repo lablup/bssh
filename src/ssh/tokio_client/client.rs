@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::{fmt::Debug, path::Path};
 use std::{io, path::PathBuf};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use zeroize::Zeroizing;
 
 use super::ToSocketAddrsWithHostname;
 use crate::utils::buffer_pool::global;
@@ -47,18 +48,18 @@ const SSH_RESPONSE_BUFFER_SIZE: usize = 1024;
 ///
 /// Used when creating a [`Client`] for authentification.
 /// Supports password, private key, public key, SSH agent, and keyboard interactive authentication.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum AuthMethod {
-    Password(String),
+    Password(Zeroizing<String>),
     PrivateKey {
         /// entire contents of private key file
-        key_data: String,
-        key_pass: Option<String>,
+        key_data: Zeroizing<String>,
+        key_pass: Option<Zeroizing<String>>,
     },
     PrivateKeyFile {
         key_file_path: PathBuf,
-        key_pass: Option<String>,
+        key_pass: Option<Zeroizing<String>>,
     },
     #[cfg(not(target_os = "windows"))]
     PublicKeyFile {
@@ -69,14 +70,14 @@ pub enum AuthMethod {
     KeyboardInteractive(AuthKeyboardInteractive),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct PromptResponse {
     exact: bool,
     prompt: String,
-    response: String,
+    response: Zeroizing<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 #[non_exhaustive]
 pub struct AuthKeyboardInteractive {
     /// Hnts to the server the preferred methods to be used for authentication.
@@ -98,20 +99,20 @@ pub enum ServerCheckMethod {
 impl AuthMethod {
     /// Convenience method to create a [`AuthMethod`] from a string literal.
     pub fn with_password(password: &str) -> Self {
-        Self::Password(password.to_string())
+        Self::Password(Zeroizing::new(password.to_string()))
     }
 
     pub fn with_key(key: &str, passphrase: Option<&str>) -> Self {
         Self::PrivateKey {
-            key_data: key.to_string(),
-            key_pass: passphrase.map(str::to_string),
+            key_data: Zeroizing::new(key.to_string()),
+            key_pass: passphrase.map(|p| Zeroizing::new(p.to_string())),
         }
     }
 
     pub fn with_key_file<T: AsRef<Path>>(key_file_path: T, passphrase: Option<&str>) -> Self {
         Self::PrivateKeyFile {
             key_file_path: key_file_path.as_ref().to_path_buf(),
-            key_pass: passphrase.map(str::to_string),
+            key_pass: passphrase.map(|p| Zeroizing::new(p.to_string())),
         }
     }
 
@@ -165,7 +166,7 @@ impl AuthKeyboardInteractive {
         self.responses.push(PromptResponse {
             exact: false,
             prompt: prompt.into(),
-            response: response.into(),
+            response: Zeroizing::new(response.into()),
         });
 
         self
@@ -180,7 +181,7 @@ impl AuthKeyboardInteractive {
         self.responses.push(PromptResponse {
             exact: true,
             prompt: prompt.into(),
-            response: response.into(),
+            response: Zeroizing::new(response.into()),
         });
 
         self
@@ -350,14 +351,16 @@ impl Client {
     ) -> Result<(), super::Error> {
         match auth {
             AuthMethod::Password(password) => {
-                let is_authentificated = handle.authenticate_password(username, password).await?;
+                let is_authentificated =
+                    handle.authenticate_password(username, &**password).await?;
                 if !is_authentificated.success() {
                     return Err(super::Error::PasswordWrong);
                 }
             }
             AuthMethod::PrivateKey { key_data, key_pass } => {
-                let cprivk = russh::keys::decode_secret_key(key_data.as_str(), key_pass.as_deref())
-                    .map_err(super::Error::KeyInvalid)?;
+                let cprivk =
+                    russh::keys::decode_secret_key(&key_data, key_pass.as_ref().map(|p| &***p))
+                        .map_err(super::Error::KeyInvalid)?;
                 let is_authentificated = handle
                     .authenticate_publickey(
                         username,
@@ -375,8 +378,9 @@ impl Client {
                 key_file_path,
                 key_pass,
             } => {
-                let cprivk = russh::keys::load_secret_key(key_file_path, key_pass.as_deref())
-                    .map_err(super::Error::KeyInvalid)?;
+                let cprivk =
+                    russh::keys::load_secret_key(key_file_path, key_pass.as_ref().map(|p| &***p))
+                        .map_err(super::Error::KeyInvalid)?;
                 let is_authentificated = handle
                     .authenticate_publickey(
                         username,
@@ -488,7 +492,7 @@ impl Client {
                             ));
                         };
                         let pr = kbd.responses.remove(pos);
-                        responses.push(pr.response);
+                        responses.push(pr.response.to_string());
                     }
 
                     res = handle
