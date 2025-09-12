@@ -135,6 +135,12 @@ prompt for the password securely without echoing it to the terminal.
 This is useful for systems that don't have SSH keys configured.
 
 .TP
+.BR \-f ", " \-\-filter " " \fIPATTERN\fR
+Filter hosts by pattern (supports wildcards like 'web*').
+Use with -H or -C to execute on a subset of hosts.
+Example: -f "web*" matches web01, web02, etc.
+
+.TP
 .BR \-\-parallel " " \fIPARALLEL\fR
 Maximum parallel connections for multi-server mode (default: 10)
 Note: -p is now used for port (SSH compatibility)
@@ -161,9 +167,12 @@ Print help information
 Print version information
 
 .SH COMMANDS
+In multi-server mode (-H or -C), commands can be executed directly without the 'exec' subcommand.
+For example: bssh -H "host1,host2" "uptime" (automatic command execution)
+
 .TP
-.B exec
-Execute a command on specified hosts
+.B Built-in subcommands:
+These commands provide special functionality and must be specified explicitly.
 
 .TP
 .B list
@@ -376,16 +385,35 @@ Chain multiple jump hosts for connection
 
 .SS Multi-Server Mode
 .TP
-Execute command on multiple hosts:
+Execute command on multiple hosts (automatic execution):
 .B bssh -H "user1@host1,user2@host2" "uptime"
+.RS
+Commands are executed directly without needing 'exec' subcommand
+.RE
 
 .TP
 Use cluster from configuration:
 .B bssh -C production "df -h"
 
 .TP
+Filter hosts with pattern matching:
+.B bssh -H "web1,web2,db1,db2" -f "web*" "systemctl status nginx"
+.RS
+Executes command only on hosts matching the pattern 'web*'
+.RE
+
+.TP
+.B bssh -C production -f "db*" "pg_dump --version"
+.RS
+Executes command only on database nodes in the production cluster
+.RE
+
+.TP
 Test connectivity:
 .B bssh -C production ping
+.RS
+Note: 'ping' is a built-in subcommand, not an automatic execution
+.RE
 
 .TP
 Upload file to remote hosts (SFTP):
