@@ -205,13 +205,58 @@ impl SshClient {
         const SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
         let connect_timeout = Duration::from_secs(SSH_CONNECT_TIMEOUT_SECS);
 
-        tokio::time::timeout(
+        match tokio::time::timeout(
             connect_timeout,
-            Client::connect(addr, &self.username, auth_method.clone(), check_method)
+            Client::connect(addr, &self.username, auth_method.clone(), check_method),
         )
         .await
-        .with_context(|| format!("Connection timeout: Failed to connect to {}:{} after 30 seconds. Please check if the host is reachable and SSH service is running.", self.host, self.port))?
-        .with_context(|| format!("SSH connection failed to {}:{}. Please verify the hostname, port, and authentication credentials.", self.host, self.port))
+        {
+            Ok(Ok(client)) => Ok(client),
+            Ok(Err(e)) => {
+                // Specific error from the SSH connection attempt
+                let error_msg = match &e {
+                    super::tokio_client::Error::KeyAuthFailed => {
+                        format!("Authentication failed for user '{}' on {}:{}. The private key was rejected by the server.", 
+                                self.username, self.host, self.port)
+                    }
+                    super::tokio_client::Error::PasswordWrong => {
+                        format!("Password authentication failed for user '{}' on {}:{}", 
+                                self.username, self.host, self.port)
+                    }
+                    super::tokio_client::Error::ServerCheckFailed => {
+                        format!("Host key verification failed for {}:{}. The server's host key was not recognized or has changed.", 
+                                self.host, self.port)
+                    }
+                    super::tokio_client::Error::KeyInvalid(key_err) => {
+                        format!("Failed to load SSH key: {}. Please check the key file format and passphrase.", key_err)
+                    }
+                    super::tokio_client::Error::AgentConnectionFailed => {
+                        "Failed to connect to SSH agent. Please ensure SSH_AUTH_SOCK is set and the agent is running.".to_string()
+                    }
+                    super::tokio_client::Error::AgentNoIdentities => {
+                        "SSH agent has no identities. Please add your key to the agent using 'ssh-add'.".to_string()
+                    }
+                    super::tokio_client::Error::AgentAuthenticationFailed => {
+                        format!("SSH agent authentication failed for user '{}' on {}:{}", 
+                                self.username, self.host, self.port)
+                    }
+                    super::tokio_client::Error::SshError(ssh_err) => {
+                        format!("SSH connection error to {}:{}: {}", self.host, self.port, ssh_err)
+                    }
+                    _ => {
+                        format!("Failed to connect to {}:{}: {}", self.host, self.port, e)
+                    }
+                };
+                Err(anyhow::anyhow!(error_msg).context(e))
+            }
+            Err(_) => Err(anyhow::anyhow!(
+                "Connection timeout: Failed to connect to {}:{} after {} seconds. \
+                     Please check if the host is reachable and SSH service is running.",
+                self.host,
+                self.port,
+                SSH_CONNECT_TIMEOUT_SECS
+            )),
+        }
     }
 
     /// Create an SSH connection through jump hosts
@@ -286,13 +331,60 @@ impl SshClient {
         // - Balances user patience with reliability on poor networks
         const SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
         let connect_timeout = Duration::from_secs(SSH_CONNECT_TIMEOUT_SECS);
-        let client = tokio::time::timeout(
+        let client = match tokio::time::timeout(
             connect_timeout,
-            Client::connect(addr, &self.username, auth_method, check_method)
+            Client::connect(addr, &self.username, auth_method, check_method),
         )
         .await
-        .with_context(|| format!("Connection timeout: Failed to connect to {}:{} after 30 seconds. Please check if the host is reachable and SSH service is running.", self.host, self.port))?
-        .with_context(|| format!("SSH connection failed to {}:{}. Please verify the hostname, port, and authentication credentials.", self.host, self.port))?;
+        {
+            Ok(Ok(client)) => client,
+            Ok(Err(e)) => {
+                let context = format!("SSH connection to {}:{}", self.host, self.port);
+                let detailed = match &e {
+                    super::tokio_client::Error::KeyAuthFailed => {
+                        format!("{} failed: Authentication rejected for user '{}' with provided SSH key", context, self.username)
+                    }
+                    super::tokio_client::Error::KeyInvalid(err) => {
+                        format!("{} failed: Invalid SSH key - {}", context, err)
+                    }
+                    super::tokio_client::Error::ServerCheckFailed => {
+                        format!("{} failed: Host key verification failed. The server's host key is not trusted.", context)
+                    }
+                    super::tokio_client::Error::PasswordWrong => {
+                        format!(
+                            "{} failed: Password authentication rejected for user '{}'",
+                            context, self.username
+                        )
+                    }
+                    super::tokio_client::Error::AgentConnectionFailed => {
+                        format!(
+                            "{} failed: Cannot connect to SSH agent. Ensure SSH_AUTH_SOCK is set.",
+                            context
+                        )
+                    }
+                    super::tokio_client::Error::AgentNoIdentities => {
+                        format!(
+                            "{} failed: SSH agent has no keys. Use 'ssh-add' to add your key.",
+                            context
+                        )
+                    }
+                    super::tokio_client::Error::AgentAuthenticationFailed => {
+                        format!(
+                            "{} failed: SSH agent authentication rejected for user '{}'",
+                            context, self.username
+                        )
+                    }
+                    _ => format!("{} failed: {}", context, e),
+                };
+                return Err(anyhow::anyhow!(detailed).context(e));
+            }
+            Err(_) => {
+                return Err(anyhow::anyhow!(
+                    "Connection timeout after {} seconds to {}:{}. Host may be unreachable or SSH service not running.",
+                    SSH_CONNECT_TIMEOUT_SECS, self.host, self.port
+                ));
+            }
+        };
 
         tracing::debug!("Connected and authenticated successfully");
 
@@ -377,13 +469,60 @@ impl SshClient {
         // - Balances user patience with reliability on poor networks
         const SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
         let connect_timeout = Duration::from_secs(SSH_CONNECT_TIMEOUT_SECS);
-        let client = tokio::time::timeout(
+        let client = match tokio::time::timeout(
             connect_timeout,
-            Client::connect(addr, &self.username, auth_method, check_method)
+            Client::connect(addr, &self.username, auth_method, check_method),
         )
         .await
-        .with_context(|| format!("Connection timeout: Failed to connect to {}:{} after 30 seconds. Please check if the host is reachable and SSH service is running.", self.host, self.port))?
-        .with_context(|| format!("SSH connection failed to {}:{}. Please verify the hostname, port, and authentication credentials.", self.host, self.port))?;
+        {
+            Ok(Ok(client)) => client,
+            Ok(Err(e)) => {
+                let context = format!("SSH connection to {}:{}", self.host, self.port);
+                let detailed = match &e {
+                    super::tokio_client::Error::KeyAuthFailed => {
+                        format!("{} failed: Authentication rejected for user '{}' with provided SSH key", context, self.username)
+                    }
+                    super::tokio_client::Error::KeyInvalid(err) => {
+                        format!("{} failed: Invalid SSH key - {}", context, err)
+                    }
+                    super::tokio_client::Error::ServerCheckFailed => {
+                        format!("{} failed: Host key verification failed. The server's host key is not trusted.", context)
+                    }
+                    super::tokio_client::Error::PasswordWrong => {
+                        format!(
+                            "{} failed: Password authentication rejected for user '{}'",
+                            context, self.username
+                        )
+                    }
+                    super::tokio_client::Error::AgentConnectionFailed => {
+                        format!(
+                            "{} failed: Cannot connect to SSH agent. Ensure SSH_AUTH_SOCK is set.",
+                            context
+                        )
+                    }
+                    super::tokio_client::Error::AgentNoIdentities => {
+                        format!(
+                            "{} failed: SSH agent has no keys. Use 'ssh-add' to add your key.",
+                            context
+                        )
+                    }
+                    super::tokio_client::Error::AgentAuthenticationFailed => {
+                        format!(
+                            "{} failed: SSH agent authentication rejected for user '{}'",
+                            context, self.username
+                        )
+                    }
+                    _ => format!("{} failed: {}", context, e),
+                };
+                return Err(anyhow::anyhow!(detailed).context(e));
+            }
+            Err(_) => {
+                return Err(anyhow::anyhow!(
+                    "Connection timeout after {} seconds to {}:{}. Host may be unreachable or SSH service not running.",
+                    SSH_CONNECT_TIMEOUT_SECS, self.host, self.port
+                ));
+            }
+        };
 
         tracing::debug!("Connected and authenticated successfully");
 
@@ -464,13 +603,42 @@ impl SshClient {
         // - Balances user patience with reliability on poor networks
         const SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
         let connect_timeout = Duration::from_secs(SSH_CONNECT_TIMEOUT_SECS);
-        let client = tokio::time::timeout(
+        let client = match tokio::time::timeout(
             connect_timeout,
             Client::connect(addr, &self.username, auth_method, check_method),
         )
         .await
-        .with_context(|| format!("Connection timeout: Failed to connect to {}:{} after 30 seconds. Please check if the host is reachable and SSH service is running.", self.host, self.port))?
-        .with_context(|| format!("SSH connection failed to {}:{}. Please verify the hostname, port, and authentication credentials.", self.host, self.port))?;
+        {
+            Ok(Ok(client)) => client,
+            Ok(Err(e)) => {
+                let context = format!("SSH connection to {}:{}", self.host, self.port);
+                let detailed = match &e {
+                    super::tokio_client::Error::KeyAuthFailed => {
+                        format!("{} failed: Authentication rejected for user '{}' with provided SSH key", context, self.username)
+                    }
+                    super::tokio_client::Error::KeyInvalid(err) => {
+                        format!("{} failed: Invalid SSH key - {}", context, err)
+                    }
+                    super::tokio_client::Error::ServerCheckFailed => {
+                        format!("{} failed: Host key verification failed. The server's host key is not trusted.", context)
+                    }
+                    super::tokio_client::Error::PasswordWrong => {
+                        format!(
+                            "{} failed: Password authentication rejected for user '{}'",
+                            context, self.username
+                        )
+                    }
+                    _ => format!("{} failed: {}", context, e),
+                };
+                return Err(anyhow::anyhow!(detailed).context(e));
+            }
+            Err(_) => {
+                return Err(anyhow::anyhow!(
+                    "Connection timeout after {} seconds to {}:{}. Host may be unreachable or SSH service not running.",
+                    SSH_CONNECT_TIMEOUT_SECS, self.host, self.port
+                ));
+            }
+        };
 
         tracing::debug!("Connected and authenticated successfully");
 
@@ -554,13 +722,42 @@ impl SshClient {
         // - Balances user patience with reliability on poor networks
         const SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
         let connect_timeout = Duration::from_secs(SSH_CONNECT_TIMEOUT_SECS);
-        let client = tokio::time::timeout(
+        let client = match tokio::time::timeout(
             connect_timeout,
             Client::connect(addr, &self.username, auth_method, check_method),
         )
         .await
-        .with_context(|| format!("Connection timeout: Failed to connect to {}:{} after 30 seconds. Please check if the host is reachable and SSH service is running.", self.host, self.port))?
-        .with_context(|| format!("SSH connection failed to {}:{}. Please verify the hostname, port, and authentication credentials.", self.host, self.port))?;
+        {
+            Ok(Ok(client)) => client,
+            Ok(Err(e)) => {
+                let context = format!("SSH connection to {}:{}", self.host, self.port);
+                let detailed = match &e {
+                    super::tokio_client::Error::KeyAuthFailed => {
+                        format!("{} failed: Authentication rejected for user '{}' with provided SSH key", context, self.username)
+                    }
+                    super::tokio_client::Error::KeyInvalid(err) => {
+                        format!("{} failed: Invalid SSH key - {}", context, err)
+                    }
+                    super::tokio_client::Error::ServerCheckFailed => {
+                        format!("{} failed: Host key verification failed. The server's host key is not trusted.", context)
+                    }
+                    super::tokio_client::Error::PasswordWrong => {
+                        format!(
+                            "{} failed: Password authentication rejected for user '{}'",
+                            context, self.username
+                        )
+                    }
+                    _ => format!("{} failed: {}", context, e),
+                };
+                return Err(anyhow::anyhow!(detailed).context(e));
+            }
+            Err(_) => {
+                return Err(anyhow::anyhow!(
+                    "Connection timeout after {} seconds to {}:{}. Host may be unreachable or SSH service not running.",
+                    SSH_CONNECT_TIMEOUT_SECS, self.host, self.port
+                ));
+            }
+        };
 
         tracing::debug!("Connected and authenticated successfully");
 

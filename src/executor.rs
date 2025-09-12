@@ -212,11 +212,14 @@ impl ParallelExecutor {
                             }
                         }
                         Err(e) => {
-                            let error_msg = format!("{e}");
-                            let short_error = if error_msg.len() > 40 {
-                                format!("{}...", &error_msg[..37])
+                            // Get the most specific error message from the chain
+                            let error_msg = format!("{:#}", e);
+                            // Take the first line which is usually the most specific error
+                            let first_line = error_msg.lines().next().unwrap_or("Unknown error");
+                            let short_error = if first_line.len() > 50 {
+                                format!("{}...", &first_line[..47])
                             } else {
-                                error_msg
+                                first_line.to_string()
                             };
                             pb.finish_with_message(format!("{} {}", "●".red(), short_error.red()));
                         }
@@ -324,11 +327,14 @@ impl ParallelExecutor {
                             ));
                         }
                         Err(e) => {
-                            let error_msg = format!("{e}");
-                            let short_error = if error_msg.len() > 40 {
-                                format!("{}...", &error_msg[..37])
+                            // Get the most specific error message from the chain
+                            let error_msg = format!("{:#}", e);
+                            // Take the first line which is usually the most specific error
+                            let first_line = error_msg.lines().next().unwrap_or("Unknown error");
+                            let short_error = if first_line.len() > 50 {
+                                format!("{}...", &first_line[..47])
                             } else {
-                                error_msg
+                                first_line.to_string()
                             };
                             pb.finish_with_message(format!("{} {}", "●".red(), short_error.red()));
                         }
@@ -752,12 +758,16 @@ impl UploadResult {
             }
             Err(e) => {
                 println!(
-                    "{} {}: {} - {}",
+                    "{} {}: {}",
                     "●".red(),
                     self.node.to_string().bold(),
-                    "Failed to upload file".red(),
-                    e.to_string().dimmed()
+                    "Failed to upload file".red()
                 );
+                // Show full error chain
+                let error_chain = format!("{:#}", e);
+                for line in error_chain.lines() {
+                    println!("    {}", line.dimmed());
+                }
             }
         }
     }
@@ -787,12 +797,16 @@ impl DownloadResult {
             }
             Err(e) => {
                 println!(
-                    "{} {}: {} - {}",
+                    "{} {}: {}",
                     "●".red(),
                     self.node.to_string().bold(),
-                    "Failed to download file".red(),
-                    e.to_string().dimmed()
+                    "Failed to download file".red()
                 );
+                // Show full error chain
+                let error_chain = format!("{:#}", e);
+                for line in error_chain.lines() {
+                    println!("    {}", line.dimmed());
+                }
             }
         }
     }
