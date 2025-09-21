@@ -41,6 +41,8 @@ pub enum Error {
     SftpError(#[from] russh_sftp::client::error::Error),
     #[error("I/O error")]
     IoError(#[from] io::Error),
+    #[error("Task join error: {0}")]
+    JoinError(#[from] tokio::task::JoinError),
     #[error("Command validation failed: {0}")]
     CommandValidationFailed(String),
     #[error("Port forwarding request failed: {0}")]

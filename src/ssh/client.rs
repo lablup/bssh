@@ -14,9 +14,11 @@
 
 use super::tokio_client::{AuthMethod, Client};
 use crate::jump::{parse_jump_hosts, JumpHostChain};
+use crate::ssh::tokio_client::client::{CommandOutput, CommandOutputBuffer};
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::time::Duration;
+use tokio::sync::mpsc::Sender;
 use zeroize::Zeroizing;
 
 /// Configuration for SSH connection and command execution
@@ -84,6 +86,32 @@ impl SshClient {
         command: &str,
         config: &ConnectionConfig<'_>,
     ) -> Result<CommandResult> {
+        let CommandOutputBuffer {
+            sender,
+            receiver_task,
+        } = CommandOutputBuffer::new();
+
+        let exit_status = self
+            .connect_and_execute_with_output_streaming(command, config, sender)
+            .await?;
+
+        let (output, stderr) = receiver_task.await?;
+
+        // Convert result to our format
+        Ok(CommandResult {
+            host: self.host.clone(),
+            output,
+            stderr,
+            exit_status,
+        })
+    }
+
+    pub async fn connect_and_execute_with_output_streaming(
+        &mut self,
+        command: &str,
+        config: &ConnectionConfig<'_>,
+        output_sender: Sender<CommandOutput>,
+    ) -> Result<u32> {
         tracing::debug!("Connecting to {}:{}", self.host, self.port);
 
         // Determine authentication method based on parameters
@@ -137,11 +165,11 @@ impl SshClient {
         tracing::debug!("Executing command: {}", command);
 
         // Execute command with timeout
-        let result = if let Some(timeout_secs) = config.timeout_seconds {
+        let exit_status = if let Some(timeout_secs) = config.timeout_seconds {
             if timeout_secs == 0 {
                 // No timeout (unlimited)
                 tracing::debug!("Executing command with no timeout (unlimited)");
-                client.execute(command)
+                client.execute_streaming(command, output_sender)
                     .await
                     .with_context(|| format!("Failed to execute command '{}' on {}:{}. The SSH connection was successful but the command could not be executed.", command, self.host, self.port))?
             } else {
@@ -150,7 +178,7 @@ impl SshClient {
                 tracing::debug!("Executing command with timeout of {} seconds", timeout_secs);
                 tokio::time::timeout(
                     command_timeout,
-                    client.execute(command)
+                    client.execute_streaming(command, output_sender)
                 )
                 .await
                 .with_context(|| format!("Command execution timeout: The command '{}' did not complete within {} seconds on {}:{}", command, timeout_secs, self.host, self.port))?
@@ -168,25 +196,16 @@ impl SshClient {
             tracing::debug!("Executing command with default timeout of 300 seconds");
             tokio::time::timeout(
                 command_timeout,
-                client.execute(command)
+                client.execute_streaming(command, output_sender)
             )
             .await
             .with_context(|| format!("Command execution timeout: The command '{}' did not complete within 5 minutes on {}:{}", command, self.host, self.port))?
             .with_context(|| format!("Failed to execute command '{}' on {}:{}. The SSH connection was successful but the command could not be executed.", command, self.host, self.port))?
         };
 
-        tracing::debug!(
-            "Command execution completed with status: {}",
-            result.exit_status
-        );
+        tracing::debug!("Command execution completed with status: {exit_status}",);
 
-        // Convert result to our format
-        Ok(CommandResult {
-            host: self.host.clone(),
-            output: result.stdout.into_bytes(),
-            stderr: result.stderr.into_bytes(),
-            exit_status: result.exit_status,
-        })
+        Ok(exit_status)
     }
 
     /// Create a direct SSH connection (no jump hosts)
