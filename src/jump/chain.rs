@@ -27,6 +27,10 @@ use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 use zeroize::Zeroizing;
 
+/// Maximum number of jump hosts allowed in a chain
+/// SECURITY: Prevents resource exhaustion and excessive connection chains
+const MAX_JUMP_HOSTS: usize = 10;
+
 /// A connection through the jump host chain
 ///
 /// Represents an active connection that may go through multiple jump hosts
@@ -126,7 +130,24 @@ pub struct JumpHostChain {
 
 impl JumpHostChain {
     /// Create a new jump host chain
+    /// Returns an error if the number of jump hosts exceeds MAX_JUMP_HOSTS
     pub fn new(jump_hosts: Vec<JumpHost>) -> Self {
+        // Log warning if approaching the limit
+        if jump_hosts.len() > MAX_JUMP_HOSTS {
+            warn!(
+                "Jump host chain has {} hosts, which exceeds the maximum of {}. Chain will be truncated.",
+                jump_hosts.len(),
+                MAX_JUMP_HOSTS
+            );
+        }
+
+        // Truncate to maximum allowed hosts
+        let jump_hosts = if jump_hosts.len() > MAX_JUMP_HOSTS {
+            jump_hosts.into_iter().take(MAX_JUMP_HOSTS).collect()
+        } else {
+            jump_hosts
+        };
+
         Self {
             jump_hosts,
             connect_timeout: Duration::from_secs(30),

@@ -15,6 +15,10 @@
 use anyhow::{Context, Result};
 use std::fmt;
 
+/// Maximum number of jump hosts allowed in a chain
+/// SECURITY: Prevents resource exhaustion and excessive connection chains
+const MAX_JUMP_HOSTS: usize = 10;
+
 /// A single jump host specification
 ///
 /// Represents one hop in a jump host chain, parsed from OpenSSH ProxyJump syntax.
@@ -108,6 +112,15 @@ pub fn parse_jump_hosts(jump_spec: &str) -> Result<Vec<JumpHost>> {
         anyhow::bail!(
             "No valid jump hosts found in specification: '{}'",
             jump_spec
+        );
+    }
+
+    // SECURITY: Validate jump host count to prevent resource exhaustion
+    if jump_hosts.len() > MAX_JUMP_HOSTS {
+        anyhow::bail!(
+            "Too many jump hosts specified: {} (maximum allowed: {}). Reduce the number of jump hosts in your chain.",
+            jump_hosts.len(),
+            MAX_JUMP_HOSTS
         );
     }
 
