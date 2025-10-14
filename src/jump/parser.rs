@@ -409,4 +409,61 @@ mod tests {
         assert_eq!(host.effective_port(), 2222);
         assert_eq!(host.effective_user(), "testuser");
     }
+
+    #[test]
+    fn test_max_jump_hosts_limit_exactly_10() {
+        // Exactly 10 jump hosts should be allowed
+        let spec = (0..10)
+            .map(|i| format!("host{i}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let result = parse_jump_hosts(&spec);
+        assert!(result.is_ok(), "Should accept exactly 10 jump hosts");
+        assert_eq!(result.unwrap().len(), 10);
+    }
+
+    #[test]
+    fn test_max_jump_hosts_limit_11_rejected() {
+        // 11 jump hosts should be rejected
+        let spec = (0..11)
+            .map(|i| format!("host{i}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let result = parse_jump_hosts(&spec);
+        assert!(result.is_err(), "Should reject 11 jump hosts");
+
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Too many jump hosts"),
+            "Error should mention 'Too many jump hosts', got: {err_msg}"
+        );
+        assert!(
+            err_msg.contains("11"),
+            "Error should mention the actual count (11), got: {err_msg}"
+        );
+        assert!(
+            err_msg.contains("10"),
+            "Error should mention the maximum (10), got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_max_jump_hosts_limit_excessive() {
+        // Test with way more than the limit to ensure proper handling
+        let spec = (0..100)
+            .map(|i| format!("host{i}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let result = parse_jump_hosts(&spec);
+        assert!(
+            result.is_err(),
+            "Should reject excessive number of jump hosts"
+        );
+
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Too many jump hosts"),
+            "Error should be about too many hosts, got: {err_msg}"
+        );
+    }
 }
