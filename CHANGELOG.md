@@ -15,13 +15,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Example: `BSSH_MAX_JUMP_HOSTS=20 bssh -J host1,...,host20 target`
   - Prevents resource exhaustion attacks while allowing flexible configurations
 
-### Security
-- Added `serial_test` dependency for thread-safe environment variable testing
-- Comprehensive test coverage for environment variable functionality (6 new tests)
-
-## [0.9.0] - 2025-10-14
-
-### Added
 - **Jump Host File Transfer Support**: Added complete file transfer operations through SSH jump hosts
   - `upload_file_with_jump_hosts()` - Upload single files through jump host chains
   - `download_file_with_jump_hosts()` - Download single files through jump hosts
@@ -53,6 +46,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 - Interactive mode timeout issues when connecting through jump hosts
 - File transfer operations not working with jump host chains
+
+### Security
+- Added `serial_test` dependency for thread-safe environment variable testing
+- Comprehensive test coverage for environment variable functionality (6 new tests)
 
 ### Technical Details
 - **Files Modified**: 8 files
@@ -220,8 +217,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - russh library for native SSH implementation
 - Cross-platform support (Linux and macOS)
 
-[Unreleased]: https://github.com/lablup/bssh/compare/v0.9.0...HEAD
-[0.9.0]: https://github.com/lablup/bssh/compare/v0.8.0...v0.9.0
+[Unreleased]: https://github.com/lablup/bssh/compare/v0.8.0...HEAD
 [0.8.0]: https://github.com/lablup/bssh/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/lablup/bssh/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/lablup/bssh/compare/v0.6.0...v0.6.1
