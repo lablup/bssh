@@ -148,6 +148,17 @@ bssh -J "[2001:db8::1]:22" user@destination
 
 # Combine with cluster operations
 bssh -J bastion.example.com -C production "uptime"
+
+# File transfer through jump host
+bssh -J bastion.example.com -H internal-server upload app.tar.gz /opt/
+bssh -J admin@bastion:2222 -C production download /etc/config ./backups/
+
+# Interactive mode through jump hosts
+bssh -J bastion.example.com user@internal-server
+bssh -J "jump1,jump2" -C production interactive
+
+# Multi-hop with file transfer
+bssh -J "bastion1,bastion2,bastion3" -H target upload -r ./app/ /opt/app/
 ```
 
 ### Multi-Server Mode (Cluster Operations)
@@ -232,6 +243,10 @@ bssh -A -c production "systemctl status"
 
 # Use password authentication
 bssh -P -H "user@host" "ls -la"
+
+# Authentication through jump hosts
+bssh -A -J bastion.example.com user@internal-server "uptime"
+bssh -i ~/.ssh/prod_key -J "jump1,jump2" -C production "df -h"
 ```
 
 ## Configuration
