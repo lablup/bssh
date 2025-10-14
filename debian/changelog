@@ -1,3 +1,36 @@
+bssh (0.9.1-1~jammy1) jammy; urgency=medium
+
+  * v0.9.1
+  ### New Features
+  None
+
+  ### Improvements
+  - **PTY Terminal Modes**: Complete implementation of PTY terminal modes for better interactive session support
+  - **Shift Key Input Support**: Full Shift key input handling in PTY mode for proper terminal behavior
+
+  ### Bug Fixes
+  - Fixed terminal mode implementation for PTY sessions
+  - Improved Shift key input handling in interactive mode
+
+  ### CI/CD Improvements
+  None
+
+  ### Technical Details
+  - Enhanced terminal mode settings for PTY allocation
+  - Implemented proper terminal flag handling for interactive sessions
+  - Improved keyboard input processing for special keys
+
+  ### Dependencies
+  None
+
+  ### Breaking Changes
+  None
+
+  ### Known Issues
+  None
+
+ -- Jeongkyu Shin <inureyes@gmail.com>  Mon, 14 Oct 2025 00:00:00 +0900
+
 bssh (0.9.0-1~jammy1) jammy; urgency=medium
 
   * v0.9.0
