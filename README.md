@@ -249,6 +249,28 @@ bssh -A -J bastion.example.com user@internal-server "uptime"
 bssh -i ~/.ssh/prod_key -J "jump1,jump2" -C production "df -h"
 ```
 
+## Environment Variables
+
+bssh supports configuration via environment variables:
+
+### Jump Host Configuration
+
+- **`BSSH_MAX_JUMP_HOSTS`**: Maximum number of jump hosts allowed in a chain
+  - Default: 10
+  - Absolute maximum: 30 (security cap)
+  - Invalid or zero values fall back to default
+  - Example: `BSSH_MAX_JUMP_HOSTS=20 bssh -J host1,host2,...,host20 target`
+
+### Backend.AI Integration Variables
+
+- **`BACKENDAI_CLUSTER_HOSTS`**: Comma-separated list of all cluster nodes
+- **`BACKENDAI_CLUSTER_HOST`**: Current node hostname
+- **`BACKENDAI_CLUSTER_ROLE`**: Node role (main/sub)
+
+### SSH Authentication Variables
+
+- **`SSH_AUTH_SOCK`**: SSH agent socket path (Unix-like systems)
+
 ## Configuration
 
 ### Configuration Priority Order

@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Configurable Jump Host Limit**: Maximum number of jump hosts can now be configured via environment variable
+  - `BSSH_MAX_JUMP_HOSTS` environment variable for dynamic limit configuration
+  - Default: 10 jump hosts, Absolute maximum: 30 (security cap)
+  - Invalid/zero values fall back to default with warning logs
+  - Example: `BSSH_MAX_JUMP_HOSTS=20 bssh -J host1,...,host20 target`
+  - Prevents resource exhaustion attacks while allowing flexible configurations
+
+### Security
+- Added `serial_test` dependency for thread-safe environment variable testing
+- Comprehensive test coverage for environment variable functionality (6 new tests)
+
 ## [0.9.0] - 2025-10-14
 
 ### Added

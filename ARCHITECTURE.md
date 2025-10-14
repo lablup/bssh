@@ -1146,6 +1146,43 @@ async fn upload_to_node(
 - SFTP buffers: ~64KB per transfer
 - Total overhead for 3-hop chain: ~20-30MB
 
+### Environment Variables
+
+**Jump Host Configuration:**
+- **`BSSH_MAX_JUMP_HOSTS`**: Maximum number of jump hosts allowed in a connection chain
+  - **Default**: 10
+  - **Absolute Maximum**: 30 (security cap to prevent DoS attacks)
+  - **Behavior**: Invalid or zero values fall back to default with warning logs
+  - **Security Rationale**: Prevents resource exhaustion and excessive connection chains
+  - **Example**: `BSSH_MAX_JUMP_HOSTS=20 bssh -J host1,host2,...,host20 target`
+
+**Implementation:**
+```rust
+pub fn get_max_jump_hosts() -> usize {
+    std::env::var("BSSH_MAX_JUMP_HOSTS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .map(|n| {
+            if n == 0 {
+                tracing::warn!("BSSH_MAX_JUMP_HOSTS cannot be 0, using default: {}", DEFAULT_MAX_JUMP_HOSTS);
+                DEFAULT_MAX_JUMP_HOSTS
+            } else if n > ABSOLUTE_MAX_JUMP_HOSTS {
+                tracing::warn!("BSSH_MAX_JUMP_HOSTS={} exceeds absolute maximum {}, capping at {}",
+                    n, ABSOLUTE_MAX_JUMP_HOSTS, ABSOLUTE_MAX_JUMP_HOSTS);
+                ABSOLUTE_MAX_JUMP_HOSTS
+            } else {
+                n
+            }
+        })
+        .unwrap_or(DEFAULT_MAX_JUMP_HOSTS)
+}
+```
+
+**Validation:**
+- Enforced at parse time in `jump::parser::parse_jump_hosts()`
+- Used by both parser and chain modules for consistent limits
+- Provides clear error messages when limit exceeded
+
 ### Security Considerations
 
 **Authentication Chain:**
@@ -1162,6 +1199,12 @@ async fn upload_to_node(
 - Each bssh invocation establishes new tunnel
 - No connection reuse across invocations
 - Clean separation between different users/sessions
+
+**Resource Exhaustion Prevention:**
+- Configurable maximum jump hosts (default: 10, absolute max: 30)
+- Timeout scaling prevents hanging on excessive chains
+- Authentication mutex prevents credential prompt race conditions
+- Integer overflow protection using saturating arithmetic
 
 ### Error Handling
 
