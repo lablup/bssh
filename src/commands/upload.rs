@@ -39,17 +39,17 @@ pub async fn upload_file(
 ) -> Result<()> {
     // Security: Validate the local source path
     let validated_source = crate::security::validate_local_path(source)
-        .with_context(|| format!("Invalid source path: {:?}", source))?;
+        .with_context(|| format!("Invalid source path: {source:?}"))?;
 
     // Security: Validate the remote destination path
     let validated_destination = crate::security::validate_remote_path(destination)
-        .with_context(|| format!("Invalid destination path: {}", destination))?;
+        .with_context(|| format!("Invalid destination path: {destination}"))?;
 
     // Collect all files matching the pattern
     let files = resolve_source_files(&validated_source, params.recursive)?;
 
     if files.is_empty() {
-        anyhow::bail!("No files found matching pattern: {:?}", source);
+        anyhow::bail!("No files found matching pattern: {source:?}");
     }
 
     // Determine destination handling based on file count
@@ -123,32 +123,32 @@ pub async fn upload_file(
                     }
 
                     if validated_destination.ends_with('/') {
-                        format!("{}{remote_relative}", validated_destination)
+                        format!("{validated_destination}{remote_relative}")
                     } else {
-                        format!("{}/{remote_relative}", validated_destination)
+                        format!("{validated_destination}/{remote_relative}")
                     }
                 } else {
                     // No base dir, just use filename
                     let filename = file
                         .file_name()
-                        .ok_or_else(|| anyhow::anyhow!("Failed to get filename from {:?}", file))?
+                        .ok_or_else(|| anyhow::anyhow!("Failed to get filename from {file:?}"))?
                         .to_string_lossy();
                     if validated_destination.ends_with('/') {
-                        format!("{}{filename}", validated_destination)
+                        format!("{validated_destination}{filename}")
                     } else {
-                        format!("{}/{filename}", validated_destination)
+                        format!("{validated_destination}/{filename}")
                     }
                 }
             } else {
                 // Non-recursive: just append filename
                 let filename = file
                     .file_name()
-                    .ok_or_else(|| anyhow::anyhow!("Failed to get filename from {:?}", file))?
+                    .ok_or_else(|| anyhow::anyhow!("Failed to get filename from {file:?}"))?
                     .to_string_lossy();
                 if validated_destination.ends_with('/') {
-                    format!("{}{filename}", validated_destination)
+                    format!("{validated_destination}{filename}")
                 } else {
-                    format!("{}/{filename}", validated_destination)
+                    format!("{validated_destination}/{filename}")
                 }
             }
         } else {

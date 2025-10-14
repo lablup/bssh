@@ -270,14 +270,13 @@ impl ForwardingManager {
         let sessions = self.sessions.read().await;
         let session_arc = sessions
             .get(&id)
-            .ok_or_else(|| anyhow::anyhow!("Forwarding session {} not found", id))?;
+            .ok_or_else(|| anyhow::anyhow!("Forwarding session {id} not found"))?;
 
         let mut session = session_arc.lock().await;
 
         if session.task_handle.is_some() {
             return Err(anyhow::anyhow!(
-                "Forwarding session {} is already started",
-                id
+                "Forwarding session {id} is already started"
             ));
         }
 
@@ -353,7 +352,7 @@ impl ForwardingManager {
         let sessions = self.sessions.read().await;
         let session_arc = sessions
             .get(&id)
-            .ok_or_else(|| anyhow::anyhow!("Forwarding session {} not found", id))?;
+            .ok_or_else(|| anyhow::anyhow!("Forwarding session {id} not found"))?;
 
         let mut session = session_arc.lock().await;
 
@@ -392,7 +391,7 @@ impl ForwardingManager {
         let sessions = self.sessions.read().await;
         let session_arc = sessions
             .get(&id)
-            .ok_or_else(|| anyhow::anyhow!("Forwarding session {} not found", id))?;
+            .ok_or_else(|| anyhow::anyhow!("Forwarding session {id} not found"))?;
 
         let session = session_arc.lock().await;
         Ok(session.status.clone())
@@ -403,7 +402,7 @@ impl ForwardingManager {
         let sessions = self.sessions.read().await;
         let session_arc = sessions
             .get(&id)
-            .ok_or_else(|| anyhow::anyhow!("Forwarding session {} not found", id))?;
+            .ok_or_else(|| anyhow::anyhow!("Forwarding session {id} not found"))?;
 
         let session = session_arc.lock().await;
         Ok(session.stats.clone())
@@ -431,7 +430,7 @@ impl ForwardingManager {
         let mut sessions = self.sessions.write().await;
         sessions
             .remove(&id)
-            .ok_or_else(|| anyhow::anyhow!("Forwarding session {} not found", id))?;
+            .ok_or_else(|| anyhow::anyhow!("Forwarding session {id} not found"))?;
 
         tracing::info!("Removed forwarding session {}", id);
         Ok(())

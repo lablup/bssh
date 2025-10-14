@@ -112,19 +112,19 @@ pub fn sanitize_hostname(hostname: &str) -> Result<String> {
         // For IPv6 with brackets, validate the content between brackets
         let ipv6_addr = &hostname[1..hostname.len() - 1];
         if !ipv6_addr.chars().all(|c| c.is_ascii_hexdigit() || c == ':') {
-            bail!("Invalid IPv6 address format: {}", hostname);
+            bail!("Invalid IPv6 address format: {hostname}");
         }
     } else if is_ipv6_raw {
         // For IPv6 without brackets, validate the entire string
         if !hostname.chars().all(|c| c.is_ascii_hexdigit() || c == ':') {
-            bail!("Invalid IPv6 address format: {}", hostname);
+            bail!("Invalid IPv6 address format: {hostname}");
         }
     } else {
         // For regular hostnames and IPv4
         let valid_chars = |c: char| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_';
 
         if !hostname.chars().all(valid_chars) {
-            bail!("Invalid characters in hostname: {}", hostname);
+            bail!("Invalid characters in hostname: {hostname}");
         }
 
         // Check for double dots which could be path traversal attempts
@@ -165,7 +165,7 @@ pub fn sanitize_username(username: &str) -> Result<String> {
     let valid_chars = |c: char| c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.';
 
     if !username.chars().all(valid_chars) {
-        bail!("Invalid characters in username: {}", username);
+        bail!("Invalid characters in username: {username}");
     }
 
     // Username should start with letter or underscore (Unix convention)

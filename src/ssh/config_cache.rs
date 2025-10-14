@@ -198,7 +198,7 @@ impl SshConfigCache {
             })
             .await
             .map_err(|_| anyhow::anyhow!("Timeout acquiring stats write lock"))?
-            .map_err(|e| anyhow::anyhow!("Stats lock poisoned: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Stats lock poisoned: {e}"))?;
             stats.misses += 1;
         }
 
@@ -210,7 +210,7 @@ impl SshConfigCache {
         let mut cache = self
             .cache
             .write()
-            .map_err(|e| anyhow::anyhow!("Cache write lock poisoned: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Cache write lock poisoned: {e}"))?;
 
         if let Some(entry) = cache.get_mut(path) {
             // Check if entry is expired
@@ -219,7 +219,7 @@ impl SshConfigCache {
                 cache.pop(path);
 
                 let mut stats = self.stats.write().map_err(|e| {
-                    anyhow::anyhow!("Stats write lock poisoned during TTL eviction: {}", e)
+                    anyhow::anyhow!("Stats write lock poisoned during TTL eviction: {e}")
                 })?;
                 stats.ttl_evictions += 1;
                 return Ok(None);
@@ -231,7 +231,7 @@ impl SshConfigCache {
                 cache.pop(path);
 
                 let mut stats = self.stats.write().map_err(|e| {
-                    anyhow::anyhow!("Stats write lock poisoned during stale eviction: {}", e)
+                    anyhow::anyhow!("Stats write lock poisoned during stale eviction: {e}")
                 })?;
                 stats.stale_evictions += 1;
                 return Ok(None);
@@ -243,7 +243,7 @@ impl SshConfigCache {
             // Update statistics
             {
                 let mut stats = self.stats.write().map_err(|e| {
-                    anyhow::anyhow!("Stats write lock poisoned during cache hit: {}", e)
+                    anyhow::anyhow!("Stats write lock poisoned during cache hit: {e}")
                 })?;
                 stats.hits += 1;
             }
@@ -260,7 +260,7 @@ impl SshConfigCache {
         let mut cache = self
             .cache
             .write()
-            .map_err(|e| anyhow::anyhow!("Cache write lock poisoned in put: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Cache write lock poisoned in put: {e}"))?;
 
         // Check if we're evicting an entry due to LRU policy
         let will_evict = cache.len() >= cache.cap().get();
@@ -273,7 +273,7 @@ impl SshConfigCache {
             let mut stats = self
                 .stats
                 .write()
-                .map_err(|e| anyhow::anyhow!("Stats write lock poisoned in put: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("Stats write lock poisoned in put: {e}"))?;
             if will_evict {
                 stats.lru_evictions += 1;
             }
@@ -313,13 +313,13 @@ impl SshConfigCache {
         let mut cache = self
             .cache
             .write()
-            .map_err(|e| anyhow::anyhow!("Cache write lock poisoned in clear: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Cache write lock poisoned in clear: {e}"))?;
         cache.clear();
 
         let mut stats = self
             .stats
             .write()
-            .map_err(|e| anyhow::anyhow!("Stats write lock poisoned in clear: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Stats write lock poisoned in clear: {e}"))?;
         stats.current_entries = 0;
         Ok(())
     }
@@ -331,14 +331,14 @@ impl SshConfigCache {
             let mut cache = self
                 .cache
                 .write()
-                .map_err(|e| anyhow::anyhow!("Cache write lock poisoned in remove: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("Cache write lock poisoned in remove: {e}"))?;
             let entry = cache.pop(&canonical_path);
 
             if entry.is_some() {
                 let mut stats = self
                     .stats
                     .write()
-                    .map_err(|e| anyhow::anyhow!("Stats write lock poisoned in remove: {}", e))?;
+                    .map_err(|e| anyhow::anyhow!("Stats write lock poisoned in remove: {e}"))?;
                 stats.current_entries = cache.len();
             }
 
@@ -352,7 +352,7 @@ impl SshConfigCache {
     pub fn stats(&self) -> Result<CacheStats> {
         self.stats
             .read()
-            .map_err(|e| anyhow::anyhow!("Stats read lock poisoned: {}", e))
+            .map_err(|e| anyhow::anyhow!("Stats read lock poisoned: {e}"))
             .map(|stats| stats.clone())
     }
 
@@ -403,7 +403,7 @@ impl SshConfigCache {
             let cache = self
                 .cache
                 .write()
-                .map_err(|e| anyhow::anyhow!("Cache write lock poisoned in maintain: {}", e))?;
+                .map_err(|e| anyhow::anyhow!("Cache write lock poisoned in maintain: {e}"))?;
 
             for (path, entry) in cache.iter() {
                 if entry.is_expired(self.config.ttl) {
@@ -441,10 +441,7 @@ impl SshConfigCache {
         // Remove expired and stale entries
         {
             let mut cache = self.cache.write().map_err(|e| {
-                anyhow::anyhow!(
-                    "Cache write lock poisoned during maintenance cleanup: {}",
-                    e
-                )
+                anyhow::anyhow!("Cache write lock poisoned during maintenance cleanup: {e}")
             })?;
             for path in &to_remove {
                 cache.pop(path);
@@ -456,10 +453,10 @@ impl SshConfigCache {
         // Update statistics
         {
             let cache = self.cache.read().map_err(|e| {
-                anyhow::anyhow!("Cache read lock poisoned during maintenance stats: {}", e)
+                anyhow::anyhow!("Cache read lock poisoned during maintenance stats: {e}")
             })?;
             let mut stats = self.stats.write().map_err(|e| {
-                anyhow::anyhow!("Stats write lock poisoned during maintenance: {}", e)
+                anyhow::anyhow!("Stats write lock poisoned during maintenance: {e}")
             })?;
             stats.ttl_evictions += expired_count as u64;
             stats.stale_evictions += stale_count as u64;
@@ -481,7 +478,7 @@ impl SshConfigCache {
         let cache = self
             .cache
             .read()
-            .map_err(|e| anyhow::anyhow!("Cache read lock poisoned in debug_info: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Cache read lock poisoned in debug_info: {e}"))?;
         let mut info = HashMap::new();
 
         for (path, entry) in cache.iter() {

@@ -24,7 +24,7 @@ fn resolve_source_files(source: &Path) -> anyhow::Result<Vec<PathBuf>> {
             let matches: Vec<PathBuf> = glob::glob(pattern_str)?.filter_map(Result::ok).collect();
 
             if matches.is_empty() {
-                anyhow::bail!("No files matched the pattern: {}", pattern_str);
+                anyhow::bail!("No files matched the pattern: {pattern_str}");
             }
 
             return Ok(matches);

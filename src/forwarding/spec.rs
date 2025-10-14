@@ -72,8 +72,7 @@ impl ForwardingSpec {
                 })
             }
             _ => Err(anyhow::anyhow!(
-                "Invalid local forwarding specification: '{}'. Expected format: [bind_address:]port:host:hostport",
-                spec
+                "Invalid local forwarding specification: '{spec}'. Expected format: [bind_address:]port:host:hostport"
             )),
         }
     }
@@ -120,8 +119,7 @@ impl ForwardingSpec {
                 })
             }
             _ => Err(anyhow::anyhow!(
-                "Invalid remote forwarding specification: '{}'. Expected format: [bind_address:]port:host:hostport",
-                spec
+                "Invalid remote forwarding specification: '{spec}'. Expected format: [bind_address:]port:host:hostport"
             )),
         }
     }
@@ -163,8 +161,7 @@ impl ForwardingSpec {
             "remote" | "r" | "-r" => Self::parse_remote(spec),
             "dynamic" | "d" | "-d" => Self::parse_dynamic(spec),
             _ => Err(anyhow::anyhow!(
-                "Unknown forwarding type: '{}'. Expected: local, remote, or dynamic",
-                forward_type
+                "Unknown forwarding type: '{forward_type}'. Expected: local, remote, or dynamic"
             )),
         }
     }

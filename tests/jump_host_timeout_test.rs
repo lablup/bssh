@@ -67,8 +67,7 @@ fn test_timeout_calculation_max_allowed_hops() {
     assert_eq!(timeout, 180); // 30 + 150 = 180 (under 600 max)
     assert!(
         timeout <= 600,
-        "Timeout should never exceed 600 seconds, got {}",
-        timeout
+        "Timeout should never exceed 600 seconds, got {timeout}"
     );
 }
 

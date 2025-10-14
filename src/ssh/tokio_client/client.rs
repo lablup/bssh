@@ -875,42 +875,36 @@ impl Client {
         }
     }
 
-    /// Request an interactive shell with PTY support.
+    /// Request an interactive shell channel.
     ///
-    /// This method opens a new SSH channel with PTY (pseudo-terminal) support,
-    /// suitable for interactive shell sessions.
+    /// This method opens a new SSH channel suitable for interactive shell sessions.
+    /// Note: This method no longer requests PTY directly. The PTY should be requested
+    /// by the caller (e.g., PtySession) with appropriate terminal modes.
     ///
     /// # Arguments
-    /// * `term_type` - Terminal type (e.g., "xterm", "xterm-256color", "vt100")
-    /// * `width` - Terminal width in columns
-    /// * `height` - Terminal height in rows
+    /// * `_term_type` - Terminal type (unused, kept for API compatibility)
+    /// * `_width` - Terminal width (unused, kept for API compatibility)
+    /// * `_height` - Terminal height (unused, kept for API compatibility)
     ///
     /// # Returns
     /// A `Channel` that can be used for bidirectional communication with the remote shell.
+    ///
+    /// # Note
+    /// The caller is responsible for:
+    /// 1. Requesting PTY with proper terminal modes via `channel.request_pty()`
+    /// 2. Requesting shell via `channel.request_shell()`
+    ///
+    /// This change fixes issue #40: PTY should be requested once with proper terminal
+    /// modes by PtySession::initialize() rather than twice with empty modes.
     pub async fn request_interactive_shell(
         &self,
-        term_type: &str,
-        width: u32,
-        height: u32,
+        _term_type: &str,
+        _width: u32,
+        _height: u32,
     ) -> Result<Channel<Msg>, super::Error> {
+        // Open a session channel - PTY and shell will be requested by the caller
+        // (e.g., PtySession::initialize() with proper terminal modes)
         let channel = self.connection_handle.channel_open_session().await?;
-
-        // Request PTY with the specified terminal type and dimensions
-        channel
-            .request_pty(
-                false,
-                term_type,
-                width,
-                height,
-                0,   // pixel width (0 means undefined)
-                0,   // pixel height (0 means undefined)
-                &[], // terminal modes (empty means use defaults)
-            )
-            .await?;
-
-        // Request shell
-        channel.request_shell(false).await?;
-
         Ok(channel)
     }
 

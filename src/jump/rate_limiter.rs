@@ -107,9 +107,7 @@ impl ConnectionRateLimiter {
                 host, wait_time
             );
             bail!(
-                "Connection rate limit exceeded for {}. Please wait {:.1} seconds before retrying.",
-                host,
-                wait_time
+                "Connection rate limit exceeded for {host}. Please wait {wait_time:.1} seconds before retrying."
             )
         }
     }

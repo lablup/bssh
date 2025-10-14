@@ -46,8 +46,7 @@ pub fn resolve_source_files(source: &Path, recursive: bool) -> Result<Vec<PathBu
             walk_directory(source)
         } else {
             anyhow::bail!(
-                "Source is a directory. Use --recursive flag or a glob pattern like '{}/*' to upload files",
-                source_str
+                "Source is a directory. Use --recursive flag or a glob pattern like '{source_str}/*' to upload files"
             );
         }
     } else {
@@ -65,7 +64,7 @@ pub fn resolve_source_files(source: &Path, recursive: bool) -> Result<Vec<PathBu
         }
 
         if files.is_empty() {
-            anyhow::bail!("Source file does not exist: {:?}", source);
+            anyhow::bail!("Source file does not exist: {source:?}");
         }
         Ok(files)
     }

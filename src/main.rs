@@ -120,7 +120,7 @@ async fn main() -> Result<()> {
         };
 
         if !expanded_path.exists() {
-            anyhow::bail!("Config file not found: {:?}", expanded_path);
+            anyhow::bail!("Config file not found: {expanded_path:?}");
         }
     }
 
@@ -564,12 +564,12 @@ fn parse_node_with_ssh_config(node_str: &str, ssh_config: &SshConfig) -> Result<
 
     // Security: Validate hostname
     let validated_host = bssh::security::validate_hostname(raw_host)
-        .with_context(|| format!("Invalid hostname in node: {}", raw_host))?;
+        .with_context(|| format!("Invalid hostname in node: {raw_host}"))?;
 
     // Security: Validate username if provided
     if let Some(user) = user_part {
         bssh::security::validate_username(user)
-            .with_context(|| format!("Invalid username in node: {}", user))?;
+            .with_context(|| format!("Invalid username in node: {user}"))?;
     }
 
     // Now resolve using SSH config with CLI taking precedence
@@ -716,7 +716,7 @@ async fn resolve_nodes(
     if let Some(filter) = cli.get_host_filter() {
         nodes = filter_nodes(nodes, filter)?;
         if nodes.is_empty() {
-            anyhow::bail!("No hosts matched the filter pattern: {}", filter);
+            anyhow::bail!("No hosts matched the filter pattern: {filter}");
         }
     }
 
@@ -730,10 +730,7 @@ fn filter_nodes(nodes: Vec<Node>, pattern: &str) -> Result<Vec<Node>> {
     // Security: Validate pattern length to prevent DoS
     const MAX_PATTERN_LENGTH: usize = 256;
     if pattern.len() > MAX_PATTERN_LENGTH {
-        anyhow::bail!(
-            "Filter pattern too long (max {} characters)",
-            MAX_PATTERN_LENGTH
-        );
+        anyhow::bail!("Filter pattern too long (max {MAX_PATTERN_LENGTH} characters)");
     }
 
     // Security: Validate pattern for dangerous constructs
@@ -745,10 +742,7 @@ fn filter_nodes(nodes: Vec<Node>, pattern: &str) -> Result<Vec<Node>> {
     let wildcard_count = pattern.chars().filter(|c| *c == '*' || *c == '?').count();
     const MAX_WILDCARDS: usize = 10;
     if wildcard_count > MAX_WILDCARDS {
-        anyhow::bail!(
-            "Filter pattern contains too many wildcards (max {})",
-            MAX_WILDCARDS
-        );
+        anyhow::bail!("Filter pattern contains too many wildcards (max {MAX_WILDCARDS})");
     }
 
     // Security: Check for potential path traversal attempts
@@ -778,8 +772,8 @@ fn filter_nodes(nodes: Vec<Node>, pattern: &str) -> Result<Vec<Node>> {
     // If pattern contains wildcards, use glob matching
     if pattern.contains('*') || pattern.contains('?') || pattern.contains('[') {
         // Security: Compile pattern with timeout to prevent ReDoS attacks
-        let glob_pattern = Pattern::new(pattern)
-            .with_context(|| format!("Invalid filter pattern: {}", pattern))?;
+        let glob_pattern =
+            Pattern::new(pattern).with_context(|| format!("Invalid filter pattern: {pattern}"))?;
 
         // Performance: Use HashSet for O(1) lookups if we need to check many nodes
         let mut matched_nodes = Vec::with_capacity(nodes.len());

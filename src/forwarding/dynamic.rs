@@ -455,7 +455,7 @@ impl DynamicForwarder {
             // Send failure response
             let response = [0, 0x5B, 0, 0, 0, 0, 0, 0]; // 0x5B = request rejected
             tcp_stream.write_all(&response).await?;
-            return Err(anyhow::anyhow!("Invalid SOCKS4 version: {}", version));
+            return Err(anyhow::anyhow!("Invalid SOCKS4 version: {version}"));
         }
 
         // Only support CONNECT command (0x01)
@@ -463,7 +463,7 @@ impl DynamicForwarder {
             debug!("Unsupported SOCKS4 command: {} from {}", command, peer_addr);
             let response = [0, 0x5C, 0, 0, 0, 0, 0, 0]; // 0x5C = request failed
             tcp_stream.write_all(&response).await?;
-            return Err(anyhow::anyhow!("Unsupported SOCKS4 command: {}", command));
+            return Err(anyhow::anyhow!("Unsupported SOCKS4 command: {command}"));
         }
 
         // Read USERID (until NULL byte)
@@ -541,7 +541,7 @@ impl DynamicForwarder {
         let nmethods = auth_request[1];
 
         if version != 5 {
-            return Err(anyhow::anyhow!("Invalid SOCKS5 version: {}", version));
+            return Err(anyhow::anyhow!("Invalid SOCKS5 version: {version}"));
         }
 
         // Read authentication methods
@@ -574,10 +574,7 @@ impl DynamicForwarder {
         let address_type = request_header[3];
 
         if version != 5 {
-            return Err(anyhow::anyhow!(
-                "Invalid SOCKS5 request version: {}",
-                version
-            ));
+            return Err(anyhow::anyhow!("Invalid SOCKS5 request version: {version}"));
         }
 
         // Only support CONNECT command (0x01)
@@ -585,7 +582,7 @@ impl DynamicForwarder {
             // Send error response
             let response = [5, 0x07, 0, 1, 0, 0, 0, 0, 0, 0]; // Command not supported
             tcp_stream.write_all(&response).await?;
-            return Err(anyhow::anyhow!("Unsupported SOCKS5 command: {}", command));
+            return Err(anyhow::anyhow!("Unsupported SOCKS5 command: {command}"));
         }
 
         // Parse destination address based on address type
@@ -626,10 +623,7 @@ impl DynamicForwarder {
             _ => {
                 let response = [5, 0x08, 0, 1, 0, 0, 0, 0, 0, 0]; // Address type not supported
                 tcp_stream.write_all(&response).await?;
-                return Err(anyhow::anyhow!(
-                    "Unsupported address type: {}",
-                    address_type
-                ));
+                return Err(anyhow::anyhow!("Unsupported address type: {address_type}"));
             }
         };
 

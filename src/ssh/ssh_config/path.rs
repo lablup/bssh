@@ -222,9 +222,8 @@ fn secure_expand_environment_variables(input: &str) -> Result<String> {
                     var_name
                 );
                 anyhow::bail!(
-                    "Security violation: Attempted to expand dangerous environment variable '{}'. \
-                     Variables like PATH, LD_LIBRARY_PATH, LD_PRELOAD are not allowed for security reasons.",
-                    var_name
+                    "Security violation: Attempted to expand dangerous environment variable '{var_name}'. \
+                     Variables like PATH, LD_LIBRARY_PATH, LD_PRELOAD are not allowed for security reasons."
                 );
             }
 
@@ -282,9 +281,8 @@ fn secure_expand_environment_variables(input: &str) -> Result<String> {
     // Security check: Did we hit the expansion depth limit?
     if expansion_depth >= MAX_EXPANSION_DEPTH {
         anyhow::bail!(
-            "Security violation: Environment variable expansion depth limit exceeded ({} levels). \
-             This could indicate a recursive expansion attack.",
-            MAX_EXPANSION_DEPTH
+            "Security violation: Environment variable expansion depth limit exceeded ({MAX_EXPANSION_DEPTH} levels). \
+             This could indicate a recursive expansion attack."
         );
     }
 
@@ -325,9 +323,8 @@ fn sanitize_environment_value(value: &str, var_name: &str) -> Result<String> {
     // Check for null bytes (could be used for path truncation attacks)
     if value.contains('\0') {
         anyhow::bail!(
-            "Security violation: Environment variable '{}' contains null byte. \
-             This could be used for path truncation attacks.",
-            var_name
+            "Security violation: Environment variable '{var_name}' contains null byte. \
+             This could be used for path truncation attacks."
         );
     }
 
@@ -335,19 +332,16 @@ fn sanitize_environment_value(value: &str, var_name: &str) -> Result<String> {
     const DANGEROUS_CHARS: &[char] = &[';', '&', '|', '`', '\n', '\r'];
     if let Some(dangerous_char) = value.chars().find(|c| DANGEROUS_CHARS.contains(c)) {
         anyhow::bail!(
-            "Security violation: Environment variable '{}' contains dangerous character '{}'. \
-             This could enable command injection attacks.",
-            var_name,
-            dangerous_char
+            "Security violation: Environment variable '{var_name}' contains dangerous character '{dangerous_char}'. \
+             This could enable command injection attacks."
         );
     }
 
     // Check for command substitution patterns
     if value.contains("$(") || value.contains("${") {
         anyhow::bail!(
-            "Security violation: Environment variable '{}' contains command substitution pattern. \
-             This could enable command injection attacks.",
-            var_name
+            "Security violation: Environment variable '{var_name}' contains command substitution pattern. \
+             This could enable command injection attacks."
         );
     }
 
@@ -367,9 +361,8 @@ fn sanitize_environment_value(value: &str, var_name: &str) -> Result<String> {
             }
             _ => {
                 anyhow::bail!(
-                    "Security violation: Environment variable '{}' contains path traversal sequence. \
-                     This could enable directory traversal attacks.",
-                    var_name
+                    "Security violation: Environment variable '{var_name}' contains path traversal sequence. \
+                     This could enable directory traversal attacks."
                 );
             }
         }

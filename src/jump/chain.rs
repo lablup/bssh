@@ -899,7 +899,7 @@ impl JumpHostChain {
                 let auth_result = handle
                     .authenticate_password(username, &**password)
                     .await
-                    .map_err(|e| anyhow::anyhow!("Password authentication failed: {}", e))?;
+                    .map_err(|e| anyhow::anyhow!("Password authentication failed: {e}"))?;
 
                 if !auth_result.success() {
                     anyhow::bail!("Password authentication rejected by jump host");
@@ -909,7 +909,7 @@ impl JumpHostChain {
             AuthMethod::PrivateKey { key_data, key_pass } => {
                 let private_key =
                     russh::keys::decode_secret_key(&key_data, key_pass.as_ref().map(|p| &***p))
-                        .map_err(|e| anyhow::anyhow!("Failed to decode private key: {}", e))?;
+                        .map_err(|e| anyhow::anyhow!("Failed to decode private key: {e}"))?;
 
                 let auth_result = handle
                     .authenticate_publickey(
@@ -920,7 +920,7 @@ impl JumpHostChain {
                         ),
                     )
                     .await
-                    .map_err(|e| anyhow::anyhow!("Private key authentication failed: {}", e))?;
+                    .map_err(|e| anyhow::anyhow!("Private key authentication failed: {e}"))?;
 
                 if !auth_result.success() {
                     anyhow::bail!("Private key authentication rejected by jump host");
@@ -931,11 +931,9 @@ impl JumpHostChain {
                 key_file_path,
                 key_pass,
             } => {
-                let private_key = russh::keys::load_secret_key(
-                    key_file_path,
-                    key_pass.as_ref().map(|p| &***p),
-                )
-                .map_err(|e| anyhow::anyhow!("Failed to load private key from file: {}", e))?;
+                let private_key =
+                    russh::keys::load_secret_key(key_file_path, key_pass.as_ref().map(|p| &***p))
+                        .map_err(|e| anyhow::anyhow!("Failed to load private key from file: {e}"))?;
 
                 let auth_result = handle
                     .authenticate_publickey(
@@ -946,9 +944,7 @@ impl JumpHostChain {
                         ),
                     )
                     .await
-                    .map_err(|e| {
-                        anyhow::anyhow!("Private key file authentication failed: {}", e)
-                    })?;
+                    .map_err(|e| anyhow::anyhow!("Private key file authentication failed: {e}"))?;
 
                 if !auth_result.success() {
                     anyhow::bail!("Private key file authentication rejected by jump host");

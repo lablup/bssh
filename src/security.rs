@@ -42,7 +42,7 @@ pub fn validate_local_path(path: &Path) -> Result<PathBuf> {
     // This will fail if the path doesn't exist yet, so we handle that case
     let canonical = if path.exists() {
         path.canonicalize()
-            .with_context(|| format!("Failed to canonicalize path: {:?}", path))?
+            .with_context(|| format!("Failed to canonicalize path: {path:?}"))?
     } else {
         // For non-existent paths, validate the parent directory
         if let Some(parent) = path.parent() {
@@ -54,7 +54,7 @@ pub fn validate_local_path(path: &Path) -> Result<PathBuf> {
             } else if parent.exists() {
                 let canonical_parent = parent
                     .canonicalize()
-                    .with_context(|| format!("Failed to canonicalize parent path: {:?}", parent))?;
+                    .with_context(|| format!("Failed to canonicalize parent path: {parent:?}"))?;
 
                 // Get the file name
                 let file_name = path
@@ -99,7 +99,7 @@ pub fn validate_remote_path(path: &str) -> Result<String> {
     // Check path length to prevent DoS
     const MAX_PATH_LENGTH: usize = 4096;
     if path.len() > MAX_PATH_LENGTH {
-        anyhow::bail!("Remote path too long (max {} characters)", MAX_PATH_LENGTH);
+        anyhow::bail!("Remote path too long (max {MAX_PATH_LENGTH} characters)");
     }
 
     // Check for shell metacharacters that could cause injection
@@ -110,7 +110,7 @@ pub fn validate_remote_path(path: &str) -> Result<String> {
 
     for &ch in DANGEROUS_CHARS {
         if path.contains(ch) {
-            anyhow::bail!("Remote path contains invalid character: '{}'", ch);
+            anyhow::bail!("Remote path contains invalid character: '{ch}'");
         }
     }
 
@@ -163,7 +163,7 @@ pub fn validate_hostname(hostname: &str) -> Result<String> {
     // Check hostname length (RFC 1123)
     const MAX_HOSTNAME_LENGTH: usize = 253;
     if hostname.len() > MAX_HOSTNAME_LENGTH {
-        anyhow::bail!("Hostname too long (max {} characters)", MAX_HOSTNAME_LENGTH);
+        anyhow::bail!("Hostname too long (max {MAX_HOSTNAME_LENGTH} characters)");
     }
 
     // Validate hostname format (RFC 1123)
@@ -194,7 +194,7 @@ pub fn validate_username(username: &str) -> Result<String> {
     // Check username length
     const MAX_USERNAME_LENGTH: usize = 32;
     if username.len() > MAX_USERNAME_LENGTH {
-        anyhow::bail!("Username too long (max {} characters)", MAX_USERNAME_LENGTH);
+        anyhow::bail!("Username too long (max {MAX_USERNAME_LENGTH} characters)");
     }
 
     // Validate username format (POSIX-compliant)
@@ -228,7 +228,7 @@ pub fn sanitize_error_message(message: &str) -> String {
         if let Some(end) = sanitized[start + 6..].find('\'') {
             let before = &sanitized[..start + 5];
             let after = &sanitized[start + 6 + end + 1..];
-            sanitized = format!("{}<redacted>{}", before, after);
+            sanitized = format!("{before}<redacted>{after}");
         }
     }
 
