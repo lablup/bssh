@@ -71,6 +71,8 @@ pub struct InteractiveCommand {
     pub use_agent: bool,
     pub use_password: bool,
     pub strict_mode: StrictHostKeyChecking,
+    // Jump hosts
+    pub jump_hosts: Option<String>,
     // PTY configuration
     pub pty_config: PtyConfig,
     pub use_pty: Option<bool>, // None = auto-detect, Some(true) = force, Some(false) = disable
@@ -320,6 +322,8 @@ impl InteractiveCommand {
 
     /// Connect to a single node and establish an interactive shell
     async fn connect_to_node(&self, node: Node) -> Result<NodeSession> {
+        use crate::jump::{parse_jump_hosts, JumpHostChain};
+
         // Determine authentication method using the same logic as exec mode
         let auth_method = self.determine_auth_method(&node)?;
 
@@ -336,18 +340,104 @@ impl InteractiveCommand {
         const SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
         let connect_timeout = Duration::from_secs(SSH_CONNECT_TIMEOUT_SECS);
 
-        let client = timeout(
-            connect_timeout,
-            Client::connect(addr, &node.username, auth_method, check_method),
-        )
-        .await
-        .with_context(|| {
-            format!(
-                "Connection timeout: Failed to connect to {}:{} after 30 seconds",
-                node.host, node.port
+        // Create client connection - either direct or through jump hosts
+        let client = if let Some(ref jump_spec) = self.jump_hosts {
+            // Parse jump hosts
+            let jump_hosts = parse_jump_hosts(jump_spec).with_context(|| {
+                format!("Failed to parse jump host specification: '{jump_spec}'")
+            })?;
+
+            if jump_hosts.is_empty() {
+                tracing::debug!("No valid jump hosts found, using direct connection");
+                timeout(
+                    connect_timeout,
+                    Client::connect(addr, &node.username, auth_method, check_method),
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "Connection timeout: Failed to connect to {}:{} after 30 seconds",
+                        node.host, node.port
+                    )
+                })?
+                .with_context(|| format!("SSH connection failed to {}:{}", node.host, node.port))?
+            } else {
+                tracing::info!(
+                    "Connecting to {}:{} via {} jump host(s) for interactive session",
+                    node.host,
+                    node.port,
+                    jump_hosts.len()
+                );
+
+                // Create jump host chain with dynamic timeout based on hop count
+                // SECURITY: Use saturating arithmetic to prevent integer overflow
+                // Cap maximum timeout at 10 minutes to prevent DoS
+                const MAX_TIMEOUT_SECS: u64 = 600; // 10 minutes max
+                const BASE_TIMEOUT: u64 = 30;
+                const PER_HOP_TIMEOUT: u64 = 15;
+
+                let hop_count = jump_hosts.len();
+                let adjusted_timeout = Duration::from_secs(
+                    BASE_TIMEOUT
+                        .saturating_add(PER_HOP_TIMEOUT.saturating_mul(hop_count as u64))
+                        .min(MAX_TIMEOUT_SECS),
+                );
+
+                let chain = JumpHostChain::new(jump_hosts)
+                    .with_connect_timeout(adjusted_timeout)
+                    .with_command_timeout(Duration::from_secs(300));
+
+                // Connect through the chain
+                let connection = timeout(
+                    adjusted_timeout,
+                    chain.connect(
+                        &node.host,
+                        node.port,
+                        &node.username,
+                        auth_method.clone(),
+                        self.key_path.as_deref(),
+                        Some(self.strict_mode),
+                        self.use_agent,
+                        self.use_password,
+                    ),
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "Connection timeout: Failed to connect to {}:{} via jump hosts after {} seconds",
+                        node.host, node.port, adjusted_timeout.as_secs()
+                    )
+                })?
+                .with_context(|| {
+                    format!(
+                        "Failed to establish jump host connection to {}:{}",
+                        node.host, node.port
+                    )
+                })?;
+
+                tracing::info!(
+                    "Jump host connection established for interactive session: {}",
+                    connection.jump_info.path_description()
+                );
+
+                connection.client
+            }
+        } else {
+            // Direct connection
+            tracing::debug!("Using direct connection (no jump hosts)");
+            timeout(
+                connect_timeout,
+                Client::connect(addr, &node.username, auth_method, check_method),
             )
-        })?
-        .with_context(|| format!("SSH connection failed to {}:{}", node.host, node.port))?;
+            .await
+            .with_context(|| {
+                format!(
+                    "Connection timeout: Failed to connect to {}:{} after 30 seconds",
+                    node.host, node.port
+                )
+            })?
+            .with_context(|| format!("SSH connection failed to {}:{}", node.host, node.port))?
+        };
 
         // Get terminal dimensions
         let (width, height) = terminal::size().unwrap_or((80, 24));
@@ -420,6 +510,8 @@ impl InteractiveCommand {
 
     /// Connect to a single node and establish a PTY-enabled SSH channel
     async fn connect_to_node_pty(&self, node: Node) -> Result<Channel<Msg>> {
+        use crate::jump::{parse_jump_hosts, JumpHostChain};
+
         // Determine authentication method using the same logic as exec mode
         let auth_method = self.determine_auth_method(&node)?;
 
@@ -436,18 +528,104 @@ impl InteractiveCommand {
         const SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
         let connect_timeout = Duration::from_secs(SSH_CONNECT_TIMEOUT_SECS);
 
-        let client = timeout(
-            connect_timeout,
-            Client::connect(addr, &node.username, auth_method, check_method),
-        )
-        .await
-        .with_context(|| {
-            format!(
-                "Connection timeout: Failed to connect to {}:{} after 30 seconds",
-                node.host, node.port
+        // Create client connection - either direct or through jump hosts
+        let client = if let Some(ref jump_spec) = self.jump_hosts {
+            // Parse jump hosts
+            let jump_hosts = parse_jump_hosts(jump_spec).with_context(|| {
+                format!("Failed to parse jump host specification: '{jump_spec}'")
+            })?;
+
+            if jump_hosts.is_empty() {
+                tracing::debug!("No valid jump hosts found, using direct connection for PTY");
+                timeout(
+                    connect_timeout,
+                    Client::connect(addr, &node.username, auth_method, check_method),
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "Connection timeout: Failed to connect to {}:{} after 30 seconds",
+                        node.host, node.port
+                    )
+                })?
+                .with_context(|| format!("SSH connection failed to {}:{}", node.host, node.port))?
+            } else {
+                tracing::info!(
+                    "Connecting to {}:{} via {} jump host(s) for PTY session",
+                    node.host,
+                    node.port,
+                    jump_hosts.len()
+                );
+
+                // Create jump host chain with dynamic timeout based on hop count
+                // SECURITY: Use saturating arithmetic to prevent integer overflow
+                // Cap maximum timeout at 10 minutes to prevent DoS
+                const MAX_TIMEOUT_SECS: u64 = 600; // 10 minutes max
+                const BASE_TIMEOUT: u64 = 30;
+                const PER_HOP_TIMEOUT: u64 = 15;
+
+                let hop_count = jump_hosts.len();
+                let adjusted_timeout = Duration::from_secs(
+                    BASE_TIMEOUT
+                        .saturating_add(PER_HOP_TIMEOUT.saturating_mul(hop_count as u64))
+                        .min(MAX_TIMEOUT_SECS),
+                );
+
+                let chain = JumpHostChain::new(jump_hosts)
+                    .with_connect_timeout(adjusted_timeout)
+                    .with_command_timeout(Duration::from_secs(300));
+
+                // Connect through the chain
+                let connection = timeout(
+                    adjusted_timeout,
+                    chain.connect(
+                        &node.host,
+                        node.port,
+                        &node.username,
+                        auth_method.clone(),
+                        self.key_path.as_deref(),
+                        Some(self.strict_mode),
+                        self.use_agent,
+                        self.use_password,
+                    ),
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "Connection timeout: Failed to connect to {}:{} via jump hosts after {} seconds",
+                        node.host, node.port, adjusted_timeout.as_secs()
+                    )
+                })?
+                .with_context(|| {
+                    format!(
+                        "Failed to establish jump host connection to {}:{}",
+                        node.host, node.port
+                    )
+                })?;
+
+                tracing::info!(
+                    "Jump host connection established for PTY session: {}",
+                    connection.jump_info.path_description()
+                );
+
+                connection.client
+            }
+        } else {
+            // Direct connection
+            tracing::debug!("Using direct connection for PTY (no jump hosts)");
+            timeout(
+                connect_timeout,
+                Client::connect(addr, &node.username, auth_method, check_method),
             )
-        })?
-        .with_context(|| format!("SSH connection failed to {}:{}", node.host, node.port))?;
+            .await
+            .with_context(|| {
+                format!(
+                    "Connection timeout: Failed to connect to {}:{} after 30 seconds",
+                    node.host, node.port
+                )
+            })?
+            .with_context(|| format!("SSH connection failed to {}:{}", node.host, node.port))?
+        };
 
         // Get terminal dimensions
         let (width, height) = crate::pty::utils::get_terminal_size().unwrap_or((80, 24));
@@ -1268,6 +1446,7 @@ mod tests {
             use_agent: false,
             use_password: false,
             strict_mode: StrictHostKeyChecking::AcceptNew,
+            jump_hosts: None,
             pty_config: PtyConfig::default(),
             use_pty: None,
         };
@@ -1298,6 +1477,7 @@ mod tests {
             use_agent: false,
             use_password: false,
             strict_mode: StrictHostKeyChecking::AcceptNew,
+            jump_hosts: None,
             pty_config: PtyConfig::default(),
             use_pty: None,
         };

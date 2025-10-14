@@ -605,6 +605,15 @@ SSH agent socket for agent-based authentication
 
 .SH ENVIRONMENT
 .TP
+.B BSSH_MAX_JUMP_HOSTS
+Maximum number of jump hosts allowed in a connection chain. Default is 10,
+with an absolute maximum of 30 for security reasons. Invalid or zero values
+fall back to the default. This setting helps prevent resource exhaustion
+attacks while allowing flexible jump host configurations.
+.br
+Example: BSSH_MAX_JUMP_HOSTS=20 bssh -J host1,host2,...,host20 target
+
+.TP
 .B USER
 Used as default username when not specified
 

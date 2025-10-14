@@ -401,6 +401,7 @@ async fn main() -> Result<()> {
                 use_agent: cli.use_agent,
                 use_password: cli.password,
                 strict_mode,
+                jump_hosts: cli.jump_hosts.clone(),
                 pty_config,
                 use_pty,
             };
@@ -458,6 +459,7 @@ async fn main() -> Result<()> {
                     use_agent: cli.use_agent,
                     use_password: cli.password,
                     strict_mode,
+                    jump_hosts: cli.jump_hosts.clone(),
                     pty_config,
                     use_pty,
                 };

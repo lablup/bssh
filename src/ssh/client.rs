@@ -794,6 +794,412 @@ impl SshClient {
         Ok(())
     }
 
+    /// Upload file with jump host support
+    #[allow(clippy::too_many_arguments)]
+    pub async fn upload_file_with_jump_hosts(
+        &mut self,
+        local_path: &Path,
+        remote_path: &str,
+        key_path: Option<&Path>,
+        strict_mode: Option<StrictHostKeyChecking>,
+        use_agent: bool,
+        use_password: bool,
+        jump_hosts_spec: Option<&str>,
+    ) -> Result<()> {
+        tracing::debug!(
+            "Uploading file to {}:{} (jump hosts: {:?})",
+            self.host,
+            self.port,
+            jump_hosts_spec
+        );
+
+        // Determine authentication method
+        let auth_method = self.determine_auth_method(key_path, use_agent, use_password)?;
+
+        let strict_mode = strict_mode.unwrap_or(StrictHostKeyChecking::AcceptNew);
+
+        // Create client connection - either direct or through jump hosts
+        let client = if let Some(jump_spec) = jump_hosts_spec {
+            // Parse jump hosts
+            let jump_hosts = parse_jump_hosts(jump_spec).with_context(|| {
+                format!("Failed to parse jump host specification: '{jump_spec}'")
+            })?;
+
+            if jump_hosts.is_empty() {
+                tracing::debug!("No valid jump hosts found, using direct connection");
+                self.connect_direct(&auth_method, strict_mode).await?
+            } else {
+                tracing::info!(
+                    "Uploading to {}:{} via {} jump host(s)",
+                    self.host,
+                    self.port,
+                    jump_hosts.len()
+                );
+
+                self.connect_via_jump_hosts(
+                    &jump_hosts,
+                    &auth_method,
+                    strict_mode,
+                    key_path,
+                    use_agent,
+                    use_password,
+                )
+                .await?
+            }
+        } else {
+            // Direct connection
+            tracing::debug!("Using direct connection (no jump hosts)");
+            self.connect_direct(&auth_method, strict_mode).await?
+        };
+
+        tracing::debug!("Connected and authenticated successfully");
+
+        // Check if local file exists
+        if !local_path.exists() {
+            anyhow::bail!("Local file does not exist: {:?}", local_path);
+        }
+
+        let metadata = std::fs::metadata(local_path)
+            .with_context(|| format!("Failed to get metadata for {local_path:?}"))?;
+
+        let file_size = metadata.len();
+
+        tracing::debug!(
+            "Uploading file {:?} ({} bytes) to {}:{} using SFTP",
+            local_path,
+            file_size,
+            self.host,
+            remote_path
+        );
+
+        // Use the built-in upload_file method with timeout (SFTP-based)
+        const FILE_UPLOAD_TIMEOUT_SECS: u64 = 300;
+        let upload_timeout = Duration::from_secs(FILE_UPLOAD_TIMEOUT_SECS);
+        tokio::time::timeout(
+            upload_timeout,
+            client.upload_file(local_path, remote_path.to_string()),
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "File upload timeout: Transfer of {:?} to {}:{} did not complete within 5 minutes",
+                local_path, self.host, remote_path
+            )
+        })?
+        .with_context(|| {
+            format!(
+                "Failed to upload file {:?} to {}:{}",
+                local_path, self.host, remote_path
+            )
+        })?;
+
+        tracing::debug!("File upload completed successfully");
+
+        Ok(())
+    }
+
+    /// Download file with jump host support
+    #[allow(clippy::too_many_arguments)]
+    pub async fn download_file_with_jump_hosts(
+        &mut self,
+        remote_path: &str,
+        local_path: &Path,
+        key_path: Option<&Path>,
+        strict_mode: Option<StrictHostKeyChecking>,
+        use_agent: bool,
+        use_password: bool,
+        jump_hosts_spec: Option<&str>,
+    ) -> Result<()> {
+        tracing::debug!(
+            "Downloading file from {}:{} (jump hosts: {:?})",
+            self.host,
+            self.port,
+            jump_hosts_spec
+        );
+
+        // Determine authentication method
+        let auth_method = self.determine_auth_method(key_path, use_agent, use_password)?;
+
+        let strict_mode = strict_mode.unwrap_or(StrictHostKeyChecking::AcceptNew);
+
+        // Create client connection - either direct or through jump hosts
+        let client = if let Some(jump_spec) = jump_hosts_spec {
+            // Parse jump hosts
+            let jump_hosts = parse_jump_hosts(jump_spec).with_context(|| {
+                format!("Failed to parse jump host specification: '{jump_spec}'")
+            })?;
+
+            if jump_hosts.is_empty() {
+                tracing::debug!("No valid jump hosts found, using direct connection");
+                self.connect_direct(&auth_method, strict_mode).await?
+            } else {
+                tracing::info!(
+                    "Downloading from {}:{} via {} jump host(s)",
+                    self.host,
+                    self.port,
+                    jump_hosts.len()
+                );
+
+                self.connect_via_jump_hosts(
+                    &jump_hosts,
+                    &auth_method,
+                    strict_mode,
+                    key_path,
+                    use_agent,
+                    use_password,
+                )
+                .await?
+            }
+        } else {
+            // Direct connection
+            tracing::debug!("Using direct connection (no jump hosts)");
+            self.connect_direct(&auth_method, strict_mode).await?
+        };
+
+        tracing::debug!("Connected and authenticated successfully");
+
+        // Create parent directory if it doesn't exist
+        if let Some(parent) = local_path.parent() {
+            tokio::fs::create_dir_all(parent)
+                .await
+                .with_context(|| format!("Failed to create parent directory for {local_path:?}"))?;
+        }
+
+        tracing::debug!(
+            "Downloading file from {}:{} to {:?} using SFTP",
+            self.host,
+            remote_path,
+            local_path
+        );
+
+        // Use the built-in download_file method with timeout (SFTP-based)
+        const FILE_DOWNLOAD_TIMEOUT_SECS: u64 = 300;
+        let download_timeout = Duration::from_secs(FILE_DOWNLOAD_TIMEOUT_SECS);
+        tokio::time::timeout(
+            download_timeout,
+            client.download_file(remote_path.to_string(), local_path),
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "File download timeout: Transfer from {}:{} to {:?} did not complete within 5 minutes",
+                self.host, remote_path, local_path
+            )
+        })?
+        .with_context(|| {
+            format!(
+                "Failed to download file from {}:{} to {:?}",
+                self.host, remote_path, local_path
+            )
+        })?;
+
+        tracing::debug!("File download completed successfully");
+
+        Ok(())
+    }
+
+    /// Upload directory with jump host support
+    #[allow(clippy::too_many_arguments)]
+    pub async fn upload_dir_with_jump_hosts(
+        &mut self,
+        local_dir_path: &Path,
+        remote_dir_path: &str,
+        key_path: Option<&Path>,
+        strict_mode: Option<StrictHostKeyChecking>,
+        use_agent: bool,
+        use_password: bool,
+        jump_hosts_spec: Option<&str>,
+    ) -> Result<()> {
+        tracing::debug!(
+            "Uploading directory to {}:{} (jump hosts: {:?})",
+            self.host,
+            self.port,
+            jump_hosts_spec
+        );
+
+        // Determine authentication method
+        let auth_method = self.determine_auth_method(key_path, use_agent, use_password)?;
+
+        let strict_mode = strict_mode.unwrap_or(StrictHostKeyChecking::AcceptNew);
+
+        // Create client connection - either direct or through jump hosts
+        let client = if let Some(jump_spec) = jump_hosts_spec {
+            // Parse jump hosts
+            let jump_hosts = parse_jump_hosts(jump_spec).with_context(|| {
+                format!("Failed to parse jump host specification: '{jump_spec}'")
+            })?;
+
+            if jump_hosts.is_empty() {
+                tracing::debug!("No valid jump hosts found, using direct connection");
+                self.connect_direct(&auth_method, strict_mode).await?
+            } else {
+                tracing::info!(
+                    "Uploading directory to {}:{} via {} jump host(s)",
+                    self.host,
+                    self.port,
+                    jump_hosts.len()
+                );
+
+                self.connect_via_jump_hosts(
+                    &jump_hosts,
+                    &auth_method,
+                    strict_mode,
+                    key_path,
+                    use_agent,
+                    use_password,
+                )
+                .await?
+            }
+        } else {
+            // Direct connection
+            tracing::debug!("Using direct connection (no jump hosts)");
+            self.connect_direct(&auth_method, strict_mode).await?
+        };
+
+        tracing::debug!("Connected and authenticated successfully");
+
+        // Check if local directory exists
+        if !local_dir_path.exists() {
+            anyhow::bail!("Local directory does not exist: {:?}", local_dir_path);
+        }
+
+        if !local_dir_path.is_dir() {
+            anyhow::bail!("Local path is not a directory: {:?}", local_dir_path);
+        }
+
+        tracing::debug!(
+            "Uploading directory {:?} to {}:{} using SFTP",
+            local_dir_path,
+            self.host,
+            remote_dir_path
+        );
+
+        // Use the built-in upload_dir method with timeout
+        const DIR_UPLOAD_TIMEOUT_SECS: u64 = 600;
+        let upload_timeout = Duration::from_secs(DIR_UPLOAD_TIMEOUT_SECS);
+        tokio::time::timeout(
+            upload_timeout,
+            client.upload_dir(local_dir_path, remote_dir_path.to_string()),
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "Directory upload timeout: Transfer of {:?} to {}:{} did not complete within 10 minutes",
+                local_dir_path, self.host, remote_dir_path
+            )
+        })?
+        .with_context(|| {
+            format!(
+                "Failed to upload directory {:?} to {}:{}",
+                local_dir_path, self.host, remote_dir_path
+            )
+        })?;
+
+        tracing::debug!("Directory upload completed successfully");
+
+        Ok(())
+    }
+
+    /// Download directory with jump host support
+    #[allow(clippy::too_many_arguments)]
+    pub async fn download_dir_with_jump_hosts(
+        &mut self,
+        remote_dir_path: &str,
+        local_dir_path: &Path,
+        key_path: Option<&Path>,
+        strict_mode: Option<StrictHostKeyChecking>,
+        use_agent: bool,
+        use_password: bool,
+        jump_hosts_spec: Option<&str>,
+    ) -> Result<()> {
+        tracing::debug!(
+            "Downloading directory from {}:{} (jump hosts: {:?})",
+            self.host,
+            self.port,
+            jump_hosts_spec
+        );
+
+        // Determine authentication method
+        let auth_method = self.determine_auth_method(key_path, use_agent, use_password)?;
+
+        let strict_mode = strict_mode.unwrap_or(StrictHostKeyChecking::AcceptNew);
+
+        // Create client connection - either direct or through jump hosts
+        let client = if let Some(jump_spec) = jump_hosts_spec {
+            // Parse jump hosts
+            let jump_hosts = parse_jump_hosts(jump_spec).with_context(|| {
+                format!("Failed to parse jump host specification: '{jump_spec}'")
+            })?;
+
+            if jump_hosts.is_empty() {
+                tracing::debug!("No valid jump hosts found, using direct connection");
+                self.connect_direct(&auth_method, strict_mode).await?
+            } else {
+                tracing::info!(
+                    "Downloading directory from {}:{} via {} jump host(s)",
+                    self.host,
+                    self.port,
+                    jump_hosts.len()
+                );
+
+                self.connect_via_jump_hosts(
+                    &jump_hosts,
+                    &auth_method,
+                    strict_mode,
+                    key_path,
+                    use_agent,
+                    use_password,
+                )
+                .await?
+            }
+        } else {
+            // Direct connection
+            tracing::debug!("Using direct connection (no jump hosts)");
+            self.connect_direct(&auth_method, strict_mode).await?
+        };
+
+        tracing::debug!("Connected and authenticated successfully");
+
+        // Create parent directory if it doesn't exist
+        if let Some(parent) = local_dir_path.parent() {
+            tokio::fs::create_dir_all(parent).await.with_context(|| {
+                format!("Failed to create parent directory for {local_dir_path:?}")
+            })?;
+        }
+
+        tracing::debug!(
+            "Downloading directory from {}:{} to {:?} using SFTP",
+            self.host,
+            remote_dir_path,
+            local_dir_path
+        );
+
+        // Use the built-in download_dir method with timeout
+        const DIR_DOWNLOAD_TIMEOUT_SECS: u64 = 600;
+        let download_timeout = Duration::from_secs(DIR_DOWNLOAD_TIMEOUT_SECS);
+        tokio::time::timeout(
+            download_timeout,
+            client.download_dir(remote_dir_path.to_string(), local_dir_path),
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "Directory download timeout: Transfer from {}:{} to {:?} did not complete within 10 minutes",
+                self.host, remote_dir_path, local_dir_path
+            )
+        })?
+        .with_context(|| {
+            format!(
+                "Failed to download directory from {}:{} to {:?}",
+                self.host, remote_dir_path, local_dir_path
+            )
+        })?;
+
+        tracing::debug!("Directory download completed successfully");
+
+        Ok(())
+    }
+
     fn determine_auth_method(
         &self,
         key_path: Option<&Path>,

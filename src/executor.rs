@@ -272,6 +272,7 @@ impl ParallelExecutor {
                 let strict_mode = self.strict_mode;
                 let use_agent = self.use_agent;
                 let use_password = self.use_password;
+                let jump_hosts = self.jump_hosts.clone();
                 let semaphore = Arc::clone(&semaphore);
                 let pb = multi_progress.add(ProgressBar::new_spinner());
                 pb.set_style(style.clone());
@@ -315,6 +316,7 @@ impl ParallelExecutor {
                         strict_mode,
                         use_agent,
                         use_password,
+                        jump_hosts.as_deref(),
                     )
                     .await;
 
@@ -387,6 +389,7 @@ impl ParallelExecutor {
                 let strict_mode = self.strict_mode;
                 let use_agent = self.use_agent;
                 let use_password = self.use_password;
+                let jump_hosts = self.jump_hosts.clone();
                 let semaphore = Arc::clone(&semaphore);
                 let pb = multi_progress.add(ProgressBar::new_spinner());
                 pb.set_style(style.clone());
@@ -442,6 +445,7 @@ impl ParallelExecutor {
                         strict_mode,
                         use_agent,
                         use_password,
+                        jump_hosts.as_deref(),
                     )
                     .await;
 
@@ -510,6 +514,7 @@ impl ParallelExecutor {
                     let strict_mode = self.strict_mode;
                     let use_agent = self.use_agent;
                     let use_password = self.use_password;
+                    let jump_hosts = self.jump_hosts.clone();
                     let semaphore = Arc::clone(&semaphore);
                     let pb = multi_progress.add(ProgressBar::new_spinner());
                     pb.set_style(style.clone());
@@ -564,6 +569,7 @@ impl ParallelExecutor {
                             strict_mode,
                             use_agent,
                             use_password,
+                            jump_hosts.as_deref(),
                         )
                         .await;
 
@@ -624,6 +630,7 @@ async fn execute_on_node_with_jump_hosts(
         .await
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn upload_to_node(
     node: Node,
     local_path: &Path,
@@ -632,6 +639,7 @@ async fn upload_to_node(
     strict_mode: StrictHostKeyChecking,
     use_agent: bool,
     use_password: bool,
+    jump_hosts: Option<&str>,
 ) -> Result<()> {
     let mut client = SshClient::new(node.host.clone(), node.port, node.username.clone());
 
@@ -640,29 +648,32 @@ async fn upload_to_node(
     // Check if the local path is a directory
     if local_path.is_dir() {
         client
-            .upload_dir(
+            .upload_dir_with_jump_hosts(
                 local_path,
                 remote_path,
                 key_path,
                 Some(strict_mode),
                 use_agent,
                 use_password,
+                jump_hosts,
             )
             .await
     } else {
         client
-            .upload_file(
+            .upload_file_with_jump_hosts(
                 local_path,
                 remote_path,
                 key_path,
                 Some(strict_mode),
                 use_agent,
                 use_password,
+                jump_hosts,
             )
             .await
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn download_from_node(
     node: Node,
     remote_path: &str,
@@ -671,6 +682,7 @@ async fn download_from_node(
     strict_mode: StrictHostKeyChecking,
     use_agent: bool,
     use_password: bool,
+    jump_hosts: Option<&str>,
 ) -> Result<std::path::PathBuf> {
     let mut client = SshClient::new(node.host.clone(), node.port, node.username.clone());
 
@@ -679,19 +691,21 @@ async fn download_from_node(
     // This function handles both files and directories
     // The caller should check if it's a directory and use the appropriate method
     client
-        .download_file(
+        .download_file_with_jump_hosts(
             remote_path,
             local_path,
             key_path,
             Some(strict_mode),
             use_agent,
             use_password,
+            jump_hosts,
         )
         .await?;
 
     Ok(local_path.to_path_buf())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn download_dir_from_node(
     node: Node,
     remote_path: &str,
@@ -700,19 +714,21 @@ pub async fn download_dir_from_node(
     strict_mode: StrictHostKeyChecking,
     use_agent: bool,
     use_password: bool,
+    jump_hosts: Option<&str>,
 ) -> Result<std::path::PathBuf> {
     let mut client = SshClient::new(node.host.clone(), node.port, node.username.clone());
 
     let key_path = key_path.map(Path::new);
 
     client
-        .download_dir(
+        .download_dir_with_jump_hosts(
             remote_path,
             local_path,
             key_path,
             Some(strict_mode),
             use_agent,
             use_password,
+            jump_hosts,
         )
         .await?;
 

@@ -15,19 +15,30 @@
 //!
 //! # Example Usage
 //!
-//! ```rust
+//! ```no_run
 //! use bssh::forwarding::{ForwardingManager, ForwardingType, ForwardingConfig};
 //! use bssh::ssh::tokio_client::Client;
+//! use std::sync::Arc;
+//! use std::net::IpAddr;
 //!
+//! # async fn example() -> anyhow::Result<()> {
 //! let mut manager = ForwardingManager::new(ForwardingConfig::default());
 //!
 //! // Add local port forwarding
 //! let forward_id = manager.add_forwarding(ForwardingType::Local {
-//!     bind_addr: "127.0.0.1".parse().unwrap(),
+//!     bind_addr: "127.0.0.1".parse::<IpAddr>().unwrap(),
 //!     bind_port: 8080,
 //!     remote_host: "example.com".to_string(),
 //!     remote_port: 80,
 //! }).await?;
+//!
+//! // Create SSH client (example - requires actual connection)
+//! # let ssh_client = Arc::new(Client::connect(
+//! #     ("example.com", 22),
+//! #     "user",
+//! #     bssh::ssh::tokio_client::AuthMethod::with_agent(),
+//! #     bssh::ssh::tokio_client::ServerCheckMethod::NoCheck,
+//! # ).await?);
 //!
 //! // Start all forwarding sessions
 //! manager.start_all(ssh_client).await?;
@@ -35,6 +46,8 @@
 //! // Monitor status
 //! let status = manager.get_status(forward_id).await?;
 //! println!("Forward status: {}", status);
+//! # Ok(())
+//! # }
 //! ```
 
 use super::{ForwardingConfig, ForwardingStats, ForwardingStatus, ForwardingType};

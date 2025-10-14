@@ -15,6 +15,53 @@
 use anyhow::{Context, Result};
 use std::fmt;
 
+/// Default maximum number of jump hosts allowed in a chain
+/// SECURITY: Prevents resource exhaustion and excessive connection chains
+const DEFAULT_MAX_JUMP_HOSTS: usize = 10;
+
+/// Absolute maximum number of jump hosts, even if configured higher
+/// SECURITY: Hard limit to prevent DoS attacks regardless of configuration
+const ABSOLUTE_MAX_JUMP_HOSTS: usize = 30;
+
+/// Get the maximum number of jump hosts allowed
+///
+/// Reads from `BSSH_MAX_JUMP_HOSTS` environment variable, with fallback to default.
+/// The value is capped at ABSOLUTE_MAX_JUMP_HOSTS for security.
+///
+/// # Examples
+/// ```bash
+/// # Use default (10)
+/// bssh -J host1,host2,... target
+///
+/// # Set custom limit (e.g., 20)
+/// BSSH_MAX_JUMP_HOSTS=20 bssh -J host1,host2,...,host20 target
+/// ```
+pub fn get_max_jump_hosts() -> usize {
+    std::env::var("BSSH_MAX_JUMP_HOSTS")
+        .ok()
+        .and_then(|s| s.parse::<usize>().ok())
+        .map(|n| {
+            if n == 0 {
+                tracing::warn!(
+                    "BSSH_MAX_JUMP_HOSTS cannot be 0, using default: {}",
+                    DEFAULT_MAX_JUMP_HOSTS
+                );
+                DEFAULT_MAX_JUMP_HOSTS
+            } else if n > ABSOLUTE_MAX_JUMP_HOSTS {
+                tracing::warn!(
+                    "BSSH_MAX_JUMP_HOSTS={} exceeds absolute maximum {}, capping at {}",
+                    n,
+                    ABSOLUTE_MAX_JUMP_HOSTS,
+                    ABSOLUTE_MAX_JUMP_HOSTS
+                );
+                ABSOLUTE_MAX_JUMP_HOSTS
+            } else {
+                n
+            }
+        })
+        .unwrap_or(DEFAULT_MAX_JUMP_HOSTS)
+}
+
 /// A single jump host specification
 ///
 /// Represents one hop in a jump host chain, parsed from OpenSSH ProxyJump syntax.
@@ -108,6 +155,16 @@ pub fn parse_jump_hosts(jump_spec: &str) -> Result<Vec<JumpHost>> {
         anyhow::bail!(
             "No valid jump hosts found in specification: '{}'",
             jump_spec
+        );
+    }
+
+    // SECURITY: Validate jump host count to prevent resource exhaustion
+    let max_jump_hosts = get_max_jump_hosts();
+    if jump_hosts.len() > max_jump_hosts {
+        anyhow::bail!(
+            "Too many jump hosts specified: {} (maximum allowed: {}). Reduce the number of jump hosts in your chain or set BSSH_MAX_JUMP_HOSTS environment variable.",
+            jump_hosts.len(),
+            max_jump_hosts
         );
     }
 
@@ -395,5 +452,165 @@ mod tests {
         );
         assert_eq!(host.effective_port(), 2222);
         assert_eq!(host.effective_user(), "testuser");
+    }
+
+    #[test]
+    fn test_max_jump_hosts_limit_exactly_10() {
+        // Exactly 10 jump hosts should be allowed
+        let spec = (0..10)
+            .map(|i| format!("host{i}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let result = parse_jump_hosts(&spec);
+        assert!(result.is_ok(), "Should accept exactly 10 jump hosts");
+        assert_eq!(result.unwrap().len(), 10);
+    }
+
+    #[test]
+    fn test_max_jump_hosts_limit_11_rejected() {
+        // 11 jump hosts should be rejected
+        let spec = (0..11)
+            .map(|i| format!("host{i}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let result = parse_jump_hosts(&spec);
+        assert!(result.is_err(), "Should reject 11 jump hosts");
+
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Too many jump hosts"),
+            "Error should mention 'Too many jump hosts', got: {err_msg}"
+        );
+        assert!(
+            err_msg.contains("11"),
+            "Error should mention the actual count (11), got: {err_msg}"
+        );
+        assert!(
+            err_msg.contains("10"),
+            "Error should mention the maximum (10), got: {err_msg}"
+        );
+    }
+
+    #[test]
+    fn test_max_jump_hosts_limit_excessive() {
+        // Test with way more than the limit to ensure proper handling
+        let spec = (0..100)
+            .map(|i| format!("host{i}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let result = parse_jump_hosts(&spec);
+        assert!(
+            result.is_err(),
+            "Should reject excessive number of jump hosts"
+        );
+
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("Too many jump hosts"),
+            "Error should be about too many hosts, got: {err_msg}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_get_max_jump_hosts_default() {
+        // Without environment variable, should return default (10)
+        std::env::remove_var("BSSH_MAX_JUMP_HOSTS");
+        let max = get_max_jump_hosts();
+        assert_eq!(max, 10, "Default should be 10");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_get_max_jump_hosts_custom_value() {
+        // Set environment variable to custom value
+        unsafe {
+            std::env::set_var("BSSH_MAX_JUMP_HOSTS", "15");
+        }
+        let max = get_max_jump_hosts();
+        assert_eq!(max, 15, "Should use custom value from environment");
+
+        // Cleanup
+        std::env::remove_var("BSSH_MAX_JUMP_HOSTS");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_get_max_jump_hosts_capped_at_absolute_max() {
+        // Set environment variable beyond absolute maximum (30)
+        unsafe {
+            std::env::set_var("BSSH_MAX_JUMP_HOSTS", "50");
+        }
+        let max = get_max_jump_hosts();
+        assert_eq!(
+            max, 30,
+            "Should be capped at absolute maximum of 30 for security"
+        );
+
+        // Cleanup
+        std::env::remove_var("BSSH_MAX_JUMP_HOSTS");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_get_max_jump_hosts_zero_falls_back() {
+        // Zero is invalid, should fall back to default
+        unsafe {
+            std::env::set_var("BSSH_MAX_JUMP_HOSTS", "0");
+        }
+        let max = get_max_jump_hosts();
+        assert_eq!(max, 10, "Zero should fall back to default (10)");
+
+        // Cleanup
+        std::env::remove_var("BSSH_MAX_JUMP_HOSTS");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_get_max_jump_hosts_invalid_value() {
+        // Invalid value should fall back to default
+        unsafe {
+            std::env::set_var("BSSH_MAX_JUMP_HOSTS", "invalid");
+        }
+        let max = get_max_jump_hosts();
+        assert_eq!(max, 10, "Invalid value should fall back to default (10)");
+
+        // Cleanup
+        std::env::remove_var("BSSH_MAX_JUMP_HOSTS");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_max_jump_hosts_respects_environment() {
+        // Set custom limit via environment variable
+        unsafe {
+            std::env::set_var("BSSH_MAX_JUMP_HOSTS", "15");
+        }
+
+        // Create spec with 15 hosts (should succeed)
+        let spec_15 = (0..15)
+            .map(|i| format!("host{i}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let result = parse_jump_hosts(&spec_15);
+        assert!(
+            result.is_ok(),
+            "Should accept 15 hosts when BSSH_MAX_JUMP_HOSTS=15"
+        );
+        assert_eq!(result.unwrap().len(), 15);
+
+        // Create spec with 16 hosts (should fail)
+        let spec_16 = (0..16)
+            .map(|i| format!("host{i}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        let result = parse_jump_hosts(&spec_16);
+        assert!(
+            result.is_err(),
+            "Should reject 16 hosts when BSSH_MAX_JUMP_HOSTS=15"
+        );
+
+        // Cleanup
+        std::env::remove_var("BSSH_MAX_JUMP_HOSTS");
     }
 }

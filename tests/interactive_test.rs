@@ -37,6 +37,7 @@ async fn test_interactive_command_creation() {
         strict_mode: StrictHostKeyChecking::AcceptNew,
         pty_config: PtyConfig::default(),
         use_pty: None,
+        jump_hosts: None,
     };
 
     assert!(!cmd.single_node);
@@ -62,6 +63,7 @@ async fn test_interactive_with_no_nodes() {
         strict_mode: StrictHostKeyChecking::AcceptNew,
         pty_config: PtyConfig::default(),
         use_pty: None,
+        jump_hosts: None,
     };
 
     let result = cmd.execute().await;
