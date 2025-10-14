@@ -23,7 +23,7 @@ use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, info, warn};
 use zeroize::Zeroizing;
 
@@ -106,6 +106,7 @@ impl JumpInfo {
 /// * Per-host authentication
 /// * Automatic retry with exponential backoff
 /// * Connection health monitoring
+/// * Thread-safe credential prompting
 #[derive(Debug)]
 pub struct JumpHostChain {
     /// The jump hosts in order (empty for direct connections)
@@ -126,6 +127,9 @@ pub struct JumpHostChain {
     max_idle_time: Duration,
     /// Maximum connection age before forced renewal (default: 30 minutes)
     max_connection_age: Duration,
+    /// Mutex to serialize authentication prompts
+    /// SECURITY: Prevents credential prompt race conditions with multiple jump hosts
+    auth_mutex: Arc<Mutex<()>>,
 }
 
 impl JumpHostChain {
@@ -158,6 +162,7 @@ impl JumpHostChain {
             rate_limiter: ConnectionRateLimiter::new(),
             max_idle_time: Duration::from_secs(300), // 5 minutes
             max_connection_age: Duration::from_secs(1800), // 30 minutes
+            auth_mutex: Arc::new(Mutex::new(())),
         }
     }
 
@@ -480,8 +485,9 @@ impl JumpHostChain {
             .await
             .with_context(|| format!("Rate limited for jump host {}", jump_host.host))?;
 
-        let auth_method =
-            self.determine_jump_auth_method(jump_host, key_path, use_agent, use_password)?;
+        let auth_method = self
+            .determine_jump_auth_method(jump_host, key_path, use_agent, use_password)
+            .await?;
         let check_method = crate::ssh::known_hosts::get_check_method(strict_mode);
 
         let client = tokio::time::timeout(
@@ -565,8 +571,9 @@ impl JumpHostChain {
         let stream = channel.into_stream();
 
         // Create SSH client over the tunnel stream
-        let auth_method =
-            self.determine_jump_auth_method(jump_host, key_path, use_agent, use_password)?;
+        let auth_method = self
+            .determine_jump_auth_method(jump_host, key_path, use_agent, use_password)
+            .await?;
 
         // Create a basic russh client config
         let config = std::sync::Arc::new(russh::client::Config::default());
@@ -752,9 +759,9 @@ impl JumpHostChain {
     /// For now, uses the same authentication method as the destination.
     /// In the future, this could be enhanced to support per-host authentication.
     #[allow(dead_code)]
-    fn determine_jump_auth_method(
+    async fn determine_jump_auth_method(
         &self,
-        _jump_host: &JumpHost,
+        jump_host: &JumpHost,
         key_path: Option<&Path>,
         use_agent: bool,
         use_password: bool,
@@ -763,11 +770,20 @@ impl JumpHostChain {
         // This could be enhanced to support per-jump-host authentication in the future
 
         if use_password {
-            // Note: In a real implementation, we might want to prompt for each jump host separately
-            warn!("Password authentication with jump hosts may prompt multiple times");
+            // SECURITY: Acquire mutex to serialize password prompts
+            // This prevents multiple simultaneous prompts that could confuse users
+            let _guard = self.auth_mutex.lock().await;
+
+            // Display which jump host we're authenticating to
+            let prompt = format!(
+                "Enter password for jump host {} ({}@{}): ",
+                jump_host.to_connection_string(),
+                jump_host.effective_user(),
+                jump_host.host
+            );
+
             let password = Zeroizing::new(
-                rpassword::prompt_password("Enter password for jump host: ")
-                    .with_context(|| "Failed to read password")?,
+                rpassword::prompt_password(prompt).with_context(|| "Failed to read password")?,
             );
             return Ok(AuthMethod::with_password(&password));
         }
@@ -791,8 +807,16 @@ impl JumpHostChain {
             let passphrase = if key_contents.contains("ENCRYPTED")
                 || key_contents.contains("Proc-Type: 4,ENCRYPTED")
             {
+                // SECURITY: Acquire mutex to serialize passphrase prompts
+                let _guard = self.auth_mutex.lock().await;
+
+                let prompt = format!(
+                    "Enter passphrase for key {key_path:?} (jump host {}): ",
+                    jump_host.to_connection_string()
+                );
+
                 let pass = Zeroizing::new(
-                    rpassword::prompt_password(format!("Enter passphrase for key {key_path:?}: "))
+                    rpassword::prompt_password(prompt)
                         .with_context(|| "Failed to read passphrase")?,
                 );
                 Some(pass)
@@ -833,11 +857,17 @@ impl JumpHostChain {
                 let passphrase = if key_contents.contains("ENCRYPTED")
                     || key_contents.contains("Proc-Type: 4,ENCRYPTED")
                 {
+                    // SECURITY: Acquire mutex to serialize passphrase prompts
+                    let _guard = self.auth_mutex.lock().await;
+
+                    let prompt = format!(
+                        "Enter passphrase for key {default_key:?} (jump host {}): ",
+                        jump_host.to_connection_string()
+                    );
+
                     let pass = Zeroizing::new(
-                        rpassword::prompt_password(format!(
-                            "Enter passphrase for key {default_key:?}: "
-                        ))
-                        .with_context(|| "Failed to read passphrase")?,
+                        rpassword::prompt_password(prompt)
+                            .with_context(|| "Failed to read passphrase")?,
                     );
                     Some(pass)
                 } else {
