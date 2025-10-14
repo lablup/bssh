@@ -370,8 +370,18 @@ impl InteractiveCommand {
                 );
 
                 // Create jump host chain with dynamic timeout based on hop count
+                // SECURITY: Use saturating arithmetic to prevent integer overflow
+                // Cap maximum timeout at 10 minutes to prevent DoS
+                const MAX_TIMEOUT_SECS: u64 = 600; // 10 minutes max
+                const BASE_TIMEOUT: u64 = 30;
+                const PER_HOP_TIMEOUT: u64 = 15;
+
                 let hop_count = jump_hosts.len();
-                let adjusted_timeout = Duration::from_secs(30 + (15 * hop_count as u64));
+                let adjusted_timeout = Duration::from_secs(
+                    BASE_TIMEOUT
+                        .saturating_add(PER_HOP_TIMEOUT.saturating_mul(hop_count as u64))
+                        .min(MAX_TIMEOUT_SECS),
+                );
 
                 let chain = JumpHostChain::new(jump_hosts)
                     .with_connect_timeout(adjusted_timeout)
@@ -548,8 +558,18 @@ impl InteractiveCommand {
                 );
 
                 // Create jump host chain with dynamic timeout based on hop count
+                // SECURITY: Use saturating arithmetic to prevent integer overflow
+                // Cap maximum timeout at 10 minutes to prevent DoS
+                const MAX_TIMEOUT_SECS: u64 = 600; // 10 minutes max
+                const BASE_TIMEOUT: u64 = 30;
+                const PER_HOP_TIMEOUT: u64 = 15;
+
                 let hop_count = jump_hosts.len();
-                let adjusted_timeout = Duration::from_secs(30 + (15 * hop_count as u64));
+                let adjusted_timeout = Duration::from_secs(
+                    BASE_TIMEOUT
+                        .saturating_add(PER_HOP_TIMEOUT.saturating_mul(hop_count as u64))
+                        .min(MAX_TIMEOUT_SECS),
+                );
 
                 let chain = JumpHostChain::new(jump_hosts)
                     .with_connect_timeout(adjusted_timeout)
