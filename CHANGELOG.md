@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] - 2025-10-14
+
+### Added
+None
+
+### Changed
+- **PTY Terminal Modes**: Complete implementation of PTY terminal modes for better interactive session support
+- **Shift Key Input Support**: Full Shift key input handling in PTY mode for proper terminal behavior
+
+### Fixed
+- Terminal mode implementation for PTY sessions
+- Shift key input handling in interactive mode
+
+### Technical Details
+- Enhanced terminal mode settings for PTY allocation
+- Implemented proper terminal flag handling for interactive sessions
+- Improved keyboard input processing for special keys
+
 ## [0.9.0] - 2025-10-14
 
 ### Added
@@ -221,7 +239,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - russh library for native SSH implementation
 - Cross-platform support (Linux and macOS)
 
-[Unreleased]: https://github.com/lablup/bssh/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/lablup/bssh/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/lablup/bssh/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/lablup/bssh/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/lablup/bssh/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/lablup/bssh/compare/v0.6.1...v0.7.0
