@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::connection::JumpHostConnection;
-use super::parser::JumpHost;
+use super::parser::{get_max_jump_hosts, JumpHost};
 use super::rate_limiter::ConnectionRateLimiter;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
 use crate::ssh::tokio_client::client::ClientHandler;
@@ -27,9 +27,8 @@ use tokio::sync::{Mutex, RwLock};
 use tracing::{debug, info, warn};
 use zeroize::Zeroizing;
 
-/// Maximum number of jump hosts allowed in a chain
-/// SECURITY: Prevents resource exhaustion and excessive connection chains
-const MAX_JUMP_HOSTS: usize = 10;
+// Maximum number of jump hosts is now determined dynamically via get_max_jump_hosts()
+// See parser::get_max_jump_hosts() for configuration details
 
 /// A connection through the jump host chain
 ///
@@ -134,20 +133,22 @@ pub struct JumpHostChain {
 
 impl JumpHostChain {
     /// Create a new jump host chain
-    /// Returns an error if the number of jump hosts exceeds MAX_JUMP_HOSTS
+    /// Truncates to maximum allowed hosts if limit is exceeded
     pub fn new(jump_hosts: Vec<JumpHost>) -> Self {
+        let max_jump_hosts = get_max_jump_hosts();
+
         // Log warning if approaching the limit
-        if jump_hosts.len() > MAX_JUMP_HOSTS {
+        if jump_hosts.len() > max_jump_hosts {
             warn!(
-                "Jump host chain has {} hosts, which exceeds the maximum of {}. Chain will be truncated.",
+                "Jump host chain has {} hosts, which exceeds the maximum of {} (BSSH_MAX_JUMP_HOSTS). Chain will be truncated.",
                 jump_hosts.len(),
-                MAX_JUMP_HOSTS
+                max_jump_hosts
             );
         }
 
         // Truncate to maximum allowed hosts
-        let jump_hosts = if jump_hosts.len() > MAX_JUMP_HOSTS {
-            jump_hosts.into_iter().take(MAX_JUMP_HOSTS).collect()
+        let jump_hosts = if jump_hosts.len() > max_jump_hosts {
+            jump_hosts.into_iter().take(max_jump_hosts).collect()
         } else {
             jump_hosts
         };
