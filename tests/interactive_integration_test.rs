@@ -49,6 +49,7 @@ fn test_interactive_command_builder() {
         strict_mode: StrictHostKeyChecking::AcceptNew,
         pty_config: PtyConfig::default(),
         use_pty: None,
+        jump_hosts: None,
     };
 
     assert!(!cmd.single_node);
@@ -80,6 +81,7 @@ fn test_history_file_handling() {
         strict_mode: StrictHostKeyChecking::AcceptNew,
         pty_config: PtyConfig::default(),
         use_pty: None,
+        jump_hosts: None,
     };
 
     assert_eq!(cmd.history_file, history_path);
@@ -174,6 +176,7 @@ async fn test_interactive_with_unreachable_nodes() {
         strict_mode: StrictHostKeyChecking::AcceptNew,
         pty_config: PtyConfig::default(),
         use_pty: None,
+        jump_hosts: None,
     };
 
     // This should fail to connect
@@ -205,6 +208,7 @@ async fn test_interactive_with_no_nodes() {
         strict_mode: StrictHostKeyChecking::AcceptNew,
         pty_config: PtyConfig::default(),
         use_pty: None,
+        jump_hosts: None,
     };
 
     let result = cmd.execute().await;
@@ -246,6 +250,7 @@ fn test_mode_configuration() {
         strict_mode: StrictHostKeyChecking::AcceptNew,
         pty_config: PtyConfig::default(),
         use_pty: None,
+        jump_hosts: None,
     };
 
     assert!(single_cmd.single_node);
@@ -268,6 +273,7 @@ fn test_mode_configuration() {
         strict_mode: StrictHostKeyChecking::AcceptNew,
         pty_config: PtyConfig::default(),
         use_pty: None,
+        jump_hosts: None,
     };
 
     assert!(!multi_cmd.single_node);
@@ -293,6 +299,7 @@ fn test_working_directory_config() {
         strict_mode: StrictHostKeyChecking::AcceptNew,
         pty_config: PtyConfig::default(),
         use_pty: None,
+        jump_hosts: None,
     };
 
     assert_eq!(cmd_with_dir.work_dir, Some("/var/www".to_string()));
@@ -313,6 +320,7 @@ fn test_working_directory_config() {
         strict_mode: StrictHostKeyChecking::AcceptNew,
         pty_config: PtyConfig::default(),
         use_pty: None,
+        jump_hosts: None,
     };
 
     assert_eq!(cmd_without_dir.work_dir, None);
@@ -345,6 +353,7 @@ fn test_prompt_format() {
             strict_mode: StrictHostKeyChecking::AcceptNew,
             pty_config: PtyConfig::default(),
             use_pty: None,
+            jump_hosts: None,
         };
 
         assert_eq!(cmd.prompt_format, format);

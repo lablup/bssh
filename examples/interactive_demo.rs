@@ -54,6 +54,7 @@ async fn main() -> anyhow::Result<()> {
         use_agent: false,
         use_password: false,
         strict_mode: StrictHostKeyChecking::AcceptNew,
+        jump_hosts: None,
         pty_config: PtyConfig::default(),
         use_pty: None,
     };

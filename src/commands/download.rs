@@ -117,6 +117,7 @@ pub async fn download_file(
                 params.strict_mode,
                 params.use_agent,
                 params.use_password,
+                None, // No jump hosts from this code path yet
             )
             .await;
 
