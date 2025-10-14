@@ -651,6 +651,7 @@ See the [LICENSE](./LICENSE) file for details.
 ## Changelog
 
 ### Recent Updates
+- **v0.9.0 (2025/10/14):** Add SSH ProxyJump support for file transfers and interactive mode, update packages
 - **v0.8.0 (2025/09/12):** Add comprehensive SSH port forwarding (local/remote/dynamic), improve error messages and remove dangerous unwrap() calls
 - **v0.7.0 (2025/08/30):** Add SSH jump host (-J) infrastructure and CLI integration, improve Ubuntu PPA support and fix deprecated GitHub Actions
 - **v0.6.1 (2025/08/28):** Rebrand from 'Backend.AI SSH' to 'Broadcast SSH' to emphasize the tool's core broadcast/parallel functionality

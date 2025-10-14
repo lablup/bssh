@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2025-10-14
+
 ### Added
 - **Configurable Jump Host Limit**: Maximum number of jump hosts can now be configured via environment variable
   - `BSSH_MAX_JUMP_HOSTS` environment variable for dynamic limit configuration
@@ -42,6 +44,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `tests/interactive_test.rs`: Added `jump_hosts: None` to test cases
   - `tests/interactive_integration_test.rs`: Updated all 9 test instances
   - `examples/interactive_demo.rs`: Updated example with jump_hosts field
+
+- **Dependencies**: Updated various dependencies for security patches and stability
 
 ### Fixed
 - Interactive mode timeout issues when connecting through jump hosts
@@ -217,7 +221,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - russh library for native SSH implementation
 - Cross-platform support (Linux and macOS)
 
-[Unreleased]: https://github.com/lablup/bssh/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/lablup/bssh/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/lablup/bssh/compare/v0.8.0...v0.9.0
 [0.8.0]: https://github.com/lablup/bssh/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/lablup/bssh/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/lablup/bssh/compare/v0.6.0...v0.6.1

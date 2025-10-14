@@ -1,3 +1,46 @@
+bssh (0.9.0-1~jammy1) jammy; urgency=medium
+
+  * v0.9.0
+  ### New Features
+  - **SSH ProxyJump File Transfer Support**: Added complete file transfer operations through SSH jump hosts (#39)
+    - Upload single files through jump host chains
+    - Download single files through jump hosts
+    - Upload directories recursively through jump hosts
+    - Download directories through jump hosts
+    - All file transfer operations now fully support multi-hop SSH connections
+
+  ### Improvements
+  - **Jump Host Interactive Mode**: Interactive shell sessions now work through jump hosts
+    - Dynamic timeout calculation based on hop count (30s base + 15s per hop)
+    - Prevents premature timeouts on multi-hop connections
+    - Full authentication support (SSH keys, agent, password) for each hop
+  - **Package Updates**: Updated dependencies to latest versions for better security and stability
+
+  ### Bug Fixes
+  - Fixed interactive mode timeout issues when connecting through jump hosts
+  - Fixed file transfer operations not working with jump host chains
+
+  ### CI/CD Improvements
+  None
+
+  ### Technical Details
+  - Parallel Executor Integration: Jump host support across all parallel operations
+  - Updated executor.rs to propagate jump_hosts to all node operations
+  - Maintains backward compatibility with Option<&str> type
+  - All *_to_node() functions now accept jump_hosts parameter
+
+  ### Dependencies
+  - Added serial_test dependency for thread-safe environment variable testing
+  - Updated various dependencies for security patches
+
+  ### Breaking Changes
+  None
+
+  ### Known Issues
+  None
+
+ -- Jeongkyu Shin <inureyes@gmail.com>  Mon, 14 Oct 2025 00:00:00 +0900
+
 bssh (0.8.0-1~jammy1) jammy; urgency=medium
 
   * v0.8.0
