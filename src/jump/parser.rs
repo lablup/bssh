@@ -152,10 +152,7 @@ pub fn parse_jump_hosts(jump_spec: &str) -> Result<Vec<JumpHost>> {
     }
 
     if jump_hosts.is_empty() {
-        anyhow::bail!(
-            "No valid jump hosts found in specification: '{}'",
-            jump_spec
-        );
+        anyhow::bail!("No valid jump hosts found in specification: '{jump_spec}'");
     }
 
     // SECURITY: Validate jump host count to prevent resource exhaustion
@@ -248,7 +245,7 @@ fn parse_host_port(host_port: &str) -> Result<(String, Option<u16>)> {
                 }
                 return Ok((ipv6_addr.to_string(), Some(port)));
             } else {
-                anyhow::bail!("Invalid characters after IPv6 address: '{}'", remaining);
+                anyhow::bail!("Invalid characters after IPv6 address: '{remaining}'");
             }
         } else {
             anyhow::bail!("Unclosed bracket in IPv6 address");
@@ -281,7 +278,7 @@ fn parse_host_port(host_port: &str) -> Result<(String, Option<u16>)> {
                 // Check if this looks like a port number (all digits)
                 if port_part.chars().all(|c| c.is_ascii_digit()) {
                     // It's clearly intended to be a port but invalid
-                    anyhow::bail!("Invalid port number: '{}' ({})", port_part, e);
+                    anyhow::bail!("Invalid port number: '{port_part}' ({e})");
                 } else {
                     // Not a port, treat entire string as hostname (might be IPv6)
                     Ok((host_port.to_string(), None))

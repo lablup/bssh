@@ -183,8 +183,7 @@ impl SocksVersion {
             "4" | "v4" | "socks4" => Ok(SocksVersion::V4),
             "5" | "v5" | "socks5" => Ok(SocksVersion::V5),
             _ => Err(anyhow::anyhow!(
-                "Invalid SOCKS version: {}. Expected 4 or 5",
-                s
+                "Invalid SOCKS version: {s}. Expected 4 or 5"
             )),
         }
     }

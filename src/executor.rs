@@ -133,7 +133,7 @@ impl ParallelExecutor {
 
         let style = ProgressStyle::default_bar()
             .template("{prefix:.bold} {spinner:.cyan} {msg}")
-            .map_err(|e| anyhow::anyhow!("Failed to create progress bar template: {}", e))?
+            .map_err(|e| anyhow::anyhow!("Failed to create progress bar template: {e}"))?
             .tick_chars("⣾⣽⣻⢿⡿⣟⣯⣷ ");
 
         let tasks: Vec<_> = self
@@ -176,7 +176,7 @@ impl ParallelExecutor {
                             ));
                             return ExecutionResult {
                                 node,
-                                result: Err(anyhow::anyhow!("Semaphore acquisition failed: {}", e)),
+                                result: Err(anyhow::anyhow!("Semaphore acquisition failed: {e}")),
                             };
                         }
                     };
@@ -213,7 +213,7 @@ impl ParallelExecutor {
                         }
                         Err(e) => {
                             // Get the most specific error message from the chain
-                            let error_msg = format!("{:#}", e);
+                            let error_msg = format!("{e:#}");
                             // Take the first line which is usually the most specific error
                             let first_line = error_msg.lines().next().unwrap_or("Unknown error");
                             let short_error = if first_line.len() > 50 {
@@ -256,9 +256,7 @@ impl ParallelExecutor {
 
         let style = ProgressStyle::default_bar()
             .template("{prefix:.bold} {spinner:.cyan} {msg}")
-            .map_err(|e| {
-                anyhow::anyhow!("Failed to create progress bar template for upload: {}", e)
-            })?
+            .map_err(|e| anyhow::anyhow!("Failed to create progress bar template for upload: {e}"))?
             .tick_chars("⣾⣽⣻⢿⡿⣟⣯⣷ ");
 
         let tasks: Vec<_> = self
@@ -301,7 +299,7 @@ impl ParallelExecutor {
                             ));
                             return UploadResult {
                                 node,
-                                result: Err(anyhow::anyhow!("Semaphore acquisition failed: {}", e)),
+                                result: Err(anyhow::anyhow!("Semaphore acquisition failed: {e}")),
                             };
                         }
                     };
@@ -330,7 +328,7 @@ impl ParallelExecutor {
                         }
                         Err(e) => {
                             // Get the most specific error message from the chain
-                            let error_msg = format!("{:#}", e);
+                            let error_msg = format!("{e:#}");
                             // Take the first line which is usually the most specific error
                             let first_line = error_msg.lines().next().unwrap_or("Unknown error");
                             let short_error = if first_line.len() > 50 {
@@ -374,7 +372,7 @@ impl ParallelExecutor {
         let style = ProgressStyle::default_bar()
             .template("{prefix:.bold} {spinner:.cyan} {msg}")
             .map_err(|e| {
-                anyhow::anyhow!("Failed to create progress bar template for download: {}", e)
+                anyhow::anyhow!("Failed to create progress bar template for download: {e}")
             })?
             .tick_chars("⣾⣽⣻⢿⡿⣟⣯⣷ ");
 
@@ -418,7 +416,7 @@ impl ParallelExecutor {
                             ));
                             return DownloadResult {
                                 node,
-                                result: Err(anyhow::anyhow!("Semaphore acquisition failed: {}", e)),
+                                result: Err(anyhow::anyhow!("Semaphore acquisition failed: {e}")),
                             };
                         }
                     };
@@ -493,10 +491,7 @@ impl ParallelExecutor {
         let style = ProgressStyle::default_bar()
             .template("{prefix:.bold} {spinner:.cyan} {msg}")
             .map_err(|e| {
-                anyhow::anyhow!(
-                    "Failed to create progress bar template for multi-download: {}",
-                    e
-                )
+                anyhow::anyhow!("Failed to create progress bar template for multi-download: {e}")
             })?
             .tick_chars("⣾⣽⣻⢿⡿⣟⣯⣷ ");
 
@@ -541,8 +536,7 @@ impl ParallelExecutor {
                                 return DownloadResult {
                                     node,
                                     result: Err(anyhow::anyhow!(
-                                        "Semaphore acquisition failed: {}",
-                                        e
+                                        "Semaphore acquisition failed: {e}"
                                     )),
                                 };
                             }
@@ -780,7 +774,7 @@ impl UploadResult {
                     "Failed to upload file".red()
                 );
                 // Show full error chain
-                let error_chain = format!("{:#}", e);
+                let error_chain = format!("{e:#}");
                 for line in error_chain.lines() {
                     println!("    {}", line.dimmed());
                 }
@@ -819,7 +813,7 @@ impl DownloadResult {
                     "Failed to download file".red()
                 );
                 // Show full error chain
-                let error_chain = format!("{:#}", e);
+                let error_chain = format!("{e:#}");
                 for line in error_chain.lines() {
                     println!("    {}", line.dimmed());
                 }

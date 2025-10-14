@@ -70,7 +70,7 @@ pub async fn ping_nodes(
             );
             if let Err(e) = &result.result {
                 // Display the full error chain for better debugging
-                let error_chain = format!("{:#}", e);
+                let error_chain = format!("{e:#}");
                 // Split by newlines and indent each line
                 for (i, line) in error_chain.lines().enumerate() {
                     if i == 0 {

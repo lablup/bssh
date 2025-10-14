@@ -59,21 +59,16 @@ pub(super) fn validate_executable_string(
     // Check for dangerous characters
     if let Some(dangerous_char) = value.chars().find(|c| DANGEROUS_CHARS.contains(c)) {
         anyhow::bail!(
-            "Security violation: {} contains dangerous character '{}' at line {}. \
-             This could enable command injection attacks.",
-            option_name,
-            dangerous_char,
-            line_number
+            "Security violation: {option_name} contains dangerous character '{dangerous_char}' at line {line_number}. \
+             This could enable command injection attacks."
         );
     }
 
     // Check for dangerous command substitution patterns
     if value.contains("$(") || value.contains("${") {
         anyhow::bail!(
-            "Security violation: {} contains command substitution pattern at line {}. \
-             This could enable command injection attacks.",
-            option_name,
-            line_number
+            "Security violation: {option_name} contains command substitution pattern at line {line_number}. \
+             This could enable command injection attacks."
         );
     }
 
@@ -104,10 +99,8 @@ pub(super) fn validate_executable_string(
     // Odd number of unescaped quotes suggests potential quote injection
     if quote_count % 2 != 0 {
         anyhow::bail!(
-            "Security violation: {} contains unmatched quote at line {}. \
-             This could enable command injection attacks.",
-            option_name,
-            line_number
+            "Security violation: {option_name} contains unmatched quote at line {line_number}. \
+             This could enable command injection attacks."
         );
     }
 
@@ -117,9 +110,8 @@ pub(super) fn validate_executable_string(
         // and should not start with suspicious patterns
         if value.trim_start().starts_with('-') {
             anyhow::bail!(
-                "Security violation: ControlPath starts with '-' at line {}. \
-                 This could be interpreted as a command flag.",
-                line_number
+                "Security violation: ControlPath starts with '-' at line {line_number}. \
+                 This could be interpreted as a command flag."
             );
         }
 
@@ -138,10 +130,8 @@ pub(super) fn validate_executable_string(
                     _ => {
                         // Unknown substitution pattern - potentially dangerous
                         anyhow::bail!(
-                            "Security violation: ControlPath contains unknown substitution pattern '%{}' at line {}. \
-                             Only %h, %p, %r, %u, %L, %l, %n, %d, and %% are allowed.",
-                            next_char,
-                            line_number
+                            "Security violation: ControlPath contains unknown substitution pattern '%{next_char}' at line {line_number}. \
+                             Only %h, %p, %r, %u, %L, %l, %n, %d, and %% are allowed."
                         );
                     }
                 }
@@ -189,9 +179,8 @@ pub(super) fn validate_executable_string(
             || lower_value.contains("cat /")
         {
             anyhow::bail!(
-                "Security violation: ProxyCommand contains suspicious command pattern at line {}. \
-                 Commands like curl, wget, nc, rm, dd are not typical for SSH proxying.",
-                line_number
+                "Security violation: ProxyCommand contains suspicious command pattern at line {line_number}. \
+                 Commands like curl, wget, nc, rm, dd are not typical for SSH proxying."
             );
         }
     }
@@ -235,28 +224,24 @@ pub(super) fn validate_control_path(path: &str, line_number: usize) -> Result<()
     // Check for dangerous characters
     if let Some(dangerous_char) = path.chars().find(|c| DANGEROUS_CHARS.contains(c)) {
         anyhow::bail!(
-            "Security violation: ControlPath contains dangerous character '{}' at line {}. \
-             This could enable command injection attacks.",
-            dangerous_char,
-            line_number
+            "Security violation: ControlPath contains dangerous character '{dangerous_char}' at line {line_number}. \
+             This could enable command injection attacks."
         );
     }
 
     // Check for command substitution patterns (but allow environment variables)
     if path.contains("$(") {
         anyhow::bail!(
-            "Security violation: ControlPath contains command substitution pattern at line {}. \
-             This could enable command injection attacks.",
-            line_number
+            "Security violation: ControlPath contains command substitution pattern at line {line_number}. \
+             This could enable command injection attacks."
         );
     }
 
     // Check for paths starting with suspicious patterns
     if path.trim_start().starts_with('-') {
         anyhow::bail!(
-            "Security violation: ControlPath starts with '-' at line {}. \
-             This could be interpreted as a command flag.",
-            line_number
+            "Security violation: ControlPath starts with '-' at line {line_number}. \
+             This could be interpreted as a command flag."
         );
     }
 
@@ -274,10 +259,8 @@ pub(super) fn validate_control_path(path: &str, line_number: usize) -> Result<()
                 _ => {
                     // Unknown substitution pattern - potentially dangerous
                     anyhow::bail!(
-                        "Security violation: ControlPath contains unknown substitution pattern '%{}' at line {}. \
-                         Only %h, %p, %r, %u, %L, %l, %n, %d, and %% are allowed.",
-                        next_char,
-                        line_number
+                        "Security violation: ControlPath contains unknown substitution pattern '%{next_char}' at line {line_number}. \
+                         Only %h, %p, %r, %u, %L, %l, %n, %d, and %% are allowed."
                     );
                 }
             }
@@ -322,20 +305,16 @@ pub(super) fn secure_validate_path(
     // Check for directory traversal sequences
     if path_str.contains("../") || path_str.contains("..\\") {
         anyhow::bail!(
-            "Security violation: {} path contains directory traversal sequence '..' at line {}. \
-             Path traversal attacks are not allowed.",
-            path_type,
-            line_number
+            "Security violation: {path_type} path contains directory traversal sequence '..' at line {line_number}. \
+             Path traversal attacks are not allowed."
         );
     }
 
     // Check for null bytes and other dangerous characters
     if path_str.contains('\0') {
         anyhow::bail!(
-            "Security violation: {} path contains null byte at line {}. \
-             This could be used for path truncation attacks.",
-            path_type,
-            line_number
+            "Security violation: {path_type} path contains null byte at line {line_number}. \
+             This could be used for path truncation attacks."
         );
     }
 
@@ -365,11 +344,8 @@ pub(super) fn secure_validate_path(
             || canonical_str.split('\\').any(|component| component == "..")
         {
             anyhow::bail!(
-                "Security violation: Canonicalized {} path '{}' contains parent directory references at line {}. \
-                 This could indicate a path traversal attempt.",
-                path_type,
-                canonical_str,
-                line_number
+                "Security violation: Canonicalized {path_type} path '{canonical_str}' contains parent directory references at line {line_number}. \
+                 This could indicate a path traversal attempt."
             );
         }
     }
@@ -416,10 +392,8 @@ pub(super) fn validate_identity_file_security(path: &Path, line_number: usize) -
     for pattern in &sensitive_patterns {
         if path_str.contains(pattern) {
             anyhow::bail!(
-                "Security violation: Identity file path '{}' at line {} points to sensitive system location. \
-                 Access to system files is not allowed for security reasons.",
-                path_str,
-                line_number
+                "Security violation: Identity file path '{path_str}' at line {line_number} points to sensitive system location. \
+                 Access to system files is not allowed for security reasons."
             );
         }
     }
@@ -454,10 +428,8 @@ pub(super) fn validate_identity_file_security(path: &Path, line_number: usize) -
             // Check if file is world-writable (very dangerous)
             if mode & 0o002 != 0 {
                 anyhow::bail!(
-                    "Security violation: Identity file '{}' at line {} is world-writable. \
-                     This is extremely dangerous and must be fixed immediately.",
-                    path_str,
-                    line_number
+                    "Security violation: Identity file '{path_str}' at line {line_number} is world-writable. \
+                     This is extremely dangerous and must be fixed immediately."
                 );
             }
         }
@@ -490,10 +462,8 @@ pub(super) fn validate_known_hosts_file_security(path: &Path, line_number: usize
     for pattern in &sensitive_patterns {
         if path_str.contains(pattern) {
             anyhow::bail!(
-                "Security violation: Known hosts file path '{}' at line {} points to sensitive system location. \
-                 Access to system files is not allowed for security reasons.",
-                path_str,
-                line_number
+                "Security violation: Known hosts file path '{path_str}' at line {line_number} points to sensitive system location. \
+                 Access to system files is not allowed for security reasons."
             );
         }
     }
@@ -544,10 +514,8 @@ pub(super) fn validate_general_file_security(path: &Path, line_number: usize) ->
     for pattern in &forbidden_patterns {
         if path_str.contains(pattern) {
             anyhow::bail!(
-                "Security violation: File path '{}' at line {} points to forbidden system location. \
-                 Access to this location is not allowed for security reasons.",
-                path_str,
-                line_number
+                "Security violation: File path '{path_str}' at line {line_number} points to forbidden system location. \
+                 Access to this location is not allowed for security reasons."
             );
         }
     }

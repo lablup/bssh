@@ -137,7 +137,7 @@ impl Tunnel {
                                 Err(e) => {
                                     stats.error_count.fetch_add(1, Ordering::Relaxed);
                                     error!("Failed to write to SSH channel: {}", e);
-                                    return Err(anyhow::anyhow!("SSH channel write error: {}", e));
+                                    return Err(anyhow::anyhow!("SSH channel write error: {e}"));
                                 }
                             }
                         }
@@ -149,7 +149,7 @@ impl Tunnel {
                                 break;
                             } else {
                                 error!("TCP read error: {}", e);
-                                return Err(anyhow::anyhow!("TCP read error: {}", e));
+                                return Err(anyhow::anyhow!("TCP read error: {e}"));
                             }
                         }
                     }
@@ -172,7 +172,7 @@ impl Tunnel {
                                         break;
                                     } else {
                                         error!("TCP write error: {}", e);
-                                        return Err(anyhow::anyhow!("TCP write error: {}", e));
+                                        return Err(anyhow::anyhow!("TCP write error: {e}"));
                                     }
                                 }
                             }

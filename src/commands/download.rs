@@ -30,11 +30,11 @@ pub async fn download_file(
 ) -> Result<()> {
     // Security: Validate the remote source path
     let validated_source = crate::security::validate_remote_path(source)
-        .with_context(|| format!("Invalid source path: {}", source))?;
+        .with_context(|| format!("Invalid source path: {source}"))?;
 
     // Security: Validate the local destination path
     let validated_destination = crate::security::validate_local_path(destination)
-        .with_context(|| format!("Invalid destination path: {:?}", destination))?;
+        .with_context(|| format!("Invalid destination path: {destination:?}"))?;
 
     // Create destination directory if it doesn't exist
     if !validated_destination.exists() {
@@ -66,10 +66,7 @@ pub async fn download_file(
     // Check if source is a directory (for recursive download)
     let is_directory = if params.recursive && !has_glob {
         // Use a test command to check if source is a directory
-        let test_cmd = format!(
-            "test -d '{}' && echo 'dir' || echo 'file'",
-            validated_source
-        );
+        let test_cmd = format!("test -d '{validated_source}' && echo 'dir' || echo 'file'");
         let test_results = executor.execute(&test_cmd).await?;
         test_results.iter().any(|r| {
             r.result
@@ -166,7 +163,7 @@ pub async fn download_file(
             .nodes
             .first()
             .ok_or_else(|| anyhow::anyhow!("No nodes available"))?;
-        let glob_command = format!("ls -1 {} 2>/dev/null || true", validated_source);
+        let glob_command = format!("ls -1 {validated_source} 2>/dev/null || true");
 
         let mut test_client = SshClient::new(
             test_node.host.clone(),
@@ -192,7 +189,7 @@ pub async fn download_file(
             .collect();
 
         if remote_files.is_empty() {
-            anyhow::bail!("No files found matching pattern: {}", validated_source);
+            anyhow::bail!("No files found matching pattern: {validated_source}");
         }
 
         println!(
