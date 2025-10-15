@@ -14,10 +14,16 @@
 
 use bssh::executor::ParallelExecutor;
 use bssh::node::Node;
+use bssh::ssh::client::ConnectionConfig;
+use bssh::ssh::known_hosts::StrictHostKeyChecking;
+use bssh::ssh::tokio_client::client::CommandOutput;
+use bssh::ssh::SshClient;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use tempfile::TempDir;
+use tokio::sync::mpsc::Sender;
+use tokio::task::JoinHandle;
 
 /// Check if SSH is available and can connect to localhost
 fn can_ssh_to_localhost() -> bool {
@@ -46,6 +52,68 @@ fn can_ssh_to_localhost() -> bool {
     }
 }
 
+fn build_test_output_buffer() -> (Sender<CommandOutput>, JoinHandle<(Vec<u8>, Vec<u8>)>) {
+    let (sender, mut output_receiver) = tokio::sync::mpsc::channel(10);
+
+    let receiver_task = tokio::task::spawn(async move {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        while let Some(output) = output_receiver.recv().await {
+            match output {
+                CommandOutput::StdOut(buffer) => stdout.extend_from_slice(&buffer),
+                CommandOutput::StdErr(buffer) => stderr.extend_from_slice(&buffer),
+            }
+        }
+
+        (stdout, stderr)
+    });
+
+    (sender, receiver_task)
+}
+
+fn get_localhost_test_user() -> String {
+    std::env::var("USER").unwrap_or_else(|_| "root".to_string())
+}
+
+#[tokio::test]
+async fn test_localhost_execute_streaming_output() {
+    if !can_ssh_to_localhost() {
+        eprintln!("Skipping integration test: Cannot SSH to localhost");
+        return;
+    }
+
+    let mut client = SshClient::new("localhost".into(), 22, get_localhost_test_user());
+
+    let config = ConnectionConfig {
+        key_path: None,
+        strict_mode: Some(StrictHostKeyChecking::No),
+        use_agent: false,
+        use_password: false,
+        timeout_seconds: None,
+        jump_hosts_spec: None,
+    };
+
+    const COMMAND: &str = "bash -c 'echo a message && echo an error >&2 && exit 123'";
+
+    let (sender, receiver_task) = build_test_output_buffer();
+
+    let exit_code = client
+        .connect_and_execute_with_output_streaming(COMMAND, &config, sender)
+        .await
+        .expect("executed command");
+
+    assert_eq!(exit_code, 123);
+
+    let (stdout, stderr) = receiver_task.await.expect("joined output task");
+
+    let stdout = String::from_utf8_lossy(&stdout).to_string();
+    let stderr = String::from_utf8_lossy(&stderr).to_string();
+
+    assert_eq!(stdout, "a message\n");
+    assert_eq!(stderr, "an error\n");
+}
+
 #[tokio::test]
 async fn test_localhost_upload_download_roundtrip() {
     if !can_ssh_to_localhost() {
@@ -66,7 +134,7 @@ async fn test_localhost_upload_download_roundtrip() {
     let nodes = vec![Node::new(
         "localhost".to_string(),
         22,
-        std::env::var("USER").unwrap_or_else(|_| "root".to_string()),
+        get_localhost_test_user(),
     )];
     // Try to find an SSH key - use None if not found (will try SSH agent)
     let ssh_key = dirs::home_dir().and_then(|h| {
@@ -141,7 +209,7 @@ async fn test_localhost_multiple_file_upload() {
     let nodes = vec![Node::new(
         "localhost".to_string(),
         22,
-        std::env::var("USER").unwrap_or_else(|_| "root".to_string()),
+        get_localhost_test_user(),
     )];
     // Try to find an SSH key - use None if not found (will try SSH agent)
     let ssh_key = dirs::home_dir().and_then(|h| {
@@ -181,7 +249,7 @@ async fn test_parallel_execution_with_multiple_nodes() {
         return;
     }
 
-    let user = std::env::var("USER").unwrap_or_else(|_| "root".to_string());
+    let user = get_localhost_test_user();
     let nodes = vec![
         Node::new("localhost".to_string(), 22, user.clone()),
         Node::new("127.0.0.1".to_string(), 22, user.clone()),
@@ -223,7 +291,7 @@ async fn test_download_with_unique_filenames() {
     fs::write(&source_file, "Shared content").unwrap();
 
     // Create executor with two "different" nodes (both localhost)
-    let user = std::env::var("USER").unwrap_or_else(|_| "root".to_string());
+    let user = get_localhost_test_user();
     let nodes = vec![
         Node::new("localhost".to_string(), 22, user.clone()),
         Node::new("127.0.0.1".to_string(), 22, user),
