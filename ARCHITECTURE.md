@@ -196,11 +196,116 @@ let tasks: Vec<JoinHandle<Result<ExecutionResult>>> = nodes
 **Security Implementation:**
 - Host key verification with three modes:
   - `StrictHostKeyChecking::Yes` - Strict verification using known_hosts
-  - `StrictHostKeyChecking::No` - Skip all verification  
+  - `StrictHostKeyChecking::No` - Skip all verification
   - `StrictHostKeyChecking::AcceptNew` - TOFU mode
 - CLI flag `--strict-host-key-checking` with default "accept-new"
 - Uses system known_hosts file (~/.ssh/known_hosts)
 - SSH agent authentication with auto-detection
+
+### 4.1 Authentication Module (`ssh/auth.rs`)
+
+**Status:** Implemented (2025-10-17) as part of code deduplication refactoring (Issue #34)
+
+**Design Motivation:**
+Authentication logic was previously duplicated across multiple modules (`ssh/client.rs` and `commands/interactive.rs`) with ~90% code duplication. This created maintenance burden and potential for bugs when fixing authentication issues in one location but not the other.
+
+**Refactoring Goals:**
+- Eliminate ~15% code duplication across codebase
+- Provide single source of truth for authentication
+- Maintain consistent authentication behavior across all commands
+- Improve testability with centralized tests
+- Reduce maintenance cost for authentication logic
+
+**Implementation:**
+The `AuthContext` struct encapsulates all authentication parameters and provides a single `determine_method()` function that implements the standard authentication priority:
+
+```rust
+pub struct AuthContext {
+    pub key_path: Option<PathBuf>,
+    pub use_agent: bool,
+    pub use_password: bool,
+    pub username: String,
+    pub host: String,
+}
+
+impl AuthContext {
+    pub fn determine_method(&self) -> Result<AuthMethod> {
+        // Priority 1: Password authentication (if explicitly requested)
+        // Priority 2: SSH agent (if explicitly requested and available)
+        // Priority 3: Specified key file (if provided)
+        // Priority 4: SSH agent auto-detection (if use_agent is true)
+        // Priority 5: Default key locations (~/.ssh/id_ed25519, ~/.ssh/id_rsa, etc.)
+    }
+}
+```
+
+**Builder Pattern Integration:**
+The context uses a fluent builder pattern for ergonomic configuration:
+
+```rust
+let auth_ctx = AuthContext::new(username, host)
+    .with_key_path(key_path.map(|p| p.to_path_buf()))
+    .with_agent(use_agent)
+    .with_password(use_password);
+
+let auth_method = auth_ctx.determine_method()?;
+```
+
+**Security Features:**
+- Uses `zeroize` crate to clear passwords and passphrases from memory
+- Secure passphrase prompts via `rpassword` crate
+- No credential caching or storage
+- Platform-specific handling (SSH agent not supported on Windows)
+
+**Code Reduction:**
+- Eliminated ~130 lines of duplicated authentication logic
+- Reduced from 2 implementations to 1 canonical implementation
+- Client modules reduced from ~140 lines to ~10 lines for authentication
+
+**Testing:**
+Comprehensive test coverage including:
+- Key file authentication
+- SSH agent authentication (Unix only)
+- Password authentication (manual test only)
+- Default key location fallback
+- Error conditions and edge cases
+
+**Usage in Codebase:**
+1. **`ssh/client.rs`**: Uses `AuthContext` for all SSH operations
+   ```rust
+   fn determine_auth_method(&self, ...) -> Result<AuthMethod> {
+       let auth_ctx = super::auth::AuthContext::new(...)
+           .with_key_path(...)
+           .with_agent(...)
+           .with_password(...);
+       auth_ctx.determine_method()
+   }
+   ```
+
+2. **`commands/interactive.rs`**: Uses `AuthContext` for interactive sessions
+   ```rust
+   fn determine_auth_method(&self, node: &Node) -> Result<AuthMethod> {
+       let auth_ctx = crate::ssh::AuthContext::new(...)
+           .with_key_path(...)
+           .with_agent(...)
+           .with_password(...);
+       auth_ctx.determine_method()
+   }
+   ```
+
+**Benefits Realized:**
+- Single source of truth for authentication logic
+- Easier to add new authentication methods
+- Consistent behavior across all bssh commands
+- Reduced bug surface area
+- Improved code maintainability
+- Better test coverage
+
+**Future Enhancements:**
+- Support for additional authentication methods (hardware tokens, certificates)
+- Credential caching with secure storage integration
+- Multi-factor authentication support
+- Per-host authentication preferences
 
 ### 5. Connection Pooling (`ssh/pool.rs`)
 

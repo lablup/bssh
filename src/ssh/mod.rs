@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+pub mod auth;
 pub mod client;
 pub mod config_cache;
 pub mod handler;
@@ -20,6 +21,7 @@ pub mod pool;
 pub mod ssh_config;
 pub mod tokio_client;
 
+pub use auth::AuthContext;
 pub use client::SshClient;
 pub use config_cache::{CacheConfig, CacheStats, SshConfigCache, GLOBAL_CACHE};
 pub use handler::BsshHandler;
