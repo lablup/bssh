@@ -324,7 +324,7 @@ impl InteractiveCommand {
         use crate::jump::{parse_jump_hosts, JumpHostChain};
 
         // Determine authentication method using the same logic as exec mode
-        let auth_method = self.determine_auth_method(&node)?;
+        let auth_method = self.determine_auth_method(&node).await?;
 
         // Set up host key checking using the configured strict mode
         let check_method = get_check_method(self.strict_mode);
@@ -512,7 +512,7 @@ impl InteractiveCommand {
         use crate::jump::{parse_jump_hosts, JumpHostChain};
 
         // Determine authentication method using the same logic as exec mode
-        let auth_method = self.determine_auth_method(&node)?;
+        let auth_method = self.determine_auth_method(&node).await?;
 
         // Set up host key checking using the configured strict mode
         let check_method = get_check_method(self.strict_mode);
@@ -639,14 +639,25 @@ impl InteractiveCommand {
     }
 
     /// Determine authentication method based on node and config (same logic as exec mode)
-    fn determine_auth_method(&self, node: &Node) -> Result<AuthMethod> {
+    async fn determine_auth_method(&self, node: &Node) -> Result<AuthMethod> {
         // Use centralized authentication logic from auth module
-        let auth_ctx = crate::ssh::AuthContext::new(node.username.clone(), node.host.clone())
-            .with_key_path(self.key_path.clone())
+        let mut auth_ctx = crate::ssh::AuthContext::new(node.username.clone(), node.host.clone())
+            .with_context(|| {
+            format!("Invalid credentials for {}@{}", node.username, node.host)
+        })?;
+
+        // Set key path if provided
+        if let Some(ref path) = self.key_path {
+            auth_ctx = auth_ctx
+                .with_key_path(Some(path.clone()))
+                .with_context(|| format!("Invalid SSH key path: {path:?}"))?;
+        }
+
+        auth_ctx = auth_ctx
             .with_agent(self.use_agent)
             .with_password(self.use_password);
 
-        auth_ctx.determine_method()
+        auth_ctx.determine_method().await
     }
 
     /// Run interactive mode with a single node
