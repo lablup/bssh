@@ -13,8 +13,7 @@
 // limitations under the License.
 
 use crate::jump::parser::JumpHost;
-use crate::ssh::tokio_client::client::ClientHandler;
-use crate::ssh::tokio_client::AuthMethod;
+use crate::ssh::tokio_client::{AuthMethod, ClientHandler};
 use anyhow::{Context, Result};
 use std::path::Path;
 use tokio::sync::Mutex;
