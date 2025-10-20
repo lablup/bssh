@@ -12,121 +12,26 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use super::config::CacheConfig;
+use super::entry::CacheEntry;
+use super::stats::CacheStats;
 use crate::ssh::SshConfig;
 use anyhow::{Context, Result};
 use lru::LruCache;
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, SystemTime};
 use tokio::time::timeout;
 use tracing::{debug, trace};
-
-/// Configuration options for the SSH config cache
-#[derive(Debug, Clone)]
-pub struct CacheConfig {
-    /// Maximum number of entries in the cache (default: 100)
-    pub max_entries: usize,
-    /// Time-to-live for cache entries (default: 300 seconds)
-    pub ttl: Duration,
-    /// Whether caching is enabled (default: true)
-    pub enabled: bool,
-}
-
-impl Default for CacheConfig {
-    fn default() -> Self {
-        Self {
-            max_entries: 100,
-            ttl: Duration::from_secs(300), // 5 minutes
-            enabled: true,
-        }
-    }
-}
-
-/// Metadata about a cached SSH config entry
-#[derive(Debug, Clone)]
-struct CacheEntry {
-    /// The cached SSH configuration
-    config: SshConfig,
-    /// When this entry was cached
-    cached_at: Instant,
-    /// File modification time when this entry was cached
-    file_mtime: SystemTime,
-    /// Number of times this entry has been accessed
-    access_count: u64,
-    /// Last access time
-    last_accessed: Instant,
-}
-
-impl CacheEntry {
-    fn new(config: SshConfig, file_mtime: SystemTime) -> Self {
-        let now = Instant::now();
-        Self {
-            config,
-            cached_at: now,
-            file_mtime,
-            access_count: 0,
-            last_accessed: now,
-        }
-    }
-
-    fn is_expired(&self, ttl: Duration) -> bool {
-        self.cached_at.elapsed() > ttl
-    }
-
-    fn is_stale(&self, current_mtime: SystemTime) -> bool {
-        self.file_mtime != current_mtime
-    }
-
-    fn access(&mut self) -> &SshConfig {
-        self.access_count += 1;
-        self.last_accessed = Instant::now();
-        &self.config
-    }
-}
-
-/// Cache statistics for monitoring and debugging
-#[derive(Debug, Clone, Default)]
-pub struct CacheStats {
-    /// Total number of cache hits
-    pub hits: u64,
-    /// Total number of cache misses
-    pub misses: u64,
-    /// Number of entries evicted due to TTL expiration
-    pub ttl_evictions: u64,
-    /// Number of entries evicted due to file modification
-    pub stale_evictions: u64,
-    /// Number of entries evicted due to LRU policy
-    pub lru_evictions: u64,
-    /// Current number of entries in cache
-    pub current_entries: usize,
-    /// Maximum number of entries allowed
-    pub max_entries: usize,
-}
-
-impl CacheStats {
-    pub fn hit_rate(&self) -> f64 {
-        let total = self.hits + self.misses;
-        if total == 0 {
-            0.0
-        } else {
-            self.hits as f64 / total as f64
-        }
-    }
-
-    pub fn miss_rate(&self) -> f64 {
-        1.0 - self.hit_rate()
-    }
-}
 
 /// Thread-safe LRU cache for SSH configurations
 pub struct SshConfigCache {
     /// LRU cache implementation
-    cache: Arc<RwLock<LruCache<PathBuf, CacheEntry>>>,
+    pub(super) cache: Arc<RwLock<LruCache<PathBuf, CacheEntry>>>,
     /// Cache configuration
-    config: CacheConfig,
+    pub(super) config: CacheConfig,
     /// Cache statistics
-    stats: Arc<RwLock<CacheStats>>,
+    pub(super) stats: Arc<RwLock<CacheStats>>,
 }
 
 impl SshConfigCache {
@@ -348,7 +253,7 @@ impl SshConfigCache {
         }
     }
 
-    /// Get current cache statistics  
+    /// Get current cache statistics
     pub fn stats(&self) -> Result<CacheStats> {
         self.stats
             .read()
@@ -383,122 +288,6 @@ impl SshConfigCache {
 
         self.config = new_config;
     }
-
-    /// Perform cache maintenance (remove expired and stale entries)
-    pub async fn maintain(&self) -> Result<usize> {
-        if !self.config.enabled {
-            return Ok(0);
-        }
-
-        let mut to_remove = Vec::new();
-        let mut expired_count = 0;
-        let mut stale_count = 0;
-
-        // Collect keys to check and expired entries (can't remove while iterating)
-        // We'll use tokio::spawn to check file metadata concurrently
-        let mut check_tasks = Vec::new();
-
-        {
-            // Scope the lock to release it before awaiting
-            let cache = self
-                .cache
-                .write()
-                .map_err(|e| anyhow::anyhow!("Cache write lock poisoned in maintain: {e}"))?;
-
-            for (path, entry) in cache.iter() {
-                if entry.is_expired(self.config.ttl) {
-                    to_remove.push(path.clone());
-                    expired_count += 1;
-                } else {
-                    let path_clone = path.clone();
-                    let entry_mtime = entry.file_mtime;
-                    check_tasks.push(tokio::spawn(async move {
-                        if let Ok(metadata) = tokio::fs::metadata(&path_clone).await {
-                            if let Ok(current_mtime) = metadata.modified() {
-                                (path_clone, entry_mtime != current_mtime, true)
-                            } else {
-                                (path_clone, false, false)
-                            }
-                        } else {
-                            // File doesn't exist anymore
-                            (path_clone, true, false)
-                        }
-                    }));
-                }
-            }
-        } // Lock is dropped here
-
-        // Wait for all file checks to complete
-        for task in check_tasks {
-            if let Ok((path, is_stale, _file_exists)) = task.await {
-                if is_stale {
-                    to_remove.push(path);
-                    stale_count += 1;
-                }
-            }
-        }
-
-        // Remove expired and stale entries
-        {
-            let mut cache = self.cache.write().map_err(|e| {
-                anyhow::anyhow!("Cache write lock poisoned during maintenance cleanup: {e}")
-            })?;
-            for path in &to_remove {
-                cache.pop(path);
-            }
-        }
-
-        let removed_count = to_remove.len();
-
-        // Update statistics
-        {
-            let cache = self.cache.read().map_err(|e| {
-                anyhow::anyhow!("Cache read lock poisoned during maintenance stats: {e}")
-            })?;
-            let mut stats = self.stats.write().map_err(|e| {
-                anyhow::anyhow!("Stats write lock poisoned during maintenance: {e}")
-            })?;
-            stats.ttl_evictions += expired_count as u64;
-            stats.stale_evictions += stale_count as u64;
-            stats.current_entries = cache.len();
-        }
-
-        if removed_count > 0 {
-            debug!(
-                "SSH config cache maintenance: removed {} entries ({} expired, {} stale)",
-                removed_count, expired_count, stale_count
-            );
-        }
-
-        Ok(removed_count)
-    }
-
-    /// Get detailed information about cache entries (for debugging)
-    pub fn debug_info(&self) -> Result<HashMap<PathBuf, String>> {
-        let cache = self
-            .cache
-            .read()
-            .map_err(|e| anyhow::anyhow!("Cache read lock poisoned in debug_info: {e}"))?;
-        let mut info = HashMap::new();
-
-        for (path, entry) in cache.iter() {
-            let age = entry.cached_at.elapsed();
-            let is_expired = entry.is_expired(self.config.ttl);
-            let last_accessed = entry.last_accessed.elapsed();
-
-            let status = if is_expired { "EXPIRED" } else { "VALID" };
-
-            info.insert(
-                path.clone(),
-                format!(
-                    "Status: {}, Age: {:?}, Accesses: {}, Last accessed: {:?} ago",
-                    status, age, entry.access_count, last_accessed
-                ),
-            );
-        }
-
-        Ok(info)
-    }
 }
 
 impl Default for SshConfigCache {
@@ -506,35 +295,6 @@ impl Default for SshConfigCache {
         Self::new()
     }
 }
-
-// Global cache instance using once_cell for thread-safe lazy initialization
-use once_cell::sync::Lazy;
-
-/// Global SSH config cache instance
-pub static GLOBAL_CACHE: Lazy<SshConfigCache> = Lazy::new(|| {
-    let config = CacheConfig {
-        max_entries: std::env::var("BSSH_CACHE_SIZE")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(100),
-        ttl: Duration::from_secs(
-            std::env::var("BSSH_CACHE_TTL")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(300),
-        ),
-        enabled: std::env::var("BSSH_CACHE_ENABLED")
-            .map(|s| s.to_lowercase() != "false" && s != "0")
-            .unwrap_or(true),
-    };
-
-    debug!(
-        "Initializing SSH config cache with {} max entries, {:?} TTL, enabled: {}",
-        config.max_entries, config.ttl, config.enabled
-    );
-
-    SshConfigCache::with_config(config)
-});
 
 #[cfg(test)]
 mod tests {
@@ -548,32 +308,6 @@ mod tests {
         assert_eq!(config.max_entries, 100);
         assert_eq!(config.ttl, Duration::from_secs(300));
         assert!(config.enabled);
-    }
-
-    #[test]
-    fn test_cache_entry_expiration() {
-        let config = SshConfig::new();
-        let mtime = SystemTime::now();
-        let mut entry = CacheEntry::new(config, mtime);
-
-        // Fresh entry should not be expired
-        assert!(!entry.is_expired(Duration::from_secs(300)));
-
-        // Simulate time passing by creating an old entry
-        entry.cached_at = Instant::now() - Duration::from_secs(400);
-        assert!(entry.is_expired(Duration::from_secs(300)));
-    }
-
-    #[test]
-    fn test_cache_entry_staleness() {
-        let config = SshConfig::new();
-        let old_mtime = SystemTime::UNIX_EPOCH;
-        let new_mtime = SystemTime::now();
-
-        let entry = CacheEntry::new(config, old_mtime);
-
-        assert!(!entry.is_stale(old_mtime));
-        assert!(entry.is_stale(new_mtime));
     }
 
     #[test]
