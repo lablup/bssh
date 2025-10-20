@@ -21,10 +21,6 @@ mod checks;
 mod path_validation;
 mod string_validation;
 
-pub use checks::{
-    validate_general_file_security, validate_identity_file_security,
-    validate_known_hosts_file_security,
-};
 pub use path_validation::secure_validate_path;
 pub use string_validation::{validate_control_path, validate_executable_string};
 

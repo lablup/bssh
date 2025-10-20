@@ -25,10 +25,13 @@ mod maintenance;
 mod stats;
 mod validation;
 
-pub use cache::EnvironmentCache;
-pub use config::EnvCacheConfig;
 pub use global::GLOBAL_ENV_CACHE;
-pub use stats::EnvCacheStats;
+
+// These are only used in integration tests
+#[cfg(test)]
+pub use cache::EnvironmentCache;
+#[cfg(test)]
+pub use config::EnvCacheConfig;
 
 #[cfg(test)]
 mod tests;

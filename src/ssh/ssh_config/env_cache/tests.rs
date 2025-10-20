@@ -12,228 +12,225 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(test)]
-mod tests {
-    use super::super::cache::EnvironmentCache;
-    use super::super::config::EnvCacheConfig;
-    use super::super::entry::CacheEntry;
-    use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::Arc;
-    use std::time::{Duration, Instant};
+use super::cache::EnvironmentCache;
+use super::config::EnvCacheConfig;
+use super::entry::CacheEntry;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
 
-    #[test]
-    fn test_env_cache_config_default() {
-        let config = EnvCacheConfig::default();
-        assert_eq!(config.ttl, Duration::from_secs(30));
-        assert!(config.enabled);
-        assert_eq!(config.max_entries, 50);
+#[test]
+fn test_env_cache_config_default() {
+    let config = EnvCacheConfig::default();
+    assert_eq!(config.ttl, Duration::from_secs(30));
+    assert!(config.enabled);
+    assert_eq!(config.max_entries, 50);
+}
+
+#[test]
+fn test_cache_entry_expiration() {
+    let mut entry = CacheEntry::new(Some("test".to_string()));
+
+    // Fresh entry should not be expired
+    assert!(!entry.is_expired(Duration::from_secs(60)));
+
+    // Cannot directly modify cached_at, so test access count instead
+    assert_eq!(entry.access_count(), 0);
+    let _ = entry.access();
+    assert_eq!(entry.access_count(), 1);
+}
+
+#[test]
+fn test_env_cache_basic_operations() {
+    let cache = EnvironmentCache::new();
+
+    // Test getting a safe environment variable
+    if let Ok(Some(value)) = cache.get_env_var("HOME") {
+        // Should not be None since HOME is typically set
+        assert!(!value.is_empty());
+
+        // Second call should be a cache hit
+        let cached_value = cache.get_env_var("HOME").unwrap();
+        assert_eq!(cached_value, Some(value));
     }
 
-    #[test]
-    fn test_cache_entry_expiration() {
-        let mut entry = CacheEntry::new(Some("test".to_string()));
+    let stats = cache.stats();
+    assert!(stats.hits > 0 || stats.misses > 0);
+}
 
-        // Fresh entry should not be expired
-        assert!(!entry.is_expired(Duration::from_secs(60)));
+#[test]
+fn test_env_cache_unsafe_variable_blocked() {
+    let cache = EnvironmentCache::new();
 
-        // Cannot directly modify cached_at, so test access count instead
-        assert_eq!(entry.access_count(), 0);
-        let _ = entry.access();
-        assert_eq!(entry.access_count(), 1);
-    }
+    // Try to access a dangerous variable
+    let result = cache.get_env_var("PATH").unwrap();
+    assert_eq!(result, None); // Should be blocked
 
-    #[test]
-    fn test_env_cache_basic_operations() {
-        let cache = EnvironmentCache::new();
+    // Check that it's not considered safe
+    assert!(!cache.is_safe_variable("PATH"));
+    assert!(!cache.is_safe_variable("LD_PRELOAD"));
 
-        // Test getting a safe environment variable
-        if let Ok(Some(value)) = cache.get_env_var("HOME") {
-            // Should not be None since HOME is typically set
-            assert!(!value.is_empty());
+    // Check that safe variables are allowed
+    assert!(cache.is_safe_variable("HOME"));
+    assert!(cache.is_safe_variable("USER"));
+}
 
-            // Second call should be a cache hit
-            let cached_value = cache.get_env_var("HOME").unwrap();
-            assert_eq!(cached_value, Some(value));
-        }
+#[test]
+fn test_env_cache_ttl_expiration() {
+    let config = EnvCacheConfig {
+        ttl: Duration::from_millis(50),
+        enabled: true,
+        max_entries: 10,
+    };
+    let cache = EnvironmentCache::with_config(config);
 
-        let stats = cache.stats();
-        assert!(stats.hits > 0 || stats.misses > 0);
-    }
+    // Get a variable to cache it
+    let _result1 = cache.get_env_var("HOME");
 
-    #[test]
-    fn test_env_cache_unsafe_variable_blocked() {
-        let cache = EnvironmentCache::new();
+    // Wait for TTL to expire
+    std::thread::sleep(Duration::from_millis(100));
 
-        // Try to access a dangerous variable
-        let result = cache.get_env_var("PATH").unwrap();
-        assert_eq!(result, None); // Should be blocked
+    // Should miss cache due to expiration
+    let _result2 = cache.get_env_var("HOME");
 
-        // Check that it's not considered safe
-        assert!(!cache.is_safe_variable("PATH"));
-        assert!(!cache.is_safe_variable("LD_PRELOAD"));
+    let stats = cache.stats();
+    assert!(stats.ttl_evictions > 0);
+}
 
-        // Check that safe variables are allowed
-        assert!(cache.is_safe_variable("HOME"));
-        assert!(cache.is_safe_variable("USER"));
-    }
+#[test]
+fn test_env_cache_size_limit() {
+    let config = EnvCacheConfig {
+        ttl: Duration::from_secs(60),
+        enabled: true,
+        max_entries: 2, // Very small limit
+    };
+    let cache = EnvironmentCache::with_config(config);
 
-    #[test]
-    fn test_env_cache_ttl_expiration() {
-        let config = EnvCacheConfig {
-            ttl: Duration::from_millis(50),
-            enabled: true,
-            max_entries: 10,
-        };
-        let cache = EnvironmentCache::with_config(config);
+    // Fill cache beyond limit
+    let _r1 = cache.get_env_var("HOME");
+    let _r2 = cache.get_env_var("USER");
+    let _r3 = cache.get_env_var("TMPDIR"); // Should evict oldest
 
-        // Get a variable to cache it
-        let _result1 = cache.get_env_var("HOME");
+    let stats = cache.stats();
+    assert!(stats.current_entries <= 2);
+}
 
-        // Wait for TTL to expire
-        std::thread::sleep(Duration::from_millis(100));
+#[test]
+fn test_env_cache_clear_and_refresh() {
+    let cache = EnvironmentCache::new();
 
-        // Should miss cache due to expiration
-        let _result2 = cache.get_env_var("HOME");
+    // Cache some variables
+    let _r1 = cache.get_env_var("HOME");
+    assert!(cache.stats().current_entries > 0);
 
-        let stats = cache.stats();
-        assert!(stats.ttl_evictions > 0);
-    }
+    // Clear cache
+    cache.clear();
+    assert_eq!(cache.stats().current_entries, 0);
 
-    #[test]
-    fn test_env_cache_size_limit() {
-        let config = EnvCacheConfig {
-            ttl: Duration::from_secs(60),
-            enabled: true,
-            max_entries: 2, // Very small limit
-        };
-        let cache = EnvironmentCache::with_config(config);
+    // Cache again and refresh
+    let _r2 = cache.get_env_var("HOME");
+    assert!(cache.stats().current_entries > 0);
 
-        // Fill cache beyond limit
-        let _r1 = cache.get_env_var("HOME");
-        let _r2 = cache.get_env_var("USER");
-        let _r3 = cache.get_env_var("TMPDIR"); // Should evict oldest
+    cache.refresh();
+    assert_eq!(cache.stats().current_entries, 0);
+}
 
-        let stats = cache.stats();
-        assert!(stats.current_entries <= 2);
-    }
+#[test]
+fn test_env_cache_maintenance() {
+    let config = EnvCacheConfig {
+        ttl: Duration::from_millis(50),
+        enabled: true,
+        max_entries: 10,
+    };
+    let cache = EnvironmentCache::with_config(config);
 
-    #[test]
-    fn test_env_cache_clear_and_refresh() {
-        let cache = EnvironmentCache::new();
+    // Cache a variable
+    let _result = cache.get_env_var("HOME");
+    assert!(cache.stats().current_entries > 0);
 
-        // Cache some variables
-        let _r1 = cache.get_env_var("HOME");
-        assert!(cache.stats().current_entries > 0);
+    // Wait for expiration
+    std::thread::sleep(Duration::from_millis(100));
 
-        // Clear cache
-        cache.clear();
-        assert_eq!(cache.stats().current_entries, 0);
+    // Run maintenance
+    let removed = cache.maintain();
+    assert!(removed > 0);
+    assert_eq!(cache.stats().current_entries, 0);
+}
 
-        // Cache again and refresh
-        let _r2 = cache.get_env_var("HOME");
-        assert!(cache.stats().current_entries > 0);
+#[test]
+fn test_env_cache_disabled() {
+    let config = EnvCacheConfig {
+        ttl: Duration::from_secs(60),
+        enabled: false,
+        max_entries: 10,
+    };
+    let cache = EnvironmentCache::with_config(config);
 
-        cache.refresh();
-        assert_eq!(cache.stats().current_entries, 0);
-    }
+    // Should not use cache when disabled
+    let _r1 = cache.get_env_var("HOME");
+    let _r2 = cache.get_env_var("HOME");
 
-    #[test]
-    fn test_env_cache_maintenance() {
-        let config = EnvCacheConfig {
-            ttl: Duration::from_millis(50),
-            enabled: true,
-            max_entries: 10,
-        };
-        let cache = EnvironmentCache::with_config(config);
+    let stats = cache.stats();
+    assert_eq!(stats.hits, 0);
+    assert_eq!(stats.misses, 0);
+    assert_eq!(stats.current_entries, 0);
+}
 
-        // Cache a variable
-        let _result = cache.get_env_var("HOME");
-        assert!(cache.stats().current_entries > 0);
+#[test]
+fn test_env_cache_stats() {
+    let cache = EnvironmentCache::new();
+    let stats = cache.stats();
 
-        // Wait for expiration
-        std::thread::sleep(Duration::from_millis(100));
+    assert_eq!(stats.hits, 0);
+    assert_eq!(stats.misses, 0);
+    assert_eq!(stats.hit_rate(), 0.0);
+    assert_eq!(stats.current_entries, 0);
+    assert_eq!(stats.max_entries, 50);
+}
 
-        // Run maintenance
-        let removed = cache.maintain();
-        assert!(removed > 0);
-        assert_eq!(cache.stats().current_entries, 0);
-    }
+#[test]
+fn test_env_cache_safe_variables_list() {
+    let cache = EnvironmentCache::new();
+    let safe_vars = cache.safe_variables();
 
-    #[test]
-    fn test_env_cache_disabled() {
-        let config = EnvCacheConfig {
-            ttl: Duration::from_secs(60),
-            enabled: false,
-            max_entries: 10,
-        };
-        let cache = EnvironmentCache::with_config(config);
+    assert!(safe_vars.contains(&"HOME"));
+    assert!(safe_vars.contains(&"USER"));
+    assert!(safe_vars.contains(&"SSH_AUTH_SOCK"));
+    assert!(!safe_vars.contains(&"PATH"));
+    assert!(!safe_vars.contains(&"LD_PRELOAD"));
+}
 
-        // Should not use cache when disabled
-        let _r1 = cache.get_env_var("HOME");
-        let _r2 = cache.get_env_var("HOME");
+#[test]
+fn test_env_cache_concurrent_access() {
+    let cache = Arc::new(EnvironmentCache::new());
+    let counter = Arc::new(AtomicUsize::new(0));
 
-        let stats = cache.stats();
-        assert_eq!(stats.hits, 0);
-        assert_eq!(stats.misses, 0);
-        assert_eq!(stats.current_entries, 0);
-    }
+    let mut handles = vec![];
 
-    #[test]
-    fn test_env_cache_stats() {
-        let cache = EnvironmentCache::new();
-        let stats = cache.stats();
+    // Spawn multiple threads accessing the cache
+    for _ in 0..10 {
+        let cache_clone = Arc::clone(&cache);
+        let counter_clone = Arc::clone(&counter);
 
-        assert_eq!(stats.hits, 0);
-        assert_eq!(stats.misses, 0);
-        assert_eq!(stats.hit_rate(), 0.0);
-        assert_eq!(stats.current_entries, 0);
-        assert_eq!(stats.max_entries, 50);
-    }
-
-    #[test]
-    fn test_env_cache_safe_variables_list() {
-        let cache = EnvironmentCache::new();
-        let safe_vars = cache.safe_variables();
-
-        assert!(safe_vars.contains(&"HOME"));
-        assert!(safe_vars.contains(&"USER"));
-        assert!(safe_vars.contains(&"SSH_AUTH_SOCK"));
-        assert!(!safe_vars.contains(&"PATH"));
-        assert!(!safe_vars.contains(&"LD_PRELOAD"));
-    }
-
-    #[test]
-    fn test_env_cache_concurrent_access() {
-        let cache = Arc::new(EnvironmentCache::new());
-        let counter = Arc::new(AtomicUsize::new(0));
-
-        let mut handles = vec![];
-
-        // Spawn multiple threads accessing the cache
-        for _ in 0..10 {
-            let cache_clone = Arc::clone(&cache);
-            let counter_clone = Arc::clone(&counter);
-
-            let handle = std::thread::spawn(move || {
-                for _ in 0..100 {
-                    if cache_clone.get_env_var("HOME").is_ok() {
-                        counter_clone.fetch_add(1, Ordering::Relaxed);
-                    }
+        let handle = std::thread::spawn(move || {
+            for _ in 0..100 {
+                if cache_clone.get_env_var("HOME").is_ok() {
+                    counter_clone.fetch_add(1, Ordering::Relaxed);
                 }
-            });
-            handles.push(handle);
-        }
-
-        // Wait for all threads to complete
-        for handle in handles {
-            handle.join().unwrap();
-        }
-
-        // Should have successful accesses
-        assert!(counter.load(Ordering::Relaxed) > 0);
-
-        // Cache should have entries
-        let stats = cache.stats();
-        assert!(stats.hits + stats.misses > 0);
+            }
+        });
+        handles.push(handle);
     }
+
+    // Wait for all threads to complete
+    for handle in handles {
+        handle.join().unwrap();
+    }
+
+    // Should have successful accesses
+    assert!(counter.load(Ordering::Relaxed) > 0);
+
+    // Cache should have entries
+    let stats = cache.stats();
+    assert!(stats.hits + stats.misses > 0);
 }
