@@ -12,288 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use anyhow::{Context, Result};
-use std::fmt;
-
-/// Default maximum number of jump hosts allowed in a chain
-/// SECURITY: Prevents resource exhaustion and excessive connection chains
-const DEFAULT_MAX_JUMP_HOSTS: usize = 10;
-
-/// Absolute maximum number of jump hosts, even if configured higher
-/// SECURITY: Hard limit to prevent DoS attacks regardless of configuration
-const ABSOLUTE_MAX_JUMP_HOSTS: usize = 30;
-
-/// Get the maximum number of jump hosts allowed
-///
-/// Reads from `BSSH_MAX_JUMP_HOSTS` environment variable, with fallback to default.
-/// The value is capped at ABSOLUTE_MAX_JUMP_HOSTS for security.
-///
-/// # Examples
-/// ```bash
-/// # Use default (10)
-/// bssh -J host1,host2,... target
-///
-/// # Set custom limit (e.g., 20)
-/// BSSH_MAX_JUMP_HOSTS=20 bssh -J host1,host2,...,host20 target
-/// ```
-pub fn get_max_jump_hosts() -> usize {
-    std::env::var("BSSH_MAX_JUMP_HOSTS")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .map(|n| {
-            if n == 0 {
-                tracing::warn!(
-                    "BSSH_MAX_JUMP_HOSTS cannot be 0, using default: {}",
-                    DEFAULT_MAX_JUMP_HOSTS
-                );
-                DEFAULT_MAX_JUMP_HOSTS
-            } else if n > ABSOLUTE_MAX_JUMP_HOSTS {
-                tracing::warn!(
-                    "BSSH_MAX_JUMP_HOSTS={} exceeds absolute maximum {}, capping at {}",
-                    n,
-                    ABSOLUTE_MAX_JUMP_HOSTS,
-                    ABSOLUTE_MAX_JUMP_HOSTS
-                );
-                ABSOLUTE_MAX_JUMP_HOSTS
-            } else {
-                n
-            }
-        })
-        .unwrap_or(DEFAULT_MAX_JUMP_HOSTS)
-}
-
-/// A single jump host specification
-///
-/// Represents one hop in a jump host chain, parsed from OpenSSH ProxyJump syntax.
-/// Supports the format: `[user@]hostname[:port]`
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct JumpHost {
-    /// Username for SSH authentication (None means use current user or config default)
-    pub user: Option<String>,
-    /// Hostname or IP address of the jump host
-    pub host: String,
-    /// SSH port (None means use default port 22 or config default)
-    pub port: Option<u16>,
-}
-
-impl JumpHost {
-    /// Create a new jump host specification
-    pub fn new(host: String, user: Option<String>, port: Option<u16>) -> Self {
-        Self { user, host, port }
-    }
-
-    /// Get the effective username (provided or current user)
-    pub fn effective_user(&self) -> String {
-        self.user.clone().unwrap_or_else(whoami::username)
-    }
-
-    /// Get the effective port (provided or default SSH port)
-    pub fn effective_port(&self) -> u16 {
-        self.port.unwrap_or(22)
-    }
-
-    /// Convert to a connection string for display purposes
-    pub fn to_connection_string(&self) -> String {
-        match (&self.user, &self.port) {
-            (Some(user), Some(port)) => format!("{}@{}:{}", user, self.host, port),
-            (Some(user), None) => format!("{}@{}", user, self.host),
-            (None, Some(port)) => format!("{}:{}", self.host, port),
-            (None, None) => self.host.clone(),
-        }
-    }
-}
-
-impl fmt::Display for JumpHost {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.to_connection_string())
-    }
-}
-
-/// Parse jump host specifications from OpenSSH ProxyJump format
-///
-/// Supports the OpenSSH -J syntax:
-/// * Single host: `hostname`, `user@hostname`, `hostname:port`, `user@hostname:port`
-/// * Multiple hosts: Comma-separated list of the above
-///
-/// # Examples
-/// ```rust
-/// use bssh::jump::parse_jump_hosts;
-///
-/// // Single jump host
-/// let jumps = parse_jump_hosts("bastion.example.com").unwrap();
-/// assert_eq!(jumps.len(), 1);
-/// assert_eq!(jumps[0].host, "bastion.example.com");
-///
-/// // With user and port
-/// let jumps = parse_jump_hosts("admin@jump.example.com:2222").unwrap();
-/// assert_eq!(jumps[0].user, Some("admin".to_string()));
-/// assert_eq!(jumps[0].port, Some(2222));
-///
-/// // Multiple jump hosts
-/// let jumps = parse_jump_hosts("jump1@host1,user@host2:2222").unwrap();
-/// assert_eq!(jumps.len(), 2);
-/// ```
-pub fn parse_jump_hosts(jump_spec: &str) -> Result<Vec<JumpHost>> {
-    if jump_spec.trim().is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let mut jump_hosts = Vec::new();
-
-    for host_spec in jump_spec.split(',') {
-        let host_spec = host_spec.trim();
-        if host_spec.is_empty() {
-            continue;
-        }
-
-        let jump_host = parse_single_jump_host(host_spec)
-            .with_context(|| format!("Failed to parse jump host specification: '{host_spec}'"))?;
-        jump_hosts.push(jump_host);
-    }
-
-    if jump_hosts.is_empty() {
-        anyhow::bail!("No valid jump hosts found in specification: '{jump_spec}'");
-    }
-
-    // SECURITY: Validate jump host count to prevent resource exhaustion
-    let max_jump_hosts = get_max_jump_hosts();
-    if jump_hosts.len() > max_jump_hosts {
-        anyhow::bail!(
-            "Too many jump hosts specified: {} (maximum allowed: {}). Reduce the number of jump hosts in your chain or set BSSH_MAX_JUMP_HOSTS environment variable.",
-            jump_hosts.len(),
-            max_jump_hosts
-        );
-    }
-
-    Ok(jump_hosts)
-}
-
-/// Parse a single jump host specification
-///
-/// Handles the format: `[user@]hostname[:port]`
-/// * IPv6 addresses are supported: `[::1]:2222` or `user@[::1]:2222`
-/// * Port parsing is disambiguated from IPv6 colons
-fn parse_single_jump_host(host_spec: &str) -> Result<JumpHost> {
-    // Handle empty specification
-    if host_spec.is_empty() {
-        anyhow::bail!("Empty jump host specification");
-    }
-
-    // Split on '@' to separate user from host:port
-    let parts: Vec<&str> = host_spec.splitn(2, '@').collect();
-    let (user, host_port) = if parts.len() == 2 {
-        (Some(parts[0].to_string()), parts[1])
-    } else {
-        (None, parts[0])
-    };
-
-    // Validate and sanitize username if provided
-    let user = if let Some(username) = user {
-        Some(crate::utils::sanitize_username(&username).with_context(|| {
-            format!("Invalid username in jump host specification: '{host_spec}'")
-        })?)
-    } else {
-        None
-    };
-
-    // Parse host:port
-    let (host, port) = parse_host_port(host_port)
-        .with_context(|| format!("Invalid host:port specification: '{host_port}'"))?;
-
-    // Sanitize hostname to prevent injection
-    let host = crate::utils::sanitize_hostname(&host)
-        .with_context(|| format!("Invalid hostname in jump host specification: '{host}'"))?;
-
-    Ok(JumpHost::new(host, user, port))
-}
-
-/// Parse host:port specification with IPv6 support
-///
-/// Handles various formats:
-/// * `hostname` -> (hostname, None)
-/// * `hostname:port` -> (hostname, Some(port))
-/// * `[::1]` -> (::1, None)
-/// * `[::1]:port` -> (::1, Some(port))
-fn parse_host_port(host_port: &str) -> Result<(String, Option<u16>)> {
-    if host_port.is_empty() {
-        anyhow::bail!("Empty host specification");
-    }
-
-    // Handle IPv6 addresses in brackets
-    if host_port.starts_with('[') {
-        // Find the closing bracket
-        if let Some(bracket_end) = host_port.find(']') {
-            let ipv6_addr = &host_port[1..bracket_end];
-            if ipv6_addr.is_empty() {
-                anyhow::bail!("Empty IPv6 address in brackets");
-            }
-
-            let remaining = &host_port[bracket_end + 1..];
-            if remaining.is_empty() {
-                // Just [ipv6]
-                return Ok((ipv6_addr.to_string(), None));
-            } else if let Some(port_str) = remaining.strip_prefix(':') {
-                // [ipv6]:port
-                if port_str.is_empty() {
-                    anyhow::bail!("Empty port specification after IPv6 address");
-                }
-                let port = port_str
-                    .parse::<u16>()
-                    .with_context(|| format!("Invalid port number: '{port_str}'"))?;
-                if port == 0 {
-                    anyhow::bail!("Port number cannot be zero");
-                }
-                return Ok((ipv6_addr.to_string(), Some(port)));
-            } else {
-                anyhow::bail!("Invalid characters after IPv6 address: '{remaining}'");
-            }
-        } else {
-            anyhow::bail!("Unclosed bracket in IPv6 address");
-        }
-    }
-
-    // Handle regular hostname[:port] format
-    // Find the last colon to handle IPv6 addresses without brackets
-    if let Some(colon_pos) = host_port.rfind(':') {
-        let host_part = &host_port[..colon_pos];
-        let port_part = &host_port[colon_pos + 1..];
-
-        if host_part.is_empty() {
-            anyhow::bail!("Empty hostname");
-        }
-
-        if port_part.is_empty() {
-            anyhow::bail!("Empty port specification");
-        }
-
-        // Try to parse as port number
-        match port_part.parse::<u16>() {
-            Ok(port) => {
-                if port == 0 {
-                    anyhow::bail!("Port number cannot be zero");
-                }
-                Ok((host_part.to_string(), Some(port)))
-            }
-            Err(e) => {
-                // Check if this looks like a port number (all digits)
-                if port_part.chars().all(|c| c.is_ascii_digit()) {
-                    // It's clearly intended to be a port but invalid
-                    anyhow::bail!("Invalid port number: '{port_part}' ({e})");
-                } else {
-                    // Not a port, treat entire string as hostname (might be IPv6)
-                    Ok((host_port.to_string(), None))
-                }
-            }
-        }
-    } else {
-        // No colon found, entire string is hostname
-        Ok((host_port.to_string(), None))
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::super::host_parser::parse_single_jump_host;
+    use super::super::*;
 
     #[test]
     fn test_parse_single_jump_host_hostname_only() {
@@ -452,7 +174,11 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_max_jump_hosts_limit_exactly_10() {
+        // Clear any environment variable first
+        std::env::remove_var("BSSH_MAX_JUMP_HOSTS");
+
         // Exactly 10 jump hosts should be allowed
         let spec = (0..10)
             .map(|i| format!("host{i}"))
@@ -464,7 +190,11 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_max_jump_hosts_limit_11_rejected() {
+        // Clear any environment variable first
+        std::env::remove_var("BSSH_MAX_JUMP_HOSTS");
+
         // 11 jump hosts should be rejected
         let spec = (0..11)
             .map(|i| format!("host{i}"))
