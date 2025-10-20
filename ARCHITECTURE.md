@@ -1054,6 +1054,12 @@ impl NodeStatus {
 - SSH jump host infrastructure (-J)
 - Complete port forwarding (-L, -R, -D)
 
+### 2025-10-14: Jump Host Feature Completion (v0.9.0)
+- File transfer operations through jump hosts
+- Interactive mode with jump hosts and dynamic timeouts
+- Executor integration for parallel operations
+- Comprehensive testing and documentation
+
 ### 2025-10-17: Large-Scale Code Refactoring (Issue #33)
 - Split 13 critical/high/medium priority files into focused modules
 - Reduced largest file from 1,394 to 691 lines
@@ -1061,51 +1067,10 @@ impl NodeStatus {
 - Established optimal module size guidelines (300-700 lines)
 - Intentionally skipped Phase 4 based on risk/benefit analysis
 
-### 2025-10-14: Jump Host Feature Completion (v0.9.0)
-- File transfer operations through jump hosts
-- Interactive mode with jump hosts and dynamic timeouts
-- Executor integration for parallel operations
-- Comprehensive testing and documentation
-
-### 2025-08-22: Code Structure Refactoring
-
-**Completed:**
-1. **Modular Command Structure:** Separated commands into individual modules
-2. **Utility Extraction:** Created reusable utility modules for common functions
-3. **Main.rs Simplification:** Reduced from 987 to ~150 lines
-
-**New Structure:**
-```
-src/
-├── commands/         # Command implementations
-│   ├── exec.rs      # Execute command (~75 lines)
-│   ├── ping.rs      # Connectivity test (~80 lines)
-│   ├── list.rs      # List clusters (~50 lines)
-│   ├── upload.rs    # File upload (~175 lines)
-│   └── download.rs  # File download (~240 lines)
-├── utils/           # Utility functions
-│   ├── fs.rs        # File system utilities (~100 lines)
-│   ├── output.rs    # Output management (~200 lines)
-│   └── logging.rs   # Logging setup (~30 lines)
-└── main.rs          # CLI dispatcher (~150 lines)
-```
-
-**Benefits:**
-- **Improved Maintainability:** Each command is self-contained
-- **Better Testability:** Individual modules can be tested in isolation
-- **Enhanced Scalability:** New commands can be added without touching main.rs
-- **Code Reusability:** Utility functions are shared across commands
-- **Clear Separation of Concerns:** Each module has a single responsibility
-
-**Metrics:**
-- Main.rs size reduction: 84% (987 → 150 lines)
-- Average module size: ~100 lines
-- Total modules created: 9 new files
-- No functionality changes, only structural improvements
 
 ## SSH Jump Host Support
 
-### Status: Fully Implemented (2025-08-30, Extended 2025-10-14), Refactored (2025-10-17)
+### Status: Fully Implemented
 
 **Jump Host Parser Module Structure (Refactored 2025-10-17):**
 - `parser/tests.rs` - Test suite (343 lines)
