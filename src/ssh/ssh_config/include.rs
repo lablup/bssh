@@ -853,4 +853,176 @@ mod tests {
             .unwrap()
             .contains("03-third"));
     }
+
+    #[tokio::test]
+    async fn test_validate_glob_pattern_security() {
+        // Test recursive glob rejection
+        let result = validate_glob_pattern("config.d/**/*.conf");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Recursive glob"));
+
+        // Test too many wildcards
+        let result = validate_glob_pattern("a*/b*/c*/d*/e*/f*");
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Too many wildcards"));
+
+        // Test too-long pattern
+        let long_pattern = "a".repeat(600);
+        let result = validate_glob_pattern(&long_pattern);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too long"));
+
+        // Test overly broad pattern
+        let result = validate_glob_pattern("/*");
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too broad"));
+
+        // Test valid patterns
+        assert!(validate_glob_pattern("~/.ssh/config.d/*.conf").is_ok());
+        assert!(validate_glob_pattern("/etc/ssh/*.conf").is_ok());
+        assert!(validate_glob_pattern("config.d/[0-9][0-9]-*.conf").is_ok());
+        // Path with ../ is allowed in pattern validation (checked later by is_path_allowed)
+        assert!(validate_glob_pattern("../../../etc/passwd").is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_multiple_patterns_in_include() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create multiple config files in different directories
+        let dir1 = temp_dir.path().join("dir1");
+        let dir2 = temp_dir.path().join("dir2");
+        fs::create_dir(&dir1).unwrap();
+        fs::create_dir(&dir2).unwrap();
+
+        fs::write(dir1.join("config1.conf"), "Host host1\n").unwrap();
+        fs::write(dir2.join("config2.conf"), "Host host2\n").unwrap();
+
+        // Create main config with multiple patterns in one Include directive
+        let main_config = temp_dir.path().join("config");
+        let main_content = format!(
+            "Include {} {}\n",
+            dir1.join("*.conf").display(),
+            dir2.join("*.conf").display()
+        );
+        fs::write(&main_config, &main_content).unwrap();
+
+        // Resolve includes
+        let result = resolve_includes(&main_config, &main_content).await.unwrap();
+
+        // Should have 2 included files
+        assert_eq!(result.len(), 2);
+        assert!(
+            result[0].content.contains("Host host1") || result[1].content.contains("Host host1")
+        );
+        assert!(
+            result[0].content.contains("Host host2") || result[1].content.contains("Host host2")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_include_nonexistent_file_skipped() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create main config that includes a non-existent file
+        let main_config = temp_dir.path().join("config");
+        let nonexistent_path = temp_dir.path().join("nonexistent.conf");
+        let main_content = format!(
+            "Include {}\nHost example.com\n    User testuser\n",
+            nonexistent_path.display()
+        );
+        fs::write(&main_config, &main_content).unwrap();
+
+        // Resolve includes - should skip non-existent file and continue
+        let result = resolve_includes(&main_config, &main_content).await.unwrap();
+
+        // Should have 1 file (main config, since Include file doesn't exist)
+        assert_eq!(result.len(), 1);
+        assert!(result[0].content.contains("Host example.com"));
+    }
+
+    #[tokio::test]
+    async fn test_include_order_preservation() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create three include files
+        let include_dir = temp_dir.path().join("includes");
+        fs::create_dir(&include_dir).unwrap();
+
+        fs::write(
+            include_dir.join("first.conf"),
+            "Host first\n    Port 1111\n",
+        )
+        .unwrap();
+        fs::write(
+            include_dir.join("second.conf"),
+            "Host second\n    Port 2222\n",
+        )
+        .unwrap();
+        fs::write(
+            include_dir.join("third.conf"),
+            "Host third\n    Port 3333\n",
+        )
+        .unwrap();
+
+        // Create main config with multiple Include directives at different positions
+        let main_config = temp_dir.path().join("config");
+        let main_content = format!(
+            "Host start\n    Port 9999\n\nInclude {}\n\nHost middle\n    Port 5555\n\nInclude {}\n\nHost end\n    Port 1\n",
+            include_dir.join("first.conf").display(),
+            include_dir.join("second.conf").display()
+        );
+        fs::write(&main_config, &main_content).unwrap();
+
+        // Resolve includes
+        let result = resolve_includes(&main_config, &main_content).await.unwrap();
+
+        // Combine and check order: start → first → middle → second → end
+        let combined = combine_included_files(&result);
+
+        let start_pos = combined.find("Host start").unwrap();
+        let first_pos = combined.find("Host first").unwrap();
+        let middle_pos = combined.find("Host middle").unwrap();
+        let second_pos = combined.find("Host second").unwrap();
+        let end_pos = combined.find("Host end").unwrap();
+
+        assert!(start_pos < first_pos, "start should come before first");
+        assert!(first_pos < middle_pos, "first should come before middle");
+        assert!(middle_pos < second_pos, "middle should come before second");
+        assert!(second_pos < end_pos, "second should come before end");
+    }
+
+    #[tokio::test]
+    async fn test_empty_glob_pattern() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create main config with glob that matches no files
+        let main_config = temp_dir.path().join("config");
+        let main_content = format!(
+            "Include {}\nHost example.com\n",
+            temp_dir.path().join("nonexistent/*.conf").display()
+        );
+        fs::write(&main_config, &main_content).unwrap();
+
+        // Resolve includes - should handle empty glob gracefully
+        let result = resolve_includes(&main_config, &main_content).await.unwrap();
+
+        // Should have 1 file (main config only)
+        assert_eq!(result.len(), 1);
+        assert!(result[0].content.contains("Host example.com"));
+    }
+
+    #[tokio::test]
+    async fn test_include_with_tilde_expansion() {
+        // Test that tilde expansion is handled
+        let patterns = parse_include_line("Include ~/.ssh/config.d/*.conf");
+        assert!(patterns.is_some());
+
+        let patterns = patterns.unwrap();
+        assert_eq!(patterns.len(), 1);
+        assert!(patterns[0].starts_with("~/"));
+    }
 }

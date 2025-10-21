@@ -737,4 +737,236 @@ mod tests {
             MatchContext::new("web.test.com".to_string(), Some("admin".to_string())).unwrap();
         assert!(!block.matches(&context).unwrap());
     }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_exec_timeout() {
+        use std::time::Instant;
+
+        let context = MatchContext::new("example.com".to_string(), None).unwrap();
+
+        // Test command that sleeps longer than timeout
+        let condition = MatchCondition::Exec("sleep 10".to_string());
+        let start = Instant::now();
+        let result = condition.matches(&context).unwrap();
+        let duration = start.elapsed();
+
+        // Should timeout and return false
+        assert!(
+            !result,
+            "Long-running command should timeout and return false"
+        );
+        assert!(
+            duration.as_secs() <= EXEC_TIMEOUT_SECS + 1,
+            "Should timeout within {} seconds, took {:?}",
+            EXEC_TIMEOUT_SECS,
+            duration
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_exec_nonexistent_command() {
+        let context = MatchContext::new("example.com".to_string(), None).unwrap();
+
+        // Test command that doesn't exist
+        let condition = MatchCondition::Exec("nonexistent_command_12345".to_string());
+        let result = condition.matches(&context).unwrap();
+
+        // Should return false for nonexistent command
+        assert!(!result, "Nonexistent command should return false");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_exec_exit_code_handling() {
+        let context = MatchContext::new("example.com".to_string(), None).unwrap();
+
+        // Test command that exits with success (0)
+        let condition = MatchCondition::Exec("test -d /tmp".to_string());
+        let result = condition.matches(&context).unwrap();
+        assert!(result, "Successful command should return true");
+
+        // Test command that exits with failure (non-zero)
+        let condition = MatchCondition::Exec("test -f /nonexistent_file_12345".to_string());
+        let result = condition.matches(&context).unwrap();
+        assert!(!result, "Failed command should return false");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn test_exec_disabled_on_windows() {
+        let context = MatchContext::new("example.com".to_string(), None).unwrap();
+
+        // exec should be disabled on Windows
+        let condition = MatchCondition::Exec("echo test".to_string());
+        let result = condition.matches(&context);
+
+        assert!(
+            result.is_err(),
+            "exec should be disabled on Windows for security"
+        );
+    }
+
+    #[test]
+    fn test_validate_exec_security_edge_cases() {
+        // Test boundary condition: exactly 1024 characters
+        let long_cmd = "a".repeat(1024);
+        assert!(validate_exec_command(&long_cmd).is_ok());
+
+        // Test over limit: 1025 characters
+        let too_long_cmd = "a".repeat(1025);
+        assert!(validate_exec_command(&too_long_cmd).is_err());
+
+        // Test unbalanced quotes
+        assert!(validate_exec_command("echo \"hello").is_err());
+        assert!(validate_exec_command("echo 'hello").is_err());
+        assert!(validate_exec_command("echo \"hello'").is_err());
+
+        // Test dangerous patterns with spaces (validation checks for "rm ")
+        assert!(validate_exec_command("rm -rf /").is_err());
+        assert!(validate_exec_command("dd if=/dev/zero").is_err());
+
+        // Test semicolon (shell command separator)
+        assert!(validate_exec_command("ls;rm file").is_err());
+        assert!(validate_exec_command("echo hello ; rm file").is_err());
+    }
+
+    #[test]
+    fn test_match_host_with_negation() {
+        // Test negation pattern: !*.internal.com matches hosts that DON'T match *.internal.com
+        let context_internal =
+            MatchContext::new("web.internal.com".to_string(), Some("testuser".to_string()))
+                .unwrap();
+        let context_external = MatchContext::new("web.example.com".to_string(), None).unwrap();
+
+        // Negation pattern should NOT match internal hosts
+        let condition = MatchCondition::Host(vec!["!*.internal.com".to_string()]);
+        assert!(!condition.matches(&context_internal).unwrap());
+        // But SHOULD match external hosts
+        assert!(condition.matches(&context_external).unwrap());
+
+        // Test wildcard negation
+        let condition = MatchCondition::Host(vec!["!db*.example.com".to_string()]);
+        let context_db = MatchContext::new("db1.example.com".to_string(), None).unwrap();
+        let context_web = MatchContext::new("web.example.com".to_string(), None).unwrap();
+
+        assert!(!condition.matches(&context_db).unwrap());
+        assert!(condition.matches(&context_web).unwrap());
+
+        // Test exact negation
+        let condition = MatchCondition::Host(vec!["!production.example.com".to_string()]);
+        let context_prod = MatchContext::new("production.example.com".to_string(), None).unwrap();
+        let context_staging = MatchContext::new("staging.example.com".to_string(), None).unwrap();
+
+        assert!(!condition.matches(&context_prod).unwrap());
+        assert!(condition.matches(&context_staging).unwrap());
+    }
+
+    #[test]
+    fn test_match_user_multiple_patterns() {
+        let context =
+            MatchContext::new("example.com".to_string(), Some("admin".to_string())).unwrap();
+
+        // Test multiple user patterns (comma or space separated)
+        let condition = MatchCondition::User(vec!["admin".to_string(), "root".to_string()]);
+        assert!(condition.matches(&context).unwrap());
+
+        let condition = MatchCondition::User(vec!["root".to_string(), "operator".to_string()]);
+        assert!(!condition.matches(&context).unwrap());
+    }
+
+    #[test]
+    fn test_match_localuser_with_wildcards() {
+        let context = MatchContext::new("example.com".to_string(), None).unwrap();
+
+        let local_user = whoami::username();
+
+        // Test wildcard pattern
+        if local_user.len() > 2 {
+            let pattern = format!("{}*", &local_user[..2]);
+            let condition = MatchCondition::LocalUser(vec![pattern]);
+            assert!(condition.matches(&context).unwrap());
+        }
+
+        // Test negation
+        let condition = MatchCondition::LocalUser(vec!["!nonexistent*".to_string()]);
+        assert!(condition.matches(&context).unwrap());
+    }
+
+    #[test]
+    fn test_parse_match_complex_conditions() {
+        // Test parsing with multiple complex conditions
+        let conditions = MatchCondition::parse_match_line(
+            "Match host *.example.com,!db*.example.com user admin,root",
+            1,
+        )
+        .unwrap();
+        assert_eq!(conditions.len(), 2);
+
+        // Test exec with variables
+        let conditions =
+            MatchCondition::parse_match_line("Match exec \"test -f /tmp/%h.lock\"", 1).unwrap();
+        assert_eq!(conditions.len(), 1);
+        match &conditions[0] {
+            MatchCondition::Exec(cmd) => assert!(cmd.contains("%h")),
+            _ => panic!("Expected Exec condition"),
+        }
+    }
+
+    #[test]
+    fn test_expand_variables_edge_cases() {
+        let mut variables = HashMap::new();
+        variables.insert("h".to_string(), "example.com".to_string());
+
+        // Test unknown variable (should be left unchanged)
+        let command = "test -f /tmp/%unknown";
+        let expanded = expand_variables(command, &variables);
+        assert_eq!(expanded, "test -f /tmp/%unknown");
+
+        // Test escaped percent
+        let command = "echo 100%%";
+        let expanded = expand_variables(command, &variables);
+        assert!(expanded.contains("%"));
+
+        // Test variable at start
+        let command = "%h.example.com";
+        let expanded = expand_variables(command, &variables);
+        assert_eq!(expanded, "example.com.example.com");
+
+        // Test variable at end
+        let command = "prefix-%h";
+        let expanded = expand_variables(command, &variables);
+        assert_eq!(expanded, "prefix-example.com");
+    }
+
+    #[test]
+    fn test_match_block_all_conditions() {
+        // Test Match all alone (should match everything)
+        let mut block = MatchBlock::new(10);
+        block.conditions.push(MatchCondition::All);
+
+        let context1 = MatchContext::new("anything.com".to_string(), None).unwrap();
+        let context2 =
+            MatchContext::new("example.com".to_string(), Some("admin".to_string())).unwrap();
+
+        // All condition should match any context
+        assert!(block.matches(&context1).unwrap());
+        assert!(block.matches(&context2).unwrap());
+
+        // Test that All with other conditions uses AND logic
+        // (Per SSH spec, 'all' should typically be alone, but if combined, all conditions must match)
+        let mut block2 = MatchBlock::new(10);
+        block2.conditions.push(MatchCondition::All);
+        block2
+            .conditions
+            .push(MatchCondition::Host(vec!["*.example.com".to_string()]));
+
+        let context_match = MatchContext::new("web.example.com".to_string(), None).unwrap();
+        let context_nomatch = MatchContext::new("web.other.com".to_string(), None).unwrap();
+
+        // Should match only if both All (always true) AND Host pattern match
+        assert!(block2.matches(&context_match).unwrap());
+        assert!(!block2.matches(&context_nomatch).unwrap());
+    }
 }
