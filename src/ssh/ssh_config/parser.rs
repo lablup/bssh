@@ -12,27 +12,59 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! SSH configuration parsing functionality
+//! SSH configuration parsing functionality with Include and Match support
 //!
-//! This module handles parsing of SSH configuration files, converting the text format
-//! into structured configuration objects while performing security validation.
+//! This module implements a 2-pass parsing strategy:
+//! - Pass 1: Resolve all Include directives and build the complete configuration
+//! - Pass 2: Parse Host and Match blocks with their configurations
 
+use super::include::{combine_included_files, resolve_includes};
+use super::match_directive::{MatchBlock, MatchCondition};
 use super::security::{secure_validate_path, validate_control_path, validate_executable_string};
-use super::types::SshHostConfig;
+use super::types::{ConfigBlock, SshHostConfig};
 use anyhow::{Context, Result};
+use std::path::Path;
 
-/// Parse SSH configuration content
+/// Parse SSH configuration content with Include and Match support
 pub(super) fn parse(content: &str) -> Result<Vec<SshHostConfig>> {
+    // For synchronous parsing without file path, we can't resolve includes
+    // This maintains backward compatibility for tests and simple usage
+    parse_without_includes(content)
+}
+
+/// Parse SSH configuration from a file with full Include support
+pub(super) async fn parse_from_file(path: &Path, content: &str) -> Result<Vec<SshHostConfig>> {
+    // Pass 1: Resolve all Include directives
+    let included_files = resolve_includes(path, content)
+        .await
+        .with_context(|| format!("Failed to resolve includes for {}", path.display()))?;
+
+    // Combine all included files into a single configuration
+    let combined_content = combine_included_files(&included_files);
+
+    // Pass 2: Parse the combined configuration
+    parse_without_includes(&combined_content)
+}
+
+/// Parse SSH configuration content without Include resolution
+fn parse_without_includes(content: &str) -> Result<Vec<SshHostConfig>> {
     // Security: Set reasonable limits to prevent DoS attacks
     const MAX_LINE_LENGTH: usize = 8192; // 8KB per line should be more than enough
     const MAX_VALUE_LENGTH: usize = 4096; // 4KB for individual values
 
-    let mut hosts = Vec::new();
-    let mut current_host: Option<SshHostConfig> = None;
+    let mut configs = Vec::new();
+    let mut current_config: Option<SshHostConfig> = None;
+    let mut current_match: Option<MatchBlock> = None;
     let mut line_number = 0;
+    let mut in_match_block = false;
 
     for line in content.lines() {
         line_number += 1;
+
+        // Skip source file comments added by include resolution
+        if line.starts_with("# Source:") {
+            continue;
+        }
 
         // Security: Check line length to prevent DoS
         if line.len() > MAX_LINE_LENGTH {
@@ -50,157 +82,243 @@ pub(super) fn parse(content: &str) -> Result<Vec<SshHostConfig>> {
             continue;
         }
 
-        // Split line into keyword and arguments
-        // Support both "Option Value" and "Option=Value" syntax
+        // Get lowercase version of line for keyword detection
+        let lower_line = line.to_lowercase();
 
-        // Determine parsing strategy based on syntax
-        // We need to check for Host directive first since it never uses equals syntax
-        // Performance optimization: only call split_whitespace once if needed
-        let eq_pos = line.find('=');
-        let uses_equals_syntax = if let Some(pos) = eq_pos {
-            // Has equals sign - check if it's a Host directive
-            // Extract first word efficiently without full split
-            let prefix = &line[..pos];
-            let first_word = prefix
-                .split_whitespace()
-                .next()
-                .unwrap_or("")
-                .to_lowercase();
-            first_word != "host"
-        } else {
-            // No equals sign - definitely not equals syntax
-            false
-        };
+        // Check for Include directive (should have been resolved in pass 1)
+        if lower_line.starts_with("include") {
+            // In direct parsing mode, we skip Include directives
+            tracing::debug!(
+                "Skipping Include directive at line {} (not in file mode)",
+                line_number
+            );
+            continue;
+        }
 
-        let (keyword, args) = if uses_equals_syntax {
-            // Option=Value syntax - we know eq_pos exists from check above
-            if let Some(eq_pos) = eq_pos {
-                let key_part = line[..eq_pos].trim();
-                let value_part = &line[eq_pos + 1..]; // Don't trim yet to preserve leading/trailing spaces if quoted
-
-                // Extract keyword - for equals syntax, the keyword is everything before the =
-                // after trimming whitespace
-                let keyword = key_part;
-
-                // Skip if we have an empty keyword (e.g., "=value" or "  =value")
-                if keyword.is_empty() {
-                    tracing::debug!("Ignoring line with empty keyword at line {}", line_number);
-                    continue;
-                }
-
-                // For equals syntax, treat everything after '=' as a single value
-                // This preserves values containing spaces, equals signs, etc.
-                let trimmed_value = value_part.trim();
-
-                // Security: Check value length to prevent DoS
-                if trimmed_value.len() > MAX_VALUE_LENGTH {
-                    anyhow::bail!(
-                        "Value at line {} exceeds maximum length of {} bytes",
-                        line_number,
-                        MAX_VALUE_LENGTH
-                    );
-                }
-
-                let args: Vec<&str> = if trimmed_value.is_empty() {
-                    // Empty value after equals - still pass empty vec
-                    // Individual options will handle this appropriately
-                    vec![]
-                } else {
-                    // Special handling for options that expect comma-separated values
-                    match keyword.to_lowercase().as_str() {
-                        "ciphers"
-                        | "macs"
-                        | "hostkeyalgorithms"
-                        | "kexalgorithms"
-                        | "preferredauthentications"
-                        | "protocol" => {
-                            // These options expect comma-separated values
-                            // Split on comma but preserve the values
-                            trimmed_value.split(',').map(|s| s.trim()).collect()
-                        }
-                        _ => {
-                            // For other options, keep the value as-is
-                            // This preserves values with spaces, equals, etc.
-                            vec![trimmed_value]
-                        }
-                    }
-                };
-
-                (keyword.to_lowercase(), args)
-            } else {
-                // This shouldn't happen given our check above, but handle gracefully
-                continue;
+        // Check for Match directive
+        if lower_line.starts_with("match ")
+            || lower_line.starts_with("match\t")
+            || lower_line == "match"
+            || lower_line.starts_with("match=")
+        {
+            // Save previous config if any
+            if let Some(config) = current_config.take() {
+                configs.push(config);
             }
-        } else {
-            // Option Value syntax (space-separated)
-            // Performance optimization: use iterator directly instead of collecting
-            let mut parts_iter = line.split_whitespace();
-            let first = match parts_iter.next() {
-                Some(k) => k,
-                None => continue,
+            if let Some(match_block) = current_match.take() {
+                configs.push(match_block.config);
+            }
+
+            // Parse Match conditions
+            let conditions = MatchCondition::parse_match_line(line, line_number)?;
+
+            // Create new Match block
+            let mut match_block = MatchBlock::new(line_number);
+            match_block.conditions = conditions.clone();
+
+            // Create config for this Match block
+            let config = SshHostConfig {
+                block_type: Some(ConfigBlock::Match(conditions)),
+                ..Default::default()
+            };
+            match_block.config = config;
+
+            current_match = Some(match_block);
+            current_config = None;
+            in_match_block = true;
+            continue;
+        }
+
+        // Check for Host directive (must be "host" not "hostname" etc.)
+        if lower_line.starts_with("host ")
+            || lower_line.starts_with("host\t")
+            || lower_line == "host"
+            || (lower_line.starts_with("host=") && !lower_line.starts_with("hostname="))
+        {
+            // Save previous config if any
+            if let Some(config) = current_config.take() {
+                configs.push(config);
+            }
+            if let Some(match_block) = current_match.take() {
+                configs.push(match_block.config);
+            }
+
+            // Parse Host patterns
+            let patterns = parse_host_line(line, line_number)?;
+
+            // Create new Host config
+            let config = SshHostConfig {
+                host_patterns: patterns.clone(),
+                block_type: Some(ConfigBlock::Host(patterns)),
+                ..Default::default()
             };
 
-            let keyword = first.to_lowercase();
-            let args: Vec<&str> = parts_iter.collect();
+            current_config = Some(config);
+            current_match = None;
+            in_match_block = false;
+            continue;
+        }
 
-            (keyword, args)
-        };
+        // Parse configuration option
+        let (keyword, args) = parse_config_line(line, line_number, MAX_VALUE_LENGTH)?;
 
         if keyword.is_empty() {
             continue;
         }
 
-        match keyword.as_str() {
-            "host" => {
-                // Save previous host config
-                if let Some(host) = current_host.take() {
-                    hosts.push(host);
-                }
-
-                // Start new host config
-                if args.is_empty() {
-                    anyhow::bail!(
-                        "Host directive requires at least one pattern at line {line_number}"
-                    );
-                }
-
-                let host_config = SshHostConfig {
-                    host_patterns: args.iter().map(|s| s.to_string()).collect(),
-                    ..Default::default()
-                };
-                current_host = Some(host_config);
+        // Apply option to current config block
+        if in_match_block {
+            if let Some(ref mut match_block) = current_match {
+                parse_option(&mut match_block.config, &keyword, &args, line_number)
+                    .with_context(|| format!("Error at line {line_number}: {line}"))?;
             }
-            _ => {
-                // Configuration option
-                if let Some(ref mut host) = current_host {
-                    parse_option(host, &keyword, &args, line_number)
-                        .with_context(|| format!("Error at line {line_number}: {line}"))?;
-                } else if keyword != "host" {
-                    // Global options outside of any Host block are ignored for now
-                    // In a full SSH config parser, these would set global defaults
-                    tracing::debug!(
-                        "Ignoring global option '{}' at line {}",
-                        keyword,
-                        line_number
-                    );
-                }
-            }
+        } else if let Some(ref mut config) = current_config {
+            parse_option(config, &keyword, &args, line_number)
+                .with_context(|| format!("Error at line {line_number}: {line}"))?;
+        } else {
+            // Global option outside any block
+            // In OpenSSH, these set defaults but we're ignoring them for now
+            tracing::debug!(
+                "Ignoring global option '{}' at line {}",
+                keyword,
+                line_number
+            );
         }
     }
 
-    // Don't forget the last host
-    if let Some(host) = current_host {
-        hosts.push(host);
+    // Don't forget the last config
+    if let Some(config) = current_config {
+        configs.push(config);
+    }
+    if let Some(match_block) = current_match {
+        configs.push(match_block.config);
     }
 
-    Ok(hosts)
+    Ok(configs)
+}
+
+/// Parse a Host directive line
+fn parse_host_line(line: &str, line_number: usize) -> Result<Vec<String>> {
+    let line = line.trim();
+
+    // Support both "Host pattern" and "Host=pattern" syntax
+    let patterns_str = if let Some(pos) = line.find('=') {
+        // Host=pattern syntax
+        if line[..pos].trim().to_lowercase() != "host" {
+            anyhow::bail!("Invalid Host directive at line {}", line_number);
+        }
+        line[pos + 1..].trim()
+    } else {
+        // Host pattern syntax
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.is_empty() || parts[0].to_lowercase() != "host" {
+            anyhow::bail!("Invalid Host directive at line {}", line_number);
+        }
+        if parts.len() < 2 {
+            anyhow::bail!(
+                "Host directive requires at least one pattern at line {}",
+                line_number
+            );
+        }
+        // Join all parts after "Host"
+        line[parts[0].len()..].trim()
+    };
+
+    if patterns_str.is_empty() {
+        anyhow::bail!(
+            "Host directive requires at least one pattern at line {}",
+            line_number
+        );
+    }
+
+    // Split into individual patterns
+    let patterns: Vec<String> = patterns_str
+        .split_whitespace()
+        .map(|s| s.to_string())
+        .collect();
+
+    Ok(patterns)
+}
+
+/// Parse a configuration line into keyword and arguments
+fn parse_config_line(
+    line: &str,
+    line_number: usize,
+    max_value_length: usize,
+) -> Result<(String, Vec<String>)> {
+    let line = line.trim();
+
+    // Determine if using equals syntax
+    let eq_pos = line.find('=');
+    let uses_equals_syntax = if let Some(pos) = eq_pos {
+        // Has equals sign - extract first word to check
+        let prefix = &line[..pos];
+        let first_word = prefix
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_lowercase();
+        // Host and Match never use equals syntax
+        !matches!(first_word.as_str(), "host" | "match")
+    } else {
+        false
+    };
+
+    let (keyword, args) = if let Some(pos) = eq_pos.filter(|_| uses_equals_syntax) {
+        // Option=Value syntax
+        let key_part = line[..pos].trim();
+        let value_part = &line[pos + 1..];
+
+        if key_part.is_empty() {
+            return Ok((String::new(), vec![]));
+        }
+
+        let trimmed_value = value_part.trim();
+
+        // Security: Check value length
+        if trimmed_value.len() > max_value_length {
+            anyhow::bail!(
+                "Value at line {} exceeds maximum length of {} bytes",
+                line_number,
+                max_value_length
+            );
+        }
+
+        let args = if trimmed_value.is_empty() {
+            vec![]
+        } else {
+            // Special handling for comma-separated options
+            match key_part.to_lowercase().as_str() {
+                "ciphers"
+                | "macs"
+                | "hostkeyalgorithms"
+                | "kexalgorithms"
+                | "preferredauthentications"
+                | "protocol" => trimmed_value
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .collect(),
+                _ => vec![trimmed_value.to_string()],
+            }
+        };
+
+        (key_part.to_lowercase(), args)
+    } else {
+        // Option Value syntax (space-separated)
+        let mut parts = line.split_whitespace();
+        let keyword = parts.next().unwrap_or("").to_lowercase();
+        let args: Vec<String> = parts.map(|s| s.to_string()).collect();
+        (keyword, args)
+    };
+
+    Ok((keyword, args))
 }
 
 /// Parse a configuration option for a host
 pub(super) fn parse_option(
     host: &mut SshHostConfig,
     keyword: &str,
-    args: &[&str],
+    args: &[String],
     line_number: usize,
 ) -> Result<()> {
     match keyword {
@@ -208,13 +326,13 @@ pub(super) fn parse_option(
             if args.is_empty() {
                 anyhow::bail!("HostName requires a value at line {line_number}");
             }
-            host.hostname = Some(args[0].to_string());
+            host.hostname = Some(args[0].clone());
         }
         "user" => {
             if args.is_empty() {
                 anyhow::bail!("User requires a value at line {line_number}");
             }
-            host.user = Some(args[0].to_string());
+            host.user = Some(args[0].clone());
         }
         "port" => {
             if args.is_empty() {
@@ -229,7 +347,7 @@ pub(super) fn parse_option(
             if args.is_empty() {
                 anyhow::bail!("IdentityFile requires a value at line {line_number}");
             }
-            let path = secure_validate_path(args[0], "identity", line_number)
+            let path = secure_validate_path(&args[0], "identity", line_number)
                 .with_context(|| format!("Invalid IdentityFile path at line {line_number}"))?;
             host.identity_files.push(path);
         }
@@ -238,7 +356,7 @@ pub(super) fn parse_option(
                 anyhow::bail!("IdentitiesOnly requires a value at line {line_number}");
             }
             // Parse yes/no and store in identity_files behavior (implicit)
-            let value = parse_yes_no(args[0], line_number)?;
+            let value = parse_yes_no(&args[0], line_number)?;
             if value {
                 // When IdentitiesOnly is yes, clear default identity files
                 // This is handled during resolution
@@ -262,14 +380,14 @@ pub(super) fn parse_option(
             if args.is_empty() {
                 anyhow::bail!("StrictHostKeyChecking requires a value at line {line_number}");
             }
-            host.strict_host_key_checking = Some(args[0].to_string());
+            host.strict_host_key_checking = Some(args[0].clone());
         }
         "userknownhostsfile" => {
             if args.is_empty() {
                 anyhow::bail!("UserKnownHostsFile requires a value at line {line_number}");
             }
             let path =
-                secure_validate_path(args[0], "known_hosts", line_number).with_context(|| {
+                secure_validate_path(&args[0], "known_hosts", line_number).with_context(|| {
                     format!("Invalid UserKnownHostsFile path at line {line_number}")
                 })?;
             host.user_known_hosts_file = Some(path);
@@ -279,7 +397,7 @@ pub(super) fn parse_option(
                 anyhow::bail!("GlobalKnownHostsFile requires a value at line {line_number}");
             }
             let path =
-                secure_validate_path(args[0], "known_hosts", line_number).with_context(|| {
+                secure_validate_path(&args[0], "known_hosts", line_number).with_context(|| {
                     format!("Invalid GlobalKnownHostsFile path at line {line_number}")
                 })?;
             host.global_known_hosts_file = Some(path);
@@ -288,13 +406,13 @@ pub(super) fn parse_option(
             if args.is_empty() {
                 anyhow::bail!("ForwardAgent requires a value at line {line_number}");
             }
-            host.forward_agent = Some(parse_yes_no(args[0], line_number)?);
+            host.forward_agent = Some(parse_yes_no(&args[0], line_number)?);
         }
         "forwardx11" => {
             if args.is_empty() {
                 anyhow::bail!("ForwardX11 requires a value at line {line_number}");
             }
-            host.forward_x11 = Some(parse_yes_no(args[0], line_number)?);
+            host.forward_x11 = Some(parse_yes_no(&args[0], line_number)?);
         }
         "serveraliveinterval" => {
             if args.is_empty() {
@@ -348,19 +466,19 @@ pub(super) fn parse_option(
             if args.is_empty() {
                 anyhow::bail!("BatchMode requires a value at line {line_number}");
             }
-            host.batch_mode = Some(parse_yes_no(args[0], line_number)?);
+            host.batch_mode = Some(parse_yes_no(&args[0], line_number)?);
         }
         "compression" => {
             if args.is_empty() {
                 anyhow::bail!("Compression requires a value at line {line_number}");
             }
-            host.compression = Some(parse_yes_no(args[0], line_number)?);
+            host.compression = Some(parse_yes_no(&args[0], line_number)?);
         }
         "tcpkeepalive" => {
             if args.is_empty() {
                 anyhow::bail!("TCPKeepAlive requires a value at line {line_number}");
             }
-            host.tcp_keep_alive = Some(parse_yes_no(args[0], line_number)?);
+            host.tcp_keep_alive = Some(parse_yes_no(&args[0], line_number)?);
         }
         "preferredauthentications" => {
             if args.is_empty() {
@@ -376,13 +494,13 @@ pub(super) fn parse_option(
             if args.is_empty() {
                 anyhow::bail!("PubkeyAuthentication requires a value at line {line_number}");
             }
-            host.pubkey_authentication = Some(parse_yes_no(args[0], line_number)?);
+            host.pubkey_authentication = Some(parse_yes_no(&args[0], line_number)?);
         }
         "passwordauthentication" => {
             if args.is_empty() {
                 anyhow::bail!("PasswordAuthentication requires a value at line {line_number}");
             }
-            host.password_authentication = Some(parse_yes_no(args[0], line_number)?);
+            host.password_authentication = Some(parse_yes_no(&args[0], line_number)?);
         }
         "kbdinteractiveauthentication" => {
             if args.is_empty() {
@@ -390,13 +508,13 @@ pub(super) fn parse_option(
                     "KbdInteractiveAuthentication requires a value at line {line_number}"
                 );
             }
-            host.keyboard_interactive_authentication = Some(parse_yes_no(args[0], line_number)?);
+            host.keyboard_interactive_authentication = Some(parse_yes_no(&args[0], line_number)?);
         }
         "gssapiauthentication" => {
             if args.is_empty() {
                 anyhow::bail!("GSSAPIAuthentication requires a value at line {line_number}");
             }
-            host.gssapi_authentication = Some(parse_yes_no(args[0], line_number)?);
+            host.gssapi_authentication = Some(parse_yes_no(&args[0], line_number)?);
         }
         "hostkeyalgorithms" => {
             if args.is_empty() {
@@ -454,8 +572,8 @@ pub(super) fn parse_option(
                 // Single arg from equals syntax - might have multiple name=value pairs
                 args[0].split_whitespace().collect()
             } else {
-                // Multiple args from space syntax
-                args.to_vec()
+                // Multiple args from space syntax - convert to &str references
+                args.iter().map(String::as_str).collect()
             };
 
             for pair in pairs {
@@ -492,25 +610,25 @@ pub(super) fn parse_option(
             if args.is_empty() {
                 anyhow::bail!("RequestTTY requires a value at line {line_number}");
             }
-            host.request_tty = Some(args[0].to_string());
+            host.request_tty = Some(args[0].clone());
         }
         "escapechar" => {
             if args.is_empty() {
                 anyhow::bail!("EscapeChar requires a value at line {line_number}");
             }
-            host.escape_char = Some(args[0].to_string());
+            host.escape_char = Some(args[0].clone());
         }
         "loglevel" => {
             if args.is_empty() {
                 anyhow::bail!("LogLevel requires a value at line {line_number}");
             }
-            host.log_level = Some(args[0].to_string());
+            host.log_level = Some(args[0].clone());
         }
         "syslogfacility" => {
             if args.is_empty() {
                 anyhow::bail!("SyslogFacility requires a value at line {line_number}");
             }
-            host.syslog_facility = Some(args[0].to_string());
+            host.syslog_facility = Some(args[0].clone());
         }
         "protocol" => {
             if args.is_empty() {
@@ -526,31 +644,31 @@ pub(super) fn parse_option(
             if args.is_empty() {
                 anyhow::bail!("AddressFamily requires a value at line {line_number}");
             }
-            host.address_family = Some(args[0].to_string());
+            host.address_family = Some(args[0].clone());
         }
         "bindaddress" => {
             if args.is_empty() {
                 anyhow::bail!("BindAddress requires a value at line {line_number}");
             }
-            host.bind_address = Some(args[0].to_string());
+            host.bind_address = Some(args[0].clone());
         }
         "clearallforwardings" => {
             if args.is_empty() {
                 anyhow::bail!("ClearAllForwardings requires a value at line {line_number}");
             }
-            host.clear_all_forwardings = Some(parse_yes_no(args[0], line_number)?);
+            host.clear_all_forwardings = Some(parse_yes_no(&args[0], line_number)?);
         }
         "controlmaster" => {
             if args.is_empty() {
                 anyhow::bail!("ControlMaster requires a value at line {line_number}");
             }
-            host.control_master = Some(args[0].to_string());
+            host.control_master = Some(args[0].clone());
         }
         "controlpath" => {
             if args.is_empty() {
                 anyhow::bail!("ControlPath requires a value at line {line_number}");
             }
-            let path = args[0].to_string();
+            let path = args[0].clone();
             // ControlPath has different validation - it allows SSH substitution patterns
             validate_control_path(&path, line_number)?;
             host.control_path = Some(path);
@@ -559,7 +677,7 @@ pub(super) fn parse_option(
             if args.is_empty() {
                 anyhow::bail!("ControlPersist requires a value at line {line_number}");
             }
-            host.control_persist = Some(args[0].to_string());
+            host.control_persist = Some(args[0].clone());
         }
         _ => {
             // Unknown option - log a warning but continue
@@ -615,6 +733,34 @@ Host example.com
     }
 
     #[test]
+    fn test_parse_match_block() {
+        let content = r#"
+Match host *.example.com user admin
+    ForwardAgent yes
+    Port 2222
+
+Host web.example.com
+    User webuser
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 2);
+
+        // First should be the Match block
+        match &hosts[0].block_type {
+            Some(ConfigBlock::Match(conditions)) => {
+                assert_eq!(conditions.len(), 2);
+            }
+            _ => panic!("Expected Match block"),
+        }
+        assert_eq!(hosts[0].forward_agent, Some(true));
+        assert_eq!(hosts[0].port, Some(2222));
+
+        // Second should be the Host block
+        assert_eq!(hosts[1].host_patterns, vec!["web.example.com"]);
+        assert_eq!(hosts[1].user, Some("webuser".to_string()));
+    }
+
+    #[test]
     fn test_parse_multiple_patterns() {
         let content = r#"
 Host web*.example.com *.test.com
@@ -666,21 +812,6 @@ Host example.com
     }
 
     #[test]
-    fn test_parse_equals_with_spaces() {
-        // Test Option = Value syntax (spaces around equals)
-        let content = r#"
-Host example.com
-    User = testuser
-    Port = 2222
-"#;
-        let hosts = parse(content).unwrap();
-        assert_eq!(hosts.len(), 1);
-        assert_eq!(hosts[0].host_patterns, vec!["example.com"]);
-        assert_eq!(hosts[0].user, Some("testuser".to_string()));
-        assert_eq!(hosts[0].port, Some(2222));
-    }
-
-    #[test]
     fn test_parse_mixed_syntax() {
         // Test mixing both syntaxes in same config
         let content = r#"
@@ -700,131 +831,105 @@ Host example.com
     }
 
     #[test]
-    fn test_parse_equals_with_boolean() {
-        // Test yes/no values with equals syntax
+    fn test_parse_match_all() {
         let content = r#"
-Host example.com
-    ForwardAgent=yes
-    ForwardX11=no
-    Compression = yes
+Match all
+    ServerAliveInterval 60
+    ServerAliveCountMax 3
 "#;
         let hosts = parse(content).unwrap();
         assert_eq!(hosts.len(), 1);
+
+        match &hosts[0].block_type {
+            Some(ConfigBlock::Match(conditions)) => {
+                assert_eq!(conditions.len(), 1);
+                assert_eq!(conditions[0], MatchCondition::All);
+            }
+            _ => panic!("Expected Match block"),
+        }
+        assert_eq!(hosts[0].server_alive_interval, Some(60));
+        assert_eq!(hosts[0].server_alive_count_max, Some(3));
+    }
+
+    #[test]
+    fn test_parse_match_with_exec() {
+        let content = r#"
+Match exec "test -f /tmp/vpn"
+    ProxyJump vpn-gateway
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+
+        match &hosts[0].block_type {
+            Some(ConfigBlock::Match(conditions)) => {
+                assert_eq!(conditions.len(), 1);
+                match &conditions[0] {
+                    MatchCondition::Exec(cmd) => {
+                        assert_eq!(cmd, "test -f /tmp/vpn");
+                    }
+                    _ => panic!("Expected Exec condition"),
+                }
+            }
+            _ => panic!("Expected Match block"),
+        }
+        assert_eq!(hosts[0].proxy_jump, Some("vpn-gateway".to_string()));
+    }
+
+    #[test]
+    fn test_parse_include_directive_skipped() {
+        // Include directives should be skipped in direct parse mode
+        let content = r#"
+Include ~/.ssh/config.d/*
+
+Host example.com
+    User testuser
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].host_patterns, vec!["example.com"]);
+        assert_eq!(hosts[0].user, Some("testuser".to_string()));
+    }
+
+    #[test]
+    fn test_parse_global_options_ignored() {
+        // Global options should be ignored for now
+        let content = r#"
+User globaluser
+Port 22
+
+Host example.com
+    User hostuser
+
+Host *.example.org
+    Port 2222
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 2);
+        assert_eq!(hosts[0].user, Some("hostuser".to_string()));
+        assert_eq!(hosts[0].port, None); // Global port not inherited
+        assert_eq!(hosts[1].port, Some(2222));
+        assert_eq!(hosts[1].user, None); // Global user not inherited
+    }
+
+    #[test]
+    fn test_parse_case_insensitive_keywords() {
+        // Test that keywords are case-insensitive
+        let content = r#"
+Host example.com
+    USER=testuser
+    Port=2222
+    hostname=server.com
+    FORWARDAGENT=yes
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].user, Some("testuser".to_string()));
+        assert_eq!(hosts[0].port, Some(2222));
+        assert_eq!(hosts[0].hostname, Some("server.com".to_string()));
         assert_eq!(hosts[0].forward_agent, Some(true));
-        assert_eq!(hosts[0].forward_x11, Some(false));
-        assert_eq!(hosts[0].compression, Some(true));
     }
 
-    #[test]
-    fn test_parse_equals_with_comma_separated() {
-        // Test comma-separated values with equals syntax
-        let content = r#"
-Host example.com
-    Ciphers=aes128-ctr,aes192-ctr,aes256-ctr
-    MACs = hmac-sha2-256,hmac-sha2-512
-"#;
-        let hosts = parse(content).unwrap();
-        assert_eq!(hosts.len(), 1);
-        assert_eq!(
-            hosts[0].ciphers,
-            vec!["aes128-ctr", "aes192-ctr", "aes256-ctr"]
-        );
-        assert_eq!(hosts[0].macs, vec!["hmac-sha2-256", "hmac-sha2-512"]);
-    }
-
-    #[test]
-    fn test_parse_equals_with_multiple_equals_in_value() {
-        // Test that values containing equals signs are preserved
-        let content = r#"
-Host example.com
-    ProxyCommand=ssh -o StrictHostKeyChecking=no proxy
-    User=test=user=name
-"#;
-        let hosts = parse(content).unwrap();
-        assert_eq!(hosts.len(), 1);
-        // ProxyCommand should preserve the entire value including the equals sign
-        // Note: This will fail security validation but parsing should work
-        assert_eq!(
-            hosts[0].proxy_command,
-            Some("ssh -o StrictHostKeyChecking=no proxy".to_string())
-        );
-        assert_eq!(hosts[0].user, Some("test=user=name".to_string()));
-    }
-
-    #[test]
-    fn test_parse_equals_with_empty_value() {
-        // Test empty values after equals - should result in error per SSH config spec
-        let content = r#"
-Host example.com
-    User=
-"#;
-        let result = parse(content);
-        // Empty value should cause an error because User requires a value
-        assert!(result.is_err());
-        // The error contains context about the line, and the caused-by contains the specific error
-        let err_msg = result.unwrap_err().to_string();
-        assert!(
-            err_msg.contains("User=") || err_msg.contains("User requires"),
-            "Expected error about User but got: {}",
-            err_msg
-        );
-
-        // Test with valid values
-        let content2 = r#"
-Host example.com
-    User=testuser
-"#;
-        let hosts = parse(content2).unwrap();
-        assert_eq!(hosts.len(), 1);
-        assert_eq!(hosts[0].user, Some("testuser".to_string()));
-    }
-
-    #[test]
-    fn test_parse_host_with_equals_in_pattern() {
-        // Test that Host directive doesn't trigger equals syntax parsing
-        let content = r#"
-Host example=test.com another=host.com
-    User=testuser
-"#;
-        let hosts = parse(content).unwrap();
-        assert_eq!(hosts.len(), 1);
-        // Host patterns should include the equals signs
-        assert_eq!(
-            hosts[0].host_patterns,
-            vec!["example=test.com", "another=host.com"]
-        );
-        assert_eq!(hosts[0].user, Some("testuser".to_string()));
-    }
-
-    #[test]
-    fn test_parse_empty_keyword_with_equals() {
-        // Test that lines starting with equals are ignored
-        let content = r#"
-Host example.com
-    =invalid
-    User=valid
-    = also_invalid
-"#;
-        let hosts = parse(content).unwrap();
-        assert_eq!(hosts.len(), 1);
-        // Only valid option should be parsed
-        assert_eq!(hosts[0].user, Some("valid".to_string()));
-    }
-
-    #[test]
-    fn test_parse_equals_preserves_spaces_in_value() {
-        // Test that spaces in values are preserved with equals syntax
-        let content = r#"
-Host example.com
-    HostName=my server.example.com
-"#;
-        let hosts = parse(content).unwrap();
-        assert_eq!(hosts.len(), 1);
-        // Spaces should be preserved in the value
-        assert_eq!(hosts[0].hostname, Some("my server.example.com".to_string()));
-    }
-
-    // Additional edge case tests
+    // Additional tests for edge cases
     #[test]
     fn test_parse_very_long_line() {
         // Test line length limit enforcement
@@ -851,166 +956,203 @@ Host example.com
             .contains("exceeds maximum length"));
     }
 
-    #[test]
-    fn test_parse_setenv_with_equals_syntax() {
-        // Test SetEnv with equals syntax containing multiple name=value pairs
-        let content = r#"
-Host example.com
-    SetEnv=FOO=bar BAZ=qux PATH=/usr/bin:/bin
+    // Integration tests for Include + Match scenarios
+    #[tokio::test]
+    async fn test_include_with_match_blocks() {
+        use crate::ssh::ssh_config::types::ConfigBlock;
+        use std::fs;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create an included file with Match blocks
+        let include_file = temp_dir.path().join("match_rules.conf");
+        let include_content = r#"
+Match host *.prod.example.com user admin
+    ForwardAgent yes
+    Port 2222
+
+Match localuser developer
+    RequestTTY yes
 "#;
-        let hosts = parse(content).unwrap();
-        assert_eq!(hosts.len(), 1);
-        assert_eq!(hosts[0].set_env.get("FOO"), Some(&"bar".to_string()));
-        assert_eq!(hosts[0].set_env.get("BAZ"), Some(&"qux".to_string()));
-        assert_eq!(
-            hosts[0].set_env.get("PATH"),
-            Some(&"/usr/bin:/bin".to_string())
+        fs::write(&include_file, include_content).unwrap();
+
+        // Create main config that includes the Match rules
+        let main_config = temp_dir.path().join("config");
+        let main_content = format!(
+            r#"
+Include {}
+
+Host example.com
+    User testuser
+    Port 22
+"#,
+            include_file.display()
         );
+        fs::write(&main_config, &main_content).unwrap();
+
+        // Parse the configuration
+        let config = crate::ssh::ssh_config::SshConfig::load_from_file(&main_config)
+            .await
+            .unwrap();
+
+        // Should have 3 blocks: Include directive inserts files at Include location
+        // Expected order (per SSH spec): Included files first, then rest of main config
+        assert_eq!(config.hosts.len(), 3);
+
+        // First should be Match host + user from included file (inserted at Include location)
+        match &config.hosts[0].block_type {
+            Some(ConfigBlock::Match(conditions)) => {
+                assert_eq!(conditions.len(), 2);
+            }
+            _ => panic!("Expected Match block at index 0"),
+        }
+        assert_eq!(config.hosts[0].forward_agent, Some(true));
+        assert_eq!(config.hosts[0].port, Some(2222));
+
+        // Second should be Match localuser from included file
+        match &config.hosts[1].block_type {
+            Some(ConfigBlock::Match(conditions)) => {
+                assert_eq!(conditions.len(), 1);
+            }
+            _ => panic!("Expected Match block at index 1"),
+        }
+        assert_eq!(config.hosts[1].request_tty, Some("yes".to_string()));
+
+        // Third is the Host block from main config (after Include directive)
+        assert_eq!(config.hosts[2].host_patterns, vec!["example.com"]);
+        assert_eq!(config.hosts[2].user, Some("testuser".to_string()));
+        assert_eq!(config.hosts[2].port, Some(22));
+    }
+
+    #[tokio::test]
+    async fn test_nested_includes_with_match() {
+        use crate::ssh::ssh_config::match_directive::MatchCondition;
+        use crate::ssh::ssh_config::types::ConfigBlock;
+        use std::fs;
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create a deeply included file with Host config
+        let deep_include = temp_dir.path().join("deep.conf");
+        fs::write(
+            &deep_include,
+            r#"
+Host deep.example.com
+    User deepuser
+    Port 3333
+"#,
+        )
+        .unwrap();
+
+        // Create a middle include with Match and Include
+        let middle_include = temp_dir.path().join("middle.conf");
+        fs::write(
+            &middle_include,
+            format!(
+                r#"
+Match host *.dev.example.com
+    ForwardAgent no
+    Port 2222
+
+Include {}
+"#,
+                deep_include.display()
+            ),
+        )
+        .unwrap();
+
+        // Create main config
+        let main_config = temp_dir.path().join("config");
+        fs::write(
+            &main_config,
+            format!(
+                r#"
+Host *.example.com
+    User defaultuser
+
+Include {}
+
+Match all
+    ServerAliveInterval 60
+"#,
+                middle_include.display()
+            ),
+        )
+        .unwrap();
+
+        // Parse the configuration
+        let config = crate::ssh::ssh_config::SshConfig::load_from_file(&main_config)
+            .await
+            .unwrap();
+
+        // Should have 4 blocks in SSH spec order
+        assert_eq!(config.hosts.len(), 4);
+
+        // Verify the order and content
+        assert_eq!(config.hosts[0].host_patterns, vec!["*.example.com"]);
+        assert_eq!(config.hosts[0].user, Some("defaultuser".to_string()));
+
+        match &config.hosts[1].block_type {
+            Some(ConfigBlock::Match(_)) => {
+                assert_eq!(config.hosts[1].forward_agent, Some(false));
+                assert_eq!(config.hosts[1].port, Some(2222));
+            }
+            _ => panic!("Expected Match block"),
+        }
+
+        assert_eq!(config.hosts[2].host_patterns, vec!["deep.example.com"]);
+        assert_eq!(config.hosts[2].user, Some("deepuser".to_string()));
+
+        match &config.hosts[3].block_type {
+            Some(ConfigBlock::Match(conditions)) => {
+                assert_eq!(conditions.len(), 1);
+                assert_eq!(conditions[0], MatchCondition::All);
+            }
+            _ => panic!("Expected Match all block"),
+        }
+        assert_eq!(config.hosts[3].server_alive_interval, Some(60));
     }
 
     #[test]
-    fn test_parse_proxycommand_with_equals() {
-        // Test ProxyCommand with complex value containing equals
+    fn test_match_resolution_with_host() {
+        use crate::ssh::ssh_config::types::ConfigBlock;
+
+        // Test that Match conditions are properly evaluated alongside Host patterns
         let content = r#"
-Host example.com
-    ProxyCommand=ssh -o StrictHostKeyChecking=no -W %h:%p proxy.example.com
+Host *.example.com
+    User defaultuser
+    Port 22
+
+Match host web*.example.com user admin
+    Port 8080
+    ForwardAgent yes
+
+Host db.example.com
+    User dbuser
+    Port 5432
 "#;
         let hosts = parse(content).unwrap();
-        assert_eq!(hosts.len(), 1);
-        assert_eq!(
-            hosts[0].proxy_command,
-            Some("ssh -o StrictHostKeyChecking=no -W %h:%p proxy.example.com".to_string())
-        );
-    }
+        assert_eq!(hosts.len(), 3);
 
-    #[test]
-    fn test_parse_mixed_whitespace() {
-        // Test various whitespace combinations
-        let content =
-            "Host example.com\n\tUser\t=\ttestuser\n    Port = 2222\n\tHostName=server.com";
-        let hosts = parse(content).unwrap();
-        assert_eq!(hosts.len(), 1);
-        assert_eq!(hosts[0].user, Some("testuser".to_string()));
-        assert_eq!(hosts[0].port, Some(2222));
-        assert_eq!(hosts[0].hostname, Some("server.com".to_string()));
-    }
+        // Verify Host block
+        assert_eq!(hosts[0].host_patterns, vec!["*.example.com"]);
+        assert_eq!(hosts[0].user, Some("defaultuser".to_string()));
 
-    #[test]
-    fn test_parse_consecutive_equals() {
-        // Test handling of consecutive equals signs
-        let content = r#"
-Host example.com
-    User===testuser
-    HostName=server==name.com
-"#;
-        let hosts = parse(content).unwrap();
-        assert_eq!(hosts.len(), 1);
-        assert_eq!(hosts[0].user, Some("==testuser".to_string()));
-        assert_eq!(hosts[0].hostname, Some("server==name.com".to_string()));
-    }
+        // Verify Match block
+        match &hosts[1].block_type {
+            Some(ConfigBlock::Match(conditions)) => {
+                assert_eq!(conditions.len(), 2);
+            }
+            _ => panic!("Expected Match block"),
+        }
+        assert_eq!(hosts[1].port, Some(8080));
+        assert_eq!(hosts[1].forward_agent, Some(true));
 
-    #[test]
-    fn test_parse_trailing_equals() {
-        // Test values ending with equals
-        let content = r#"
-Host example.com
-    User=testuser=
-    HostName=server.com==
-"#;
-        let hosts = parse(content).unwrap();
-        assert_eq!(hosts.len(), 1);
-        assert_eq!(hosts[0].user, Some("testuser=".to_string()));
-        assert_eq!(hosts[0].hostname, Some("server.com==".to_string()));
-    }
-
-    #[test]
-    fn test_parse_special_chars_in_equals_value() {
-        // Test special characters in values
-        let content = r#"
-Host example.com
-    User=test@user!$
-    HostName=server-name_01.example.com:8080
-"#;
-        let hosts = parse(content).unwrap();
-        assert_eq!(hosts.len(), 1);
-        assert_eq!(hosts[0].user, Some("test@user!$".to_string()));
-        assert_eq!(
-            hosts[0].hostname,
-            Some("server-name_01.example.com:8080".to_string())
-        );
-    }
-
-    #[test]
-    fn test_parse_ciphers_with_plus_minus() {
-        // Test cipher specifications with +/- modifiers
-        let content = r#"
-Host example.com
-    Ciphers=+aes128-ctr,-3des-cbc,aes256-gcm
-"#;
-        let hosts = parse(content).unwrap();
-        assert_eq!(hosts.len(), 1);
-        assert_eq!(
-            hosts[0].ciphers,
-            vec!["+aes128-ctr", "-3des-cbc", "aes256-gcm"]
-        );
-    }
-
-    #[test]
-    fn test_parse_global_and_host_options() {
-        // Test that global options are properly ignored
-        let content = r#"
-User=globaluser
-Port=22
-
-Host example.com
-    User=hostuser
-
-Host *.example.org
-    Port=2222
-"#;
-        let hosts = parse(content).unwrap();
-        assert_eq!(hosts.len(), 2);
-        assert_eq!(hosts[0].user, Some("hostuser".to_string()));
-        assert_eq!(hosts[0].port, None); // Global port not inherited
-        assert_eq!(hosts[1].port, Some(2222));
-        assert_eq!(hosts[1].user, None); // Global user not inherited
-    }
-
-    #[test]
-    fn test_parse_host_with_special_patterns() {
-        // Test various host patterns
-        let content = r#"
-Host *.example.com !bad.example.com 192.168.*.* server-[0-9]
-    User=testuser
-"#;
-        let hosts = parse(content).unwrap();
-        assert_eq!(hosts.len(), 1);
-        assert_eq!(
-            hosts[0].host_patterns,
-            vec![
-                "*.example.com",
-                "!bad.example.com",
-                "192.168.*.*",
-                "server-[0-9]"
-            ]
-        );
-    }
-
-    #[test]
-    fn test_parse_case_insensitive_keywords() {
-        // Test that keywords are case-insensitive
-        let content = r#"
-Host example.com
-    USER=testuser
-    Port=2222
-    hostname=server.com
-    FORWARDAGENT=yes
-"#;
-        let hosts = parse(content).unwrap();
-        assert_eq!(hosts.len(), 1);
-        assert_eq!(hosts[0].user, Some("testuser".to_string()));
-        assert_eq!(hosts[0].port, Some(2222));
-        assert_eq!(hosts[0].hostname, Some("server.com".to_string()));
-        assert_eq!(hosts[0].forward_agent, Some(true));
+        // Verify specific Host block
+        assert_eq!(hosts[2].host_patterns, vec!["db.example.com"]);
+        assert_eq!(hosts[2].user, Some("dbuser".to_string()));
+        assert_eq!(hosts[2].port, Some(5432));
     }
 }

@@ -12,21 +12,72 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Configuration resolution and merging logic for SSH configuration
+//! Configuration resolution and merging logic for SSH configuration with Match support
 //!
 //! This module handles finding matching host configurations and merging them
-//! according to SSH configuration precedence rules.
+//! according to SSH configuration precedence rules, including Match blocks.
 
+use super::match_directive::MatchContext;
 use super::pattern::matches_host_pattern;
-use super::types::SshHostConfig;
+use super::types::{ConfigBlock, SshHostConfig};
 use std::path::PathBuf;
 
 /// Find configuration for a specific hostname
 pub(super) fn find_host_config(hosts: &[SshHostConfig], hostname: &str) -> SshHostConfig {
+    find_host_config_with_user(hosts, hostname, None)
+}
+
+/// Find configuration for a specific hostname with optional user
+pub(super) fn find_host_config_with_user(
+    hosts: &[SshHostConfig],
+    hostname: &str,
+    remote_user: Option<&str>,
+) -> SshHostConfig {
     let mut merged_config = SshHostConfig::default();
 
+    // Create match context for evaluating Match blocks
+    let match_context =
+        match MatchContext::new(hostname.to_string(), remote_user.map(|s| s.to_string())) {
+            Ok(ctx) => Some(ctx),
+            Err(e) => {
+                tracing::warn!("Failed to create match context: {}", e);
+                None
+            }
+        };
+
     for host_config in hosts {
-        if matches_host_pattern(hostname, &host_config.host_patterns) {
+        let should_apply = match &host_config.block_type {
+            Some(ConfigBlock::Host(patterns)) => {
+                // For Host blocks, check pattern matching
+                matches_host_pattern(hostname, patterns)
+            }
+            Some(ConfigBlock::Match(conditions)) => {
+                // For Match blocks, evaluate conditions
+                if let Some(ref ctx) = match_context {
+                    // Create a temporary MatchBlock to evaluate conditions
+                    let match_block = super::match_directive::MatchBlock {
+                        conditions: conditions.clone(),
+                        config: host_config.clone(),
+                        line_number: 0, // Not used for evaluation
+                    };
+                    match match_block.matches(ctx) {
+                        Ok(matches) => matches,
+                        Err(e) => {
+                            tracing::debug!("Failed to evaluate Match conditions: {}", e);
+                            false
+                        }
+                    }
+                } else {
+                    false
+                }
+            }
+            None => {
+                // Legacy format without block_type - use host_patterns
+                matches_host_pattern(hostname, &host_config.host_patterns)
+            }
+        };
+
+        if should_apply {
             merge_host_config(&mut merged_config, host_config);
         }
     }

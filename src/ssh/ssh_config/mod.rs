@@ -22,8 +22,10 @@ use std::path::{Path, PathBuf};
 
 // Internal modules
 mod env_cache;
+mod include;
 #[cfg(test)]
 mod integration_tests;
+mod match_directive;
 mod parser;
 mod path;
 mod pattern;
@@ -46,14 +48,15 @@ impl SshConfig {
         Self::default()
     }
 
-    /// Load SSH configuration from a file
+    /// Load SSH configuration from a file with Include support
     pub async fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref();
         let content = tokio::fs::read_to_string(path)
             .await
             .with_context(|| format!("Failed to read SSH config file: {}", path.display()))?;
 
-        Self::parse(&content)
+        Self::parse_from_file_with_content(path, &content)
+            .await
             .with_context(|| format!("Failed to parse SSH config file: {}", path.display()))
     }
 
@@ -89,9 +92,15 @@ impl SshConfig {
         crate::ssh::GLOBAL_CACHE.load_default().await
     }
 
-    /// Parse SSH configuration from a string
+    /// Parse SSH configuration from a string (without Include support)
     pub fn parse(content: &str) -> Result<Self> {
         let hosts = parser::parse(content)?;
+        Ok(Self { hosts })
+    }
+
+    /// Parse SSH configuration from a file with Include support
+    pub async fn parse_from_file_with_content(path: &Path, content: &str) -> Result<Self> {
+        let hosts = parser::parse_from_file(path, content).await?;
         Ok(Self { hosts })
     }
 
