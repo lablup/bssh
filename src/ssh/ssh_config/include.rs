@@ -18,7 +18,6 @@
 //! from external files, supporting glob patterns and recursive includes.
 
 use anyhow::{Context, Result};
-use glob::glob;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
@@ -35,12 +34,14 @@ const MAX_INCLUDED_FILES: usize = 100;
 pub struct IncludeContext {
     /// Current recursion depth
     depth: usize,
-    /// Set of canonical paths already processed (cycle detection)
-    visited: HashSet<PathBuf>,
+    /// Set of canonical paths already processed (cycle detection) - using string for efficiency
+    visited: HashSet<String>,
     /// Total number of files included so far
     file_count: usize,
     /// Base directory for relative includes
     base_dir: PathBuf,
+    /// LRU cache for canonicalized paths to avoid repeated filesystem operations
+    canonical_cache: std::collections::HashMap<PathBuf, PathBuf>,
 }
 
 impl IncludeContext {
@@ -53,9 +54,10 @@ impl IncludeContext {
 
         Self {
             depth: 0,
-            visited: HashSet::new(),
+            visited: HashSet::with_capacity(16), // Pre-allocate reasonable capacity
             file_count: 0,
             base_dir,
+            canonical_cache: std::collections::HashMap::with_capacity(16),
         }
     }
 
@@ -82,11 +84,17 @@ impl IncludeContext {
     fn enter_include(&mut self, path: &Path) -> Result<()> {
         self.can_include()?;
 
-        // Get canonical path for cycle detection
-        // Always canonicalize if possible for consistent cycle detection
-        let canonical = if path.exists() {
-            path.canonicalize()
-                .with_context(|| format!("Failed to canonicalize path: {}", path.display()))?
+        // Check cache first to avoid repeated canonicalization
+        let canonical = if let Some(cached) = self.canonical_cache.get(path) {
+            cached.clone()
+        } else if path.exists() {
+            // Canonicalize and cache the result
+            let canonical = path
+                .canonicalize()
+                .with_context(|| format!("Failed to canonicalize path: {}", path.display()))?;
+            self.canonical_cache
+                .insert(path.to_path_buf(), canonical.clone());
+            canonical
         } else {
             // For non-existent files, try to at least make it absolute
             if path.is_absolute() {
@@ -96,55 +104,29 @@ impl IncludeContext {
             }
         };
 
-        // Check for cycles
-        tracing::debug!(
-            "Checking cycle for path: {:?}, canonical: {:?}",
-            path,
-            canonical
-        );
-        tracing::debug!("Already visited: {:?}", self.visited);
+        // Use string representation for more efficient cycle detection
+        let canonical_str = canonical.to_string_lossy().into_owned();
 
-        if self.visited.contains(&canonical) {
+        // Check for cycles
+        if self.visited.contains(&canonical_str) {
             anyhow::bail!(
                 "Include cycle detected: {} has already been processed",
                 path.display()
             );
         }
 
-        // Also check using the original path in case canonicalization differs
-        // This handles the case where the same file is referenced via different paths
-        if path.exists() {
-            let abs_path = if path.is_absolute() {
-                path.to_path_buf()
-            } else {
-                self.base_dir.join(path)
-            };
-
-            // Check if any visited path points to the same file
-            for visited in &self.visited {
-                if visited.exists() && abs_path.exists() {
-                    // Try to compare canonicalized versions
-                    if let (Ok(visited_canonical), Ok(path_canonical)) =
-                        (visited.canonicalize(), abs_path.canonicalize())
-                    {
-                        if visited_canonical == path_canonical {
-                            anyhow::bail!(
-                                "Include cycle detected: {} has already been processed",
-                                path.display()
-                            );
-                        }
-                    }
-                }
-            }
-        }
-
-        self.visited.insert(canonical.clone());
+        self.visited.insert(canonical_str);
         self.depth += 1;
         self.file_count += 1;
 
         // Update base directory for nested includes
         if let Some(parent) = canonical.parent() {
             self.base_dir = parent.to_path_buf();
+        }
+
+        // Clear cache if it gets too large to prevent unbounded memory growth
+        if self.canonical_cache.len() > 100 {
+            self.canonical_cache.clear();
         }
 
         Ok(())
@@ -186,109 +168,119 @@ pub async fn resolve_includes(config_path: &Path, content: &str) -> Result<Vec<I
     } else {
         config_path.to_path_buf()
     };
-    context.visited.insert(canonical);
+    context
+        .visited
+        .insert(canonical.to_string_lossy().into_owned());
 
     // Process the main file with includes
     process_file_with_includes(config_path, content, &mut context).await
 }
 
 /// Process a file with Include directives, inserting included files at the correct positions
-fn process_file_with_includes<'a>(
-    file_path: &'a Path,
-    content: &'a str,
-    context: &'a mut IncludeContext,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<IncludedFile>>> + 'a>> {
-    Box::pin(async move {
-        let mut result = Vec::new();
-        let mut current_content = String::new();
+async fn process_file_with_includes(
+    file_path: &Path,
+    content: &str,
+    context: &mut IncludeContext,
+) -> Result<Vec<IncludedFile>> {
+    let mut result = Vec::new();
+    let mut current_content = String::new();
 
-        for (line_number, line) in content.lines().enumerate() {
-            let line_number = line_number + 1; // 1-indexed for error messages
-            let trimmed = line.trim();
+    for (line_number, line) in content.lines().enumerate() {
+        let line_number = line_number + 1; // 1-indexed for error messages
+        let trimmed = line.trim();
 
-            // Check for Include directive
-            if let Some(patterns) = parse_include_line(trimmed) {
-                // Save current accumulated content as an IncludedFile (if not empty)
-                if !current_content.is_empty() {
-                    let line_offset: usize = result
-                        .iter()
-                        .map(|f: &IncludedFile| f.content.lines().count())
-                        .sum();
-                    result.push(IncludedFile {
-                        path: file_path.to_path_buf(),
-                        content: current_content.clone(),
-                        line_offset,
-                    });
-                    current_content.clear();
-                }
-
-                // Process each Include pattern
-                for pattern in patterns {
-                    let resolved_files = resolve_include_pattern(pattern, context)
-                        .await
-                        .with_context(|| {
-                            format!(
-                                "Failed to resolve Include pattern '{}' at line {} in {}",
-                                pattern,
-                                line_number,
-                                file_path.display()
-                            )
-                        })?;
-
-                    // Process each resolved file recursively
-                    for include_path in resolved_files {
-                        context.enter_include(&include_path).with_context(|| {
-                            format!("Failed to include file: {}", include_path.display())
-                        })?;
-
-                        let include_content = tokio::fs::read_to_string(&include_path)
-                            .await
-                            .with_context(|| {
-                                format!("Failed to read include file: {}", include_path.display())
-                            })?;
-
-                        // Recursively process the included file
-                        let mut included_files =
-                            process_file_with_includes(&include_path, &include_content, context)
-                                .await?;
-
-                        // Add all files from the included file to result
-                        result.append(&mut included_files);
-
-                        context.exit_include();
-                    }
-                }
-            } else {
-                // Regular line - add to current content
-                current_content.push_str(line);
-                current_content.push('\n');
+        // Check for Include directive
+        if let Some(patterns) = parse_include_line(trimmed) {
+            // Save current accumulated content as an IncludedFile (if not empty)
+            if !current_content.is_empty() {
+                let line_offset: usize = result
+                    .iter()
+                    .map(|f: &IncludedFile| f.content.lines().count())
+                    .sum();
+                result.push(IncludedFile {
+                    path: file_path.to_path_buf(),
+                    content: current_content.clone(),
+                    line_offset,
+                });
+                current_content.clear();
             }
-        }
 
-        // Add any remaining content as the final IncludedFile
-        if !current_content.is_empty() {
-            let line_offset: usize = result
-                .iter()
-                .map(|f: &IncludedFile| f.content.lines().count())
-                .sum();
-            result.push(IncludedFile {
-                path: file_path.to_path_buf(),
-                content: current_content,
-                line_offset,
-            });
-        }
+            // Process each Include pattern
+            for pattern in patterns {
+                let resolved_files = resolve_include_pattern(pattern, context)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "Failed to resolve Include pattern '{}' at line {} in {}",
+                            pattern,
+                            line_number,
+                            file_path.display()
+                        )
+                    })?;
 
-        // If no Include directives were found and result is empty, add the whole file
-        if result.is_empty() {
-            result.push(IncludedFile {
-                path: file_path.to_path_buf(),
-                content: content.to_string(),
-                line_offset: 0,
-            });
-        }
+                // Process each resolved file recursively
+                for include_path in resolved_files {
+                    context.enter_include(&include_path).with_context(|| {
+                        format!("Failed to include file: {}", include_path.display())
+                    })?;
 
-        Ok(result)
-    })
+                    // Read with timeout to prevent hanging on network filesystems
+                    let include_content = tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        tokio::fs::read_to_string(&include_path),
+                    )
+                    .await
+                    .map_err(|_| {
+                        anyhow::anyhow!("Timeout reading include file: {}", include_path.display())
+                    })?
+                    .with_context(|| {
+                        format!("Failed to read include file: {}", include_path.display())
+                    })?;
+
+                    // Recursively process the included file (use Box::pin to avoid stack overflow)
+                    let mut included_files = Box::pin(process_file_with_includes(
+                        &include_path,
+                        &include_content,
+                        context,
+                    ))
+                    .await?;
+
+                    // Add all files from the included file to result
+                    result.append(&mut included_files);
+
+                    context.exit_include();
+                }
+            }
+        } else {
+            // Regular line - add to current content
+            current_content.push_str(line);
+            current_content.push('\n');
+        }
+    }
+
+    // Add any remaining content as the final IncludedFile
+    if !current_content.is_empty() {
+        let line_offset: usize = result
+            .iter()
+            .map(|f: &IncludedFile| f.content.lines().count())
+            .sum();
+        result.push(IncludedFile {
+            path: file_path.to_path_buf(),
+            content: current_content,
+            line_offset,
+        });
+    }
+
+    // If no Include directives were found and result is empty, add the whole file
+    if result.is_empty() {
+        result.push(IncludedFile {
+            path: file_path.to_path_buf(),
+            content: content.to_string(),
+            line_offset: 0,
+        });
+    }
+
+    Ok(result)
 }
 
 /// Recursively resolve includes in a configuration content (DEPRECATED - kept for reference)
@@ -401,6 +393,9 @@ fn parse_include_line(line: &str) -> Option<Vec<&str>> {
 
 /// Resolve a single include pattern to a list of files
 async fn resolve_include_pattern(pattern: &str, context: &IncludeContext) -> Result<Vec<PathBuf>> {
+    // Validate pattern for security before expansion
+    validate_glob_pattern(pattern)?;
+
     // Expand environment variables and tilde
     let expanded = expand_path_internal(pattern)?;
 
@@ -416,18 +411,65 @@ async fn resolve_include_pattern(pattern: &str, context: &IncludeContext) -> Res
         .to_str()
         .ok_or_else(|| anyhow::anyhow!("Invalid UTF-8 in path: {:?}", search_path))?;
 
-    // Use glob to expand the pattern
+    // Additional validation after expansion
+    validate_glob_pattern(pattern_str)?;
+
+    // Limit glob results to prevent resource exhaustion
+    const MAX_GLOB_RESULTS: usize = 100;
     let mut files = Vec::new();
-    for entry in
-        glob(pattern_str).with_context(|| format!("Invalid glob pattern: {}", pattern_str))?
+
+    // Use glob with options to control behavior
+    let glob_options = glob::MatchOptions {
+        case_sensitive: true,
+        require_literal_separator: true,   // Don't match / with *
+        require_literal_leading_dot: true, // Don't match hidden files with *
+    };
+
+    for entry in glob::glob_with(pattern_str, glob_options)
+        .with_context(|| format!("Invalid glob pattern: {}", pattern_str))?
     {
+        if files.len() >= MAX_GLOB_RESULTS {
+            anyhow::bail!(
+                "Glob pattern '{}' matched too many files (>{MAX_GLOB_RESULTS}). \
+                 Please use a more specific pattern.",
+                pattern
+            );
+        }
+
         match entry {
             Ok(path) => {
-                // Skip directories
-                if path.is_file() {
-                    // Security check: validate the path
-                    validate_include_path(&path)?;
-                    files.push(path);
+                // Additional security: ensure resolved path doesn't escape expected directories
+                let canonical = match path.canonicalize() {
+                    Ok(c) => c,
+                    Err(_) if !path.exists() => continue, // Skip non-existent files
+                    Err(e) => {
+                        tracing::debug!("Failed to canonicalize {}: {}", path.display(), e);
+                        continue;
+                    }
+                };
+
+                // Verify the canonical path is still under an allowed directory
+                if !is_path_allowed(&canonical) {
+                    tracing::warn!(
+                        "Glob result {} escapes allowed directories, skipping",
+                        path.display()
+                    );
+                    continue;
+                }
+
+                // Skip directories and symlinks
+                match std::fs::symlink_metadata(&path) {
+                    Ok(metadata) => {
+                        if metadata.is_file() && !metadata.is_symlink() {
+                            // Security check: validate the path
+                            if validate_include_path(&path).is_ok() {
+                                files.push(path);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        tracing::debug!("Failed to get metadata for {}: {}", path.display(), e);
+                    }
                 }
             }
             Err(e) => {
@@ -451,6 +493,52 @@ async fn resolve_include_pattern(pattern: &str, context: &IncludeContext) -> Res
     Ok(files)
 }
 
+/// Validate a glob pattern for security
+fn validate_glob_pattern(pattern: &str) -> Result<()> {
+    // Check for dangerous glob patterns
+    if pattern.contains("**") {
+        anyhow::bail!("Recursive glob patterns (**) are not allowed for security reasons");
+    }
+
+    // Check for excessive wildcards that could cause exponential expansion
+    let wildcard_count = pattern.chars().filter(|&c| c == '*').count();
+    if wildcard_count > 5 {
+        anyhow::bail!(
+            "Too many wildcards in pattern '{}'. Maximum 5 wildcards allowed.",
+            pattern
+        );
+    }
+
+    // Check for overly broad patterns that could match system files
+    // But allow common SSH config patterns like ~/.ssh/config.d/*
+    if (pattern == "*" || pattern == "/*") && !pattern.contains("ssh") {
+        anyhow::bail!(
+            "Pattern '{}' is too broad and could match system files",
+            pattern
+        );
+    }
+
+    // Check pattern length
+    if pattern.len() > 512 {
+        anyhow::bail!("Pattern is too long (max 512 characters)");
+    }
+
+    Ok(())
+}
+
+/// Check if a path is in an allowed directory
+fn is_path_allowed(path: &Path) -> bool {
+    let allowed_prefixes = [
+        dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")),
+        PathBuf::from("/etc/ssh"),
+        PathBuf::from("/usr/local/etc/ssh"),
+    ];
+
+    allowed_prefixes
+        .iter()
+        .any(|prefix| path.starts_with(prefix))
+}
+
 /// Validate an include file path for security
 fn validate_include_path(path: &Path) -> Result<()> {
     // Check if file exists
@@ -459,27 +547,77 @@ fn validate_include_path(path: &Path) -> Result<()> {
         return Ok(());
     }
 
+    // Get metadata without following symlinks
+    let metadata = std::fs::symlink_metadata(path)
+        .with_context(|| format!("Failed to get metadata for {}", path.display()))?;
+
+    // Reject symbolic links for security
+    if metadata.is_symlink() {
+        anyhow::bail!(
+            "Include path {} is a symbolic link. Symlinks are not allowed for security reasons.",
+            path.display()
+        );
+    }
+
     // Check if it's a regular file
-    if !path.is_file() {
+    if !metadata.is_file() {
         anyhow::bail!("Include path is not a regular file: {}", path.display());
     }
 
-    // Check file permissions (warn on world-writable)
+    // Canonicalize and verify the path doesn't escape expected directories
+    let canonical = path
+        .canonicalize()
+        .with_context(|| format!("Failed to canonicalize {}", path.display()))?;
+
+    // Check for directory traversal attempts
+    let path_str = canonical.to_string_lossy();
+    if path_str.contains("../") || path_str.contains("..\\") {
+        anyhow::bail!(
+            "Include path {} contains directory traversal sequences",
+            path.display()
+        );
+    }
+
+    // Restrict includes to safe directories
+    let safe_prefixes = [
+        dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")),
+        PathBuf::from("/etc/ssh"),
+        PathBuf::from("/usr/local/etc/ssh"),
+    ];
+
+    let is_safe = safe_prefixes
+        .iter()
+        .any(|prefix| canonical.starts_with(prefix));
+
+    if !is_safe {
+        tracing::warn!(
+            "Include path {} is outside of standard SSH config directories. This may be a security risk.",
+            canonical.display()
+        );
+    }
+
+    // Check file permissions (warn on world-writable or group-writable)
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
 
-        if let Ok(metadata) = path.metadata() {
-            let permissions = metadata.permissions();
-            let mode = permissions.mode();
+        let permissions = metadata.permissions();
+        let mode = permissions.mode();
 
-            // Check if world-writable (other-write bit set)
-            if mode & 0o002 != 0 {
-                tracing::warn!(
-                    "SSH config file {} is world-writable. This is a security risk.",
-                    path.display()
-                );
-            }
+        // Check if world-writable (other-write bit set)
+        if mode & 0o002 != 0 {
+            anyhow::bail!(
+                "SSH config file {} is world-writable. This is a security vulnerability.",
+                path.display()
+            );
+        }
+
+        // Check if group-writable (group-write bit set)
+        if mode & 0o020 != 0 {
+            tracing::warn!(
+                "SSH config file {} is group-writable. This is a potential security risk.",
+                path.display()
+            );
         }
     }
 

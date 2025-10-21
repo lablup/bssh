@@ -17,7 +17,7 @@
 //! This module handles the Match directive which provides conditional configuration
 //! based on various criteria like hostname, username, and command execution results.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::process::Command;
 use std::time::Duration;
@@ -293,71 +293,126 @@ fn execute_match_command(command: &str, context: &MatchContext) -> Result<bool> 
 
     tracing::debug!("Executing Match exec command: {}", expanded_command);
 
-    // Parse command into program and args
-    let parts: Vec<&str> = expanded_command.split_whitespace().collect();
+    // Parse command into program and args using shell parsing for proper handling
+    let parts = shell_words::split(&expanded_command)
+        .with_context(|| format!("Failed to parse command: {}", expanded_command))?;
+
     if parts.is_empty() {
         anyhow::bail!("Empty command for Match exec");
     }
 
-    let program = parts[0];
+    let program = &parts[0];
     let args = &parts[1..];
 
-    // Execute with timeout
+    // Execute with proper timeout enforcement
     #[cfg(unix)]
     {
+        use std::process::Stdio;
         use std::time::Instant;
 
         let start = Instant::now();
+        let timeout = Duration::from_secs(EXEC_TIMEOUT_SECS);
 
         let mut cmd = Command::new(program);
-        cmd.args(args);
+        cmd.args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
 
         // Set environment variables
         for (key, value) in &context.variables {
             cmd.env(format!("SSH_MATCH_{}", key.to_uppercase()), value);
         }
 
-        // Execute the command
-        match cmd.output() {
-            Ok(output) => {
-                let elapsed = start.elapsed();
+        // Spawn the process
+        let mut child = match cmd.spawn() {
+            Ok(child) => child,
+            Err(e) => {
+                tracing::debug!("Failed to spawn Match exec command '{}': {}", program, e);
+                return Ok(false); // Command execution failure means condition doesn't match
+            }
+        };
 
-                // Check timeout
-                if elapsed > Duration::from_secs(EXEC_TIMEOUT_SECS) {
-                    tracing::warn!(
-                        "Match exec command '{}' took too long ({:.1}s)",
+        // Wait with timeout using a loop
+        loop {
+            // Try to get the exit status without blocking
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    // Process exited
+                    let success = status.success();
+                    let elapsed = start.elapsed();
+
+                    tracing::debug!(
+                        "Match exec command '{}' completed in {:.1}s with status: {} (exit code: {:?})",
                         program,
-                        elapsed.as_secs_f64()
+                        elapsed.as_secs_f64(),
+                        success,
+                        status.code()
                     );
+
+                    return Ok(success);
+                }
+                Ok(None) => {
+                    // Process still running, check timeout
+                    if start.elapsed() > timeout {
+                        // Timeout exceeded, kill the process
+                        tracing::warn!(
+                            "Match exec command '{}' exceeded timeout of {}s, killing process",
+                            program,
+                            EXEC_TIMEOUT_SECS
+                        );
+
+                        // Try to kill the process
+                        let _ = child.kill();
+                        // Wait a bit for it to die
+                        std::thread::sleep(Duration::from_millis(100));
+                        // Force wait to clean up zombie
+                        let _ = child.wait();
+
+                        return Ok(false);
+                    }
+
+                    // Sleep a bit before checking again
+                    std::thread::sleep(Duration::from_millis(50));
+                }
+                Err(e) => {
+                    tracing::error!("Error waiting for Match exec command '{}': {}", program, e);
+                    // Try to kill the process just in case
+                    let _ = child.kill();
                     return Ok(false);
                 }
-
-                let success = output.status.success();
-
-                tracing::debug!(
-                    "Match exec command '{}' returned: {} (exit code: {:?})",
-                    program,
-                    success,
-                    output.status.code()
-                );
-
-                Ok(success)
-            }
-            Err(e) => {
-                tracing::debug!("Match exec command '{}' failed: {}", program, e);
-                Ok(false) // Command execution failure means condition doesn't match
             }
         }
     }
 
     #[cfg(not(unix))]
     {
-        // On non-Unix systems, we still try to execute but with simpler handling
-        let mut cmd = Command::new(program);
-        cmd.args(args);
+        use std::process::Stdio;
 
+        // On non-Unix systems, use a simpler approach
+        let mut cmd = Command::new(program);
+        cmd.args(args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+
+        // Set environment variables
+        for (key, value) in &context.variables {
+            cmd.env(format!("SSH_MATCH_{}", key.to_uppercase()), value);
+        }
+
+        // Note: Windows doesn't have good timeout support without additional dependencies
         match cmd.status() {
-            Ok(status) => Ok(status.success()),
+            Ok(status) => {
+                let success = status.success();
+                tracing::debug!(
+                    "Match exec command '{}' returned: {} (exit code: {:?})",
+                    program,
+                    success,
+                    status.code()
+                );
+                Ok(success)
+            }
             Err(e) => {
                 tracing::debug!("Match exec command '{}' failed: {}", program, e);
                 Ok(false)
@@ -368,14 +423,40 @@ fn execute_match_command(command: &str, context: &MatchContext) -> Result<bool> 
 
 /// Validate an exec command for security
 fn validate_exec_command(command: &str) -> Result<()> {
-    // Check for dangerous patterns
+    // Check command length first
+    const MAX_COMMAND_LENGTH: usize = 1024;
+    if command.len() > MAX_COMMAND_LENGTH {
+        anyhow::bail!(
+            "Match exec command is too long ({} bytes). Maximum allowed is {} bytes.",
+            command.len(),
+            MAX_COMMAND_LENGTH
+        );
+    }
+
+    // Check for newlines and control characters
+    if command
+        .chars()
+        .any(|c| c.is_control() && c != ' ' && c != '\t')
+    {
+        anyhow::bail!(
+            "Match exec command contains control characters. This is blocked for security."
+        );
+    }
+
+    // Check for dangerous patterns with more comprehensive list
     const DANGEROUS_PATTERNS: &[&str] = &[
-        "rm ", "rm -", "dd ", "mkfs", "format", "fdisk", ">",  // Output redirection
+        "rm ", "rm\t", "rm-", "rmdir", "dd ", "dd\t", "mkfs", "format", "fdisk", ">", ">>", "<",
+        "<<", // File redirection
         "|",  // Pipes
         ";",  // Command chaining
+        "&&", "||", // Conditional execution
         "&",  // Background execution
         "`",  // Command substitution
         "$(", // Command substitution
+        "${", // Variable expansion that could be dangerous
+        "\\n", "\\r", // Escaped newlines
+        "../", "..\\", // Directory traversal
+        "~/.", "~root", // Hidden file or root access attempts
     ];
 
     for pattern in DANGEROUS_PATTERNS {
@@ -388,26 +469,96 @@ fn validate_exec_command(command: &str) -> Result<()> {
         }
     }
 
-    // Check command length
-    const MAX_COMMAND_LENGTH: usize = 1024;
-    if command.len() > MAX_COMMAND_LENGTH {
-        anyhow::bail!(
-            "Match exec command is too long ({} bytes). Maximum allowed is {} bytes.",
-            command.len(),
-            MAX_COMMAND_LENGTH
-        );
+    // Check for quotes that might hide dangerous patterns
+    let mut in_single_quote = false;
+    let mut in_double_quote = false;
+    let mut prev_char = '\0';
+
+    for ch in command.chars() {
+        match ch {
+            '\'' if prev_char != '\\' => in_single_quote = !in_single_quote,
+            '"' if prev_char != '\\' => in_double_quote = !in_double_quote,
+            '`' if !in_single_quote => {
+                anyhow::bail!(
+                    "Match exec command contains backtick outside single quotes. \
+                     This could allow command substitution."
+                );
+            }
+            '$' if !in_single_quote => {
+                // $ is dangerous in double quotes or unquoted
+                if let Some(next) = command.chars().nth(command.find('$').unwrap() + 1) {
+                    if next == '(' || next == '{' {
+                        anyhow::bail!(
+                            "Match exec command contains potential command or variable substitution. \
+                             This is blocked for security."
+                        );
+                    }
+                }
+            }
+            _ => {}
+        }
+        prev_char = ch;
+    }
+
+    // Ensure quotes are balanced
+    if in_single_quote || in_double_quote {
+        anyhow::bail!("Match exec command has unbalanced quotes.");
+    }
+
+    // Block potentially dangerous executables
+    const BLOCKED_COMMANDS: &[&str] = &[
+        "sh", "bash", "zsh", "ksh", "csh", "fish", // Shells
+        "python", "python2", "python3", "perl", "ruby", "php", "node", // Interpreters
+        "nc", "netcat", "ncat", "socat", // Network tools
+        "wget", "curl", "fetch", // Download tools
+        "chmod", "chown", "chgrp", // Permission changes
+    ];
+
+    // Extract the first word (command name)
+    let first_word = command
+        .split_whitespace()
+        .next()
+        .unwrap_or("")
+        .trim_start_matches('/');
+
+    // Check against blocked commands
+    for blocked in BLOCKED_COMMANDS {
+        if first_word == *blocked || first_word.ends_with(&format!("/{}", blocked)) {
+            anyhow::bail!(
+                "Match exec command uses blocked executable '{}'. \
+                 Executing shells or interpreters is not allowed for security.",
+                blocked
+            );
+        }
     }
 
     // Warn about potentially sensitive commands
-    const SENSITIVE_COMMANDS: &[&str] = &["sudo", "su", "passwd", "ssh", "scp"];
+    const SENSITIVE_COMMANDS: &[&str] = &["sudo", "su", "doas", "passwd", "ssh", "scp", "sftp"];
     for cmd in SENSITIVE_COMMANDS {
-        if command.starts_with(cmd) || command.contains(&format!(" {}", cmd)) {
+        if first_word == *cmd || first_word.ends_with(&format!("/{}", cmd)) {
             tracing::warn!(
                 "Match exec command uses potentially sensitive command '{}'. \
-                 Please ensure this is intentional.",
+                 Please ensure this is intentional and secure.",
                 cmd
             );
         }
+    }
+
+    // Restrict to allowlisted commands for maximum security (optional, logged as info)
+    const SAFE_COMMANDS: &[&str] = &[
+        "test", "[", "ls", "cat", "grep", "head", "tail", "echo", "true", "false", "date",
+        "hostname",
+    ];
+    if !SAFE_COMMANDS
+        .iter()
+        .any(|&safe| first_word == safe || first_word.ends_with(&format!("/{}", safe)))
+    {
+        tracing::info!(
+            "Match exec command '{}' is not in the safe command allowlist. \
+             Consider using one of: {:?}",
+            first_word,
+            SAFE_COMMANDS
+        );
     }
 
     Ok(())
@@ -415,14 +566,30 @@ fn validate_exec_command(command: &str) -> Result<()> {
 
 /// Expand variables in a command string
 fn expand_variables(command: &str, variables: &HashMap<String, String>) -> String {
-    let mut result = command.to_string();
+    // Early return if no % characters to expand
+    if !command.contains('%') {
+        return command.to_string();
+    }
 
-    // Expand %h, %u, %l, etc.
-    for (key, value) in variables {
-        // Single character tokens
-        if key.len() == 1 {
-            let token = format!("%{}", key);
-            result = result.replace(&token, value);
+    let mut result = String::with_capacity(command.len() + 32);
+    let mut chars = command.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '%' {
+            if let Some(&next_ch) = chars.peek() {
+                // Look for single character variable
+                let key = next_ch.to_string();
+                if let Some(value) = variables.get(&key) {
+                    result.push_str(value);
+                    chars.next(); // Consume the variable character
+                } else {
+                    result.push(ch); // Keep the % if no matching variable
+                }
+            } else {
+                result.push(ch); // Keep trailing %
+            }
+        } else {
+            result.push(ch);
         }
     }
 

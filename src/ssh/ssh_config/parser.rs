@@ -321,21 +321,18 @@ pub(super) fn parse_option(
     args: &[String],
     line_number: usize,
 ) -> Result<()> {
-    // Convert &[String] to &[&str] for compatibility
-    let args: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-
     match keyword {
         "hostname" => {
             if args.is_empty() {
                 anyhow::bail!("HostName requires a value at line {line_number}");
             }
-            host.hostname = Some(args[0].to_string());
+            host.hostname = Some(args[0].clone());
         }
         "user" => {
             if args.is_empty() {
                 anyhow::bail!("User requires a value at line {line_number}");
             }
-            host.user = Some(args[0].to_string());
+            host.user = Some(args[0].clone());
         }
         "port" => {
             if args.is_empty() {
@@ -350,7 +347,7 @@ pub(super) fn parse_option(
             if args.is_empty() {
                 anyhow::bail!("IdentityFile requires a value at line {line_number}");
             }
-            let path = secure_validate_path(args[0], "identity", line_number)
+            let path = secure_validate_path(&args[0], "identity", line_number)
                 .with_context(|| format!("Invalid IdentityFile path at line {line_number}"))?;
             host.identity_files.push(path);
         }
@@ -359,7 +356,7 @@ pub(super) fn parse_option(
                 anyhow::bail!("IdentitiesOnly requires a value at line {line_number}");
             }
             // Parse yes/no and store in identity_files behavior (implicit)
-            let value = parse_yes_no(args[0], line_number)?;
+            let value = parse_yes_no(&args[0], line_number)?;
             if value {
                 // When IdentitiesOnly is yes, clear default identity files
                 // This is handled during resolution
@@ -383,14 +380,14 @@ pub(super) fn parse_option(
             if args.is_empty() {
                 anyhow::bail!("StrictHostKeyChecking requires a value at line {line_number}");
             }
-            host.strict_host_key_checking = Some(args[0].to_string());
+            host.strict_host_key_checking = Some(args[0].clone());
         }
         "userknownhostsfile" => {
             if args.is_empty() {
                 anyhow::bail!("UserKnownHostsFile requires a value at line {line_number}");
             }
             let path =
-                secure_validate_path(args[0], "known_hosts", line_number).with_context(|| {
+                secure_validate_path(&args[0], "known_hosts", line_number).with_context(|| {
                     format!("Invalid UserKnownHostsFile path at line {line_number}")
                 })?;
             host.user_known_hosts_file = Some(path);
@@ -400,7 +397,7 @@ pub(super) fn parse_option(
                 anyhow::bail!("GlobalKnownHostsFile requires a value at line {line_number}");
             }
             let path =
-                secure_validate_path(args[0], "known_hosts", line_number).with_context(|| {
+                secure_validate_path(&args[0], "known_hosts", line_number).with_context(|| {
                     format!("Invalid GlobalKnownHostsFile path at line {line_number}")
                 })?;
             host.global_known_hosts_file = Some(path);
@@ -409,13 +406,13 @@ pub(super) fn parse_option(
             if args.is_empty() {
                 anyhow::bail!("ForwardAgent requires a value at line {line_number}");
             }
-            host.forward_agent = Some(parse_yes_no(args[0], line_number)?);
+            host.forward_agent = Some(parse_yes_no(&args[0], line_number)?);
         }
         "forwardx11" => {
             if args.is_empty() {
                 anyhow::bail!("ForwardX11 requires a value at line {line_number}");
             }
-            host.forward_x11 = Some(parse_yes_no(args[0], line_number)?);
+            host.forward_x11 = Some(parse_yes_no(&args[0], line_number)?);
         }
         "serveraliveinterval" => {
             if args.is_empty() {
@@ -469,19 +466,19 @@ pub(super) fn parse_option(
             if args.is_empty() {
                 anyhow::bail!("BatchMode requires a value at line {line_number}");
             }
-            host.batch_mode = Some(parse_yes_no(args[0], line_number)?);
+            host.batch_mode = Some(parse_yes_no(&args[0], line_number)?);
         }
         "compression" => {
             if args.is_empty() {
                 anyhow::bail!("Compression requires a value at line {line_number}");
             }
-            host.compression = Some(parse_yes_no(args[0], line_number)?);
+            host.compression = Some(parse_yes_no(&args[0], line_number)?);
         }
         "tcpkeepalive" => {
             if args.is_empty() {
                 anyhow::bail!("TCPKeepAlive requires a value at line {line_number}");
             }
-            host.tcp_keep_alive = Some(parse_yes_no(args[0], line_number)?);
+            host.tcp_keep_alive = Some(parse_yes_no(&args[0], line_number)?);
         }
         "preferredauthentications" => {
             if args.is_empty() {
@@ -497,13 +494,13 @@ pub(super) fn parse_option(
             if args.is_empty() {
                 anyhow::bail!("PubkeyAuthentication requires a value at line {line_number}");
             }
-            host.pubkey_authentication = Some(parse_yes_no(args[0], line_number)?);
+            host.pubkey_authentication = Some(parse_yes_no(&args[0], line_number)?);
         }
         "passwordauthentication" => {
             if args.is_empty() {
                 anyhow::bail!("PasswordAuthentication requires a value at line {line_number}");
             }
-            host.password_authentication = Some(parse_yes_no(args[0], line_number)?);
+            host.password_authentication = Some(parse_yes_no(&args[0], line_number)?);
         }
         "kbdinteractiveauthentication" => {
             if args.is_empty() {
@@ -511,13 +508,13 @@ pub(super) fn parse_option(
                     "KbdInteractiveAuthentication requires a value at line {line_number}"
                 );
             }
-            host.keyboard_interactive_authentication = Some(parse_yes_no(args[0], line_number)?);
+            host.keyboard_interactive_authentication = Some(parse_yes_no(&args[0], line_number)?);
         }
         "gssapiauthentication" => {
             if args.is_empty() {
                 anyhow::bail!("GSSAPIAuthentication requires a value at line {line_number}");
             }
-            host.gssapi_authentication = Some(parse_yes_no(args[0], line_number)?);
+            host.gssapi_authentication = Some(parse_yes_no(&args[0], line_number)?);
         }
         "hostkeyalgorithms" => {
             if args.is_empty() {
@@ -575,8 +572,8 @@ pub(super) fn parse_option(
                 // Single arg from equals syntax - might have multiple name=value pairs
                 args[0].split_whitespace().collect()
             } else {
-                // Multiple args from space syntax
-                args.to_vec()
+                // Multiple args from space syntax - convert to &str references
+                args.iter().map(String::as_str).collect()
             };
 
             for pair in pairs {
@@ -613,25 +610,25 @@ pub(super) fn parse_option(
             if args.is_empty() {
                 anyhow::bail!("RequestTTY requires a value at line {line_number}");
             }
-            host.request_tty = Some(args[0].to_string());
+            host.request_tty = Some(args[0].clone());
         }
         "escapechar" => {
             if args.is_empty() {
                 anyhow::bail!("EscapeChar requires a value at line {line_number}");
             }
-            host.escape_char = Some(args[0].to_string());
+            host.escape_char = Some(args[0].clone());
         }
         "loglevel" => {
             if args.is_empty() {
                 anyhow::bail!("LogLevel requires a value at line {line_number}");
             }
-            host.log_level = Some(args[0].to_string());
+            host.log_level = Some(args[0].clone());
         }
         "syslogfacility" => {
             if args.is_empty() {
                 anyhow::bail!("SyslogFacility requires a value at line {line_number}");
             }
-            host.syslog_facility = Some(args[0].to_string());
+            host.syslog_facility = Some(args[0].clone());
         }
         "protocol" => {
             if args.is_empty() {
@@ -647,31 +644,31 @@ pub(super) fn parse_option(
             if args.is_empty() {
                 anyhow::bail!("AddressFamily requires a value at line {line_number}");
             }
-            host.address_family = Some(args[0].to_string());
+            host.address_family = Some(args[0].clone());
         }
         "bindaddress" => {
             if args.is_empty() {
                 anyhow::bail!("BindAddress requires a value at line {line_number}");
             }
-            host.bind_address = Some(args[0].to_string());
+            host.bind_address = Some(args[0].clone());
         }
         "clearallforwardings" => {
             if args.is_empty() {
                 anyhow::bail!("ClearAllForwardings requires a value at line {line_number}");
             }
-            host.clear_all_forwardings = Some(parse_yes_no(args[0], line_number)?);
+            host.clear_all_forwardings = Some(parse_yes_no(&args[0], line_number)?);
         }
         "controlmaster" => {
             if args.is_empty() {
                 anyhow::bail!("ControlMaster requires a value at line {line_number}");
             }
-            host.control_master = Some(args[0].to_string());
+            host.control_master = Some(args[0].clone());
         }
         "controlpath" => {
             if args.is_empty() {
                 anyhow::bail!("ControlPath requires a value at line {line_number}");
             }
-            let path = args[0].to_string();
+            let path = args[0].clone();
             // ControlPath has different validation - it allows SSH substitution patterns
             validate_control_path(&path, line_number)?;
             host.control_path = Some(path);
@@ -680,7 +677,7 @@ pub(super) fn parse_option(
             if args.is_empty() {
                 anyhow::bail!("ControlPersist requires a value at line {line_number}");
             }
-            host.control_persist = Some(args[0].to_string());
+            host.control_persist = Some(args[0].clone());
         }
         _ => {
             // Unknown option - log a warning but continue
