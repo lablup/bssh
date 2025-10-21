@@ -23,12 +23,26 @@ use anyhow::{Context, Result};
 
 /// Parse SSH configuration content
 pub(super) fn parse(content: &str) -> Result<Vec<SshHostConfig>> {
+    // Security: Set reasonable limits to prevent DoS attacks
+    const MAX_LINE_LENGTH: usize = 8192; // 8KB per line should be more than enough
+    const MAX_VALUE_LENGTH: usize = 4096; // 4KB for individual values
+
     let mut hosts = Vec::new();
     let mut current_host: Option<SshHostConfig> = None;
     let mut line_number = 0;
 
     for line in content.lines() {
         line_number += 1;
+
+        // Security: Check line length to prevent DoS
+        if line.len() > MAX_LINE_LENGTH {
+            anyhow::bail!(
+                "Line {} exceeds maximum length of {} bytes",
+                line_number,
+                MAX_LINE_LENGTH
+            );
+        }
+
         let line = line.trim();
 
         // Skip empty lines and comments
@@ -39,25 +53,28 @@ pub(super) fn parse(content: &str) -> Result<Vec<SshHostConfig>> {
         // Split line into keyword and arguments
         // Support both "Option Value" and "Option=Value" syntax
 
-        // First, check if this line uses equals syntax
-        // We need to handle Host directive specially since it shouldn't use equals syntax
-        let trimmed_line = line.trim_start();
-        let first_word = trimmed_line
-            .split_whitespace()
-            .next()
-            .unwrap_or("")
-            .to_lowercase();
-        let uses_equals_syntax = if first_word == "host" {
-            // Host directive should never use equals syntax
-            false
+        // Determine parsing strategy based on syntax
+        // We need to check for Host directive first since it never uses equals syntax
+        // Performance optimization: only call split_whitespace once if needed
+        let eq_pos = line.find('=');
+        let uses_equals_syntax = if let Some(pos) = eq_pos {
+            // Has equals sign - check if it's a Host directive
+            // Extract first word efficiently without full split
+            let prefix = &line[..pos];
+            let first_word = prefix
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .to_lowercase();
+            first_word != "host"
         } else {
-            // Check for equals sign in the line
-            line.contains('=')
+            // No equals sign - definitely not equals syntax
+            false
         };
 
         let (keyword, args) = if uses_equals_syntax {
-            // Option=Value syntax
-            if let Some(eq_pos) = line.find('=') {
+            // Option=Value syntax - we know eq_pos exists from check above
+            if let Some(eq_pos) = eq_pos {
                 let key_part = line[..eq_pos].trim();
                 let value_part = &line[eq_pos + 1..]; // Don't trim yet to preserve leading/trailing spaces if quoted
 
@@ -74,6 +91,16 @@ pub(super) fn parse(content: &str) -> Result<Vec<SshHostConfig>> {
                 // For equals syntax, treat everything after '=' as a single value
                 // This preserves values containing spaces, equals signs, etc.
                 let trimmed_value = value_part.trim();
+
+                // Security: Check value length to prevent DoS
+                if trimmed_value.len() > MAX_VALUE_LENGTH {
+                    anyhow::bail!(
+                        "Value at line {} exceeds maximum length of {} bytes",
+                        line_number,
+                        MAX_VALUE_LENGTH
+                    );
+                }
+
                 let args: Vec<&str> = if trimmed_value.is_empty() {
                     // Empty value after equals - still pass empty vec
                     // Individual options will handle this appropriately
@@ -106,13 +133,15 @@ pub(super) fn parse(content: &str) -> Result<Vec<SshHostConfig>> {
             }
         } else {
             // Option Value syntax (space-separated)
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.is_empty() {
-                continue;
-            }
+            // Performance optimization: use iterator directly instead of collecting
+            let mut parts_iter = line.split_whitespace();
+            let first = match parts_iter.next() {
+                Some(k) => k,
+                None => continue,
+            };
 
-            let keyword = parts[0].to_lowercase();
-            let args = parts[1..].to_vec();
+            let keyword = first.to_lowercase();
+            let args: Vec<&str> = parts_iter.collect();
 
             (keyword, args)
         };
