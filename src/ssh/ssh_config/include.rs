@@ -1,0 +1,710 @@
+// Copyright 2025 Lablup Inc. and Jeongkyu Shin
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+//! Include directive support for SSH configuration
+//!
+//! This module handles the Include directive which allows loading configuration
+//! from external files, supporting glob patterns and recursive includes.
+
+use anyhow::{Context, Result};
+use glob::glob;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+
+use super::path::expand_path_internal;
+
+/// Maximum include depth to prevent infinite recursion
+const MAX_INCLUDE_DEPTH: usize = 10;
+
+/// Maximum number of files that can be included (DoS prevention)
+const MAX_INCLUDED_FILES: usize = 100;
+
+/// Context for tracking include resolution state
+#[derive(Debug, Clone)]
+pub struct IncludeContext {
+    /// Current recursion depth
+    depth: usize,
+    /// Set of canonical paths already processed (cycle detection)
+    visited: HashSet<PathBuf>,
+    /// Total number of files included so far
+    file_count: usize,
+    /// Base directory for relative includes
+    base_dir: PathBuf,
+}
+
+impl IncludeContext {
+    /// Create a new include context for the given config file
+    pub fn new(config_path: &Path) -> Self {
+        let base_dir = config_path
+            .parent()
+            .unwrap_or_else(|| Path::new("/"))
+            .to_path_buf();
+
+        Self {
+            depth: 0,
+            visited: HashSet::new(),
+            file_count: 0,
+            base_dir,
+        }
+    }
+
+    /// Check if we can include another file
+    fn can_include(&self) -> Result<()> {
+        if self.depth >= MAX_INCLUDE_DEPTH {
+            anyhow::bail!(
+                "Maximum include depth ({}) exceeded. This may indicate an include cycle or misconfiguration.",
+                MAX_INCLUDE_DEPTH
+            );
+        }
+
+        if self.file_count >= MAX_INCLUDED_FILES {
+            anyhow::bail!(
+                "Maximum number of included files ({}) exceeded. This limit exists to prevent DoS attacks.",
+                MAX_INCLUDED_FILES
+            );
+        }
+
+        Ok(())
+    }
+
+    /// Enter a new include level
+    fn enter_include(&mut self, path: &Path) -> Result<()> {
+        self.can_include()?;
+
+        // Get canonical path for cycle detection
+        // Always canonicalize if possible for consistent cycle detection
+        let canonical = if path.exists() {
+            path.canonicalize()
+                .with_context(|| format!("Failed to canonicalize path: {}", path.display()))?
+        } else {
+            // For non-existent files, try to at least make it absolute
+            if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                self.base_dir.join(path)
+            }
+        };
+
+        // Check for cycles
+        tracing::debug!(
+            "Checking cycle for path: {:?}, canonical: {:?}",
+            path,
+            canonical
+        );
+        tracing::debug!("Already visited: {:?}", self.visited);
+
+        if self.visited.contains(&canonical) {
+            anyhow::bail!(
+                "Include cycle detected: {} has already been processed",
+                path.display()
+            );
+        }
+
+        // Also check using the original path in case canonicalization differs
+        // This handles the case where the same file is referenced via different paths
+        if path.exists() {
+            let abs_path = if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                self.base_dir.join(path)
+            };
+
+            // Check if any visited path points to the same file
+            for visited in &self.visited {
+                if visited.exists() && abs_path.exists() {
+                    // Try to compare canonicalized versions
+                    if let (Ok(visited_canonical), Ok(path_canonical)) =
+                        (visited.canonicalize(), abs_path.canonicalize())
+                    {
+                        if visited_canonical == path_canonical {
+                            anyhow::bail!(
+                                "Include cycle detected: {} has already been processed",
+                                path.display()
+                            );
+                        }
+                    }
+                }
+            }
+        }
+
+        self.visited.insert(canonical.clone());
+        self.depth += 1;
+        self.file_count += 1;
+
+        // Update base directory for nested includes
+        if let Some(parent) = canonical.parent() {
+            self.base_dir = parent.to_path_buf();
+        }
+
+        Ok(())
+    }
+
+    /// Exit an include level
+    fn exit_include(&mut self) {
+        if self.depth > 0 {
+            self.depth -= 1;
+        }
+    }
+}
+
+/// Resolved include file with its content
+#[derive(Debug, Clone)]
+pub struct IncludedFile {
+    /// Path to the file
+    pub path: PathBuf,
+    /// File content
+    pub content: String,
+    /// Line offset in the combined configuration
+    #[allow(dead_code)]
+    pub line_offset: usize,
+}
+
+/// Resolve Include directives and collect all configuration files
+/// Processes files in the order they appear, inserting included files at Include directive locations
+pub async fn resolve_includes(config_path: &Path, content: &str) -> Result<Vec<IncludedFile>> {
+    let mut context = IncludeContext::new(config_path);
+
+    // Mark the main file as visited to prevent cycles
+    let canonical = if config_path.exists() {
+        config_path.canonicalize().with_context(|| {
+            format!(
+                "Failed to canonicalize main config path: {}",
+                config_path.display()
+            )
+        })?
+    } else {
+        config_path.to_path_buf()
+    };
+    context.visited.insert(canonical);
+
+    // Process the main file with includes
+    process_file_with_includes(config_path, content, &mut context).await
+}
+
+/// Process a file with Include directives, inserting included files at the correct positions
+fn process_file_with_includes<'a>(
+    file_path: &'a Path,
+    content: &'a str,
+    context: &'a mut IncludeContext,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<IncludedFile>>> + 'a>> {
+    Box::pin(async move {
+        let mut result = Vec::new();
+        let mut current_content = String::new();
+
+        for (line_number, line) in content.lines().enumerate() {
+            let line_number = line_number + 1; // 1-indexed for error messages
+            let trimmed = line.trim();
+
+            // Check for Include directive
+            if let Some(patterns) = parse_include_line(trimmed) {
+                // Save current accumulated content as an IncludedFile (if not empty)
+                if !current_content.is_empty() {
+                    let line_offset: usize = result
+                        .iter()
+                        .map(|f: &IncludedFile| f.content.lines().count())
+                        .sum();
+                    result.push(IncludedFile {
+                        path: file_path.to_path_buf(),
+                        content: current_content.clone(),
+                        line_offset,
+                    });
+                    current_content.clear();
+                }
+
+                // Process each Include pattern
+                for pattern in patterns {
+                    let resolved_files = resolve_include_pattern(pattern, context)
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "Failed to resolve Include pattern '{}' at line {} in {}",
+                                pattern,
+                                line_number,
+                                file_path.display()
+                            )
+                        })?;
+
+                    // Process each resolved file recursively
+                    for include_path in resolved_files {
+                        context.enter_include(&include_path).with_context(|| {
+                            format!("Failed to include file: {}", include_path.display())
+                        })?;
+
+                        let include_content = tokio::fs::read_to_string(&include_path)
+                            .await
+                            .with_context(|| {
+                                format!("Failed to read include file: {}", include_path.display())
+                            })?;
+
+                        // Recursively process the included file
+                        let mut included_files =
+                            process_file_with_includes(&include_path, &include_content, context)
+                                .await?;
+
+                        // Add all files from the included file to result
+                        result.append(&mut included_files);
+
+                        context.exit_include();
+                    }
+                }
+            } else {
+                // Regular line - add to current content
+                current_content.push_str(line);
+                current_content.push('\n');
+            }
+        }
+
+        // Add any remaining content as the final IncludedFile
+        if !current_content.is_empty() {
+            let line_offset: usize = result
+                .iter()
+                .map(|f: &IncludedFile| f.content.lines().count())
+                .sum();
+            result.push(IncludedFile {
+                path: file_path.to_path_buf(),
+                content: current_content,
+                line_offset,
+            });
+        }
+
+        // If no Include directives were found and result is empty, add the whole file
+        if result.is_empty() {
+            result.push(IncludedFile {
+                path: file_path.to_path_buf(),
+                content: content.to_string(),
+                line_offset: 0,
+            });
+        }
+
+        Ok(result)
+    })
+}
+
+/// Recursively resolve includes in a configuration content (DEPRECATED - kept for reference)
+#[allow(dead_code)]
+fn resolve_includes_recursive<'a>(
+    result: &'a mut Vec<IncludedFile>,
+    content: &'a str,
+    context: &'a mut IncludeContext,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + 'a>> {
+    Box::pin(async move {
+        for (line_number, line) in content.lines().enumerate() {
+            let line_number = line_number + 1; // 1-indexed for error messages
+            let line = line.trim();
+
+            // Skip comments and empty lines
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+
+            // Check for Include directive
+            if let Some(patterns) = parse_include_line(line) {
+                // Resolve each pattern
+                for pattern in patterns {
+                    let resolved_files = resolve_include_pattern(pattern, context)
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "Failed to resolve Include pattern '{}' at line {}",
+                                pattern, line_number
+                            )
+                        })?;
+
+                    // Process each resolved file
+                    for file_path in resolved_files {
+                        // Check if we can include this file
+                        context.enter_include(&file_path).with_context(|| {
+                            format!("Failed to include file: {}", file_path.display())
+                        })?;
+
+                        // Read the file
+                        let file_content = tokio::fs::read_to_string(&file_path)
+                            .await
+                            .with_context(|| {
+                                format!("Failed to read include file: {}", file_path.display())
+                            })?;
+
+                        // Calculate line offset
+                        let line_offset = result
+                            .iter()
+                            .map(|f| f.content.lines().count())
+                            .sum::<usize>();
+
+                        // Add to results
+                        result.push(IncludedFile {
+                            path: file_path.clone(),
+                            content: file_content.clone(),
+                            line_offset,
+                        });
+
+                        // Recursively process includes in this file
+                        resolve_includes_recursive(result, &file_content, context).await?;
+
+                        context.exit_include();
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    })
+}
+
+/// Parse an Include directive line
+fn parse_include_line(line: &str) -> Option<Vec<&str>> {
+    // Support both "Include pattern" and "Include=pattern" syntax
+    let line = line.trim();
+
+    // Check if it starts with Include directive (case-insensitive)
+    if !line.to_lowercase().starts_with("include") {
+        return None;
+    }
+
+    // Extract the patterns part
+    let patterns_part = if let Some(pos) = line.find('=') {
+        // Include=pattern syntax
+        line[pos + 1..].trim()
+    } else {
+        // Include pattern syntax
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.len() < 2 || parts[0].to_lowercase() != "include" {
+            return None;
+        }
+        // Join all parts after "Include" keyword
+        line[parts[0].len()..].trim()
+    };
+
+    if patterns_part.is_empty() {
+        return None;
+    }
+
+    // Split multiple patterns (space-separated)
+    let patterns: Vec<&str> = patterns_part.split_whitespace().collect();
+
+    if patterns.is_empty() {
+        None
+    } else {
+        Some(patterns)
+    }
+}
+
+/// Resolve a single include pattern to a list of files
+async fn resolve_include_pattern(pattern: &str, context: &IncludeContext) -> Result<Vec<PathBuf>> {
+    // Expand environment variables and tilde
+    let expanded = expand_path_internal(pattern)?;
+
+    // Make relative paths relative to the config directory
+    let search_path = if expanded.is_relative() {
+        context.base_dir.join(&expanded)
+    } else {
+        expanded
+    };
+
+    // Convert to string for glob
+    let pattern_str = search_path
+        .to_str()
+        .ok_or_else(|| anyhow::anyhow!("Invalid UTF-8 in path: {:?}", search_path))?;
+
+    // Use glob to expand the pattern
+    let mut files = Vec::new();
+    for entry in
+        glob(pattern_str).with_context(|| format!("Invalid glob pattern: {}", pattern_str))?
+    {
+        match entry {
+            Ok(path) => {
+                // Skip directories
+                if path.is_file() {
+                    // Security check: validate the path
+                    validate_include_path(&path)?;
+                    files.push(path);
+                }
+            }
+            Err(e) => {
+                // Log glob errors but continue
+                tracing::warn!("Error processing glob pattern '{}': {}", pattern_str, e);
+            }
+        }
+    }
+
+    // Sort files in lexical order (as per SSH spec)
+    files.sort();
+
+    // If no files matched and pattern doesn't contain wildcards, it might be an error
+    if files.is_empty() && !pattern.contains('*') && !pattern.contains('?') {
+        tracing::debug!(
+            "Include pattern '{}' matched no files (this may be intentional)",
+            pattern
+        );
+    }
+
+    Ok(files)
+}
+
+/// Validate an include file path for security
+fn validate_include_path(path: &Path) -> Result<()> {
+    // Check if file exists
+    if !path.exists() {
+        // Non-existent files are silently ignored per SSH spec
+        return Ok(());
+    }
+
+    // Check if it's a regular file
+    if !path.is_file() {
+        anyhow::bail!("Include path is not a regular file: {}", path.display());
+    }
+
+    // Check file permissions (warn on world-writable)
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+
+        if let Ok(metadata) = path.metadata() {
+            let permissions = metadata.permissions();
+            let mode = permissions.mode();
+
+            // Check if world-writable (other-write bit set)
+            if mode & 0o002 != 0 {
+                tracing::warn!(
+                    "SSH config file {} is world-writable. This is a security risk.",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Combine multiple included files into a single configuration string
+pub fn combine_included_files(files: &[IncludedFile]) -> String {
+    let mut combined = String::new();
+
+    for file in files {
+        if !combined.is_empty() {
+            combined.push('\n');
+        }
+
+        // Add a comment indicating the source file (helpful for debugging)
+        combined.push_str(&format!("# Source: {}\n", file.path.display()));
+        combined.push_str(&file.content);
+    }
+
+    combined
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::TempDir;
+
+    #[tokio::test]
+    async fn test_parse_include_line() {
+        // Test space syntax
+        assert_eq!(
+            parse_include_line("Include ~/.ssh/config.d/*"),
+            Some(vec!["~/.ssh/config.d/*"])
+        );
+
+        // Test equals syntax
+        assert_eq!(
+            parse_include_line("Include=~/.ssh/config.d/*"),
+            Some(vec!["~/.ssh/config.d/*"])
+        );
+
+        // Test multiple patterns
+        assert_eq!(
+            parse_include_line("Include /etc/ssh/config.d/* ~/.ssh/extra/*"),
+            Some(vec!["/etc/ssh/config.d/*", "~/.ssh/extra/*"])
+        );
+
+        // Test case insensitivity
+        assert_eq!(
+            parse_include_line("include ~/.ssh/config.d/*"),
+            Some(vec!["~/.ssh/config.d/*"])
+        );
+
+        // Test non-include lines
+        assert_eq!(parse_include_line("Host example.com"), None);
+        assert_eq!(parse_include_line("User testuser"), None);
+    }
+
+    #[tokio::test]
+    async fn test_resolve_includes_simple() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create main config
+        let main_config = temp_dir.path().join("config");
+        let main_content = "Host example.com\n    User mainuser\n";
+        fs::write(&main_config, main_content).unwrap();
+
+        // Resolve includes (no Include directives)
+        let result = resolve_includes(&main_config, main_content).await.unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].path, main_config);
+        assert_eq!(result[0].content, main_content);
+    }
+
+    #[tokio::test]
+    async fn test_resolve_includes_with_include() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create included file
+        let include_dir = temp_dir.path().join("config.d");
+        fs::create_dir(&include_dir).unwrap();
+
+        let included_file = include_dir.join("extra.conf");
+        let included_content = "Host included.com\n    User includeduser\n";
+        fs::write(&included_file, included_content).unwrap();
+
+        // Create main config with Include directive
+        let main_config = temp_dir.path().join("config");
+        let main_content = format!(
+            "Include {}\n\nHost example.com\n    User mainuser\n",
+            included_file.display()
+        );
+        fs::write(&main_config, &main_content).unwrap();
+
+        // Resolve includes
+        let result = resolve_includes(&main_config, &main_content).await.unwrap();
+
+        // With corrected Include order, included files are inserted at Include location
+        // Expected: included file first, then rest of main config
+        assert_eq!(result.len(), 2, "Should have 2 file chunks");
+        assert_eq!(
+            result[0].path, included_file,
+            "First should be included file"
+        );
+        assert_eq!(result[0].content, included_content);
+        assert_eq!(
+            result[1].path, main_config,
+            "Second should be rest of main config"
+        );
+        assert!(
+            result[1].content.contains("Host example.com"),
+            "Should contain main config content"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_include_cycle_detection() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create file A that includes B
+        let file_a = temp_dir.path().join("a.conf");
+        let content_a = format!("Include {}\n", temp_dir.path().join("b.conf").display());
+        fs::write(&file_a, &content_a).unwrap();
+
+        // Create file B that includes A (cycle)
+        let file_b = temp_dir.path().join("b.conf");
+        let content_b = format!("Include {}\n", file_a.display());
+        fs::write(&file_b, content_b).unwrap();
+
+        // Try to resolve - should detect cycle
+        let result = resolve_includes(&file_a, &content_a).await;
+
+        assert!(result.is_err());
+        let err_display = result.as_ref().unwrap_err().to_string();
+        // Check the full error chain for cycle detection message
+        let err_chain = format!("{:?}", result.unwrap_err());
+        println!("Error display: {}", err_display); // Debug output
+        println!("Error chain: {}", err_chain); // Debug output
+        assert!(
+            err_chain.contains("cycle")
+                || err_chain.contains("already been processed")
+                || err_chain.contains("Include cycle"),
+            "Expected cycle detection in error chain but got: {}",
+            err_chain
+        );
+    }
+
+    #[tokio::test]
+    async fn test_max_depth_limit() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create a chain of includes deeper than the limit
+        let mut prev_file = temp_dir.path().join("config");
+        let mut prev_content = String::new();
+
+        for i in 0..=MAX_INCLUDE_DEPTH + 1 {
+            let file = temp_dir.path().join(format!("level{}.conf", i));
+            let content = if i == 0 {
+                "Host start\n".to_string()
+            } else {
+                format!("Include {}\n", prev_file.display())
+            };
+            fs::write(&file, &content).unwrap();
+
+            prev_file = file;
+            prev_content = content;
+        }
+
+        // Try to resolve - should hit depth limit
+        let result = resolve_includes(&prev_file, &prev_content).await;
+
+        assert!(result.is_err());
+        let error = result.unwrap_err();
+        // Check the full error chain since the depth error is in the cause
+        let err_chain = format!("{:?}", error);
+        assert!(err_chain.contains("depth") || err_chain.contains("Maximum include depth"));
+    }
+
+    #[tokio::test]
+    async fn test_glob_pattern_expansion() {
+        let temp_dir = TempDir::new().unwrap();
+
+        // Create multiple config files
+        let config_dir = temp_dir.path().join("config.d");
+        fs::create_dir(&config_dir).unwrap();
+
+        fs::write(config_dir.join("01-first.conf"), "Host first\n").unwrap();
+        fs::write(config_dir.join("02-second.conf"), "Host second\n").unwrap();
+        fs::write(config_dir.join("03-third.conf"), "Host third\n").unwrap();
+
+        // Create main config with glob Include
+        let main_config = temp_dir.path().join("config");
+        let main_content = format!("Include {}/*.conf\n", config_dir.display());
+        fs::write(&main_config, &main_content).unwrap();
+
+        // Resolve includes
+        let result = resolve_includes(&main_config, &main_content).await.unwrap();
+
+        // Should have 3 included files (main config only has Include, so no content chunk from main)
+        assert_eq!(result.len(), 3);
+
+        // Check lexical ordering of included files
+        assert!(result[0]
+            .path
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("01-first"));
+        assert!(result[1]
+            .path
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("02-second"));
+        assert!(result[2]
+            .path
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .contains("03-third"));
+    }
+}

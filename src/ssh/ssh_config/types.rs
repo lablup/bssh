@@ -18,9 +18,21 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
 
-/// SSH configuration for a specific host
+/// Configuration block type
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConfigBlock {
+    /// Host block with patterns
+    Host(Vec<String>),
+    /// Match block with conditions
+    Match(Vec<crate::ssh::ssh_config::match_directive::MatchCondition>),
+}
+
+/// SSH configuration for a specific host or match block
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SshHostConfig {
+    /// Block type (Host patterns or Match conditions)
+    pub block_type: Option<ConfigBlock>,
+    /// Host patterns (for backward compatibility and Host blocks)
     pub host_patterns: Vec<String>,
     pub hostname: Option<String>,
     pub user: Option<String>,
