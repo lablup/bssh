@@ -823,4 +823,194 @@ Host example.com
         // Spaces should be preserved in the value
         assert_eq!(hosts[0].hostname, Some("my server.example.com".to_string()));
     }
+
+    // Additional edge case tests
+    #[test]
+    fn test_parse_very_long_line() {
+        // Test line length limit enforcement
+        let long_line = "User=".to_string() + &"a".repeat(9000);
+        let content = format!("Host example.com\n    {}", long_line);
+        let result = parse(&content);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("exceeds maximum length"));
+    }
+
+    #[test]
+    fn test_parse_very_long_value() {
+        // Test value length limit enforcement
+        let long_value = "a".repeat(5000);
+        let content = format!("Host example.com\n    User={}", long_value);
+        let result = parse(&content);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("exceeds maximum length"));
+    }
+
+    #[test]
+    fn test_parse_setenv_with_equals_syntax() {
+        // Test SetEnv with equals syntax containing multiple name=value pairs
+        let content = r#"
+Host example.com
+    SetEnv=FOO=bar BAZ=qux PATH=/usr/bin:/bin
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].set_env.get("FOO"), Some(&"bar".to_string()));
+        assert_eq!(hosts[0].set_env.get("BAZ"), Some(&"qux".to_string()));
+        assert_eq!(
+            hosts[0].set_env.get("PATH"),
+            Some(&"/usr/bin:/bin".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_proxycommand_with_equals() {
+        // Test ProxyCommand with complex value containing equals
+        let content = r#"
+Host example.com
+    ProxyCommand=ssh -o StrictHostKeyChecking=no -W %h:%p proxy.example.com
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(
+            hosts[0].proxy_command,
+            Some("ssh -o StrictHostKeyChecking=no -W %h:%p proxy.example.com".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_mixed_whitespace() {
+        // Test various whitespace combinations
+        let content =
+            "Host example.com\n\tUser\t=\ttestuser\n    Port = 2222\n\tHostName=server.com";
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].user, Some("testuser".to_string()));
+        assert_eq!(hosts[0].port, Some(2222));
+        assert_eq!(hosts[0].hostname, Some("server.com".to_string()));
+    }
+
+    #[test]
+    fn test_parse_consecutive_equals() {
+        // Test handling of consecutive equals signs
+        let content = r#"
+Host example.com
+    User===testuser
+    HostName=server==name.com
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].user, Some("==testuser".to_string()));
+        assert_eq!(hosts[0].hostname, Some("server==name.com".to_string()));
+    }
+
+    #[test]
+    fn test_parse_trailing_equals() {
+        // Test values ending with equals
+        let content = r#"
+Host example.com
+    User=testuser=
+    HostName=server.com==
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].user, Some("testuser=".to_string()));
+        assert_eq!(hosts[0].hostname, Some("server.com==".to_string()));
+    }
+
+    #[test]
+    fn test_parse_special_chars_in_equals_value() {
+        // Test special characters in values
+        let content = r#"
+Host example.com
+    User=test@user!$
+    HostName=server-name_01.example.com:8080
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].user, Some("test@user!$".to_string()));
+        assert_eq!(
+            hosts[0].hostname,
+            Some("server-name_01.example.com:8080".to_string())
+        );
+    }
+
+    #[test]
+    fn test_parse_ciphers_with_plus_minus() {
+        // Test cipher specifications with +/- modifiers
+        let content = r#"
+Host example.com
+    Ciphers=+aes128-ctr,-3des-cbc,aes256-gcm
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(
+            hosts[0].ciphers,
+            vec!["+aes128-ctr", "-3des-cbc", "aes256-gcm"]
+        );
+    }
+
+    #[test]
+    fn test_parse_global_and_host_options() {
+        // Test that global options are properly ignored
+        let content = r#"
+User=globaluser
+Port=22
+
+Host example.com
+    User=hostuser
+
+Host *.example.org
+    Port=2222
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 2);
+        assert_eq!(hosts[0].user, Some("hostuser".to_string()));
+        assert_eq!(hosts[0].port, None); // Global port not inherited
+        assert_eq!(hosts[1].port, Some(2222));
+        assert_eq!(hosts[1].user, None); // Global user not inherited
+    }
+
+    #[test]
+    fn test_parse_host_with_special_patterns() {
+        // Test various host patterns
+        let content = r#"
+Host *.example.com !bad.example.com 192.168.*.* server-[0-9]
+    User=testuser
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(
+            hosts[0].host_patterns,
+            vec![
+                "*.example.com",
+                "!bad.example.com",
+                "192.168.*.*",
+                "server-[0-9]"
+            ]
+        );
+    }
+
+    #[test]
+    fn test_parse_case_insensitive_keywords() {
+        // Test that keywords are case-insensitive
+        let content = r#"
+Host example.com
+    USER=testuser
+    Port=2222
+    hostname=server.com
+    FORWARDAGENT=yes
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].user, Some("testuser".to_string()));
+        assert_eq!(hosts[0].port, Some(2222));
+        assert_eq!(hosts[0].hostname, Some("server.com".to_string()));
+        assert_eq!(hosts[0].forward_agent, Some(true));
+    }
 }
