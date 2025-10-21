@@ -53,52 +53,60 @@ bssh (Backend.AI SSH / Broadcast SSH) is a high-performance parallel SSH command
 └──────────┘ └──────────┘ └──────────┘
 ```
 
-### Modular Design (Refactored 2025-01-22)
+### Code Structure Evolution
 
-The codebase has been restructured for better maintainability and scalability:
+The codebase has undergone significant refactoring to improve maintainability, testability, and clarity:
 
-1. **Minimal Entry Point (`main.rs`):**
-   - Reduced from 987 lines to ~150 lines
-   - Only handles CLI parsing and command dispatching
-   - Delegates all business logic to specialized modules
+#### Phase 1: Initial Modularization (2025-08-22)
+- Reduced `main.rs` from 987 lines to ~150 lines
+- Created command modules (`commands/`) for each operation
+- Extracted utility modules (`utils/`) for reusable functions
+- Established pattern of self-contained, independently testable modules
 
-2. **Command Modules (`commands/`):**
-   - `exec.rs`: Command execution with output management
-   - `ping.rs`: Connectivity testing
-   - `interactive.rs`: Interactive shell sessions with PTY support
-   - `list.rs`: Cluster listing
-   - `upload.rs`: File upload operations
-   - `download.rs`: File download operations
-   - Each module is self-contained and independently testable
+#### Phase 2: Large-Scale Refactoring (2025-10-17, Issue #33)
+**Objective:** Split all oversized modules (>600 lines) into focused, maintainable components while maintaining full backward compatibility.
 
-3. **Utility Modules (`utils/`):**
-   - `fs.rs`: File system operations (glob patterns, directory walking)
-   - `output.rs`: Command output file management
-   - `logging.rs`: Logging initialization
-   - Reusable across different commands
+**Scope:** 13 critical/high/medium priority files refactored across 3 phases:
+- **Phase 1**: 4 critical files (>1000 lines) → modular structure
+- **Phase 2**: 4 high-priority files (800-1000 lines) → modular structure
+- **Phase 3**: 5 medium-priority files (600-800 lines) → modular structure
+- **Phase 4**: 6 lower-priority files (500-600 lines) → **Intentionally skipped**
+
+**Results:**
+- All critical/high/medium files now under 700 lines
+- Largest module: 691 lines (previously 1,394 lines)
+- 232+ tests maintained with zero breaking changes
+- Established clear separation of concerns throughout codebase
+
+See "Issue #33 Refactoring Details" section below for comprehensive breakdown.
 
 ## Component Details
 
-### 1. CLI Interface (`cli.rs`, `main.rs`)
+### 1. CLI Interface (`cli.rs`, `main.rs`, `app/*`)
+
+**Main Entry Point Module Structure (Refactored 2025-10-17):**
+- `main.rs` - Clean entry point (69 lines)
+- `app/dispatcher.rs` - Command routing and dispatch (368 lines)
+- `app/initialization.rs` - App initialization and config loading (206 lines)
+- `app/nodes.rs` - Node resolution and filtering (242 lines)
+- `app/cache.rs` - Cache statistics and management (142 lines)
+- `app/query.rs` - SSH query options handler (58 lines)
+- `app/utils.rs` - Utility functions (62 lines)
+- `app/mod.rs` - Module exports (25 lines)
 
 **Design Decisions:**
 - Uses clap v4 with derive macros for type-safe argument parsing
 - Subcommand pattern for different operations (exec, list, ping, upload, download)
 - Environment variable support via `env` attribute
-- **Refactored (2025-01-22):** Separated command logic from main.rs
+- **Refactored (2025-08-22):** Separated command logic from main.rs
+- **Refactored (2025-10-17):** Further split into app modules for initialization, dispatching, and utilities
 
 **Implementation:**
 ```rust
-// main.rs - Minimal dispatcher
+// main.rs - Minimal entry point (69 lines)
 async fn main() -> Result<()> {
     let cli = Cli::parse();
-    match cli.command {
-        Commands::Exec { .. } => exec::execute_command(params).await,
-        Commands::List => list::list_clusters(&config),
-        Commands::Ping => ping::ping_nodes(nodes, ...).await,
-        Commands::Upload { .. } => upload::upload_file(params, ...).await,
-        Commands::Download { .. } => download::download_file(params, ...).await,
-    }
+    app::dispatcher::dispatch(cli).await
 }
 ```
 
@@ -107,7 +115,16 @@ async fn main() -> Result<()> {
 - Subcommand pattern adds complexity but improves UX
 - Modular structure increases file count but improves testability
 
-### 2. Configuration Management (`config.rs`)
+### 2. Configuration Management (`config/*`)
+
+**Module Structure (Refactored 2025-10-17):**
+- `config/types.rs` - Configuration structs and enums (166 lines)
+- `config/loader.rs` - Loading and priority logic (236 lines)
+- `config/resolver.rs` - Node resolution (124 lines)
+- `config/interactive.rs` - Interactive config management (135 lines)
+- `config/utils.rs` - Utility functions (125 lines)
+- `config/tests.rs` - Test suite (239 lines)
+- `config/mod.rs` - Public API exports (30 lines)
 
 **Design Decisions:**
 - YAML format for human readability
@@ -151,7 +168,14 @@ pub struct Cluster {
 }
 ```
 
-### 3. Parallel Executor (`executor.rs`)
+### 3. Parallel Executor (`executor/*`)
+
+**Module Structure (Refactored 2025-10-17):**
+- `executor/parallel.rs` - ParallelExecutor core logic (412 lines)
+- `executor/execution_strategy.rs` - Task spawning and progress bars (257 lines)
+- `executor/connection_manager.rs` - SSH connection setup (168 lines)
+- `executor/result_types.rs` - Result types (119 lines)
+- `executor/mod.rs` - Public API exports (25 lines)
 
 **Design Decisions:**
 - Tokio-based async execution for maximum concurrency
@@ -179,7 +203,21 @@ let tasks: Vec<JoinHandle<Result<ExecutionResult>>> = nodes
 - Buffered I/O for output collection
 - Early termination on critical failures
 
-### 4. SSH Client (`ssh/client.rs`, `ssh/tokio_client/*`)
+### 4. SSH Client (`ssh/client/*`, `ssh/tokio_client/*`)
+
+**SSH Client Module Structure (Refactored 2025-10-17):**
+- `client/core.rs` - Client struct and core functionality (44 lines)
+- `client/connection.rs` - Connection establishment and management (308 lines)
+- `client/command.rs` - Command execution logic (155 lines)
+- `client/file_transfer.rs` - SFTP operations (691 lines)
+- `client/config.rs` - Configuration types (27 lines)
+- `client/result.rs` - Result types and implementations (86 lines)
+
+**Tokio Client Module Structure (Refactored 2025-10-17):**
+- `tokio_client/connection.rs` - Connection management (293 lines)
+- `tokio_client/authentication.rs` - Authentication methods (378 lines)
+- `tokio_client/channel_manager.rs` - Channel operations (230 lines)
+- `tokio_client/file_transfer.rs` - SFTP file operations (285 lines)
 
 **Library Choice: russh and russh-sftp**
 - Native Rust SSH implementation with full async support
@@ -363,9 +401,18 @@ Focus on more impactful optimizations like:
 - First-match-wins resolution (SSH-compatible)
 - CLI arguments override config values
 
-### 7. SSH Configuration Caching (`ssh/config_cache.rs`)
+### 7. SSH Configuration Caching (`ssh/config_cache/*`)
 
-**Status:** Implemented (2025-08-28)
+**Status:** Implemented (2025-08-28), Refactored (2025-10-17)
+
+**Module Structure (Refactored 2025-10-17):**
+- `config_cache/manager.rs` - Core cache manager (491 lines)
+- `config_cache/maintenance.rs` - Cache maintenance operations (136 lines)
+- `config_cache/stats.rs` - Statistics tracking (138 lines)
+- `config_cache/entry.rs` - Cache entry management (111 lines)
+- `config_cache/config.rs` - Cache configuration (74 lines)
+- `config_cache/global.rs` - Global instance management (29 lines)
+- `config_cache/mod.rs` - Module exports (27 lines)
 
 **Design Motivation:**
 SSH configuration files are frequently accessed and parsed during bssh operations, especially for multi-node commands. Caching eliminates redundant file I/O and parsing overhead, providing significant performance improvements for repeated operations.
@@ -500,11 +547,21 @@ bssh cache-stats --maintain        # Remove expired entries
 4. **Caching:** Cache host keys and authentication
 5. **Environment Variable Caching:** Cache safe environment variables for path expansion
 
-### Environment Variable Caching (Added 2025-01-28)
+### Environment Variable Caching (Added 2025-08-28, Refactored 2025-10-17)
 
 To improve performance during SSH configuration path expansion, bssh implements a comprehensive environment variable cache:
 
-**Implementation:** `src/ssh/ssh_config/env_cache.rs`
+**Module Structure (Refactored 2025-10-17):**
+- `env_cache/cache.rs` - Core caching logic (237 lines)
+- `env_cache/tests.rs` - Test suite (239 lines)
+- `env_cache/maintenance.rs` - Maintenance operations (120 lines)
+- `env_cache/entry.rs` - Cache entry management (58 lines)
+- `env_cache/validation.rs` - Variable validation (51 lines)
+- `env_cache/global.rs` - Global instance management (49 lines)
+- `env_cache/stats.rs` - Statistics tracking (42 lines)
+- `env_cache/config.rs` - Configuration structure (37 lines)
+
+**Implementation:** `src/ssh/ssh_config/env_cache/*`
 - Thread-safe LRU cache with configurable TTL (default: 30 seconds)
 - Whitelisted safe variables only (HOME, USER, SSH_AUTH_SOCK, etc.)
 - O(1) lookups using HashMap storage
@@ -540,7 +597,16 @@ if let Ok(Some(home)) = GLOBAL_ENV_CACHE.get_env_var("HOME") {
 
 ## Interactive Mode Architecture
 
-### Status: Fully Implemented (2025-08-22)
+### Status: Fully Implemented (2025-08-22), Refactored (2025-10-17)
+
+**Module Structure (Refactored 2025-10-17):**
+- `interactive/types.rs` - Type definitions and enums (142 lines)
+- `interactive/connection.rs` - Connection establishment (363 lines)
+- `interactive/single_node.rs` - Single node interactive mode (228 lines)
+- `interactive/multiplex.rs` - Multi-node multiplexing (331 lines)
+- `interactive/commands.rs` - Command processing (152 lines)
+- `interactive/execution.rs` - Command execution (158 lines)
+- `interactive/utils.rs` - Helper functions (135 lines)
 
 Interactive mode provides persistent shell sessions with single-node or multiplexed multi-node support, enabling real-time interaction with cluster nodes.
 
@@ -580,7 +646,13 @@ The PTY implementation provides true terminal emulation for interactive SSH sess
 
 ### Core Components
 
-1. **PTY Session (`pty/session.rs`)**
+1. **PTY Session (`pty/session/*`, Refactored 2025-10-17)**
+   - **Module Structure:**
+     - `session/session_manager.rs` - Core session management (381 lines)
+     - `session/input.rs` - Input event handling (193 lines)
+     - `session/constants.rs` - Terminal key sequences and buffers (105 lines)
+     - `session/terminal_modes.rs` - Terminal mode configuration (91 lines)
+     - `session/mod.rs` - Module exports (22 lines)
    - Manages bidirectional terminal communication
    - Handles terminal resize events
    - Processes key sequences and ANSI escape codes
@@ -988,45 +1060,33 @@ impl NodeStatus {
 - Executor integration for parallel operations
 - Comprehensive testing and documentation
 
-### 2025-08-22: Code Structure Refactoring
+### 2025-10-17: Large-Scale Code Refactoring (Issue #33)
+- Split 13 critical/high/medium priority files into focused modules
+- Reduced largest file from 1,394 to 691 lines
+- Maintained full backward compatibility (232+ tests passing)
+- Established optimal module size guidelines (300-700 lines)
+- Intentionally skipped Phase 4 based on risk/benefit analysis
 
-**Completed:**
-1. **Modular Command Structure:** Separated commands into individual modules
-2. **Utility Extraction:** Created reusable utility modules for common functions
-3. **Main.rs Simplification:** Reduced from 987 to ~150 lines
-
-**New Structure:**
-```
-src/
-├── commands/         # Command implementations
-│   ├── exec.rs      # Execute command (~75 lines)
-│   ├── ping.rs      # Connectivity test (~80 lines)
-│   ├── list.rs      # List clusters (~50 lines)
-│   ├── upload.rs    # File upload (~175 lines)
-│   └── download.rs  # File download (~240 lines)
-├── utils/           # Utility functions
-│   ├── fs.rs        # File system utilities (~100 lines)
-│   ├── output.rs    # Output management (~200 lines)
-│   └── logging.rs   # Logging setup (~30 lines)
-└── main.rs          # CLI dispatcher (~150 lines)
-```
-
-**Benefits:**
-- **Improved Maintainability:** Each command is self-contained
-- **Better Testability:** Individual modules can be tested in isolation
-- **Enhanced Scalability:** New commands can be added without touching main.rs
-- **Code Reusability:** Utility functions are shared across commands
-- **Clear Separation of Concerns:** Each module has a single responsibility
-
-**Metrics:**
-- Main.rs size reduction: 84% (987 → 150 lines)
-- Average module size: ~100 lines
-- Total modules created: 9 new files
-- No functionality changes, only structural improvements
 
 ## SSH Jump Host Support
 
-### Status: Fully Implemented (2025-08-30, Extended 2025-10-14)
+### Status: Fully Implemented
+
+**Jump Host Parser Module Structure (Refactored 2025-10-17):**
+- `parser/tests.rs` - Test suite (343 lines)
+- `parser/host_parser.rs` - Host and port parsing (141 lines)
+- `parser/main_parser.rs` - Main parsing logic (79 lines)
+- `parser/host.rs` - JumpHost data structure (63 lines)
+- `parser/config.rs` - Jump host limits configuration (61 lines)
+- `parser/mod.rs` - Module exports (29 lines)
+
+**Jump Chain Module Structure (Refactored 2025-10-17):**
+- `chain/types.rs` - Type definitions (133 lines)
+- `chain/chain_connection.rs` - Chain connection logic (69 lines)
+- `chain/auth.rs` - Authentication handling (260 lines)
+- `chain/tunnel.rs` - Tunnel management (256 lines)
+- `chain/cleanup.rs` - Resource cleanup (75 lines)
+- Main `chain.rs` - Chain orchestration (436 lines)
 
 **Overview:**
 SSH jump host support enables connections through intermediate bastion hosts using OpenSSH-compatible `-J` syntax. The feature is fully implemented with comprehensive parsing, connection chain management, and full integration across all bssh operations including command execution, file transfers, and interactive mode.
@@ -1460,7 +1520,13 @@ The port forwarding functionality is organized into the following modules:
    - Handles incoming `forwarded-tcpip` channels
    - Connects to local services
 
-7. **`src/forwarding/dynamic.rs`**: Dynamic forwarding (-D)
+7. **`src/forwarding/dynamic/*`**: Dynamic forwarding (-D, Refactored 2025-10-17)
+   - **Module Structure:**
+     - `dynamic/forwarder.rs` - Main forwarder logic and retry mechanism (280 lines)
+     - `dynamic/socks.rs` - SOCKS4/5 protocol handlers (257 lines)
+     - `dynamic/connection.rs` - Connection management and lifecycle (174 lines)
+     - `dynamic/stats.rs` - Statistics tracking (83 lines)
+     - `dynamic/mod.rs` - Module exports and tests (173 lines)
    - Full SOCKS4/SOCKS5 proxy implementation
    - Authentication negotiation
    - DNS resolution support
