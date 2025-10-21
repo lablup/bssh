@@ -37,13 +37,39 @@ pub(super) fn parse(content: &str) -> Result<Vec<SshHostConfig>> {
         }
 
         // Split line into keyword and arguments
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.is_empty() {
+        // Support both "Option Value" and "Option=Value" syntax
+        let (keyword, args) = if let Some(eq_pos) = line.find('=') {
+            // Option=Value syntax
+            let key_part = line[..eq_pos].trim();
+            let value_part = line[eq_pos + 1..].trim();
+
+            // Extract keyword (first word before =)
+            let keyword = key_part.split_whitespace().next().unwrap_or("");
+
+            // For values, split by whitespace to maintain consistency with space-separated syntax
+            let args: Vec<&str> = if value_part.is_empty() {
+                vec![]
+            } else {
+                value_part.split_whitespace().collect()
+            };
+
+            (keyword.to_lowercase(), args)
+        } else {
+            // Option Value syntax (space-separated)
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.is_empty() {
+                continue;
+            }
+
+            let keyword = parts[0].to_lowercase();
+            let args = parts[1..].to_vec();
+
+            (keyword, args)
+        };
+
+        if keyword.is_empty() {
             continue;
         }
-
-        let keyword = parts[0].to_lowercase();
-        let args = &parts[1..];
 
         match keyword.as_str() {
             "host" => {
@@ -68,7 +94,7 @@ pub(super) fn parse(content: &str) -> Result<Vec<SshHostConfig>> {
             _ => {
                 // Configuration option
                 if let Some(ref mut host) = current_host {
-                    parse_option(host, &keyword, args, line_number)
+                    parse_option(host, &keyword, &args, line_number)
                         .with_context(|| format!("Error at line {line_number}: {line}"))?;
                 } else if keyword != "host" {
                     // Global options outside of any Host block are ignored for now
@@ -521,9 +547,9 @@ Host web*.example.com *.test.com
 Host example.com
     # Another comment
     User testuser
-    
+
     Port 2222
-    
+
 # Final comment
 "#;
         let hosts = parse(content).unwrap();
@@ -531,5 +557,89 @@ Host example.com
         assert_eq!(hosts[0].host_patterns, vec!["example.com"]);
         assert_eq!(hosts[0].user, Some("testuser".to_string()));
         assert_eq!(hosts[0].port, Some(2222));
+    }
+
+    #[test]
+    fn test_parse_equals_syntax() {
+        // Test Option=Value syntax
+        let content = r#"
+Host example.com
+    User=testuser
+    Port=2222
+    HostName=actual.example.com
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].host_patterns, vec!["example.com"]);
+        assert_eq!(hosts[0].user, Some("testuser".to_string()));
+        assert_eq!(hosts[0].port, Some(2222));
+        assert_eq!(hosts[0].hostname, Some("actual.example.com".to_string()));
+    }
+
+    #[test]
+    fn test_parse_equals_with_spaces() {
+        // Test Option = Value syntax (spaces around equals)
+        let content = r#"
+Host example.com
+    User = testuser
+    Port = 2222
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].host_patterns, vec!["example.com"]);
+        assert_eq!(hosts[0].user, Some("testuser".to_string()));
+        assert_eq!(hosts[0].port, Some(2222));
+    }
+
+    #[test]
+    fn test_parse_mixed_syntax() {
+        // Test mixing both syntaxes in same config
+        let content = r#"
+Host example.com
+    User testuser
+    Port=2222
+    HostName = actual.example.com
+    ForwardAgent yes
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].host_patterns, vec!["example.com"]);
+        assert_eq!(hosts[0].user, Some("testuser".to_string()));
+        assert_eq!(hosts[0].port, Some(2222));
+        assert_eq!(hosts[0].hostname, Some("actual.example.com".to_string()));
+        assert_eq!(hosts[0].forward_agent, Some(true));
+    }
+
+    #[test]
+    fn test_parse_equals_with_boolean() {
+        // Test yes/no values with equals syntax
+        let content = r#"
+Host example.com
+    ForwardAgent=yes
+    ForwardX11=no
+    Compression = yes
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].forward_agent, Some(true));
+        assert_eq!(hosts[0].forward_x11, Some(false));
+        assert_eq!(hosts[0].compression, Some(true));
+    }
+
+    #[test]
+    fn test_parse_equals_with_comma_separated() {
+        // Test comma-separated values with equals syntax
+        let content = r#"
+Host example.com
+    Ciphers=aes128-ctr,aes192-ctr,aes256-ctr
+    MACs = hmac-sha2-256,hmac-sha2-512
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(
+            hosts[0].ciphers,
+            vec!["aes128-ctr", "aes192-ctr", "aes256-ctr"]
+        );
+        assert_eq!(hosts[0].macs, vec!["hmac-sha2-256", "hmac-sha2-512"]);
     }
 }
