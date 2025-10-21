@@ -38,22 +38,72 @@ pub(super) fn parse(content: &str) -> Result<Vec<SshHostConfig>> {
 
         // Split line into keyword and arguments
         // Support both "Option Value" and "Option=Value" syntax
-        let (keyword, args) = if let Some(eq_pos) = line.find('=') {
+
+        // First, check if this line uses equals syntax
+        // We need to handle Host directive specially since it shouldn't use equals syntax
+        let trimmed_line = line.trim_start();
+        let first_word = trimmed_line
+            .split_whitespace()
+            .next()
+            .unwrap_or("")
+            .to_lowercase();
+        let uses_equals_syntax = if first_word == "host" {
+            // Host directive should never use equals syntax
+            false
+        } else {
+            // Check for equals sign in the line
+            line.contains('=')
+        };
+
+        let (keyword, args) = if uses_equals_syntax {
             // Option=Value syntax
-            let key_part = line[..eq_pos].trim();
-            let value_part = line[eq_pos + 1..].trim();
+            if let Some(eq_pos) = line.find('=') {
+                let key_part = line[..eq_pos].trim();
+                let value_part = &line[eq_pos + 1..]; // Don't trim yet to preserve leading/trailing spaces if quoted
 
-            // Extract keyword (first word before =)
-            let keyword = key_part.split_whitespace().next().unwrap_or("");
+                // Extract keyword - for equals syntax, the keyword is everything before the =
+                // after trimming whitespace
+                let keyword = key_part;
 
-            // For values, split by whitespace to maintain consistency with space-separated syntax
-            let args: Vec<&str> = if value_part.is_empty() {
-                vec![]
+                // Skip if we have an empty keyword (e.g., "=value" or "  =value")
+                if keyword.is_empty() {
+                    tracing::debug!("Ignoring line with empty keyword at line {}", line_number);
+                    continue;
+                }
+
+                // For equals syntax, treat everything after '=' as a single value
+                // This preserves values containing spaces, equals signs, etc.
+                let trimmed_value = value_part.trim();
+                let args: Vec<&str> = if trimmed_value.is_empty() {
+                    // Empty value after equals - still pass empty vec
+                    // Individual options will handle this appropriately
+                    vec![]
+                } else {
+                    // Special handling for options that expect comma-separated values
+                    match keyword.to_lowercase().as_str() {
+                        "ciphers"
+                        | "macs"
+                        | "hostkeyalgorithms"
+                        | "kexalgorithms"
+                        | "preferredauthentications"
+                        | "protocol" => {
+                            // These options expect comma-separated values
+                            // Split on comma but preserve the values
+                            trimmed_value.split(',').map(|s| s.trim()).collect()
+                        }
+                        _ => {
+                            // For other options, keep the value as-is
+                            // This preserves values with spaces, equals, etc.
+                            vec![trimmed_value]
+                        }
+                    }
+                };
+
+                (keyword.to_lowercase(), args)
             } else {
-                value_part.split_whitespace().collect()
-            };
-
-            (keyword.to_lowercase(), args)
+                // This shouldn't happen given our check above, but handle gracefully
+                continue;
+            }
         } else {
             // Option Value syntax (space-separated)
             let parts: Vec<&str> = line.split_whitespace().collect();
@@ -366,17 +416,27 @@ pub(super) fn parse_option(
             host.send_env.extend(args.iter().map(|s| s.to_string()));
         }
         "setenv" => {
-            if args.len() < 2 {
-                anyhow::bail!("SetEnv requires name=value at line {line_number}");
+            if args.is_empty() {
+                anyhow::bail!("SetEnv requires at least one name=value pair at line {line_number}");
             }
-            for arg in args {
-                if let Some(eq_pos) = arg.find('=') {
-                    let name = arg[..eq_pos].to_string();
-                    let value = arg[eq_pos + 1..].to_string();
+            // SetEnv can have multiple name=value pairs
+            // If we have a single arg (from equals syntax), it might contain multiple pairs
+            let pairs: Vec<&str> = if args.len() == 1 && args[0].contains('=') {
+                // Single arg from equals syntax - might have multiple name=value pairs
+                args[0].split_whitespace().collect()
+            } else {
+                // Multiple args from space syntax
+                args.to_vec()
+            };
+
+            for pair in pairs {
+                if let Some(eq_pos) = pair.find('=') {
+                    let name = pair[..eq_pos].to_string();
+                    let value = pair[eq_pos + 1..].to_string();
                     host.set_env.insert(name, value);
                 } else {
                     anyhow::bail!(
-                        "Invalid SetEnv format '{arg}' at line {line_number} (expected name=value)"
+                        "Invalid SetEnv format '{pair}' at line {line_number} (expected name=value)"
                     );
                 }
             }
@@ -641,5 +701,97 @@ Host example.com
             vec!["aes128-ctr", "aes192-ctr", "aes256-ctr"]
         );
         assert_eq!(hosts[0].macs, vec!["hmac-sha2-256", "hmac-sha2-512"]);
+    }
+
+    #[test]
+    fn test_parse_equals_with_multiple_equals_in_value() {
+        // Test that values containing equals signs are preserved
+        let content = r#"
+Host example.com
+    ProxyCommand=ssh -o StrictHostKeyChecking=no proxy
+    User=test=user=name
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+        // ProxyCommand should preserve the entire value including the equals sign
+        // Note: This will fail security validation but parsing should work
+        assert_eq!(
+            hosts[0].proxy_command,
+            Some("ssh -o StrictHostKeyChecking=no proxy".to_string())
+        );
+        assert_eq!(hosts[0].user, Some("test=user=name".to_string()));
+    }
+
+    #[test]
+    fn test_parse_equals_with_empty_value() {
+        // Test empty values after equals - should result in error per SSH config spec
+        let content = r#"
+Host example.com
+    User=
+"#;
+        let result = parse(content);
+        // Empty value should cause an error because User requires a value
+        assert!(result.is_err());
+        // The error contains context about the line, and the caused-by contains the specific error
+        let err_msg = result.unwrap_err().to_string();
+        assert!(
+            err_msg.contains("User=") || err_msg.contains("User requires"),
+            "Expected error about User but got: {}",
+            err_msg
+        );
+
+        // Test with valid values
+        let content2 = r#"
+Host example.com
+    User=testuser
+"#;
+        let hosts = parse(content2).unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].user, Some("testuser".to_string()));
+    }
+
+    #[test]
+    fn test_parse_host_with_equals_in_pattern() {
+        // Test that Host directive doesn't trigger equals syntax parsing
+        let content = r#"
+Host example=test.com another=host.com
+    User=testuser
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+        // Host patterns should include the equals signs
+        assert_eq!(
+            hosts[0].host_patterns,
+            vec!["example=test.com", "another=host.com"]
+        );
+        assert_eq!(hosts[0].user, Some("testuser".to_string()));
+    }
+
+    #[test]
+    fn test_parse_empty_keyword_with_equals() {
+        // Test that lines starting with equals are ignored
+        let content = r#"
+Host example.com
+    =invalid
+    User=valid
+    = also_invalid
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+        // Only valid option should be parsed
+        assert_eq!(hosts[0].user, Some("valid".to_string()));
+    }
+
+    #[test]
+    fn test_parse_equals_preserves_spaces_in_value() {
+        // Test that spaces in values are preserved with equals syntax
+        let content = r#"
+Host example.com
+    HostName=my server.example.com
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+        // Spaces should be preserved in the value
+        assert_eq!(hosts[0].hostname, Some("my server.example.com".to_string()));
     }
 }
