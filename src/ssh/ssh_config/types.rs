@@ -112,6 +112,15 @@ pub struct SshHostConfig {
     // X11 forwarding
     pub forward_x11_timeout: Option<String>,
     pub forward_x11_trusted: Option<bool>,
+    // Phase 5: High-priority practical SSH config options
+    // Authentication & agent management
+    pub identities_only: Option<bool>,
+    pub add_keys_to_agent: Option<String>, // yes/no/ask/confirm
+    pub identity_agent: Option<String>,    // socket path or "none"
+    // Security & algorithm management
+    pub pubkey_accepted_algorithms: Vec<String>,
+    pub required_rsa_size: Option<u32>,
+    pub fingerprint_hash: Option<String>, // md5/sha256
 }
 
 impl fmt::Display for SshHostConfig {
