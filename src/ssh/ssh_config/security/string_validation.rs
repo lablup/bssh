@@ -217,10 +217,12 @@ fn validate_local_executable_command(
     let trimmed = value.trim();
 
     // Look for common data exfiltration or download patterns
+    // Note: rsync is allowed as it's a legitimate file sync tool commonly used with SSH
     let lower_value = value.to_lowercase();
     if lower_value.contains("curl ")
         || lower_value.contains("wget ")
-        || lower_value.contains("nc ")
+        || lower_value.contains(" nc ")  // Note the space to avoid matching 'sync'
+        || lower_value.starts_with("nc ")
         || lower_value.contains("netcat ")
         || lower_value.contains("socat ")
         || lower_value.contains("telnet ")

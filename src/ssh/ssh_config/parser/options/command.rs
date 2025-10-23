@@ -51,9 +51,13 @@ pub(super) fn parse_command_option(
             if args.is_empty() {
                 anyhow::bail!("RemoteCommand requires a value at line {line_number}");
             }
-            // RemoteCommand runs on the remote host, so no local validation needed
-            // Just store the full command string
-            host.remote_command = Some(args.join(" "));
+            let command = args.join(" ");
+
+            // Security: Warn about potentially dangerous patterns even though it runs remotely
+            // This helps prevent lateral movement attacks
+            validate_remote_command_warnings(&command, line_number);
+
+            host.remote_command = Some(command);
         }
         "knownhostscommand" => {
             if args.is_empty() {
@@ -102,6 +106,72 @@ pub(super) fn parse_command_option(
     Ok(())
 }
 
+/// Validate and warn about potentially dangerous RemoteCommand patterns
+///
+/// RemoteCommand executes on the remote host, so we don't block commands
+/// but we warn about suspicious patterns that could indicate attacks.
+fn validate_remote_command_warnings(command: &str, line_number: usize) {
+    let lower_command = command.to_lowercase();
+
+    // Warn about potential lateral movement attempts
+    if lower_command.contains("ssh ")
+        || lower_command.contains("scp ")
+        || lower_command.contains("rsync ")
+    {
+        tracing::warn!(
+            "RemoteCommand at line {} contains SSH/SCP/rsync command '{}'. \
+             This could be used for lateral movement attacks. \
+             Ensure this is intentional and the remote host is trusted.",
+            line_number,
+            command.split_whitespace().next().unwrap_or("")
+        );
+    }
+
+    // Warn about download/upload commands
+    if lower_command.contains("curl ")
+        || lower_command.contains("wget ")
+        || lower_command.contains("nc ")
+        || lower_command.contains("netcat ")
+    {
+        tracing::warn!(
+            "RemoteCommand at line {} contains network command '{}'. \
+             This could download malware or exfiltrate data from the remote host. \
+             Ensure this is intentional.",
+            line_number,
+            command.split_whitespace().next().unwrap_or("")
+        );
+    }
+
+    // Warn about privilege escalation attempts
+    if lower_command.contains("sudo ")
+        || lower_command.contains("su ")
+        || lower_command.contains("doas ")
+        || lower_command.contains("pkexec ")
+    {
+        tracing::warn!(
+            "RemoteCommand at line {} contains privilege escalation command '{}'. \
+             Verify that elevated privileges are necessary and properly authorized.",
+            line_number,
+            command.split_whitespace().next().unwrap_or("")
+        );
+    }
+
+    // Warn about system modification commands
+    if lower_command.contains("chmod ")
+        || lower_command.contains("chown ")
+        || lower_command.contains("usermod ")
+        || lower_command.contains("adduser ")
+        || lower_command.contains("useradd ")
+    {
+        tracing::warn!(
+            "RemoteCommand at line {} modifies system configuration with '{}'. \
+             Ensure these changes are authorized and necessary.",
+            line_number,
+            command.split_whitespace().next().unwrap_or("")
+        );
+    }
+}
+
 /// Validate command strings that support token substitution
 ///
 /// This function validates commands while allowing SSH token substitution patterns.
@@ -123,6 +193,42 @@ fn validate_command_with_tokens(
     // First, check if the command is empty or just whitespace
     if command.trim().is_empty() {
         anyhow::bail!("{option_name} cannot be empty at line {line_number}");
+    }
+
+    // Security: Check for excessive token usage that could cause DoS
+    // Count the number of tokens (excluding %%)
+    let token_count = command.matches("%h").count()
+        + command.matches("%H").count()
+        + command.matches("%n").count()
+        + command.matches("%p").count()
+        + command.matches("%r").count()
+        + command.matches("%u").count();
+
+    const MAX_TOKENS: usize = 50; // Reasonable limit for token expansion
+    if token_count > MAX_TOKENS {
+        anyhow::bail!(
+            "Security violation: {} contains excessive token usage ({} tokens) at line {}. \
+             Maximum allowed is {} tokens to prevent resource exhaustion.",
+            option_name,
+            token_count,
+            line_number,
+            MAX_TOKENS
+        );
+    }
+
+    // Check command length after potential expansion (worst case)
+    // Assume each token could expand to 255 chars (max hostname/username length)
+    const MAX_EXPANDED_LENGTH: usize = 8192; // 8KB reasonable limit
+    let potential_length = command.len() + (token_count * 255);
+    if potential_length > MAX_EXPANDED_LENGTH {
+        anyhow::bail!(
+            "Security violation: {} could expand to {} bytes at line {}. \
+             Maximum allowed expanded length is {} bytes.",
+            option_name,
+            potential_length,
+            line_number,
+            MAX_EXPANDED_LENGTH
+        );
     }
 
     // Validate tokens before substitution
@@ -178,11 +284,10 @@ fn validate_command_with_tokens(
         sanitized = sanitized.replace(token, replacement);
     }
 
-    // Don't restore %% yet - we want to validate without literal % characters
-    // The validation function will check for dangerous patterns
+    // Restore the %% marker as a single % for accurate validation
+    sanitized = sanitized.replace("__DOUBLE_PERCENT__", "%");
 
     // Now validate the sanitized command for injection attacks
-    // We pass a version without any % characters to avoid false positives
     validate_executable_string(&sanitized, option_name, line_number).with_context(|| {
         format!("Security validation failed for {option_name} at line {line_number}")
     })
@@ -241,6 +346,29 @@ mod tests {
 
         // Command with pipe
         assert!(validate_command_with_tokens("ls | grep test", "LocalCommand", 1).is_err());
+    }
+
+    #[test]
+    fn test_validate_command_token_rate_limiting() {
+        // Excessive token usage (DoS prevention)
+        let many_tokens = "%h".repeat(100); // 100 tokens
+        assert!(validate_command_with_tokens(&many_tokens, "LocalCommand", 1).is_err());
+
+        // Under both token count and expansion size limits
+        let ok_tokens = format!("echo {}", "%h ".repeat(20)); // 20 tokens, expands to ~5KB
+        assert!(validate_command_with_tokens(&ok_tokens, "LocalCommand", 1).is_ok());
+
+        // Token count OK but would expand to huge size
+        let huge_expansion = format!("{} {}", "%h".repeat(30), "x".repeat(1000));
+        assert!(validate_command_with_tokens(&huge_expansion, "LocalCommand", 1).is_err());
+
+        // Exactly at token limit (50 tokens) but would exceed size after expansion
+        let at_limit = "%p ".repeat(50);
+        assert!(validate_command_with_tokens(&at_limit, "LocalCommand", 1).is_err());
+
+        // Just over token limit (51 tokens)
+        let over_limit = "%p ".repeat(51);
+        assert!(validate_command_with_tokens(&over_limit, "LocalCommand", 1).is_err());
     }
 
     #[test]
