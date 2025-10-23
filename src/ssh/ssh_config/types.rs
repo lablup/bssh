@@ -77,6 +77,14 @@ pub struct SshHostConfig {
     pub control_master: Option<String>,
     pub control_path: Option<String>,
     pub control_persist: Option<String>,
+    // Phase 2: Certificate authentication and advanced port forwarding
+    pub certificate_files: Vec<PathBuf>,
+    pub ca_signature_algorithms: Vec<String>,
+    pub gateway_ports: Option<String>,
+    pub exit_on_forward_failure: Option<bool>,
+    pub permit_remote_open: Vec<String>,
+    pub hostbased_authentication: Option<bool>,
+    pub hostbased_accepted_algorithms: Vec<String>,
 }
 
 impl fmt::Display for SshHostConfig {

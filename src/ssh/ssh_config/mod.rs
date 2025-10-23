@@ -30,7 +30,11 @@ mod parser;
 mod path;
 mod pattern;
 mod resolver;
+#[cfg(test)]
+mod resolver_tests;
 mod security;
+#[cfg(test)]
+mod security_fix_tests;
 mod types;
 
 // Re-export public types
@@ -245,5 +249,99 @@ Host test.example.com
         assert_eq!(config.hosts[0].host_patterns, vec!["test.example.com"]);
         assert_eq!(config.hosts[0].user, Some("testuser".to_string()));
         assert_eq!(config.hosts[0].port, Some(2222));
+    }
+
+    #[test]
+    fn test_parse_phase2_certificate_and_forwarding_options() {
+        // Test parsing of Phase 2 options: certificate authentication and advanced port forwarding
+        let config_content = r#"
+Host *.secure.example.com
+    CertificateFile ~/.ssh/id_rsa-cert.pub
+    CASignatureAlgorithms ssh-ed25519,rsa-sha2-512
+    GatewayPorts yes
+    ExitOnForwardFailure yes
+    HostbasedAuthentication yes
+    HostbasedAcceptedAlgorithms ssh-ed25519,rsa-sha2-512
+
+Host web1.secure.example.com
+    CertificateFile /etc/ssh/host-cert.pub
+    PermitRemoteOpen localhost:8080 db.internal:5432
+    GatewayPorts clientspecified
+"#;
+
+        let config = SshConfig::parse(config_content).unwrap();
+        assert_eq!(config.hosts.len(), 2);
+
+        // Verify first host (*.secure.example.com)
+        let host1 = &config.hosts[0];
+        assert_eq!(host1.certificate_files.len(), 1);
+        assert!(host1.certificate_files[0]
+            .to_string_lossy()
+            .contains("id_rsa-cert.pub"));
+        assert_eq!(host1.ca_signature_algorithms.len(), 2);
+        assert_eq!(host1.ca_signature_algorithms[0], "ssh-ed25519");
+        assert_eq!(host1.ca_signature_algorithms[1], "rsa-sha2-512");
+        assert_eq!(host1.gateway_ports, Some("yes".to_string()));
+        assert_eq!(host1.exit_on_forward_failure, Some(true));
+        assert_eq!(host1.hostbased_authentication, Some(true));
+        assert_eq!(host1.hostbased_accepted_algorithms.len(), 2);
+
+        // Verify second host (web1.secure.example.com)
+        let host2 = &config.hosts[1];
+        assert_eq!(host2.certificate_files.len(), 1);
+        assert!(host2.certificate_files[0]
+            .to_string_lossy()
+            .contains("host-cert.pub"));
+        assert_eq!(host2.permit_remote_open.len(), 2);
+        assert_eq!(host2.permit_remote_open[0], "localhost:8080");
+        assert_eq!(host2.permit_remote_open[1], "db.internal:5432");
+        assert_eq!(host2.gateway_ports, Some("clientspecified".to_string()));
+    }
+
+    #[test]
+    fn test_merge_phase2_options() {
+        // Test that Phase 2 options are properly merged according to SSH config precedence
+        let config_content = r#"
+Host *.example.com
+    CertificateFile ~/.ssh/default-cert.pub
+    CASignatureAlgorithms ssh-ed25519
+    GatewayPorts no
+    HostbasedAuthentication no
+
+Host web*.example.com
+    CertificateFile ~/.ssh/web-cert.pub
+    GatewayPorts yes
+    PermitRemoteOpen localhost:8080
+
+Host web1.example.com
+    CASignatureAlgorithms rsa-sha2-512,rsa-sha2-256
+    ExitOnForwardFailure yes
+"#;
+
+        let config = SshConfig::parse(config_content).unwrap();
+
+        // Test merging for web1.example.com (should get configs from all three blocks)
+        let host_config = config.find_host_config("web1.example.com");
+
+        // Should have certificate files from both *.example.com and web*.example.com (appended)
+        assert_eq!(host_config.certificate_files.len(), 2);
+
+        // CASignatureAlgorithms should be from web1.example.com (most specific)
+        assert_eq!(host_config.ca_signature_algorithms.len(), 2);
+        assert_eq!(host_config.ca_signature_algorithms[0], "rsa-sha2-512");
+        assert_eq!(host_config.ca_signature_algorithms[1], "rsa-sha2-256");
+
+        // GatewayPorts should be from web*.example.com
+        assert_eq!(host_config.gateway_ports, Some("yes".to_string()));
+
+        // ExitOnForwardFailure should be from web1.example.com
+        assert_eq!(host_config.exit_on_forward_failure, Some(true));
+
+        // PermitRemoteOpen should be from web*.example.com
+        assert_eq!(host_config.permit_remote_open.len(), 1);
+        assert_eq!(host_config.permit_remote_open[0], "localhost:8080");
+
+        // HostbasedAuthentication should be from *.example.com
+        assert_eq!(host_config.hostbased_authentication, Some(false));
     }
 }
