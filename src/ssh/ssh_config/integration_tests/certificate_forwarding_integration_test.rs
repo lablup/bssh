@@ -12,7 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Integration tests for Phase 2 SSH config options (Include + Match + new options)
+//! Integration tests for certificate authentication and advanced port forwarding options
+//!
+//! Tests the interaction of Include, Match, and Host directives with:
+//! - Certificate-based authentication (CertificateFile, CASignatureAlgorithms)
+//! - Host-based authentication (HostbasedAuthentication, HostbasedAcceptedAlgorithms)
+//! - Advanced port forwarding (GatewayPorts, ExitOnForwardFailure, PermitRemoteOpen)
 
 #[cfg(test)]
 pub(crate) mod tests {
