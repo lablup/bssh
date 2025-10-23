@@ -679,6 +679,74 @@ pub(super) fn parse_option(
             }
             host.control_persist = Some(args[0].clone());
         }
+        "certificatefile" => {
+            if args.is_empty() {
+                anyhow::bail!("CertificateFile requires a value at line {line_number}");
+            }
+            let path = secure_validate_path(&args[0], "certificate", line_number)
+                .with_context(|| format!("Invalid CertificateFile path at line {line_number}"))?;
+            host.certificate_files.push(path);
+        }
+        "casignaturealgorithms" => {
+            if args.is_empty() {
+                anyhow::bail!("CASignatureAlgorithms requires a value at line {line_number}");
+            }
+            host.ca_signature_algorithms = args
+                .join(",")
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .collect();
+        }
+        "gatewayports" => {
+            if args.is_empty() {
+                anyhow::bail!("GatewayPorts requires a value at line {line_number}");
+            }
+            // Validate GatewayPorts value (yes, no, or clientspecified)
+            let value = args[0].to_lowercase();
+            match value.as_str() {
+                "yes" | "no" | "clientspecified" => {
+                    host.gateway_ports = Some(value);
+                }
+                _ => {
+                    anyhow::bail!(
+                        "Invalid GatewayPorts value '{}' at line {} (expected yes, no, or clientspecified)",
+                        args[0],
+                        line_number
+                    );
+                }
+            }
+        }
+        "exitonforwardfailure" => {
+            if args.is_empty() {
+                anyhow::bail!("ExitOnForwardFailure requires a value at line {line_number}");
+            }
+            host.exit_on_forward_failure = Some(parse_yes_no(&args[0], line_number)?);
+        }
+        "permitremoteopen" => {
+            if args.is_empty() {
+                anyhow::bail!("PermitRemoteOpen requires at least one value at line {line_number}");
+            }
+            // PermitRemoteOpen can have multiple host:port patterns or special values
+            // Support both space-separated and single value
+            host.permit_remote_open
+                .extend(args.iter().map(|s| s.to_string()));
+        }
+        "hostbasedauthentication" => {
+            if args.is_empty() {
+                anyhow::bail!("HostbasedAuthentication requires a value at line {line_number}");
+            }
+            host.hostbased_authentication = Some(parse_yes_no(&args[0], line_number)?);
+        }
+        "hostbasedacceptedalgorithms" => {
+            if args.is_empty() {
+                anyhow::bail!("HostbasedAcceptedAlgorithms requires a value at line {line_number}");
+            }
+            host.hostbased_accepted_algorithms = args
+                .join(",")
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .collect();
+        }
         _ => {
             // Unknown option - log a warning but continue
             tracing::warn!(
@@ -1154,5 +1222,459 @@ Host db.example.com
         assert_eq!(hosts[2].host_patterns, vec!["db.example.com"]);
         assert_eq!(hosts[2].user, Some("dbuser".to_string()));
         assert_eq!(hosts[2].port, Some(5432));
+    }
+
+    #[test]
+    fn test_parse_certificate_file() {
+        let content = r#"
+Host example.com
+    CertificateFile ~/.ssh/id_rsa-cert.pub
+    CertificateFile /etc/ssh/host-cert.pub
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].certificate_files.len(), 2);
+        // Paths should be validated and stored
+        assert!(hosts[0].certificate_files[0]
+            .to_string_lossy()
+            .contains("id_rsa-cert.pub"));
+        assert!(hosts[0].certificate_files[1]
+            .to_string_lossy()
+            .contains("host-cert.pub"));
+    }
+
+    #[test]
+    fn test_parse_certificate_file_with_equals() {
+        // Test Option=Value syntax
+        let content = r#"
+Host example.com
+    CertificateFile=~/.ssh/id_ed25519-cert.pub
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].certificate_files.len(), 1);
+        assert!(hosts[0].certificate_files[0]
+            .to_string_lossy()
+            .contains("id_ed25519-cert.pub"));
+    }
+
+    #[test]
+    fn test_parse_ca_signature_algorithms() {
+        let content = r#"
+Host example.com
+    CASignatureAlgorithms ssh-ed25519,rsa-sha2-512,rsa-sha2-256
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].ca_signature_algorithms.len(), 3);
+        assert_eq!(hosts[0].ca_signature_algorithms[0], "ssh-ed25519");
+        assert_eq!(hosts[0].ca_signature_algorithms[1], "rsa-sha2-512");
+        assert_eq!(hosts[0].ca_signature_algorithms[2], "rsa-sha2-256");
+    }
+
+    #[test]
+    fn test_parse_ca_signature_algorithms_with_spaces() {
+        // Test space-separated algorithms (each becomes separate arg, joined with commas, then split)
+        let content = r#"
+Host example.com
+    CASignatureAlgorithms ssh-ed25519 rsa-sha2-512 rsa-sha2-256
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].ca_signature_algorithms.len(), 3);
+        assert_eq!(hosts[0].ca_signature_algorithms[0], "ssh-ed25519");
+        assert_eq!(hosts[0].ca_signature_algorithms[1], "rsa-sha2-512");
+        assert_eq!(hosts[0].ca_signature_algorithms[2], "rsa-sha2-256");
+    }
+
+    #[test]
+    fn test_parse_ca_signature_algorithms_with_equals() {
+        let content = r#"
+Host example.com
+    CASignatureAlgorithms=ecdsa-sha2-nistp256,ecdsa-sha2-nistp384
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].ca_signature_algorithms.len(), 2);
+        assert_eq!(hosts[0].ca_signature_algorithms[0], "ecdsa-sha2-nistp256");
+        assert_eq!(hosts[0].ca_signature_algorithms[1], "ecdsa-sha2-nistp384");
+    }
+
+    #[test]
+    fn test_parse_gateway_ports_yes() {
+        let content = r#"
+Host example.com
+    GatewayPorts yes
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].gateway_ports, Some("yes".to_string()));
+    }
+
+    #[test]
+    fn test_parse_gateway_ports_no() {
+        let content = r#"
+Host example.com
+    GatewayPorts no
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].gateway_ports, Some("no".to_string()));
+    }
+
+    #[test]
+    fn test_parse_gateway_ports_clientspecified() {
+        let content = r#"
+Host example.com
+    GatewayPorts clientspecified
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].gateway_ports, Some("clientspecified".to_string()));
+    }
+
+    #[test]
+    fn test_parse_gateway_ports_case_insensitive() {
+        // Should normalize to lowercase
+        let content = r#"
+Host example.com
+    GatewayPorts ClientSpecified
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].gateway_ports, Some("clientspecified".to_string()));
+    }
+
+    #[test]
+    fn test_parse_gateway_ports_invalid() {
+        let content = r#"
+Host example.com
+    GatewayPorts invalid
+"#;
+        let result = parse(content);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        // Error should mention GatewayPorts and the invalid value
+        assert!(err_msg.contains("GatewayPorts") || err_msg.contains("gatewayports"));
+        assert!(err_msg.contains("invalid"));
+    }
+
+    #[test]
+    fn test_parse_gateway_ports_with_equals() {
+        let content = r#"
+Host example.com
+    GatewayPorts=yes
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].gateway_ports, Some("yes".to_string()));
+    }
+
+    #[test]
+    fn test_parse_exit_on_forward_failure() {
+        let content = r#"
+Host example.com
+    ExitOnForwardFailure yes
+
+Host other.com
+    ExitOnForwardFailure no
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 2);
+        assert_eq!(hosts[0].exit_on_forward_failure, Some(true));
+        assert_eq!(hosts[1].exit_on_forward_failure, Some(false));
+    }
+
+    #[test]
+    fn test_parse_exit_on_forward_failure_with_equals() {
+        let content = r#"
+Host example.com
+    ExitOnForwardFailure=yes
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].exit_on_forward_failure, Some(true));
+    }
+
+    #[test]
+    fn test_parse_permit_remote_open_single() {
+        let content = r#"
+Host example.com
+    PermitRemoteOpen localhost:8080
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].permit_remote_open.len(), 1);
+        assert_eq!(hosts[0].permit_remote_open[0], "localhost:8080");
+    }
+
+    #[test]
+    fn test_parse_permit_remote_open_multiple() {
+        let content = r#"
+Host example.com
+    PermitRemoteOpen localhost:8080 db.internal:5432 cache.internal:6379
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].permit_remote_open.len(), 3);
+        assert_eq!(hosts[0].permit_remote_open[0], "localhost:8080");
+        assert_eq!(hosts[0].permit_remote_open[1], "db.internal:5432");
+        assert_eq!(hosts[0].permit_remote_open[2], "cache.internal:6379");
+    }
+
+    #[test]
+    fn test_parse_permit_remote_open_special_values() {
+        // Test special values like 'any' and 'none'
+        let content = r#"
+Host example.com
+    PermitRemoteOpen any
+
+Host other.com
+    PermitRemoteOpen none
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 2);
+        assert_eq!(hosts[0].permit_remote_open, vec!["any"]);
+        assert_eq!(hosts[1].permit_remote_open, vec!["none"]);
+    }
+
+    #[test]
+    fn test_parse_permit_remote_open_multiple_declarations() {
+        // Multiple PermitRemoteOpen lines should accumulate
+        let content = r#"
+Host example.com
+    PermitRemoteOpen localhost:8080
+    PermitRemoteOpen db.internal:5432
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].permit_remote_open.len(), 2);
+        assert_eq!(hosts[0].permit_remote_open[0], "localhost:8080");
+        assert_eq!(hosts[0].permit_remote_open[1], "db.internal:5432");
+    }
+
+    #[test]
+    fn test_parse_permit_remote_open_with_equals() {
+        let content = r#"
+Host example.com
+    PermitRemoteOpen=localhost:8080
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].permit_remote_open, vec!["localhost:8080"]);
+    }
+
+    #[test]
+    fn test_parse_hostbased_authentication() {
+        let content = r#"
+Host example.com
+    HostbasedAuthentication yes
+
+Host other.com
+    HostbasedAuthentication no
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 2);
+        assert_eq!(hosts[0].hostbased_authentication, Some(true));
+        assert_eq!(hosts[1].hostbased_authentication, Some(false));
+    }
+
+    #[test]
+    fn test_parse_hostbased_authentication_with_equals() {
+        let content = r#"
+Host example.com
+    HostbasedAuthentication=yes
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].hostbased_authentication, Some(true));
+    }
+
+    #[test]
+    fn test_parse_hostbased_accepted_algorithms() {
+        let content = r#"
+Host example.com
+    HostbasedAcceptedAlgorithms ssh-ed25519,rsa-sha2-512
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].hostbased_accepted_algorithms.len(), 2);
+        assert_eq!(hosts[0].hostbased_accepted_algorithms[0], "ssh-ed25519");
+        assert_eq!(hosts[0].hostbased_accepted_algorithms[1], "rsa-sha2-512");
+    }
+
+    #[test]
+    fn test_parse_hostbased_accepted_algorithms_with_spaces() {
+        // Test space-separated algorithms
+        let content = r#"
+Host example.com
+    HostbasedAcceptedAlgorithms ssh-ed25519 rsa-sha2-512 ecdsa-sha2-nistp256
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].hostbased_accepted_algorithms.len(), 3);
+        assert_eq!(hosts[0].hostbased_accepted_algorithms[0], "ssh-ed25519");
+        assert_eq!(hosts[0].hostbased_accepted_algorithms[1], "rsa-sha2-512");
+        assert_eq!(
+            hosts[0].hostbased_accepted_algorithms[2],
+            "ecdsa-sha2-nistp256"
+        );
+    }
+
+    #[test]
+    fn test_parse_hostbased_accepted_algorithms_with_equals() {
+        let content = r#"
+Host example.com
+    HostbasedAcceptedAlgorithms=ssh-rsa,ssh-dss
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+        assert_eq!(hosts[0].hostbased_accepted_algorithms.len(), 2);
+        assert_eq!(hosts[0].hostbased_accepted_algorithms[0], "ssh-rsa");
+        assert_eq!(hosts[0].hostbased_accepted_algorithms[1], "ssh-dss");
+    }
+
+    #[test]
+    fn test_parse_all_new_options_combined() {
+        // Test all new options together in a realistic scenario
+        let content = r#"
+Host secure.example.com
+    CertificateFile ~/.ssh/id_rsa-cert.pub
+    CASignatureAlgorithms ssh-ed25519,rsa-sha2-512
+    GatewayPorts clientspecified
+    ExitOnForwardFailure yes
+    PermitRemoteOpen localhost:8080 db.internal:5432
+    HostbasedAuthentication yes
+    HostbasedAcceptedAlgorithms ssh-ed25519,rsa-sha2-512,rsa-sha2-256
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+
+        // Verify all fields are parsed correctly
+        assert_eq!(hosts[0].certificate_files.len(), 1);
+        assert_eq!(hosts[0].ca_signature_algorithms.len(), 2);
+        assert_eq!(hosts[0].gateway_ports, Some("clientspecified".to_string()));
+        assert_eq!(hosts[0].exit_on_forward_failure, Some(true));
+        assert_eq!(hosts[0].permit_remote_open.len(), 2);
+        assert_eq!(hosts[0].hostbased_authentication, Some(true));
+        assert_eq!(hosts[0].hostbased_accepted_algorithms.len(), 3);
+    }
+
+    #[test]
+    fn test_parse_new_options_with_mixed_syntax() {
+        // Test mixing Option=Value and Option Value syntax
+        let content = r#"
+Host example.com
+    CertificateFile=~/.ssh/id_rsa-cert.pub
+    CASignatureAlgorithms ssh-ed25519,rsa-sha2-512
+    GatewayPorts=yes
+    ExitOnForwardFailure yes
+    PermitRemoteOpen=localhost:8080
+    HostbasedAuthentication=no
+    HostbasedAcceptedAlgorithms ssh-ed25519
+"#;
+        let hosts = parse(content).unwrap();
+        assert_eq!(hosts.len(), 1);
+
+        // Verify all fields are parsed correctly
+        assert_eq!(hosts[0].certificate_files.len(), 1);
+        assert_eq!(hosts[0].ca_signature_algorithms.len(), 2);
+        assert_eq!(hosts[0].gateway_ports, Some("yes".to_string()));
+        assert_eq!(hosts[0].exit_on_forward_failure, Some(true));
+        assert_eq!(hosts[0].permit_remote_open, vec!["localhost:8080"]);
+        assert_eq!(hosts[0].hostbased_authentication, Some(false));
+        assert_eq!(hosts[0].hostbased_accepted_algorithms.len(), 1);
+    }
+
+    #[test]
+    fn test_parse_certificate_file_empty_value() {
+        let content = r#"
+Host example.com
+    CertificateFile
+"#;
+        let result = parse(content);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        // Error message is wrapped with context, so check for both the line reference and the option name
+        assert!(err_msg.contains("CertificateFile"));
+        assert!(err_msg.contains("line 3"));
+    }
+
+    #[test]
+    fn test_parse_ca_signature_algorithms_empty_value() {
+        let content = r#"
+Host example.com
+    CASignatureAlgorithms
+"#;
+        let result = parse(content);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("CASignatureAlgorithms"));
+        assert!(err_msg.contains("line 3"));
+    }
+
+    #[test]
+    fn test_parse_gateway_ports_empty_value() {
+        let content = r#"
+Host example.com
+    GatewayPorts
+"#;
+        let result = parse(content);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("GatewayPorts"));
+        assert!(err_msg.contains("line 3"));
+    }
+
+    #[test]
+    fn test_parse_exit_on_forward_failure_empty_value() {
+        let content = r#"
+Host example.com
+    ExitOnForwardFailure
+"#;
+        let result = parse(content);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("ExitOnForwardFailure"));
+        assert!(err_msg.contains("line 3"));
+    }
+
+    #[test]
+    fn test_parse_permit_remote_open_empty_value() {
+        let content = r#"
+Host example.com
+    PermitRemoteOpen
+"#;
+        let result = parse(content);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("PermitRemoteOpen"));
+        assert!(err_msg.contains("line 3"));
+    }
+
+    #[test]
+    fn test_parse_hostbased_authentication_empty_value() {
+        let content = r#"
+Host example.com
+    HostbasedAuthentication
+"#;
+        let result = parse(content);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("HostbasedAuthentication"));
+        assert!(err_msg.contains("line 3"));
+    }
+
+    #[test]
+    fn test_parse_hostbased_accepted_algorithms_empty_value() {
+        let content = r#"
+Host example.com
+    HostbasedAcceptedAlgorithms
+"#;
+        let result = parse(content);
+        assert!(result.is_err());
+        let err_msg = result.unwrap_err().to_string();
+        assert!(err_msg.contains("HostbasedAcceptedAlgorithms"));
+        assert!(err_msg.contains("line 3"));
     }
 }

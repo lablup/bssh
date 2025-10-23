@@ -226,6 +226,32 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
     if overlay.control_persist.is_some() {
         base.control_persist = overlay.control_persist.clone();
     }
+    // Phase 2: Certificate authentication and advanced port forwarding options
+    if !overlay.certificate_files.is_empty() {
+        // For certificate files, we append them like identity files
+        base.certificate_files
+            .extend(overlay.certificate_files.iter().cloned());
+    }
+    if !overlay.ca_signature_algorithms.is_empty() {
+        base.ca_signature_algorithms = overlay.ca_signature_algorithms.clone();
+    }
+    if overlay.gateway_ports.is_some() {
+        base.gateway_ports = overlay.gateway_ports.clone();
+    }
+    if overlay.exit_on_forward_failure.is_some() {
+        base.exit_on_forward_failure = overlay.exit_on_forward_failure;
+    }
+    if !overlay.permit_remote_open.is_empty() {
+        // For PermitRemoteOpen, we append them
+        base.permit_remote_open
+            .extend(overlay.permit_remote_open.iter().cloned());
+    }
+    if overlay.hostbased_authentication.is_some() {
+        base.hostbased_authentication = overlay.hostbased_authentication;
+    }
+    if !overlay.hostbased_accepted_algorithms.is_empty() {
+        base.hostbased_accepted_algorithms = overlay.hostbased_accepted_algorithms.clone();
+    }
 }
 
 /// Get the effective hostname (resolves HostName directive)
