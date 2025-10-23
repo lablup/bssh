@@ -66,41 +66,298 @@ pub(super) fn parse_security_option(
             if args.is_empty() {
                 anyhow::bail!("HostKeyAlgorithms requires a value at line {line_number}");
             }
-            host.host_key_algorithms = args
-                .join(",")
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .collect();
+            const MAX_ALGORITHMS: usize = 50;
+            const MAX_ALGORITHM_NAME_LENGTH: usize = 256;
+
+            let mut algorithms = Vec::with_capacity(MAX_ALGORITHMS.min(args.len() * 2));
+            let mut total_count = 0;
+            let mut truncated = false;
+
+            for arg in args {
+                for algorithm in arg.split(',') {
+                    total_count += 1;
+
+                    if algorithms.len() >= MAX_ALGORITHMS {
+                        truncated = true;
+                        break;
+                    }
+
+                    let trimmed = algorithm.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+
+                    if trimmed.len() > MAX_ALGORITHM_NAME_LENGTH {
+                        tracing::warn!(
+                            "HostKeyAlgorithm name at line {} exceeds maximum length of {} characters, skipping",
+                            line_number, MAX_ALGORITHM_NAME_LENGTH
+                        );
+                        continue;
+                    }
+
+                    // Security: Validate algorithm name contains only safe characters
+                    if !trimmed.chars().all(|c| {
+                        c.is_ascii_alphanumeric()
+                            || c == '-'
+                            || c == '.'
+                            || c == '_'
+                            || c == '@'
+                            || c == '+'
+                    }) {
+                        anyhow::bail!(
+                            "HostKeyAlgorithms at line {} contains invalid characters in algorithm name '{}'. \
+                             Only alphanumeric characters, hyphens, dots, underscores, @ and + are allowed",
+                            line_number, trimmed
+                        );
+                    }
+
+                    algorithms.push(trimmed.to_string());
+                }
+                if truncated {
+                    break;
+                }
+            }
+
+            if truncated {
+                tracing::warn!(
+                    "HostKeyAlgorithms at line {} contains {} algorithms, truncated to first {}",
+                    line_number,
+                    total_count,
+                    MAX_ALGORITHMS
+                );
+            }
+
+            if algorithms.is_empty() {
+                anyhow::bail!(
+                    "HostKeyAlgorithms at line {} must contain at least one valid algorithm",
+                    line_number
+                );
+            }
+
+            host.host_key_algorithms = algorithms;
         }
         "kexalgorithms" => {
             if args.is_empty() {
                 anyhow::bail!("KexAlgorithms requires a value at line {line_number}");
             }
-            host.kex_algorithms = args
-                .join(",")
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .collect();
+            const MAX_ALGORITHMS: usize = 50;
+            const MAX_ALGORITHM_NAME_LENGTH: usize = 256;
+
+            let mut algorithms = Vec::with_capacity(MAX_ALGORITHMS.min(args.len() * 2));
+            let mut total_count = 0;
+            let mut truncated = false;
+
+            for arg in args {
+                for algorithm in arg.split(',') {
+                    total_count += 1;
+
+                    if algorithms.len() >= MAX_ALGORITHMS {
+                        truncated = true;
+                        break;
+                    }
+
+                    let trimmed = algorithm.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+
+                    if trimmed.len() > MAX_ALGORITHM_NAME_LENGTH {
+                        tracing::warn!(
+                            "KexAlgorithm name at line {} exceeds maximum length of {} characters, skipping",
+                            line_number, MAX_ALGORITHM_NAME_LENGTH
+                        );
+                        continue;
+                    }
+
+                    // Security: Validate algorithm name contains only safe characters
+                    if !trimmed.chars().all(|c| {
+                        c.is_ascii_alphanumeric()
+                            || c == '-'
+                            || c == '.'
+                            || c == '_'
+                            || c == '@'
+                            || c == '+'
+                    }) {
+                        anyhow::bail!(
+                            "KexAlgorithms at line {} contains invalid characters in algorithm name '{}'. \
+                             Only alphanumeric characters, hyphens, dots, underscores, @ and + are allowed",
+                            line_number, trimmed
+                        );
+                    }
+
+                    algorithms.push(trimmed.to_string());
+                }
+                if truncated {
+                    break;
+                }
+            }
+
+            if truncated {
+                tracing::warn!(
+                    "KexAlgorithms at line {} contains {} algorithms, truncated to first {}",
+                    line_number,
+                    total_count,
+                    MAX_ALGORITHMS
+                );
+            }
+
+            if algorithms.is_empty() {
+                anyhow::bail!(
+                    "KexAlgorithms at line {} must contain at least one valid algorithm",
+                    line_number
+                );
+            }
+
+            host.kex_algorithms = algorithms;
         }
         "ciphers" => {
             if args.is_empty() {
                 anyhow::bail!("Ciphers requires a value at line {line_number}");
             }
-            host.ciphers = args
-                .join(",")
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .collect();
+            const MAX_CIPHERS: usize = 50;
+            const MAX_CIPHER_NAME_LENGTH: usize = 256;
+
+            let mut ciphers = Vec::with_capacity(MAX_CIPHERS.min(args.len() * 2));
+            let mut total_count = 0;
+            let mut truncated = false;
+
+            for arg in args {
+                for cipher in arg.split(',') {
+                    total_count += 1;
+
+                    if ciphers.len() >= MAX_CIPHERS {
+                        truncated = true;
+                        break;
+                    }
+
+                    let trimmed = cipher.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+
+                    if trimmed.len() > MAX_CIPHER_NAME_LENGTH {
+                        tracing::warn!(
+                            "Cipher name at line {} exceeds maximum length of {} characters, skipping",
+                            line_number, MAX_CIPHER_NAME_LENGTH
+                        );
+                        continue;
+                    }
+
+                    // Security: Validate cipher name contains only safe characters
+                    if !trimmed.chars().all(|c| {
+                        c.is_ascii_alphanumeric()
+                            || c == '-'
+                            || c == '.'
+                            || c == '_'
+                            || c == '@'
+                            || c == '+'
+                    }) {
+                        anyhow::bail!(
+                            "Ciphers at line {} contains invalid characters in cipher name '{}'. \
+                             Only alphanumeric characters, hyphens, dots, underscores, @ and + are allowed",
+                            line_number, trimmed
+                        );
+                    }
+
+                    ciphers.push(trimmed.to_string());
+                }
+                if truncated {
+                    break;
+                }
+            }
+
+            if truncated {
+                tracing::warn!(
+                    "Ciphers at line {} contains {} ciphers, truncated to first {}",
+                    line_number,
+                    total_count,
+                    MAX_CIPHERS
+                );
+            }
+
+            if ciphers.is_empty() {
+                anyhow::bail!(
+                    "Ciphers at line {} must contain at least one valid cipher",
+                    line_number
+                );
+            }
+
+            host.ciphers = ciphers;
         }
         "macs" => {
             if args.is_empty() {
                 anyhow::bail!("MACs requires a value at line {line_number}");
             }
-            host.macs = args
-                .join(",")
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .collect();
+            const MAX_MACS: usize = 50;
+            const MAX_MAC_NAME_LENGTH: usize = 256;
+
+            let mut macs = Vec::with_capacity(MAX_MACS.min(args.len() * 2));
+            let mut total_count = 0;
+            let mut truncated = false;
+
+            for arg in args {
+                for mac in arg.split(',') {
+                    total_count += 1;
+
+                    if macs.len() >= MAX_MACS {
+                        truncated = true;
+                        break;
+                    }
+
+                    let trimmed = mac.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+
+                    if trimmed.len() > MAX_MAC_NAME_LENGTH {
+                        tracing::warn!(
+                            "MAC name at line {} exceeds maximum length of {} characters, skipping",
+                            line_number,
+                            MAX_MAC_NAME_LENGTH
+                        );
+                        continue;
+                    }
+
+                    // Security: Validate MAC name contains only safe characters
+                    if !trimmed.chars().all(|c| {
+                        c.is_ascii_alphanumeric()
+                            || c == '-'
+                            || c == '.'
+                            || c == '_'
+                            || c == '@'
+                            || c == '+'
+                    }) {
+                        anyhow::bail!(
+                            "MACs at line {} contains invalid characters in MAC name '{}'. \
+                             Only alphanumeric characters, hyphens, dots, underscores, @ and + are allowed",
+                            line_number, trimmed
+                        );
+                    }
+
+                    macs.push(trimmed.to_string());
+                }
+                if truncated {
+                    break;
+                }
+            }
+
+            if truncated {
+                tracing::warn!(
+                    "MACs at line {} contains {} MACs, truncated to first {}",
+                    line_number,
+                    total_count,
+                    MAX_MACS
+                );
+            }
+
+            if macs.is_empty() {
+                anyhow::bail!(
+                    "MACs at line {} must contain at least one valid MAC",
+                    line_number
+                );
+            }
+
+            host.macs = macs;
         }
         "casignaturealgorithms" => {
             if args.is_empty() {
@@ -108,18 +365,77 @@ pub(super) fn parse_security_option(
             }
             // Security: Limit the number of algorithms to prevent memory exhaustion
             const MAX_ALGORITHMS: usize = 50;
-            let algorithms: Vec<String> = args
-                .join(",")
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty()) // Skip empty strings from malformed input
-                .take(MAX_ALGORITHMS)
-                .collect();
+            const MAX_ALGORITHM_NAME_LENGTH: usize = 256;
 
-            if args.join(",").split(',').count() > MAX_ALGORITHMS {
+            let mut algorithms = Vec::with_capacity(MAX_ALGORITHMS.min(args.len() * 2));
+            let mut total_count = 0;
+            let mut truncated = false;
+
+            // Efficiently parse algorithms without creating unnecessary intermediate strings
+            for arg in args {
+                // Split each arg by comma and process
+                for algorithm in arg.split(',') {
+                    total_count += 1;
+
+                    // Stop processing if we've hit the limit
+                    if algorithms.len() >= MAX_ALGORITHMS {
+                        truncated = true;
+                        break;
+                    }
+
+                    let trimmed = algorithm.trim();
+
+                    // Skip empty strings from malformed input
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+
+                    // Security: Limit individual algorithm name length
+                    if trimmed.len() > MAX_ALGORITHM_NAME_LENGTH {
+                        tracing::warn!(
+                            "Algorithm name at line {} exceeds maximum length of {} characters, skipping",
+                            line_number, MAX_ALGORITHM_NAME_LENGTH
+                        );
+                        continue;
+                    }
+
+                    // Security: Validate algorithm name contains only safe characters
+                    // Allow alphanumeric, hyphens, dots, underscores, @ and +
+                    if !trimmed.chars().all(|c| {
+                        c.is_ascii_alphanumeric()
+                            || c == '-'
+                            || c == '.'
+                            || c == '_'
+                            || c == '@'
+                            || c == '+'
+                    }) {
+                        anyhow::bail!(
+                            "CASignatureAlgorithms at line {} contains invalid characters in algorithm name '{}'. \
+                             Only alphanumeric characters, hyphens, dots, underscores, @ and + are allowed",
+                            line_number, trimmed
+                        );
+                    }
+
+                    algorithms.push(trimmed.to_string());
+                }
+
+                if truncated {
+                    break;
+                }
+            }
+
+            if truncated {
                 tracing::warn!(
-                    "CASignatureAlgorithms at line {} contains more than {} algorithms, truncated to first {}",
-                    line_number, MAX_ALGORITHMS, MAX_ALGORITHMS
+                    "CASignatureAlgorithms at line {} contains {} algorithms, truncated to first {}",
+                    line_number, total_count, MAX_ALGORITHMS
+                );
+            }
+
+            // Ensure we have at least one algorithm
+            if algorithms.is_empty() {
+                anyhow::bail!(
+                    "CASignatureAlgorithms at line {} must contain at least one valid algorithm",
+                    line_number
                 );
             }
 

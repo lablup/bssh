@@ -63,8 +63,30 @@ pub(super) fn parse_authentication_option(
                 anyhow::bail!("IdentityAgent requires a value at line {line_number}");
             }
             // IdentityAgent can be a socket path or special value "none" or "SSH_AUTH_SOCK"
-            let value = args[0].to_string();
-            if value.to_lowercase() != "none" && value != "SSH_AUTH_SOCK" {
+            let value = &args[0];
+
+            // Security: Validate special values first
+            if value.to_lowercase() == "none" || value == "SSH_AUTH_SOCK" {
+                host.identity_agent = Some(value.to_string());
+            } else {
+                // Security: Check for path traversal attempts without expanding the path
+                if value.contains("../") || value.contains("..\\") {
+                    anyhow::bail!(
+                        "Security violation: IdentityAgent path contains directory traversal sequence '..' at line {}. \
+                         Path traversal attacks are not allowed.",
+                        line_number
+                    );
+                }
+
+                // Check for null bytes and other dangerous characters
+                if value.contains('\0') {
+                    anyhow::bail!(
+                        "Security violation: IdentityAgent path contains null byte at line {}. \
+                         This could be used for path truncation attacks.",
+                        line_number
+                    );
+                }
+
                 // Validate it looks like a path (contains / or starts with ~)
                 if !value.contains('/') && !value.starts_with('~') {
                     tracing::warn!(
@@ -73,8 +95,10 @@ pub(super) fn parse_authentication_option(
                         line_number
                     );
                 }
+
+                // Store the original path format (validation happens at usage time)
+                host.identity_agent = Some(value.to_string());
             }
-            host.identity_agent = Some(value);
         }
         "pubkeyacceptedalgorithms" => {
             if args.is_empty() {
@@ -82,18 +106,77 @@ pub(super) fn parse_authentication_option(
             }
             // Security: Limit the number of algorithms to prevent memory exhaustion
             const MAX_ALGORITHMS: usize = 50;
-            let algorithms: Vec<String> = args
-                .join(",")
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty()) // Skip empty strings from malformed input
-                .take(MAX_ALGORITHMS)
-                .collect();
+            const MAX_ALGORITHM_NAME_LENGTH: usize = 256;
 
-            if args.join(",").split(',').count() > MAX_ALGORITHMS {
+            let mut algorithms = Vec::with_capacity(MAX_ALGORITHMS.min(args.len() * 2));
+            let mut total_count = 0;
+            let mut truncated = false;
+
+            // Efficiently parse algorithms without creating unnecessary intermediate strings
+            for arg in args {
+                // Split each arg by comma and process
+                for algorithm in arg.split(',') {
+                    total_count += 1;
+
+                    // Stop processing if we've hit the limit
+                    if algorithms.len() >= MAX_ALGORITHMS {
+                        truncated = true;
+                        break;
+                    }
+
+                    let trimmed = algorithm.trim();
+
+                    // Skip empty strings from malformed input
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+
+                    // Security: Limit individual algorithm name length
+                    if trimmed.len() > MAX_ALGORITHM_NAME_LENGTH {
+                        tracing::warn!(
+                            "Algorithm name at line {} exceeds maximum length of {} characters, skipping",
+                            line_number, MAX_ALGORITHM_NAME_LENGTH
+                        );
+                        continue;
+                    }
+
+                    // Security: Validate algorithm name contains only safe characters
+                    // Allow alphanumeric, hyphens, dots, underscores, @ and +
+                    if !trimmed.chars().all(|c| {
+                        c.is_ascii_alphanumeric()
+                            || c == '-'
+                            || c == '.'
+                            || c == '_'
+                            || c == '@'
+                            || c == '+'
+                    }) {
+                        anyhow::bail!(
+                            "PubkeyAcceptedAlgorithms at line {} contains invalid characters in algorithm name '{}'. \
+                             Only alphanumeric characters, hyphens, dots, underscores, @ and + are allowed",
+                            line_number, trimmed
+                        );
+                    }
+
+                    algorithms.push(trimmed.to_string());
+                }
+
+                if truncated {
+                    break;
+                }
+            }
+
+            if truncated {
                 tracing::warn!(
-                    "PubkeyAcceptedAlgorithms at line {} contains more than {} algorithms, truncated to first {}",
-                    line_number, MAX_ALGORITHMS, MAX_ALGORITHMS
+                    "PubkeyAcceptedAlgorithms at line {} contains {} algorithms, truncated to first {}",
+                    line_number, total_count, MAX_ALGORITHMS
+                );
+            }
+
+            // Ensure we have at least one algorithm
+            if algorithms.is_empty() {
+                anyhow::bail!(
+                    "PubkeyAcceptedAlgorithms at line {} must contain at least one valid algorithm",
+                    line_number
                 );
             }
 
@@ -155,18 +238,77 @@ pub(super) fn parse_authentication_option(
             }
             // Security: Limit the number of algorithms to prevent memory exhaustion
             const MAX_ALGORITHMS: usize = 50;
-            let algorithms: Vec<String> = args
-                .join(",")
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty()) // Skip empty strings from malformed input
-                .take(MAX_ALGORITHMS)
-                .collect();
+            const MAX_ALGORITHM_NAME_LENGTH: usize = 256;
 
-            if args.join(",").split(',').count() > MAX_ALGORITHMS {
+            let mut algorithms = Vec::with_capacity(MAX_ALGORITHMS.min(args.len() * 2));
+            let mut total_count = 0;
+            let mut truncated = false;
+
+            // Efficiently parse algorithms without creating unnecessary intermediate strings
+            for arg in args {
+                // Split each arg by comma and process
+                for algorithm in arg.split(',') {
+                    total_count += 1;
+
+                    // Stop processing if we've hit the limit
+                    if algorithms.len() >= MAX_ALGORITHMS {
+                        truncated = true;
+                        break;
+                    }
+
+                    let trimmed = algorithm.trim();
+
+                    // Skip empty strings from malformed input
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+
+                    // Security: Limit individual algorithm name length
+                    if trimmed.len() > MAX_ALGORITHM_NAME_LENGTH {
+                        tracing::warn!(
+                            "Algorithm name at line {} exceeds maximum length of {} characters, skipping",
+                            line_number, MAX_ALGORITHM_NAME_LENGTH
+                        );
+                        continue;
+                    }
+
+                    // Security: Validate algorithm name contains only safe characters
+                    // Allow alphanumeric, hyphens, dots, underscores, @ and +
+                    if !trimmed.chars().all(|c| {
+                        c.is_ascii_alphanumeric()
+                            || c == '-'
+                            || c == '.'
+                            || c == '_'
+                            || c == '@'
+                            || c == '+'
+                    }) {
+                        anyhow::bail!(
+                            "HostbasedAcceptedAlgorithms at line {} contains invalid characters in algorithm name '{}'. \
+                             Only alphanumeric characters, hyphens, dots, underscores, @ and + are allowed",
+                            line_number, trimmed
+                        );
+                    }
+
+                    algorithms.push(trimmed.to_string());
+                }
+
+                if truncated {
+                    break;
+                }
+            }
+
+            if truncated {
                 tracing::warn!(
-                    "HostbasedAcceptedAlgorithms at line {} contains more than {} algorithms, truncated to first {}",
-                    line_number, MAX_ALGORITHMS, MAX_ALGORITHMS
+                    "HostbasedAcceptedAlgorithms at line {} contains {} algorithms, truncated to first {}",
+                    line_number, total_count, MAX_ALGORITHMS
+                );
+            }
+
+            // Ensure we have at least one algorithm
+            if algorithms.is_empty() {
+                anyhow::bail!(
+                    "HostbasedAcceptedAlgorithms at line {} must contain at least one valid algorithm",
+                    line_number
                 );
             }
 

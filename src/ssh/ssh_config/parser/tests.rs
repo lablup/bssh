@@ -1371,6 +1371,144 @@ Host secure-server
     assert_eq!(hosts[0].fingerprint_hash, Some("sha256".to_string()));
 }
 
+// Security tests for Phase 5 options
+#[test]
+fn test_parse_identity_agent_path_traversal_attack() {
+    // Test that path traversal attempts are rejected
+    let content = r#"
+Host example.com
+    IdentityAgent ../../../etc/passwd
+"#;
+    let result = parse(content);
+    assert!(result.is_err());
+    let error = result.unwrap_err();
+    // Check both the main error and any causes in the error chain
+    let full_error = format!("{:#}", error);
+    assert!(
+        full_error.contains("Security violation") || full_error.contains("directory traversal"),
+        "Expected security error, got: {}",
+        full_error
+    );
+}
+
+#[test]
+fn test_parse_identity_agent_null_byte_injection() {
+    // Test that null bytes are rejected
+    let content = "Host example.com\n    IdentityAgent /tmp/agent\0.sock\n";
+    let result = parse(content);
+    assert!(result.is_err());
+    let error = result.unwrap_err();
+    let full_error = format!("{:#}", error);
+    assert!(
+        full_error.contains("Security violation") || full_error.contains("null byte"),
+        "Expected security error for null byte, got: {}",
+        full_error
+    );
+}
+
+#[test]
+fn test_parse_pubkey_accepted_algorithms_injection() {
+    // Test that algorithm names with dangerous characters are rejected
+    let content = r#"
+Host example.com
+    PubkeyAcceptedAlgorithms ssh-ed25519,rsa-sha2-512;rm -rf /
+"#;
+    let result = parse(content);
+    assert!(result.is_err());
+    let error = result.unwrap_err();
+    let full_error = format!("{:#}", error);
+    assert!(
+        full_error.contains("invalid characters"),
+        "Expected invalid characters error, got: {}",
+        full_error
+    );
+}
+
+#[test]
+fn test_parse_pubkey_accepted_algorithms_memory_exhaustion() {
+    // Test that excessive algorithms are truncated
+    let mut algorithms = Vec::new();
+    for i in 0..100 {
+        algorithms.push(format!("algo-{}", i));
+    }
+    let content = format!(
+        "Host example.com\n    PubkeyAcceptedAlgorithms {}\n",
+        algorithms.join(",")
+    );
+    let hosts = parse(&content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    // Should be truncated to MAX_ALGORITHMS (50)
+    assert_eq!(hosts[0].pubkey_accepted_algorithms.len(), 50);
+}
+
+#[test]
+fn test_parse_algorithm_name_length_limit() {
+    // Test that excessively long algorithm names are skipped
+    let long_name = "a".repeat(300);
+    let content = format!(
+        "Host example.com\n    PubkeyAcceptedAlgorithms ssh-ed25519,{},rsa-sha2-256\n",
+        long_name
+    );
+    let hosts = parse(&content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    // Long algorithm should be skipped
+    assert_eq!(hosts[0].pubkey_accepted_algorithms.len(), 2);
+    assert_eq!(hosts[0].pubkey_accepted_algorithms[0], "ssh-ed25519");
+    assert_eq!(hosts[0].pubkey_accepted_algorithms[1], "rsa-sha2-256");
+}
+
+#[test]
+fn test_parse_empty_algorithms_after_filtering() {
+    // Test that we reject configs with no valid algorithms after filtering
+    let content = r#"
+Host example.com
+    PubkeyAcceptedAlgorithms ,,,,
+"#;
+    let result = parse(content);
+    assert!(result.is_err());
+    let error = result.unwrap_err();
+    let full_error = format!("{:#}", error);
+    assert!(
+        full_error.contains("must contain at least one valid algorithm"),
+        "Expected empty algorithm list error, got: {}",
+        full_error
+    );
+}
+
+#[test]
+fn test_parse_hostbased_accepted_algorithms_injection() {
+    // Test that hostbased algorithms also validate characters
+    let content = r#"
+Host example.com
+    HostbasedAcceptedAlgorithms ssh-ed25519,$(whoami),rsa-sha2-256
+"#;
+    let result = parse(content);
+    assert!(result.is_err());
+    let error = result.unwrap_err();
+    let full_error = format!("{:#}", error);
+    assert!(
+        full_error.contains("invalid characters"),
+        "Expected invalid characters error, got: {}",
+        full_error
+    );
+}
+
+#[test]
+fn test_parse_ca_signature_algorithms_memory_limit() {
+    // Test CASignatureAlgorithms memory limits
+    let mut algorithms = Vec::new();
+    for i in 0..60 {
+        algorithms.push(format!("ca-algo-{}", i));
+    }
+    let content = format!(
+        "Host example.com\n    CASignatureAlgorithms {}\n",
+        algorithms.join(",")
+    );
+    let hosts = parse(&content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0].ca_signature_algorithms.len(), 50);
+}
+
 #[test]
 fn test_parse_phase5_with_match_block() {
     use crate::ssh::ssh_config::types::ConfigBlock;
