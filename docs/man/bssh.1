@@ -617,6 +617,95 @@ When disabled (default), X11 forwarding is subject to X11 SECURITY extension res
 Example:
 .I ForwardX11Trusted yes
 
+.SS Authentication and Security Management Options
+
+These options provide essential authentication management, security enforcement, and user convenience features for practical SSH configurations.
+
+.TP
+.B IdentitiesOnly
+Specifies that SSH should only use identity files explicitly configured in the SSH config.
+When enabled, SSH agent keys are ignored, preventing authentication conflicts in multi-account setups.
+Default is no.
+.br
+Example:
+.I IdentitiesOnly yes
+
+.TP
+.B AddKeysToAgent
+Specifies whether keys should be automatically added to the SSH agent after successful authentication.
+Possible values:
+.RS
+.IP \[bu] 2
+.B yes
+- Automatically add keys to agent
+.IP \[bu] 2
+.B no
+- Do not add keys (default)
+.IP \[bu] 2
+.B ask
+- Ask user before adding
+.IP \[bu] 2
+.B confirm
+- Require confirmation for each use after adding
+.RE
+.IP
+Example:
+.I AddKeysToAgent yes
+
+.TP
+.B IdentityAgent
+Specifies the path to the SSH agent socket to use for authentication.
+Allows integration with custom agent implementations like 1Password, gpg-agent, etc.
+Special values:
+.RS
+.IP \[bu] 2
+.B none
+- Explicitly disable agent authentication
+.IP \[bu] 2
+.B SSH_AUTH_SOCK
+- Use environment variable (default)
+.RE
+.IP
+Example:
+.I IdentityAgent ~/.1password/agent.sock
+
+.TP
+.B PubkeyAcceptedAlgorithms
+Specifies the signature algorithms that will be used for public key authentication.
+Comma-separated list of algorithms (maximum 50 entries).
+Useful for enforcing security policies by restricting to modern algorithms.
+.br
+Example:
+.I PubkeyAcceptedAlgorithms ssh-ed25519,rsa-sha2-512,rsa-sha2-256
+
+.TP
+.B RequiredRSASize
+Specifies the minimum RSA key size in bits that will be accepted.
+Valid range is 1024-16384 bits.
+OpenSSH 9.0+ default is 2048 bits. Using values below 2048 will generate a warning.
+Added in OpenSSH 8.7 (2021).
+.br
+Example:
+.I RequiredRSASize 2048
+
+.TP
+.B FingerprintHash
+Specifies the hash algorithm to use when displaying SSH key fingerprints.
+Possible values:
+.RS
+.IP \[bu] 2
+.B md5
+- Use MD5 hash (legacy, for compatibility)
+.IP \[bu] 2
+.B sha256
+- Use SHA-256 hash (default since OpenSSH 6.8)
+.RE
+.IP
+Using MD5 will generate a deprecation warning as it's considered weak.
+.br
+Example:
+.I FingerprintHash sha256
+
 .SS SSH Config Example with New Options
 .nf
 # ~/.ssh/config
@@ -690,6 +779,32 @@ Host graphics-workstation
     ForwardX11 yes
     ForwardX11Trusted yes
     ForwardX11Timeout 2h
+
+# Authentication and Security Best Practices
+# Multi-account setup with identity isolation
+Host work
+    HostName work.example.com
+    IdentityFile ~/.ssh/work_rsa
+    IdentitiesOnly yes
+
+# Auto-add keys to SSH agent
+Host *
+    AddKeysToAgent yes
+
+# Custom SSH agent (1Password, gpg-agent, etc.)
+Host secure-*
+    IdentityAgent ~/.1password/agent.sock
+
+# Security-hardened public key settings
+Host *.prod.example.com
+    PubkeyAcceptedAlgorithms ssh-ed25519,rsa-sha2-512,rsa-sha2-256
+    RequiredRSASize 2048
+    FingerprintHash sha256
+
+# Legacy system with MD5 fingerprints
+Host legacy.example.com
+    FingerprintHash md5
+    RequiredRSASize 1024
 .fi
 
 .SH BACKEND.AI INTEGRATION
