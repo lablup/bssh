@@ -42,12 +42,62 @@ pub(super) fn parse_authentication_option(
             if args.is_empty() {
                 anyhow::bail!("IdentitiesOnly requires a value at line {line_number}");
             }
-            // Parse yes/no and store in identity_files behavior (implicit)
-            let value = parse_yes_no(&args[0], line_number)?;
-            if value {
-                // When IdentitiesOnly is yes, clear default identity files
-                // This is handled during resolution
+            host.identities_only = Some(parse_yes_no(&args[0], line_number)?);
+        }
+        "addkeystoagent" => {
+            if args.is_empty() {
+                anyhow::bail!("AddKeysToAgent requires a value at line {line_number}");
             }
+            let value = args[0].to_lowercase();
+            if !["yes", "no", "ask", "confirm"].contains(&value.as_str()) {
+                anyhow::bail!(
+                    "Invalid AddKeysToAgent value '{}' at line {} (must be yes/no/ask/confirm)",
+                    args[0],
+                    line_number
+                );
+            }
+            host.add_keys_to_agent = Some(value);
+        }
+        "identityagent" => {
+            if args.is_empty() {
+                anyhow::bail!("IdentityAgent requires a value at line {line_number}");
+            }
+            // IdentityAgent can be a socket path or special value "none" or "SSH_AUTH_SOCK"
+            let value = args[0].to_string();
+            if value.to_lowercase() != "none" && value != "SSH_AUTH_SOCK" {
+                // Validate it looks like a path (contains / or starts with ~)
+                if !value.contains('/') && !value.starts_with('~') {
+                    tracing::warn!(
+                        "IdentityAgent '{}' at line {} does not look like a valid socket path",
+                        value,
+                        line_number
+                    );
+                }
+            }
+            host.identity_agent = Some(value);
+        }
+        "pubkeyacceptedalgorithms" => {
+            if args.is_empty() {
+                anyhow::bail!("PubkeyAcceptedAlgorithms requires a value at line {line_number}");
+            }
+            // Security: Limit the number of algorithms to prevent memory exhaustion
+            const MAX_ALGORITHMS: usize = 50;
+            let algorithms: Vec<String> = args
+                .join(",")
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()) // Skip empty strings from malformed input
+                .take(MAX_ALGORITHMS)
+                .collect();
+
+            if args.join(",").split(',').count() > MAX_ALGORITHMS {
+                tracing::warn!(
+                    "PubkeyAcceptedAlgorithms at line {} contains more than {} algorithms, truncated to first {}",
+                    line_number, MAX_ALGORITHMS, MAX_ALGORITHMS
+                );
+            }
+
+            host.pubkey_accepted_algorithms = algorithms;
         }
         "certificatefile" => {
             if args.is_empty() {

@@ -231,6 +231,80 @@ pub(super) fn parse_security_option(
             }
             host.update_host_keys = Some(value);
         }
+        "requiredrsasize" => {
+            if args.is_empty() {
+                anyhow::bail!("RequiredRSASize requires a value at line {line_number}");
+            }
+            let size: u32 = args[0].parse().with_context(|| {
+                format!(
+                    "Invalid RequiredRSASize value '{}' at line {}",
+                    args[0], line_number
+                )
+            })?;
+
+            // Security: Enforce reasonable limits to prevent issues
+            // OpenSSH minimum is 1024, maximum practical is 16384
+            const MIN_RSA_SIZE: u32 = 1024;
+            const MAX_RSA_SIZE: u32 = 16384;
+            const RECOMMENDED_MIN: u32 = 2048;
+
+            if size < MIN_RSA_SIZE {
+                anyhow::bail!(
+                    "RequiredRSASize {} at line {} is below minimum allowed value of {}",
+                    size,
+                    line_number,
+                    MIN_RSA_SIZE
+                );
+            }
+
+            if size > MAX_RSA_SIZE {
+                anyhow::bail!(
+                    "RequiredRSASize {} at line {} exceeds maximum allowed value of {}",
+                    size,
+                    line_number,
+                    MAX_RSA_SIZE
+                );
+            }
+
+            // Warn if below recommended minimum (OpenSSH 9.0+ default is 2048)
+            if size < RECOMMENDED_MIN {
+                tracing::warn!(
+                    "RequiredRSASize {} at line {} is below recommended minimum {} (OpenSSH 9.0+ default). \
+                     RSA keys smaller than {} bits are considered weak and may be vulnerable to attacks",
+                    size,
+                    line_number,
+                    RECOMMENDED_MIN,
+                    RECOMMENDED_MIN
+                );
+            }
+
+            host.required_rsa_size = Some(size);
+        }
+        "fingerprinthash" => {
+            if args.is_empty() {
+                anyhow::bail!("FingerprintHash requires a value at line {line_number}");
+            }
+            let value = args[0].to_lowercase();
+            if !["md5", "sha256"].contains(&value.as_str()) {
+                anyhow::bail!(
+                    "Invalid FingerprintHash value '{}' at line {} (must be md5 or sha256)",
+                    args[0],
+                    line_number
+                );
+            }
+
+            // Warn about MD5 usage (deprecated in OpenSSH 6.8+, default is sha256)
+            if value == "md5" {
+                tracing::warn!(
+                    "FingerprintHash md5 at line {} is deprecated. \
+                     OpenSSH 6.8+ (2015) uses sha256 by default. \
+                     MD5 should only be used for compatibility with legacy systems",
+                    line_number
+                );
+            }
+
+            host.fingerprint_hash = Some(value);
+        }
         _ => unreachable!("Unexpected keyword in parse_security_option: {}", keyword),
     }
 
