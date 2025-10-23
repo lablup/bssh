@@ -927,3 +927,469 @@ Host example.com
     assert!(err_msg.contains("HostbasedAcceptedAlgorithms"));
     assert!(err_msg.contains("line 3"));
 }
+
+// Phase 5: High-priority practical SSH config options tests
+
+#[test]
+fn test_parse_identities_only_yes() {
+    let content = r#"
+Host example.com
+    IdentitiesOnly yes
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0].identities_only, Some(true));
+}
+
+#[test]
+fn test_parse_identities_only_no() {
+    let content = r#"
+Host example.com
+    IdentitiesOnly no
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0].identities_only, Some(false));
+}
+
+#[test]
+fn test_parse_identities_only_with_equals() {
+    let content = r#"
+Host example.com
+    IdentitiesOnly=yes
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0].identities_only, Some(true));
+}
+
+#[test]
+fn test_parse_identities_only_empty_value() {
+    let content = r#"
+Host example.com
+    IdentitiesOnly
+"#;
+    let result = parse(content);
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+    assert!(err_msg.contains("IdentitiesOnly"));
+}
+
+#[test]
+fn test_parse_add_keys_to_agent_yes() {
+    let content = r#"
+Host example.com
+    AddKeysToAgent yes
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0].add_keys_to_agent, Some("yes".to_string()));
+}
+
+#[test]
+fn test_parse_add_keys_to_agent_no() {
+    let content = r#"
+Host example.com
+    AddKeysToAgent no
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0].add_keys_to_agent, Some("no".to_string()));
+}
+
+#[test]
+fn test_parse_add_keys_to_agent_ask() {
+    let content = r#"
+Host example.com
+    AddKeysToAgent ask
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0].add_keys_to_agent, Some("ask".to_string()));
+}
+
+#[test]
+fn test_parse_add_keys_to_agent_confirm() {
+    let content = r#"
+Host example.com
+    AddKeysToAgent confirm
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0].add_keys_to_agent, Some("confirm".to_string()));
+}
+
+#[test]
+fn test_parse_add_keys_to_agent_case_insensitive() {
+    let content = r#"
+Host example.com
+    AddKeysToAgent YES
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0].add_keys_to_agent, Some("yes".to_string()));
+}
+
+#[test]
+fn test_parse_add_keys_to_agent_invalid() {
+    let content = r#"
+Host example.com
+    AddKeysToAgent invalid
+"#;
+    let result = parse(content);
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+    assert!(err_msg.contains("AddKeysToAgent"));
+    assert!(err_msg.contains("invalid"));
+}
+
+#[test]
+fn test_parse_add_keys_to_agent_with_equals() {
+    let content = r#"
+Host example.com
+    AddKeysToAgent=confirm
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0].add_keys_to_agent, Some("confirm".to_string()));
+}
+
+#[test]
+fn test_parse_identity_agent_socket_path() {
+    let content = r#"
+Host example.com
+    IdentityAgent ~/.1password/agent.sock
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(
+        hosts[0].identity_agent,
+        Some("~/.1password/agent.sock".to_string())
+    );
+}
+
+#[test]
+fn test_parse_identity_agent_none() {
+    let content = r#"
+Host example.com
+    IdentityAgent none
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0].identity_agent, Some("none".to_string()));
+}
+
+#[test]
+fn test_parse_identity_agent_ssh_auth_sock() {
+    let content = r#"
+Host example.com
+    IdentityAgent SSH_AUTH_SOCK
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0].identity_agent, Some("SSH_AUTH_SOCK".to_string()));
+}
+
+#[test]
+fn test_parse_identity_agent_with_equals() {
+    let content = r#"
+Host example.com
+    IdentityAgent=/run/user/1000/keyring/ssh
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(
+        hosts[0].identity_agent,
+        Some("/run/user/1000/keyring/ssh".to_string())
+    );
+}
+
+#[test]
+fn test_parse_identity_agent_empty_value() {
+    let content = r#"
+Host example.com
+    IdentityAgent
+"#;
+    let result = parse(content);
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+    assert!(err_msg.contains("IdentityAgent"));
+}
+
+#[test]
+fn test_parse_pubkey_accepted_algorithms() {
+    let content = r#"
+Host example.com
+    PubkeyAcceptedAlgorithms ssh-ed25519,rsa-sha2-512,rsa-sha2-256
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0].pubkey_accepted_algorithms.len(), 3);
+    assert_eq!(hosts[0].pubkey_accepted_algorithms[0], "ssh-ed25519");
+    assert_eq!(hosts[0].pubkey_accepted_algorithms[1], "rsa-sha2-512");
+    assert_eq!(hosts[0].pubkey_accepted_algorithms[2], "rsa-sha2-256");
+}
+
+#[test]
+fn test_parse_pubkey_accepted_algorithms_with_spaces() {
+    let content = r#"
+Host example.com
+    PubkeyAcceptedAlgorithms ssh-ed25519 ecdsa-sha2-nistp256
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0].pubkey_accepted_algorithms.len(), 2);
+    assert_eq!(hosts[0].pubkey_accepted_algorithms[0], "ssh-ed25519");
+    assert_eq!(
+        hosts[0].pubkey_accepted_algorithms[1],
+        "ecdsa-sha2-nistp256"
+    );
+}
+
+#[test]
+fn test_parse_pubkey_accepted_algorithms_with_equals() {
+    let content = r#"
+Host example.com
+    PubkeyAcceptedAlgorithms=ssh-ed25519,rsa-sha2-512
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0].pubkey_accepted_algorithms.len(), 2);
+    assert_eq!(hosts[0].pubkey_accepted_algorithms[0], "ssh-ed25519");
+    assert_eq!(hosts[0].pubkey_accepted_algorithms[1], "rsa-sha2-512");
+}
+
+#[test]
+fn test_parse_pubkey_accepted_algorithms_empty_value() {
+    let content = r#"
+Host example.com
+    PubkeyAcceptedAlgorithms
+"#;
+    let result = parse(content);
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+    assert!(err_msg.contains("PubkeyAcceptedAlgorithms"));
+}
+
+#[test]
+fn test_parse_required_rsa_size() {
+    let content = r#"
+Host example.com
+    RequiredRSASize 2048
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0].required_rsa_size, Some(2048));
+}
+
+#[test]
+fn test_parse_required_rsa_size_4096() {
+    let content = r#"
+Host example.com
+    RequiredRSASize 4096
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0].required_rsa_size, Some(4096));
+}
+
+#[test]
+fn test_parse_required_rsa_size_minimum() {
+    let content = r#"
+Host example.com
+    RequiredRSASize 1024
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0].required_rsa_size, Some(1024));
+}
+
+#[test]
+fn test_parse_required_rsa_size_maximum() {
+    let content = r#"
+Host example.com
+    RequiredRSASize 16384
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0].required_rsa_size, Some(16384));
+}
+
+#[test]
+fn test_parse_required_rsa_size_below_minimum() {
+    let content = r#"
+Host example.com
+    RequiredRSASize 512
+"#;
+    let result = parse(content);
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+    assert!(err_msg.contains("RequiredRSASize"));
+    assert!(err_msg.contains("512"));
+}
+
+#[test]
+fn test_parse_required_rsa_size_above_maximum() {
+    let content = r#"
+Host example.com
+    RequiredRSASize 32768
+"#;
+    let result = parse(content);
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+    assert!(err_msg.contains("RequiredRSASize"));
+    assert!(err_msg.contains("32768"));
+}
+
+#[test]
+fn test_parse_required_rsa_size_invalid() {
+    let content = r#"
+Host example.com
+    RequiredRSASize invalid
+"#;
+    let result = parse(content);
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+    assert!(err_msg.contains("RequiredRSASize"));
+    assert!(err_msg.contains("invalid"));
+}
+
+#[test]
+fn test_parse_required_rsa_size_with_equals() {
+    let content = r#"
+Host example.com
+    RequiredRSASize=3072
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0].required_rsa_size, Some(3072));
+}
+
+#[test]
+fn test_parse_required_rsa_size_empty_value() {
+    let content = r#"
+Host example.com
+    RequiredRSASize
+"#;
+    let result = parse(content);
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+    assert!(err_msg.contains("RequiredRSASize"));
+}
+
+#[test]
+fn test_parse_fingerprint_hash_sha256() {
+    let content = r#"
+Host example.com
+    FingerprintHash sha256
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0].fingerprint_hash, Some("sha256".to_string()));
+}
+
+#[test]
+fn test_parse_fingerprint_hash_md5() {
+    let content = r#"
+Host example.com
+    FingerprintHash md5
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0].fingerprint_hash, Some("md5".to_string()));
+}
+
+#[test]
+fn test_parse_fingerprint_hash_case_insensitive() {
+    let content = r#"
+Host example.com
+    FingerprintHash SHA256
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0].fingerprint_hash, Some("sha256".to_string()));
+}
+
+#[test]
+fn test_parse_fingerprint_hash_invalid() {
+    let content = r#"
+Host example.com
+    FingerprintHash sha1
+"#;
+    let result = parse(content);
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+    assert!(err_msg.contains("FingerprintHash"));
+    assert!(err_msg.contains("sha1"));
+}
+
+#[test]
+fn test_parse_fingerprint_hash_with_equals() {
+    let content = r#"
+Host example.com
+    FingerprintHash=md5
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0].fingerprint_hash, Some("md5".to_string()));
+}
+
+#[test]
+fn test_parse_fingerprint_hash_empty_value() {
+    let content = r#"
+Host example.com
+    FingerprintHash
+"#;
+    let result = parse(content);
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+    assert!(err_msg.contains("FingerprintHash"));
+}
+
+#[test]
+fn test_parse_phase5_combined() {
+    // Test all Phase 5 options together
+    let content = r#"
+Host secure-server
+    IdentitiesOnly yes
+    AddKeysToAgent confirm
+    IdentityAgent ~/.1password/agent.sock
+    PubkeyAcceptedAlgorithms ssh-ed25519,rsa-sha2-512
+    RequiredRSASize 2048
+    FingerprintHash sha256
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0].identities_only, Some(true));
+    assert_eq!(hosts[0].add_keys_to_agent, Some("confirm".to_string()));
+    assert_eq!(
+        hosts[0].identity_agent,
+        Some("~/.1password/agent.sock".to_string())
+    );
+    assert_eq!(hosts[0].pubkey_accepted_algorithms.len(), 2);
+    assert_eq!(hosts[0].required_rsa_size, Some(2048));
+    assert_eq!(hosts[0].fingerprint_hash, Some("sha256".to_string()));
+}
+
+#[test]
+fn test_parse_phase5_with_match_block() {
+    use crate::ssh::ssh_config::types::ConfigBlock;
+
+    let content = r#"
+Match host *.secure.com
+    IdentitiesOnly yes
+    RequiredRSASize 4096
+    FingerprintHash sha256
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 1);
+
+    match &hosts[0].block_type {
+        Some(ConfigBlock::Match(_)) => {
+            assert_eq!(hosts[0].identities_only, Some(true));
+            assert_eq!(hosts[0].required_rsa_size, Some(4096));
+            assert_eq!(hosts[0].fingerprint_hash, Some("sha256".to_string()));
+        }
+        _ => panic!("Expected Match block"),
+    }
+}
