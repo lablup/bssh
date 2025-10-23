@@ -57,20 +57,20 @@ bssh (Backend.AI SSH / Broadcast SSH) is a high-performance parallel SSH command
 
 The codebase has undergone significant refactoring to improve maintainability, testability, and clarity:
 
-#### Phase 1: Initial Modularization (2025-08-22)
+#### Initial Modularization (2025-08-22)
 - Reduced `main.rs` from 987 lines to ~150 lines
 - Created command modules (`commands/`) for each operation
 - Extracted utility modules (`utils/`) for reusable functions
 - Established pattern of self-contained, independently testable modules
 
-#### Phase 2: Large-Scale Refactoring (2025-10-17, Issue #33)
+#### Large-Scale Refactoring (2025-10-17, Issue #33)
 **Objective:** Split all oversized modules (>600 lines) into focused, maintainable components while maintaining full backward compatibility.
 
-**Scope:** 13 critical/high/medium priority files refactored across 3 phases:
-- **Phase 1**: 4 critical files (>1000 lines) → modular structure
-- **Phase 2**: 4 high-priority files (800-1000 lines) → modular structure
-- **Phase 3**: 5 medium-priority files (600-800 lines) → modular structure
-- **Phase 4**: 6 lower-priority files (500-600 lines) → **Intentionally skipped**
+**Scope:** 13 critical/high/medium priority files refactored in multiple stages:
+- **Stage 1**: 4 critical files (>1000 lines) → modular structure
+- **Stage 2**: 4 high-priority files (800-1000 lines) → modular structure
+- **Stage 3**: 5 medium-priority files (600-800 lines) → modular structure
+- **Remaining**: 6 lower-priority files (500-600 lines) → **Intentionally skipped**
 
 **Results:**
 - All critical/high/medium files now under 700 lines
@@ -148,7 +148,7 @@ async fn main() -> Result<()> {
 - Lazy loading of configuration
 - Validation at parse time
 - Support for both file-based and CLI-specified nodes
-- ✅ Environment variable expansion (Phase 1 - Completed 2025-08-21)
+- ✅ Environment variable expansion (Completed 2025-08-21)
   - Supports `${VAR}` and `$VAR` syntax
   - Expands in hostnames and usernames
   - Graceful fallback for undefined variables
@@ -347,7 +347,7 @@ Comprehensive test coverage including:
 
 ### 5. Connection Pooling (`ssh/pool.rs`)
 
-**Current Status:** Placeholder implementation (Phase 3, 2025-08-21)
+**Current Status:** Placeholder implementation (2025-08-21)
 
 **Design Decision:**
 After thorough analysis, connection pooling was determined to be **not beneficial** for bssh's current usage pattern. The implementation exists as a placeholder for future features.
@@ -596,9 +596,9 @@ bssh supports 40+ SSH configuration directives organized into categories:
 
 **Authentication Options:**
 - `IdentityFile` - SSH private key file (multiple allowed)
-- `CertificateFile` - SSH certificate file for PKI auth (max 100, Phase 2)
-- `HostbasedAuthentication` - Enable host-based auth (yes/no, Phase 2)
-- `HostbasedAcceptedAlgorithms` - Host-based auth algorithms (max 50, Phase 2)
+- `CertificateFile` - SSH certificate file for PKI auth (max 100)
+- `HostbasedAuthentication` - Enable host-based auth (yes/no)
+- `HostbasedAcceptedAlgorithms` - Host-based auth algorithms (max 50)
 - `PubkeyAuthentication` - Enable public key auth
 - `PasswordAuthentication` - Enable password auth
 - `PreferredAuthentications` - Authentication method priority
@@ -607,7 +607,7 @@ bssh supports 40+ SSH configuration directives organized into categories:
 - `StrictHostKeyChecking` - Host key verification (yes/no/accept-new)
 - `UserKnownHostsFile` - Known hosts file path
 - `HashKnownHosts` - Hash hostnames in known_hosts
-- `CASignatureAlgorithms` - CA signature algorithms (max 50, Phase 2)
+- `CASignatureAlgorithms` - CA signature algorithms (max 50)
 - `HostKeyAlgorithms` - Accepted host key types
 - `PubkeyAcceptedAlgorithms` - Accepted public key types
 
@@ -615,9 +615,9 @@ bssh supports 40+ SSH configuration directives organized into categories:
 - `LocalForward` - Local port forwarding (-L)
 - `RemoteForward` - Remote port forwarding (-R)
 - `DynamicForward` - SOCKS proxy (-D)
-- `GatewayPorts` - Remote forwarding access control (yes/no/clientspecified, Phase 2)
-- `ExitOnForwardFailure` - Terminate on forwarding failure (yes/no, Phase 2)
-- `PermitRemoteOpen` - Allowed remote forward destinations (max 1000, Phase 2)
+- `GatewayPorts` - Remote forwarding access control (yes/no/clientspecified)
+- `ExitOnForwardFailure` - Terminate on forwarding failure (yes/no)
+- `PermitRemoteOpen` - Allowed remote forward destinations (max 1000)
 
 **Jump Host Options:**
 - `ProxyJump` - Jump host specification (-J)
@@ -635,7 +635,7 @@ All options support both OpenSSH-compatible syntaxes:
 - `Option Value` - Traditional space-separated format
 - `Option=Value` - Alternative equals-sign format
 
-**Security Limits (Phase 2):**
+**Security Limits:**
 - CertificateFile: Maximum 100 entries per configuration
 - CASignatureAlgorithms: Maximum 50 algorithms
 - HostbasedAcceptedAlgorithms: Maximum 50 algorithms
@@ -1340,7 +1340,7 @@ impl NodeStatus {
 - Reduced largest file from 1,394 to 691 lines
 - Maintained full backward compatibility (232+ tests passing)
 - Established optimal module size guidelines (300-700 lines)
-- Intentionally skipped Phase 4 based on risk/benefit analysis
+- Intentionally skipped some lower-priority files based on risk/benefit analysis
 
 
 ## SSH Jump Host Support
@@ -2002,7 +2002,7 @@ src/ssh/ssh_config/
 │   ├── options/          # Option parsing modules
 │   │   ├── authentication.rs
 │   │   ├── basic.rs
-│   │   ├── command.rs    # Phase 3: Command execution options
+│   │   ├── command.rs    # Command execution options
 │   │   ├── connection.rs
 │   │   ├── control.rs
 │   │   ├── environment.rs
@@ -2018,22 +2018,22 @@ src/ssh/ssh_config/
 └── resolver.rs          # Host configuration resolution
 ```
 
-### Implementation Phases
+### Supported Configuration Categories
 
-The SSH configuration parser has been implemented in multiple phases:
+The SSH configuration parser supports a comprehensive set of OpenSSH configuration options:
 
-#### Phase 1: Basic Options (Completed)
+#### Basic Configuration Options
 - **Option=Value syntax**: Support for both space and equals-separated options
 - **Basic options**: Hostname, User, Port, IdentityFile
 - **Authentication**: PubkeyAuthentication, PasswordAuthentication
 - **Connection**: ServerAliveInterval, ConnectTimeout, etc.
 
-#### Phase 2: Certificate Authentication and Port Forwarding (Completed)
+#### Certificate Authentication and Port Forwarding
 - **Certificate support**: CertificateFile, CASignatureAlgorithms
 - **Advanced forwarding**: GatewayPorts, ExitOnForwardFailure, PermitRemoteOpen
 - **Hostbased auth**: HostbasedAuthentication, HostbasedAcceptedAlgorithms
 
-#### Phase 3: Command Execution and Automation (Completed)
+#### Command Execution and Automation
 Command execution options enable sophisticated automation workflows:
 
 ##### LocalCommand and PermitLocalCommand
@@ -2059,8 +2059,8 @@ Command execution options enable sophisticated automation workflows:
 - **SessionType**: Control session type (none/subsystem/default)
 - **StdinNull**: Redirect stdin from /dev/null for scripting
 
-#### Phase 4: Additional Useful SSH Configuration Options (Completed)
-Phase 4 adds 15 commonly-used SSH configuration options that enhance security, authentication control, and network behavior. These options complete ~70% OpenSSH compatibility coverage.
+#### Host Key Verification, Authentication, and Network Options
+This category includes 15 commonly-used SSH configuration options that enhance security, authentication control, and network behavior. These options complete ~70% OpenSSH compatibility coverage.
 
 ##### Host Key Verification & Security (7 options)
 - **NoHostAuthenticationForLocalhost**: Skip host key verification for localhost connections (yes/no)
@@ -2138,17 +2138,17 @@ Phase 4 adds 15 commonly-used SSH configuration options that enhance security, a
 - `src/ssh/ssh_config/resolver.rs`: Merge logic for all new options
 
 **Testing:**
-- 7 comprehensive test functions covering all Phase 4 options
+- 7 comprehensive test functions covering all host key verification, authentication, and network options
 - Parsing validation, config merging, precedence, error handling
-- Option=Value syntax compatibility (from Phase 1)
+- Option=Value syntax compatibility
 - Total test count: 278 tests passing
 
 **Coverage Achievement:**
-After Phase 4 completion:
-- Phase 1: Basic options + Include + Match (structural)
-- Phase 2: Certificate authentication and port forwarding (7 options)
-- Phase 3: Command execution and automation (7 options)
-- Phase 4: Additional useful options (15 options)
+The SSH configuration parser currently supports:
+- Basic options + Include + Match directives (structural)
+- Certificate authentication and port forwarding (7 options)
+- Command execution and automation (7 options)
+- Host key verification, authentication, and network options (15 options)
 - **Total: ~71 options** (~69% of OpenSSH's 103 options)
 
 ### Security Model
@@ -2199,7 +2199,7 @@ Comprehensive test coverage includes:
 
 Test files:
 - `src/ssh/ssh_config/parser/options/command.rs`: Unit tests for command options
-- `tests/ssh_config_command_options_test.rs`: Integration tests for Phase 3
+- `tests/ssh_config_command_options_test.rs`: Integration tests for command execution options
 
 ### Performance Considerations
 
@@ -2210,17 +2210,22 @@ Test files:
 
 ### Future Enhancements
 
-Planned phases for complete OpenSSH compatibility:
+Planned enhancements for complete OpenSSH compatibility:
 
-#### Phase 4: Include and Match Directives
-- **Include**: Recursive configuration file inclusion
-- **Match**: Conditional configuration blocks
-- **Pattern matching**: Host patterns with wildcards
+#### Additional Configuration Options
+The following high-priority options are planned for future implementation:
+- **IdentitiesOnly**: Use only identity files specified in config
+- **AddKeysToAgent**: Automatically add keys to SSH agent
+- **IdentityAgent**: Custom SSH agent socket path
+- **PubkeyAcceptedAlgorithms**: Restrict allowed public key algorithms
+- **RequiredRSASize**: Enforce minimum RSA key size
+- **FingerprintHash**: Choose fingerprint hash algorithm
 
-#### Phase 5: Advanced Features
-- **ProxyCommand**: Custom proxy commands
-- **ProxyJump**: Multi-hop SSH connections
-- **ControlMaster**: Connection multiplexing
+#### Advanced Features
+- **ProxyCommand**: Custom proxy commands (alternative to ProxyJump)
+- **ControlMaster**: Connection multiplexing and sharing
+- **ControlPath**: Socket path for connection multiplexing
+- **ControlPersist**: Keep multiplexed connections alive
 - **Additional options**: As needed for compatibility
 
 ## Dependencies and Licensing

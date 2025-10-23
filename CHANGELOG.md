@@ -70,10 +70,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Support for both "Option Value" and "Option=Value" syntax
 - Scalar options override in later blocks, vector options accumulate with deduplication
 - **SSH Configuration Coverage**: ~71 options (~69% of OpenSSH's 103 options)
-  - Phase 1: Basic options + Include + Match (structural)
-  - Phase 2: Certificate authentication and port forwarding (7 options)
-  - Phase 3: Command execution and automation (7 options)
-  - Phase 4: Host key verification, authentication, network, and X11 (15 options)
+  - Basic options + Include + Match directives (structural)
+  - Certificate authentication and port forwarding (7 options)
+  - Command execution and automation (7 options)
+  - Host key verification, authentication, network, and X11 options (15 options)
 - Comprehensive test coverage: 278 tests including parser, resolver, integration, and security tests
 - Validation: NumberOfPasswordPrompts range checking (1-10), CheckHostIP deprecation warnings
 
