@@ -171,7 +171,7 @@ pub(super) fn parse_connection_option(
                 anyhow::bail!("IPQoS requires a value at line {line_number}");
             }
             // IPQoS can have one or two values (interactive and bulk)
-            // Valid values are: af11-af43, cs0-cs7, ef, lowdelay, throughput, reliability, or numeric (0-63)
+            // Valid values are: af11-af43, cs0-cs7, ef, lowdelay, throughput, reliability, or numeric (0-63 for DSCP, 0-255 for ToS)
             if args.len() > 2 {
                 anyhow::bail!(
                     "IPQoS at line {} accepts at most 2 values (interactive and bulk), got {}",
@@ -209,26 +209,66 @@ pub(super) fn parse_connection_option(
                 "none",
             ];
 
+            // Additional mappings for common aliases
+            let qos_aliases = [
+                ("expedited", "ef"),
+                ("assured", "af11"),
+                ("besteffort", "cs0"),
+                ("background", "cs1"),
+            ];
+
             for value in args {
-                // Check if it's a known QoS value
+                // Check if it's a known QoS value or alias
                 let lower_value = value.to_lowercase();
-                if !valid_qos_values.contains(&lower_value.as_str()) {
-                    // Check if it's a numeric value (0-63 for DSCP or 0-255 for ToS)
-                    if let Ok(num) = value.parse::<u8>() {
-                        if num > 63 && num != 0xff {
-                            tracing::warn!(
-                                "IPQoS value '{}' at line {} is outside typical DSCP range (0-63)",
-                                value,
-                                line_number
-                            );
+                let normalized = qos_aliases
+                    .iter()
+                    .find(|(alias, _)| *alias == lower_value.as_str())
+                    .map(|(_, canonical)| *canonical)
+                    .unwrap_or(lower_value.as_str());
+
+                if !valid_qos_values.contains(&normalized) {
+                    // Check if it's a numeric value
+                    match value.parse::<u8>() {
+                        Ok(num) => {
+                            // DSCP values are 0-63 (6 bits)
+                            // ToS values are 0-255 (8 bits) but only certain values are valid
+                            if num > 63 {
+                                // If it's a ToS value (0-255), check if it's a valid one
+                                // Valid ToS values: 0x10 (lowdelay), 0x08 (throughput), 0x04 (reliability)
+                                let valid_tos = [0x00, 0x04, 0x08, 0x10, 0xff];
+                                if !valid_tos.contains(&num) {
+                                    tracing::warn!(
+                                        "IPQoS value '{}' ({:#04x}) at line {} is not a standard DSCP (0-63) or ToS value",
+                                        value, num, line_number
+                                    );
+                                }
+                            }
                         }
-                    } else {
-                        anyhow::bail!(
-                            "IPQoS value '{}' at line {} is not a valid QoS identifier. \
-                             Valid values are: af11-af43, cs0-cs7, ef, lowdelay, throughput, reliability, none, or numeric (0-63)",
-                            value,
-                            line_number
-                        );
+                        Err(_) => {
+                            // Check for hex notation (0x prefix)
+                            if value.starts_with("0x") || value.starts_with("0X") {
+                                if let Ok(num) = u8::from_str_radix(&value[2..], 16) {
+                                    if num > 63 && ![0x00, 0x04, 0x08, 0x10, 0xff].contains(&num) {
+                                        tracing::warn!(
+                                            "IPQoS hex value '{}' at line {} is outside standard ranges",
+                                            value, line_number
+                                        );
+                                    }
+                                } else {
+                                    anyhow::bail!(
+                                        "IPQoS value '{}' at line {} is not a valid hexadecimal number",
+                                        value, line_number
+                                    );
+                                }
+                            } else {
+                                anyhow::bail!(
+                                    "IPQoS value '{}' at line {} is not valid. \
+                                     Valid values are: af11-af43, cs0-cs7, ef, lowdelay, throughput, \
+                                     reliability, none, or numeric (0-63 for DSCP, specific ToS values)",
+                                    value, line_number
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -250,8 +290,8 @@ pub(super) fn parse_connection_option(
             }
             // RekeyLimit can have one or two values (data limit and time limit)
             // Format: <data> [<time>]
-            // Data: default, none, or number with optional suffix (K/M/G)
-            // Time: none or number with optional suffix (s/m/h)
+            // Data: default, none, or number with optional suffix (K/M/G/T)
+            // Time: none or number with optional suffix (s/m/h/d/w)
 
             if args.len() > 2 {
                 anyhow::bail!(
@@ -265,27 +305,62 @@ pub(super) fn parse_connection_option(
             let data_limit = &args[0];
             if data_limit != "default" && data_limit != "none" {
                 // Parse size with optional suffix
-                let valid_size = if let Some(stripped) = data_limit.strip_suffix(&['K', 'k'][..]) {
-                    stripped.parse::<u64>().is_ok()
-                } else if let Some(stripped) = data_limit.strip_suffix(&['M', 'm'][..]) {
-                    stripped.parse::<u64>().is_ok()
-                } else if let Some(stripped) = data_limit.strip_suffix(&['G', 'g'][..]) {
-                    stripped.parse::<u64>().is_ok()
-                } else {
-                    // Plain number (bytes)
-                    data_limit.parse::<u64>().is_ok()
-                };
+                let (number_part, _suffix, multiplier) =
+                    if let Some(stripped) = data_limit.strip_suffix(&['K', 'k'][..]) {
+                        (stripped, "K", 1024u64)
+                    } else if let Some(stripped) = data_limit.strip_suffix(&['M', 'm'][..]) {
+                        (stripped, "M", 1024u64 * 1024)
+                    } else if let Some(stripped) = data_limit.strip_suffix(&['G', 'g'][..]) {
+                        (stripped, "G", 1024u64 * 1024 * 1024)
+                    } else if let Some(stripped) = data_limit.strip_suffix(&['T', 't'][..]) {
+                        (stripped, "T", 1024u64 * 1024 * 1024 * 1024)
+                    } else {
+                        // Plain number (bytes)
+                        (data_limit.as_str(), "", 1u64)
+                    };
 
-                if !valid_size {
-                    anyhow::bail!(
-                        "RekeyLimit data limit '{}' at line {} is invalid. \
-                         Use 'default', 'none', or a number with optional suffix (K/M/G)",
-                        data_limit,
-                        line_number
-                    );
+                match number_part.parse::<u64>() {
+                    Ok(num) => {
+                        // Check for overflow when applying multiplier
+                        if let Some(total) = num.checked_mul(multiplier) {
+                            // Warn if rekey limit is very large (> 1TB)
+                            if total > 1024u64 * 1024 * 1024 * 1024 {
+                                tracing::warn!(
+                                    "RekeyLimit data limit '{}' at line {} is very large ({}TB). \
+                                     This may not be effective for security",
+                                    data_limit,
+                                    line_number,
+                                    total / (1024u64 * 1024 * 1024 * 1024)
+                                );
+                            }
+                            // Warn if rekey limit is very small (< 1KB)
+                            if total < 1024 && total != 0 {
+                                tracing::warn!(
+                                    "RekeyLimit data limit '{}' at line {} is very small ({} bytes). \
+                                     This may cause frequent rekeying",
+                                    data_limit, line_number, total
+                                );
+                            }
+                        } else {
+                            anyhow::bail!(
+                                "RekeyLimit data limit '{}' at line {} would overflow. \
+                                 Please use a smaller value",
+                                data_limit,
+                                line_number
+                            );
+                        }
+                    }
+                    Err(_) => {
+                        anyhow::bail!(
+                            "RekeyLimit data limit '{}' at line {} is invalid. \
+                             Use 'default', 'none', or a number with optional suffix (K/M/G/T)",
+                            data_limit,
+                            line_number
+                        );
+                    }
                 }
 
-                // Prevent absurdly large values that could cause issues
+                // Prevent absurdly long input strings
                 if data_limit.len() > 20 {
                     anyhow::bail!(
                         "RekeyLimit data limit at line {} is too long (max 20 characters)",
@@ -299,28 +374,62 @@ pub(super) fn parse_connection_option(
                 let time_limit = &args[1];
                 if time_limit != "none" {
                     // Parse time with optional suffix
-                    let valid_time =
+                    let (number_part, _suffix, multiplier) =
                         if let Some(stripped) = time_limit.strip_suffix(&['s', 'S'][..]) {
-                            stripped.parse::<u64>().is_ok()
+                            (stripped, "s", 1u64)
                         } else if let Some(stripped) = time_limit.strip_suffix(&['m', 'M'][..]) {
-                            stripped.parse::<u64>().is_ok()
+                            (stripped, "m", 60u64)
                         } else if let Some(stripped) = time_limit.strip_suffix(&['h', 'H'][..]) {
-                            stripped.parse::<u64>().is_ok()
+                            (stripped, "h", 3600u64)
+                        } else if let Some(stripped) = time_limit.strip_suffix(&['d', 'D'][..]) {
+                            (stripped, "d", 86400u64)
+                        } else if let Some(stripped) = time_limit.strip_suffix(&['w', 'W'][..]) {
+                            (stripped, "w", 604800u64)
                         } else {
                             // Plain number (seconds)
-                            time_limit.parse::<u64>().is_ok()
+                            (time_limit.as_str(), "", 1u64)
                         };
 
-                    if !valid_time {
-                        anyhow::bail!(
-                            "RekeyLimit time limit '{}' at line {} is invalid. \
-                             Use 'none' or a number with optional suffix (s/m/h)",
-                            time_limit,
-                            line_number
-                        );
+                    match number_part.parse::<u64>() {
+                        Ok(num) => {
+                            // Check for overflow when applying multiplier
+                            if let Some(total_seconds) = num.checked_mul(multiplier) {
+                                // Warn if rekey time is very long (> 1 week)
+                                if total_seconds > 604800 {
+                                    tracing::warn!(
+                                        "RekeyLimit time limit '{}' at line {} is very long ({} days). \
+                                         This may reduce security",
+                                        time_limit, line_number, total_seconds / 86400
+                                    );
+                                }
+                                // Warn if rekey time is very short (< 60 seconds)
+                                if total_seconds < 60 && total_seconds != 0 {
+                                    tracing::warn!(
+                                        "RekeyLimit time limit '{}' at line {} is very short ({} seconds). \
+                                         This may cause frequent rekeying",
+                                        time_limit, line_number, total_seconds
+                                    );
+                                }
+                            } else {
+                                anyhow::bail!(
+                                    "RekeyLimit time limit '{}' at line {} would overflow. \
+                                     Please use a smaller value",
+                                    time_limit,
+                                    line_number
+                                );
+                            }
+                        }
+                        Err(_) => {
+                            anyhow::bail!(
+                                "RekeyLimit time limit '{}' at line {} is invalid. \
+                                 Use 'none' or a number with optional suffix (s/m/h/d/w)",
+                                time_limit,
+                                line_number
+                            );
+                        }
                     }
 
-                    // Prevent absurdly large values
+                    // Prevent absurdly long input strings
                     if time_limit.len() > 20 {
                         anyhow::bail!(
                             "RekeyLimit time limit at line {} is too long (max 20 characters)",
