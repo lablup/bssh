@@ -368,6 +368,103 @@ clusters:
     user: staging_user
 ```
 
+## SSH Configuration Support
+
+bssh fully supports OpenSSH-compatible configuration files via the `-F` flag or default SSH config locations (`~/.ssh/config`, `/etc/ssh/ssh_config`). In addition to standard SSH directives, bssh supports advanced options for certificate-based authentication and port forwarding control.
+
+### Certificate Authentication Options
+
+These options enable enterprise-grade PKI authentication using SSH certificates:
+
+| Option | Description | Example |
+|--------|-------------|---------|
+| **CertificateFile** | SSH certificate file for PKI authentication (max 100 files) | `CertificateFile ~/.ssh/id_rsa-cert.pub` |
+| **CASignatureAlgorithms** | CA signature algorithms for certificate validation (max 50) | `CASignatureAlgorithms ssh-ed25519,rsa-sha2-512` |
+| **HostbasedAuthentication** | Enable host-based authentication (yes/no) | `HostbasedAuthentication yes` |
+| **HostbasedAcceptedAlgorithms** | Algorithms for host-based auth (max 50) | `HostbasedAcceptedAlgorithms ssh-ed25519,rsa-sha2-512` |
+
+### Port Forwarding Control Options
+
+These options provide fine-grained control over SSH port forwarding:
+
+| Option | Description | Example |
+|--------|-------------|---------|
+| **GatewayPorts** | Control remote port forwarding (yes/no/clientspecified) | `GatewayPorts clientspecified` |
+| **ExitOnForwardFailure** | Terminate connection if port forwarding fails (yes/no) | `ExitOnForwardFailure yes` |
+| **PermitRemoteOpen** | Allowed destinations for remote forwarding (max 1000) | `PermitRemoteOpen localhost:8080` |
+
+### SSH Config Examples
+
+#### Certificate-based Authentication
+
+```ssh-config
+# ~/.ssh/config
+
+# Production servers with certificate authentication
+Host *.prod.example.com
+    User admin
+    CertificateFile ~/.ssh/prod-user-cert.pub
+    CertificateFile ~/.ssh/prod-host-cert.pub
+    CASignatureAlgorithms ssh-ed25519,rsa-sha2-512,rsa-sha2-256
+    HostbasedAuthentication yes
+    HostbasedAcceptedAlgorithms ssh-ed25519,rsa-sha2-512
+```
+
+#### Strict Port Forwarding Control
+
+```ssh-config
+# Secure hosts with restricted port forwarding
+Host *.secure.prod.example.com
+    GatewayPorts clientspecified
+    ExitOnForwardFailure yes
+    PermitRemoteOpen localhost:8080
+    PermitRemoteOpen db.internal:5432
+    PermitRemoteOpen cache.internal:6379
+```
+
+#### Complete Example with Include and Match
+
+```ssh-config
+# Base security settings
+Host *
+    HostbasedAuthentication no
+    ExitOnForwardFailure no
+
+# Production certificate configuration
+Host *.prod.example.com
+    CertificateFile ~/.ssh/prod-cert.pub
+    CASignatureAlgorithms ssh-ed25519,rsa-sha2-512
+    HostbasedAuthentication yes
+
+# Match directive for secure hosts
+Match host *.secure.prod.example.com
+    GatewayPorts clientspecified
+    ExitOnForwardFailure yes
+    PermitRemoteOpen localhost:8080
+
+# Specific host overrides
+Host web.secure.prod.example.com
+    User webadmin
+    Port 443
+    CertificateFile ~/.ssh/web-specific-cert.pub
+```
+
+### Using SSH Config with bssh
+
+```bash
+# Use default SSH config (~/.ssh/config)
+bssh user@host.prod.example.com
+
+# Use custom SSH config file
+bssh -F ~/custom-ssh-config user@host.prod.example.com
+
+# SSH config works with cluster operations
+bssh -C production "uptime"
+
+# Config options apply to all cluster nodes
+bssh -F ~/.ssh/prod-config -C production upload app.tar.gz /opt/
+```
+
 ## Command-Line Options
 
 ```

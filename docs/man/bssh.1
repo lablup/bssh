@@ -284,6 +284,107 @@ clusters:
     user: staging_user
 .fi
 
+.SH SSH CONFIGURATION OPTIONS
+.B bssh
+supports OpenSSH-compatible configuration via the
+.B -F
+flag or default SSH config files (~/.ssh/config, /etc/ssh/ssh_config).
+
+In addition to standard SSH configuration directives, bssh supports advanced options for
+certificate-based authentication and port forwarding control:
+
+.SS Certificate Authentication Options
+.TP
+.B CertificateFile
+Specifies a file containing the SSH certificate for PKI authentication.
+Can be specified multiple times (maximum 100 certificates).
+.br
+Example:
+.I CertificateFile ~/.ssh/id_rsa-cert.pub
+
+.TP
+.B CASignatureAlgorithms
+Specifies the signature algorithms that will be used for certificate validation.
+Comma-separated list of algorithms (maximum 50 entries).
+.br
+Example:
+.I CASignatureAlgorithms ssh-ed25519,rsa-sha2-512,rsa-sha2-256
+
+.TP
+.B HostbasedAuthentication
+Enables or disables host-based authentication. Default is no.
+.br
+Example:
+.I HostbasedAuthentication yes
+
+.TP
+.B HostbasedAcceptedAlgorithms
+Specifies the signature algorithms that will be accepted for host-based authentication.
+Comma-separated list (maximum 50 entries).
+.br
+Example:
+.I HostbasedAcceptedAlgorithms ssh-ed25519,rsa-sha2-512
+
+.SS Port Forwarding Control Options
+.TP
+.B GatewayPorts
+Specifies whether remote hosts are allowed to connect to ports forwarded for the client.
+Possible values:
+.RS
+.IP \[bu] 2
+.B yes
+- Remote hosts can connect to forwarded ports
+.IP \[bu] 2
+.B no
+- Only localhost connections allowed (default)
+.IP \[bu] 2
+.B clientspecified
+- Client can specify which addresses may connect
+.RE
+.IP
+Example:
+.I GatewayPorts clientspecified
+
+.TP
+.B ExitOnForwardFailure
+Specifies whether the connection should be terminated if port forwarding fails.
+Default is no.
+.br
+Example:
+.I ExitOnForwardFailure yes
+
+.TP
+.B PermitRemoteOpen
+Specifies the destinations to which remote TCP port forwarding is permitted.
+Can be specified multiple times (maximum 1000 entries).
+Format: host:port or host:* to allow any port.
+.br
+Example:
+.I PermitRemoteOpen localhost:8080
+.br
+.I PermitRemoteOpen db.internal:5432
+
+.SS SSH Config Example with New Options
+.nf
+# ~/.ssh/config
+
+# Production servers with certificate authentication
+Host *.prod.example.com
+    User admin
+    CertificateFile ~/.ssh/prod-user-cert.pub
+    CertificateFile ~/.ssh/prod-host-cert.pub
+    CASignatureAlgorithms ssh-ed25519,rsa-sha2-512
+    HostbasedAuthentication yes
+    HostbasedAcceptedAlgorithms ssh-ed25519,rsa-sha2-512
+
+# Secure hosts with strict port forwarding
+Host *.secure.prod.example.com
+    GatewayPorts clientspecified
+    ExitOnForwardFailure yes
+    PermitRemoteOpen localhost:8080
+    PermitRemoteOpen db.internal:5432
+.fi
+
 .SH BACKEND.AI INTEGRATION
 When running inside a Backend.AI multi-node session, bssh automatically detects cluster configuration
 from environment variables:
