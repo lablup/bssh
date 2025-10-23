@@ -393,6 +393,30 @@ These options provide fine-grained control over SSH port forwarding:
 | **ExitOnForwardFailure** | Terminate connection if port forwarding fails (yes/no) | `ExitOnForwardFailure yes` |
 | **PermitRemoteOpen** | Allowed destinations for remote forwarding (max 1000) | `PermitRemoteOpen localhost:8080` |
 
+### Command Execution and Automation Options
+
+These options enable powerful automation workflows and command execution features:
+
+| Option | Description | Example |
+|--------|-------------|---------|
+| **PermitLocalCommand** | Allow local command execution after connection (yes/no, default: no) | `PermitLocalCommand yes` |
+| **LocalCommand** | Execute local command after successful connection (supports tokens: %h, %H, %n, %p, %r, %u) | `LocalCommand rsync -av ~/project/ %h:~/project/` |
+| **RemoteCommand** | Execute command on remote host instead of shell | `RemoteCommand tmux attach -t dev \|\| tmux new -s dev` |
+| **KnownHostsCommand** | Command to fetch host keys dynamically (supports tokens) | `KnownHostsCommand /usr/local/bin/fetch-host-key %H` |
+| **ForkAfterAuthentication** | Fork to background after authentication (yes/no) | `ForkAfterAuthentication yes` |
+| **SessionType** | Session type: none/subsystem/default | `SessionType none` |
+| **StdinNull** | Redirect stdin from /dev/null (yes/no) | `StdinNull yes` |
+
+**Token Substitution:**
+LocalCommand and KnownHostsCommand support the following tokens:
+- `%h` - Remote hostname (from config)
+- `%H` - Remote hostname (as specified on command line)
+- `%n` - Original hostname
+- `%p` - Remote port
+- `%r` - Remote username
+- `%u` - Local username
+- `%%` - Literal percent sign
+
 ### SSH Config Examples
 
 #### Certificate-based Authentication
@@ -422,6 +446,33 @@ Host *.secure.prod.example.com
     PermitRemoteOpen cache.internal:6379
 ```
 
+#### Command Execution and Automation
+
+```ssh-config
+# Development server with automatic file synchronization
+Host dev-server
+    User developer
+    PermitLocalCommand yes
+    LocalCommand rsync -av ~/project/ %h:~/project/
+
+# Auto-attach to tmux session on connection
+Host project-server
+    RemoteCommand tmux attach -t project || tmux new -s project
+    RequestTTY yes
+
+# Cloud instances with dynamic host key fetching
+Host *.cloud.example.com
+    KnownHostsCommand /usr/local/bin/fetch-cloud-key %H
+    StrictHostKeyChecking accept-new
+
+# Background SSH tunnel for port forwarding
+Host tunnel
+    ForkAfterAuthentication yes
+    SessionType none
+    LocalForward 8080 internal-server:80
+    StdinNull yes
+```
+
 #### Complete Example with Include and Match
 
 ```ssh-config
@@ -429,6 +480,7 @@ Host *.secure.prod.example.com
 Host *
     HostbasedAuthentication no
     ExitOnForwardFailure no
+    PermitLocalCommand no
 
 # Production certificate configuration
 Host *.prod.example.com
@@ -441,6 +493,11 @@ Match host *.secure.prod.example.com
     GatewayPorts clientspecified
     ExitOnForwardFailure yes
     PermitRemoteOpen localhost:8080
+
+# Development hosts with automation
+Match host *.dev.example.com
+    PermitLocalCommand yes
+    LocalCommand notify-send "Connected to %h"
 
 # Specific host overrides
 Host web.secure.prod.example.com

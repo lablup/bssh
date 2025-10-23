@@ -19,11 +19,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `ExitOnForwardFailure` - Terminate connection when port forwarding fails
   - `PermitRemoteOpen` - Specify allowed destinations for remote TCP port forwarding (maximum 1000 entries)
 
+- **SSH Configuration: Command Execution and Automation Options**
+  - `PermitLocalCommand` - Allow execution of local commands after successful SSH connection (yes/no, default: no)
+  - `LocalCommand` - Execute local command after connection with token substitution support (%h, %H, %n, %p, %r, %u, %%)
+  - `RemoteCommand` - Execute command on remote host instead of starting interactive shell
+  - `KnownHostsCommand` - Execute command to obtain host keys dynamically (supports token substitution)
+  - `ForkAfterAuthentication` - Fork SSH process to background after successful authentication (yes/no)
+  - `SessionType` - Specify session type: none (port forwarding only), subsystem (e.g., SFTP), or default (shell)
+  - `StdinNull` - Redirect stdin from /dev/null for background operations and scripting (yes/no)
+
 - **Security Enhancements**
   - Path validation to prevent usage of sensitive system files (e.g., /etc/passwd, /etc/shadow)
   - Memory exhaustion prevention with entry limits for certificates and forwarding rules
   - Algorithm list validation with maximum entry limits
   - Deduplication for certificate files and remote forwarding destinations
+  - Command injection prevention for LocalCommand and KnownHostsCommand
+  - Token validation to prevent invalid substitution patterns
+  - Dangerous character detection in command strings (semicolons, backticks, pipes, etc.)
 
 ### Changed
 - **SSH Config Parser**: Refactored into modular structure for better maintainability

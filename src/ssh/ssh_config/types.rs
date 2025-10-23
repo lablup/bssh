@@ -85,6 +85,14 @@ pub struct SshHostConfig {
     pub permit_remote_open: Vec<String>,
     pub hostbased_authentication: Option<bool>,
     pub hostbased_accepted_algorithms: Vec<String>,
+    // Phase 3: Command execution and automation options
+    pub permit_local_command: Option<bool>,
+    pub local_command: Option<String>,
+    pub remote_command: Option<String>,
+    pub known_hosts_command: Option<String>,
+    pub fork_after_authentication: Option<bool>,
+    pub session_type: Option<String>,
+    pub stdin_null: Option<bool>,
 }
 
 impl fmt::Display for SshHostConfig {

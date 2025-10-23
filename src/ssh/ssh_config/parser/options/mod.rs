@@ -19,6 +19,7 @@
 
 mod authentication;
 mod basic;
+mod command;
 mod connection;
 mod control;
 mod environment;
@@ -111,6 +112,15 @@ pub fn parse_option(
         "requesttty" | "escapechar" | "loglevel" | "syslogfacility" | "protocol" => {
             ui::parse_ui_option(host, keyword, args, line_number)
         }
+
+        // Command execution options (Phase 3)
+        "permitlocalcommand"
+        | "localcommand"
+        | "remotecommand"
+        | "knownhostscommand"
+        | "forkafterauthentication"
+        | "sessiontype"
+        | "stdinnull" => command::parse_command_option(host, keyword, args, line_number),
 
         _ => {
             // Unknown option - log a warning but continue

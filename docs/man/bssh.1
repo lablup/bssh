@@ -364,6 +364,100 @@ Example:
 .br
 .I PermitRemoteOpen db.internal:5432
 
+.SS Command Execution and Automation Options
+.TP
+.B PermitLocalCommand
+Specifies whether to allow execution of local commands after successful SSH connection.
+Commands are executed on the local machine with the user's shell.
+Default is no for security reasons.
+.br
+Example:
+.I PermitLocalCommand yes
+
+.TP
+.B LocalCommand
+Specifies a local command to execute after successfully connecting to the remote host.
+Requires PermitLocalCommand to be enabled. Supports token substitution:
+.RS
+.IP \[bu] 2
+.B %h
+- Remote hostname (from config)
+.IP \[bu] 2
+.B %H
+- Remote hostname (as specified on command line)
+.IP \[bu] 2
+.B %n
+- Original hostname
+.IP \[bu] 2
+.B %p
+- Remote port
+.IP \[bu] 2
+.B %r
+- Remote username
+.IP \[bu] 2
+.B %u
+- Local username
+.IP \[bu] 2
+.B %%
+- Literal percent sign
+.RE
+.IP
+Example:
+.I LocalCommand rsync -av ~/project/ %h:~/project/
+
+.TP
+.B RemoteCommand
+Specifies a command to execute on the remote host instead of starting an interactive shell.
+Alternative to providing command on the command line.
+.br
+Example:
+.I RemoteCommand tmux attach -t dev || tmux new -s dev
+
+.TP
+.B KnownHostsCommand
+Specifies a command to execute to obtain host keys dynamically.
+Supplements UserKnownHostsFile and GlobalKnownHostsFile.
+The command output must be in known_hosts format.
+Supports token substitution (%h, %H, etc.).
+.br
+Example:
+.I KnownHostsCommand /usr/local/bin/fetch-host-key %H
+
+.TP
+.B ForkAfterAuthentication
+Specifies whether to fork the SSH process into the background after successful authentication.
+Useful for persistent background connections. Default is no.
+.br
+Example:
+.I ForkAfterAuthentication yes
+
+.TP
+.B SessionType
+Specifies the type of session to request from the server.
+Valid values are:
+.RS
+.IP \[bu] 2
+.B none
+- No session (port forwarding only)
+.IP \[bu] 2
+.B subsystem
+- Request a subsystem (e.g., SFTP)
+.IP \[bu] 2
+.B default
+- Standard shell session (default)
+.RE
+.IP
+Example:
+.I SessionType none
+
+.TP
+.B StdinNull
+Specifies whether to redirect stdin from /dev/null.
+Useful for background operations and scripting. Default is no.
+.br
+Example:
+.I StdinNull yes
+
 .SS SSH Config Example with New Options
 .nf
 # ~/.ssh/config
@@ -383,6 +477,28 @@ Host *.secure.prod.example.com
     ExitOnForwardFailure yes
     PermitRemoteOpen localhost:8080
     PermitRemoteOpen db.internal:5432
+
+# Development server with automatic file sync
+Host dev-server
+    User developer
+    PermitLocalCommand yes
+    LocalCommand rsync -av ~/project/ %h:~/project/
+
+# Auto-attach to tmux session
+Host project-server
+    RemoteCommand tmux attach -t project || tmux new -s project
+    RequestTTY yes
+
+# Dynamic host key fetching for cloud instances
+Host *.cloud.example.com
+    KnownHostsCommand /usr/local/bin/fetch-cloud-key %H
+
+# Background SSH tunnel
+Host tunnel
+    ForkAfterAuthentication yes
+    SessionType none
+    LocalForward 8080 internal-server:80
+    StdinNull yes
 .fi
 
 .SH BACKEND.AI INTEGRATION
