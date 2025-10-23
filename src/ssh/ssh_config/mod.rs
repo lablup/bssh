@@ -344,4 +344,240 @@ Host web1.example.com
         // HostbasedAuthentication should be from *.example.com
         assert_eq!(host_config.hostbased_authentication, Some(false));
     }
+
+    #[test]
+    fn test_parse_phase4_host_key_verification_options() {
+        // Test parsing of Phase 4 host key verification options
+        let config_content = r#"
+Host localhost 127.0.0.1
+    NoHostAuthenticationForLocalhost yes
+    HashKnownHosts yes
+
+Host *.example.com
+    CheckHostIP no
+    VisualHostKey yes
+    HostKeyAlias shared-key.example.com
+    VerifyHostKeyDNS ask
+    UpdateHostKeys yes
+"#;
+
+        let config = SshConfig::parse(config_content).unwrap();
+        assert_eq!(config.hosts.len(), 2);
+
+        // Verify localhost config
+        let host1 = &config.hosts[0];
+        assert_eq!(host1.no_host_authentication_for_localhost, Some(true));
+        assert_eq!(host1.hash_known_hosts, Some(true));
+
+        // Verify *.example.com config
+        let host2 = &config.hosts[1];
+        assert_eq!(host2.check_host_ip, Some(false));
+        assert_eq!(host2.visual_host_key, Some(true));
+        assert_eq!(
+            host2.host_key_alias,
+            Some("shared-key.example.com".to_string())
+        );
+        assert_eq!(host2.verify_host_key_dns, Some("ask".to_string()));
+        assert_eq!(host2.update_host_keys, Some("yes".to_string()));
+    }
+
+    #[test]
+    fn test_parse_phase4_authentication_options() {
+        // Test parsing of Phase 4 authentication options
+        let config_content = r#"
+Host automated-server
+    NumberOfPasswordPrompts 1
+    EnableSSHKeysign yes
+
+Host secure-server
+    NumberOfPasswordPrompts 5
+    EnableSSHKeysign no
+"#;
+
+        let config = SshConfig::parse(config_content).unwrap();
+        assert_eq!(config.hosts.len(), 2);
+
+        // Verify automated-server config
+        let host1 = &config.hosts[0];
+        assert_eq!(host1.number_of_password_prompts, Some(1));
+        assert_eq!(host1.enable_ssh_keysign, Some(true));
+
+        // Verify secure-server config
+        let host2 = &config.hosts[1];
+        assert_eq!(host2.number_of_password_prompts, Some(5));
+        assert_eq!(host2.enable_ssh_keysign, Some(false));
+    }
+
+    #[test]
+    fn test_parse_phase4_network_options() {
+        // Test parsing of Phase 4 network options
+        let config_content = r#"
+Host vpn-server
+    BindInterface tun0
+    IPQoS lowdelay throughput
+    RekeyLimit 1G 1h
+
+Host backup-server
+    BindInterface eth1
+    IPQoS af21
+    RekeyLimit default none
+"#;
+
+        let config = SshConfig::parse(config_content).unwrap();
+        assert_eq!(config.hosts.len(), 2);
+
+        // Verify vpn-server config
+        let host1 = &config.hosts[0];
+        assert_eq!(host1.bind_interface, Some("tun0".to_string()));
+        assert_eq!(host1.ipqos, Some("lowdelay throughput".to_string()));
+        assert_eq!(host1.rekey_limit, Some("1G 1h".to_string()));
+
+        // Verify backup-server config
+        let host2 = &config.hosts[1];
+        assert_eq!(host2.bind_interface, Some("eth1".to_string()));
+        assert_eq!(host2.ipqos, Some("af21".to_string()));
+        assert_eq!(host2.rekey_limit, Some("default none".to_string()));
+    }
+
+    #[test]
+    fn test_parse_phase4_x11_forwarding_options() {
+        // Test parsing of Phase 4 X11 forwarding options
+        let config_content = r#"
+Host gui-server
+    ForwardX11 yes
+    ForwardX11Timeout 1h
+    ForwardX11Trusted yes
+
+Host desktop-server
+    ForwardX11 yes
+    ForwardX11Timeout 0
+    ForwardX11Trusted no
+"#;
+
+        let config = SshConfig::parse(config_content).unwrap();
+        assert_eq!(config.hosts.len(), 2);
+
+        // Verify gui-server config
+        let host1 = &config.hosts[0];
+        assert_eq!(host1.forward_x11, Some(true));
+        assert_eq!(host1.forward_x11_timeout, Some("1h".to_string()));
+        assert_eq!(host1.forward_x11_trusted, Some(true));
+
+        // Verify desktop-server config
+        let host2 = &config.hosts[1];
+        assert_eq!(host2.forward_x11, Some(true));
+        assert_eq!(host2.forward_x11_timeout, Some("0".to_string()));
+        assert_eq!(host2.forward_x11_trusted, Some(false));
+    }
+
+    #[test]
+    fn test_merge_phase4_options() {
+        // Test that Phase 4 options are properly merged according to SSH config precedence
+        let config_content = r#"
+Host *
+    HashKnownHosts yes
+    NumberOfPasswordPrompts 3
+    BindInterface eth0
+    ForwardX11Trusted no
+
+Host *.example.com
+    VisualHostKey yes
+    EnableSSHKeysign yes
+    IPQoS lowdelay
+    ForwardX11Timeout 30m
+
+Host web1.example.com
+    HostKeyAlias shared.example.com
+    NumberOfPasswordPrompts 1
+    RekeyLimit 1G 2h
+    ForwardX11Trusted yes
+"#;
+
+        let config = SshConfig::parse(config_content).unwrap();
+
+        // Test merging for web1.example.com (should get configs from all three blocks)
+        let host_config = config.find_host_config("web1.example.com");
+
+        // HashKnownHosts should be from * (least specific)
+        assert_eq!(host_config.hash_known_hosts, Some(true));
+
+        // VisualHostKey should be from *.example.com
+        assert_eq!(host_config.visual_host_key, Some(true));
+
+        // HostKeyAlias should be from web1.example.com (most specific)
+        assert_eq!(
+            host_config.host_key_alias,
+            Some("shared.example.com".to_string())
+        );
+
+        // NumberOfPasswordPrompts should be from web1.example.com (most specific)
+        assert_eq!(host_config.number_of_password_prompts, Some(1));
+
+        // EnableSSHKeysign should be from *.example.com
+        assert_eq!(host_config.enable_ssh_keysign, Some(true));
+
+        // BindInterface should be from * (least specific)
+        assert_eq!(host_config.bind_interface, Some("eth0".to_string()));
+
+        // IPQoS should be from *.example.com
+        assert_eq!(host_config.ipqos, Some("lowdelay".to_string()));
+
+        // RekeyLimit should be from web1.example.com (most specific)
+        assert_eq!(host_config.rekey_limit, Some("1G 2h".to_string()));
+
+        // ForwardX11Timeout should be from *.example.com
+        assert_eq!(host_config.forward_x11_timeout, Some("30m".to_string()));
+
+        // ForwardX11Trusted should be from web1.example.com (most specific)
+        assert_eq!(host_config.forward_x11_trusted, Some(true));
+    }
+
+    #[test]
+    fn test_phase4_validation_errors() {
+        // Test validation of Phase 4 options
+
+        // Invalid VerifyHostKeyDNS value
+        let config_content = r#"
+Host test
+    VerifyHostKeyDNS invalid
+"#;
+        assert!(SshConfig::parse(config_content).is_err());
+
+        // Invalid UpdateHostKeys value
+        let config_content = r#"
+Host test
+    UpdateHostKeys invalid
+"#;
+        assert!(SshConfig::parse(config_content).is_err());
+
+        // Invalid NumberOfPasswordPrompts (not a number)
+        let config_content = r#"
+Host test
+    NumberOfPasswordPrompts abc
+"#;
+        assert!(SshConfig::parse(config_content).is_err());
+    }
+
+    #[test]
+    fn test_phase4_option_value_syntax() {
+        // Test Option=Value syntax for Phase 4 options
+        let config_content = r#"
+Host test
+    NoHostAuthenticationForLocalhost=yes
+    HashKnownHosts=yes
+    NumberOfPasswordPrompts=2
+    BindInterface=eth0
+    ForwardX11Trusted=yes
+"#;
+
+        let config = SshConfig::parse(config_content).unwrap();
+        assert_eq!(config.hosts.len(), 1);
+
+        let host = &config.hosts[0];
+        assert_eq!(host.no_host_authentication_for_localhost, Some(true));
+        assert_eq!(host.hash_known_hosts, Some(true));
+        assert_eq!(host.number_of_password_prompts, Some(2));
+        assert_eq!(host.bind_interface, Some("eth0".to_string()));
+        assert_eq!(host.forward_x11_trusted, Some(true));
+    }
 }

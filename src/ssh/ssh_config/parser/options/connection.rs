@@ -107,6 +107,26 @@ pub(super) fn parse_connection_option(
             }
             host.bind_address = Some(args[0].clone());
         }
+        "bindinterface" => {
+            if args.is_empty() {
+                anyhow::bail!("BindInterface requires a value at line {line_number}");
+            }
+            host.bind_interface = Some(args[0].clone());
+        }
+        "ipqos" => {
+            if args.is_empty() {
+                anyhow::bail!("IPQoS requires a value at line {line_number}");
+            }
+            // IPQoS can have one or two values (interactive and bulk)
+            host.ipqos = Some(args.join(" "));
+        }
+        "rekeylimit" => {
+            if args.is_empty() {
+                anyhow::bail!("RekeyLimit requires a value at line {line_number}");
+            }
+            // RekeyLimit can have one or two values (data and time)
+            host.rekey_limit = Some(args.join(" "));
+        }
         _ => unreachable!("Unexpected keyword in parse_connection_option: {}", keyword),
     }
 

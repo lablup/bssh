@@ -17,6 +17,7 @@
 //! Handles security-related configuration options including host key
 //! verification, known hosts files, and cryptographic algorithms.
 
+use crate::ssh::ssh_config::parser::helpers::parse_yes_no;
 use crate::ssh::ssh_config::security::secure_validate_path;
 use crate::ssh::ssh_config::types::SshHostConfig;
 use anyhow::{Context, Result};
@@ -117,6 +118,73 @@ pub(super) fn parse_security_option(
             }
 
             host.ca_signature_algorithms = algorithms;
+        }
+        "nohostauthenticationforlocalhost" => {
+            if args.is_empty() {
+                anyhow::bail!(
+                    "NoHostAuthenticationForLocalhost requires a value at line {line_number}"
+                );
+            }
+            host.no_host_authentication_for_localhost = Some(parse_yes_no(&args[0], line_number)?);
+        }
+        "hashknownhosts" => {
+            if args.is_empty() {
+                anyhow::bail!("HashKnownHosts requires a value at line {line_number}");
+            }
+            host.hash_known_hosts = Some(parse_yes_no(&args[0], line_number)?);
+        }
+        "checkhostip" => {
+            if args.is_empty() {
+                anyhow::bail!("CheckHostIP requires a value at line {line_number}");
+            }
+            host.check_host_ip = Some(parse_yes_no(&args[0], line_number)?);
+            // Note: CheckHostIP is deprecated in OpenSSH 8.5+ (2021)
+            tracing::warn!(
+                "CheckHostIP at line {} is deprecated in OpenSSH 8.5+ and may not have effect",
+                line_number
+            );
+        }
+        "visualhostkey" => {
+            if args.is_empty() {
+                anyhow::bail!("VisualHostKey requires a value at line {line_number}");
+            }
+            host.visual_host_key = Some(parse_yes_no(&args[0], line_number)?);
+        }
+        "hostkeyalias" => {
+            if args.is_empty() {
+                anyhow::bail!("HostKeyAlias requires a value at line {line_number}");
+            }
+            host.host_key_alias = Some(args[0].clone());
+        }
+        "verifyhostkeydns" => {
+            if args.is_empty() {
+                anyhow::bail!("VerifyHostKeyDNS requires a value at line {line_number}");
+            }
+            // Accepts yes/no/ask
+            let value = args[0].to_lowercase();
+            if !["yes", "no", "ask"].contains(&value.as_str()) {
+                anyhow::bail!(
+                    "VerifyHostKeyDNS at line {} must be yes, no, or ask, got '{}'",
+                    line_number,
+                    args[0]
+                );
+            }
+            host.verify_host_key_dns = Some(value);
+        }
+        "updatehostkeys" => {
+            if args.is_empty() {
+                anyhow::bail!("UpdateHostKeys requires a value at line {line_number}");
+            }
+            // Accepts yes/no/ask
+            let value = args[0].to_lowercase();
+            if !["yes", "no", "ask"].contains(&value.as_str()) {
+                anyhow::bail!(
+                    "UpdateHostKeys at line {} must be yes, no, or ask, got '{}'",
+                    line_number,
+                    args[0]
+                );
+            }
+            host.update_host_keys = Some(value);
         }
         _ => unreachable!("Unexpected keyword in parse_security_option: {}", keyword),
     }

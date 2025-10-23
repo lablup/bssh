@@ -99,6 +99,19 @@ pub(super) fn parse_forwarding_option(
             }
             host.clear_all_forwardings = Some(parse_yes_no(&args[0], line_number)?);
         }
+        "forwardx11timeout" => {
+            if args.is_empty() {
+                anyhow::bail!("ForwardX11Timeout requires a value at line {line_number}");
+            }
+            // Store timeout value as string (can be "0" for unlimited or time spec like "1h")
+            host.forward_x11_timeout = Some(args[0].clone());
+        }
+        "forwardx11trusted" => {
+            if args.is_empty() {
+                anyhow::bail!("ForwardX11Trusted requires a value at line {line_number}");
+            }
+            host.forward_x11_trusted = Some(parse_yes_no(&args[0], line_number)?);
+        }
         _ => unreachable!("Unexpected keyword in parse_forwarding_option: {}", keyword),
     }
 

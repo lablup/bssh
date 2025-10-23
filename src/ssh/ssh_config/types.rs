@@ -93,6 +93,25 @@ pub struct SshHostConfig {
     pub fork_after_authentication: Option<bool>,
     pub session_type: Option<String>,
     pub stdin_null: Option<bool>,
+    // Phase 4: Remaining useful SSH config options
+    // Host key verification & security
+    pub no_host_authentication_for_localhost: Option<bool>,
+    pub hash_known_hosts: Option<bool>,
+    pub check_host_ip: Option<bool>,
+    pub visual_host_key: Option<bool>,
+    pub host_key_alias: Option<String>,
+    pub verify_host_key_dns: Option<String>,
+    pub update_host_keys: Option<String>,
+    // Authentication
+    pub number_of_password_prompts: Option<u32>,
+    pub enable_ssh_keysign: Option<bool>,
+    // Network & connection
+    pub bind_interface: Option<String>,
+    pub ipqos: Option<String>,
+    pub rekey_limit: Option<String>,
+    // X11 forwarding
+    pub forward_x11_timeout: Option<String>,
+    pub forward_x11_trusted: Option<bool>,
 }
 
 impl fmt::Display for SshHostConfig {

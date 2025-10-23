@@ -55,7 +55,9 @@ pub fn parse_option(
         | "gssapiauthentication"
         | "preferredauthentications"
         | "hostbasedauthentication"
-        | "hostbasedacceptedalgorithms" => {
+        | "hostbasedacceptedalgorithms"
+        | "numberofpasswordprompts"
+        | "enablesshkeysign" => {
             authentication::parse_authentication_option(host, keyword, args, line_number)
         }
 
@@ -67,9 +69,14 @@ pub fn parse_option(
         | "kexalgorithms"
         | "ciphers"
         | "macs"
-        | "casignaturealgorithms" => {
-            security::parse_security_option(host, keyword, args, line_number)
-        }
+        | "casignaturealgorithms"
+        | "nohostauthenticationforlocalhost"
+        | "hashknownhosts"
+        | "checkhostip"
+        | "visualhostkey"
+        | "hostkeyalias"
+        | "verifyhostkeydns"
+        | "updatehostkeys" => security::parse_security_option(host, keyword, args, line_number),
 
         // Forwarding options
         "forwardagent"
@@ -80,7 +87,9 @@ pub fn parse_option(
         | "gatewayports"
         | "exitonforwardfailure"
         | "permitremoteopen"
-        | "clearallforwardings" => {
+        | "clearallforwardings"
+        | "forwardx11timeout"
+        | "forwardx11trusted" => {
             forwarding::parse_forwarding_option(host, keyword, args, line_number)
         }
 
@@ -93,7 +102,10 @@ pub fn parse_option(
         | "compression"
         | "tcpkeepalive"
         | "addressfamily"
-        | "bindaddress" => connection::parse_connection_option(host, keyword, args, line_number),
+        | "bindaddress"
+        | "bindinterface"
+        | "ipqos"
+        | "rekeylimit" => connection::parse_connection_option(host, keyword, args, line_number),
 
         // Proxy options
         "proxyjump" | "proxycommand" => proxy::parse_proxy_option(host, keyword, args, line_number),
