@@ -580,4 +580,169 @@ Host test
         assert_eq!(host.bind_interface, Some("eth0".to_string()));
         assert_eq!(host.forward_x11_trusted, Some(true));
     }
+
+    #[test]
+    fn test_phase4_security_validations() {
+        // Test HostKeyAlias - should reject shell metacharacters
+        let config_content = r#"
+Host test
+    HostKeyAlias "bad;command"
+"#;
+        assert!(
+            SshConfig::parse(config_content).is_err(),
+            "Should reject shell metacharacters in HostKeyAlias"
+        );
+
+        // Test HostKeyAlias - should reject path traversal
+        let config_content = r#"
+Host test
+    HostKeyAlias "../etc/passwd"
+"#;
+        assert!(
+            SshConfig::parse(config_content).is_err(),
+            "Should reject path traversal in HostKeyAlias"
+        );
+
+        // Test HostKeyAlias - should accept valid hostnames
+        let config_content = r#"
+Host test
+    HostKeyAlias lb-1.example.com
+"#;
+        let config = SshConfig::parse(config_content).unwrap();
+        assert_eq!(
+            config.hosts[0].host_key_alias,
+            Some("lb-1.example.com".to_string())
+        );
+
+        // Test BindInterface - should reject shell metacharacters
+        let config_content = r#"
+Host test
+    BindInterface "eth0;rm -rf /"
+"#;
+        assert!(
+            SshConfig::parse(config_content).is_err(),
+            "Should reject shell metacharacters in BindInterface"
+        );
+
+        // Test BindInterface - should reject too long names
+        let config_content = r#"
+Host test
+    BindInterface "verylonginterfacename123456789"
+"#;
+        assert!(
+            SshConfig::parse(config_content).is_err(),
+            "Should reject too long interface names"
+        );
+
+        // Test BindInterface - should accept valid interface names
+        let config_content = r#"
+Host test
+    BindInterface eth0
+"#;
+        let config = SshConfig::parse(config_content).unwrap();
+        assert_eq!(config.hosts[0].bind_interface, Some("eth0".to_string()));
+
+        // Test BindInterface - should accept tun0
+        let config_content = r#"
+Host test
+    BindInterface tun0
+"#;
+        let config = SshConfig::parse(config_content).unwrap();
+        assert_eq!(config.hosts[0].bind_interface, Some("tun0".to_string()));
+
+        // Test IPQoS - should reject invalid values
+        let config_content = r#"
+Host test
+    IPQoS invalid-value
+"#;
+        assert!(
+            SshConfig::parse(config_content).is_err(),
+            "Should reject invalid IPQoS values"
+        );
+
+        // Test IPQoS - should reject too many values
+        let config_content = r#"
+Host test
+    IPQoS af11 af12 af13
+"#;
+        assert!(
+            SshConfig::parse(config_content).is_err(),
+            "Should reject more than 2 IPQoS values"
+        );
+
+        // Test IPQoS - should accept valid values
+        let config_content = r#"
+Host test
+    IPQoS lowdelay throughput
+"#;
+        let config = SshConfig::parse(config_content).unwrap();
+        assert_eq!(
+            config.hosts[0].ipqos,
+            Some("lowdelay throughput".to_string())
+        );
+
+        // Test RekeyLimit - should reject invalid format
+        let config_content = r#"
+Host test
+    RekeyLimit invalid
+"#;
+        assert!(
+            SshConfig::parse(config_content).is_err(),
+            "Should reject invalid RekeyLimit format"
+        );
+
+        // Test RekeyLimit - should accept valid format
+        let config_content = r#"
+Host test
+    RekeyLimit 1G 1h
+"#;
+        let config = SshConfig::parse(config_content).unwrap();
+        assert_eq!(config.hosts[0].rekey_limit, Some("1G 1h".to_string()));
+
+        // Test ForwardX11Timeout - should reject invalid format
+        let config_content = r#"
+Host test
+    ForwardX11Timeout "../../etc/passwd"
+"#;
+        assert!(
+            SshConfig::parse(config_content).is_err(),
+            "Should reject path traversal in ForwardX11Timeout"
+        );
+
+        // Test ForwardX11Timeout - should accept valid format
+        let config_content = r#"
+Host test
+    ForwardX11Timeout 1h
+"#;
+        let config = SshConfig::parse(config_content).unwrap();
+        assert_eq!(config.hosts[0].forward_x11_timeout, Some("1h".to_string()));
+
+        // Test NumberOfPasswordPrompts - should reject 0
+        let config_content = r#"
+Host test
+    NumberOfPasswordPrompts 0
+"#;
+        assert!(
+            SshConfig::parse(config_content).is_err(),
+            "Should reject 0 for NumberOfPasswordPrompts"
+        );
+
+        // Test NumberOfPasswordPrompts - should reject values > 100
+        let config_content = r#"
+Host test
+    NumberOfPasswordPrompts 101
+"#;
+        assert!(
+            SshConfig::parse(config_content).is_err(),
+            "Should reject values > 100 for NumberOfPasswordPrompts"
+        );
+
+        // Test NumberOfPasswordPrompts - should accept valid range
+        let config_content = r#"
+Host test
+    NumberOfPasswordPrompts 3
+"#;
+        let config = SshConfig::parse(config_content).unwrap();
+        assert_eq!(config.hosts[0].number_of_password_prompts, Some(3));
+    }
 }
