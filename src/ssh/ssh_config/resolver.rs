@@ -278,6 +278,75 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
     if !overlay.hostbased_accepted_algorithms.is_empty() {
         base.hostbased_accepted_algorithms = overlay.hostbased_accepted_algorithms.clone();
     }
+    // Phase 3: Command execution and automation options
+    if overlay.permit_local_command.is_some() {
+        base.permit_local_command = overlay.permit_local_command;
+    }
+    if overlay.local_command.is_some() {
+        base.local_command = overlay.local_command.clone();
+    }
+    if overlay.remote_command.is_some() {
+        base.remote_command = overlay.remote_command.clone();
+    }
+    if overlay.known_hosts_command.is_some() {
+        base.known_hosts_command = overlay.known_hosts_command.clone();
+    }
+    if overlay.fork_after_authentication.is_some() {
+        base.fork_after_authentication = overlay.fork_after_authentication;
+    }
+    if overlay.session_type.is_some() {
+        base.session_type = overlay.session_type.clone();
+    }
+    if overlay.stdin_null.is_some() {
+        base.stdin_null = overlay.stdin_null;
+    }
+    // Phase 4: Remaining useful SSH config options
+    // Host key verification & security
+    if overlay.no_host_authentication_for_localhost.is_some() {
+        base.no_host_authentication_for_localhost = overlay.no_host_authentication_for_localhost;
+    }
+    if overlay.hash_known_hosts.is_some() {
+        base.hash_known_hosts = overlay.hash_known_hosts;
+    }
+    if overlay.check_host_ip.is_some() {
+        base.check_host_ip = overlay.check_host_ip;
+    }
+    if overlay.visual_host_key.is_some() {
+        base.visual_host_key = overlay.visual_host_key;
+    }
+    if overlay.host_key_alias.is_some() {
+        base.host_key_alias = overlay.host_key_alias.clone();
+    }
+    if overlay.verify_host_key_dns.is_some() {
+        base.verify_host_key_dns = overlay.verify_host_key_dns.clone();
+    }
+    if overlay.update_host_keys.is_some() {
+        base.update_host_keys = overlay.update_host_keys.clone();
+    }
+    // Authentication
+    if overlay.number_of_password_prompts.is_some() {
+        base.number_of_password_prompts = overlay.number_of_password_prompts;
+    }
+    if overlay.enable_ssh_keysign.is_some() {
+        base.enable_ssh_keysign = overlay.enable_ssh_keysign;
+    }
+    // Network & connection
+    if overlay.bind_interface.is_some() {
+        base.bind_interface = overlay.bind_interface.clone();
+    }
+    if overlay.ipqos.is_some() {
+        base.ipqos = overlay.ipqos.clone();
+    }
+    if overlay.rekey_limit.is_some() {
+        base.rekey_limit = overlay.rekey_limit.clone();
+    }
+    // X11 forwarding
+    if overlay.forward_x11_timeout.is_some() {
+        base.forward_x11_timeout = overlay.forward_x11_timeout.clone();
+    }
+    if overlay.forward_x11_trusted.is_some() {
+        base.forward_x11_trusted = overlay.forward_x11_trusted;
+    }
 }
 
 /// Get the effective hostname (resolves HostName directive)

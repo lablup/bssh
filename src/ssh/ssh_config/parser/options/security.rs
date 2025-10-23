@@ -17,6 +17,7 @@
 //! Handles security-related configuration options including host key
 //! verification, known hosts files, and cryptographic algorithms.
 
+use crate::ssh::ssh_config::parser::helpers::parse_yes_no;
 use crate::ssh::ssh_config::security::secure_validate_path;
 use crate::ssh::ssh_config::types::SshHostConfig;
 use anyhow::{Context, Result};
@@ -33,7 +34,13 @@ pub(super) fn parse_security_option(
             if args.is_empty() {
                 anyhow::bail!("StrictHostKeyChecking requires a value at line {line_number}");
             }
-            host.strict_host_key_checking = Some(args[0].clone());
+            let value = &args[0];
+            tracing::debug!(
+                "Setting StrictHostKeyChecking to '{}' at line {} (security-sensitive)",
+                value,
+                line_number
+            );
+            host.strict_host_key_checking = Some(value.clone());
         }
         "userknownhostsfile" => {
             if args.is_empty() {
@@ -117,6 +124,112 @@ pub(super) fn parse_security_option(
             }
 
             host.ca_signature_algorithms = algorithms;
+        }
+        "nohostauthenticationforlocalhost" => {
+            if args.is_empty() {
+                anyhow::bail!(
+                    "NoHostAuthenticationForLocalhost requires a value at line {line_number}"
+                );
+            }
+            let value = parse_yes_no(&args[0], line_number)?;
+            if value {
+                tracing::debug!(
+                    "NoHostAuthenticationForLocalhost enabled at line {} - skipping host verification for localhost (security-sensitive)",
+                    line_number
+                );
+            }
+            host.no_host_authentication_for_localhost = Some(value);
+        }
+        "hashknownhosts" => {
+            if args.is_empty() {
+                anyhow::bail!("HashKnownHosts requires a value at line {line_number}");
+            }
+            host.hash_known_hosts = Some(parse_yes_no(&args[0], line_number)?);
+        }
+        "checkhostip" => {
+            if args.is_empty() {
+                anyhow::bail!("CheckHostIP requires a value at line {line_number}");
+            }
+            host.check_host_ip = Some(parse_yes_no(&args[0], line_number)?);
+            // Note: CheckHostIP is deprecated in OpenSSH 8.5+ (2021)
+            tracing::warn!(
+                "CheckHostIP at line {} is deprecated in OpenSSH 8.5+ and may not have effect",
+                line_number
+            );
+        }
+        "visualhostkey" => {
+            if args.is_empty() {
+                anyhow::bail!("VisualHostKey requires a value at line {line_number}");
+            }
+            host.visual_host_key = Some(parse_yes_no(&args[0], line_number)?);
+        }
+        "hostkeyalias" => {
+            if args.is_empty() {
+                anyhow::bail!("HostKeyAlias requires a value at line {line_number}");
+            }
+            // Security: Validate HostKeyAlias to prevent injection attacks
+            // Only allow alphanumeric, dots, hyphens, and underscores (valid hostname characters)
+            let alias = &args[0];
+            if alias.is_empty() {
+                anyhow::bail!("HostKeyAlias cannot be empty at line {line_number}");
+            }
+            if alias.len() > 255 {
+                anyhow::bail!(
+                    "HostKeyAlias at line {line_number} exceeds maximum length of 255 characters"
+                );
+            }
+            // Check for dangerous characters that could be used in injection attacks
+            if !alias
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_')
+            {
+                anyhow::bail!(
+                    "HostKeyAlias at line {} contains invalid characters. Only alphanumeric, dots, hyphens, and underscores are allowed",
+                    line_number
+                );
+            }
+            // Prevent directory traversal
+            if alias.contains("..") {
+                anyhow::bail!(
+                    "HostKeyAlias at line {} contains '..' which could be used for path traversal attacks",
+                    line_number
+                );
+            }
+            tracing::debug!(
+                "Setting HostKeyAlias to '{}' at line {} (security-sensitive: affects host key verification)",
+                alias, line_number
+            );
+            host.host_key_alias = Some(alias.clone());
+        }
+        "verifyhostkeydns" => {
+            if args.is_empty() {
+                anyhow::bail!("VerifyHostKeyDNS requires a value at line {line_number}");
+            }
+            // Accepts yes/no/ask
+            let value = args[0].to_lowercase();
+            if !["yes", "no", "ask"].contains(&value.as_str()) {
+                anyhow::bail!(
+                    "VerifyHostKeyDNS at line {} must be yes, no, or ask, got '{}'",
+                    line_number,
+                    args[0]
+                );
+            }
+            host.verify_host_key_dns = Some(value);
+        }
+        "updatehostkeys" => {
+            if args.is_empty() {
+                anyhow::bail!("UpdateHostKeys requires a value at line {line_number}");
+            }
+            // Accepts yes/no/ask
+            let value = args[0].to_lowercase();
+            if !["yes", "no", "ask"].contains(&value.as_str()) {
+                anyhow::bail!(
+                    "UpdateHostKeys at line {} must be yes, no, or ask, got '{}'",
+                    line_number,
+                    args[0]
+                );
+            }
+            host.update_host_keys = Some(value);
         }
         _ => unreachable!("Unexpected keyword in parse_security_option: {}", keyword),
     }

@@ -417,6 +417,48 @@ LocalCommand and KnownHostsCommand support the following tokens:
 - `%u` - Local username
 - `%%` - Literal percent sign
 
+### Host Key Verification & Security Options
+
+These options provide enhanced security and host key management features:
+
+| Option | Description | Example |
+|--------|-------------|---------|
+| **NoHostAuthenticationForLocalhost** | Skip host key verification for localhost (yes/no, default: no) | `NoHostAuthenticationForLocalhost yes` |
+| **HashKnownHosts** | Hash hostnames in known_hosts file for security (yes/no, default: no) | `HashKnownHosts yes` |
+| **CheckHostIP** | Check host IP address in known_hosts (yes/no, **deprecated** in OpenSSH 8.5+) | `CheckHostIP no` |
+| **VisualHostKey** | Display ASCII art of host key fingerprint (yes/no, default: no) | `VisualHostKey yes` |
+| **HostKeyAlias** | Alias for host key lookup in known_hosts | `HostKeyAlias lb.example.com` |
+| **VerifyHostKeyDNS** | Verify host keys using DNS SSHFP records (yes/no/ask, default: no) | `VerifyHostKeyDNS ask` |
+| **UpdateHostKeys** | Accept updated host keys from server (yes/no/ask, default: no) | `UpdateHostKeys ask` |
+
+### Additional Authentication Options
+
+These options provide fine-grained control over authentication behavior:
+
+| Option | Description | Example |
+|--------|-------------|---------|
+| **NumberOfPasswordPrompts** | Password retry attempts (1-10, default: 3) | `NumberOfPasswordPrompts 1` |
+| **EnableSSHKeysign** | Enable ssh-keysign for host-based auth (yes/no, default: no) | `EnableSSHKeysign yes` |
+
+### Network & Connection Options
+
+These options control network-level connection behavior:
+
+| Option | Description | Example |
+|--------|-------------|---------|
+| **BindInterface** | Bind connection to specific network interface | `BindInterface tun0` |
+| **IPQoS** | Set IP QoS/DSCP values (interactive bulk) | `IPQoS lowdelay throughput` |
+| **RekeyLimit** | Control SSH session key renegotiation (data time) | `RekeyLimit 1G 1h` |
+
+### X11 Forwarding Options
+
+These options control X11 display forwarding behavior:
+
+| Option | Description | Example |
+|--------|-------------|---------|
+| **ForwardX11Timeout** | Timeout for untrusted X11 forwarding (0 = no timeout) | `ForwardX11Timeout 1h` |
+| **ForwardX11Trusted** | Enable trusted X11 forwarding (yes/no, default: no) | `ForwardX11Trusted yes` |
+
 ### SSH Config Examples
 
 #### Certificate-based Authentication
@@ -471,6 +513,42 @@ Host tunnel
     SessionType none
     LocalForward 8080 internal-server:80
     StdinNull yes
+```
+
+#### Phase 4: Host Key Verification, Authentication, and Network Options
+
+```ssh-config
+# Local development environment - skip localhost verification
+Host localhost 127.0.0.1 ::1
+    NoHostAuthenticationForLocalhost yes
+    NumberOfPasswordPrompts 1
+
+# Security-hardened configuration with host key protection
+Host *.secure.example.com
+    HashKnownHosts yes
+    VisualHostKey yes
+    VerifyHostKeyDNS ask
+    UpdateHostKeys ask
+    CheckHostIP no
+
+# Load-balanced service with shared host key
+Host lb-node-*
+    HostKeyAlias lb.example.com
+
+# Multi-homed host with specific interface binding
+Host vpn-only
+    BindInterface tun0
+    IPQoS lowdelay throughput
+
+# High-security session with frequent rekeying
+Host sensitive-data
+    RekeyLimit 500M 30m
+
+# X11 forwarding with timeout and trust for graphics workstation
+Host graphics-workstation
+    ForwardX11 yes
+    ForwardX11Trusted yes
+    ForwardX11Timeout 2h
 ```
 
 #### Complete Example with Include and Match

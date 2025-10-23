@@ -28,6 +28,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `SessionType` - Specify session type: none (port forwarding only), subsystem (e.g., SFTP), or default (shell)
   - `StdinNull` - Redirect stdin from /dev/null for background operations and scripting (yes/no)
 
+- **SSH Configuration: Host Key Verification & Security Options**
+  - `NoHostAuthenticationForLocalhost` - Skip host key verification for localhost connections (convenient for local development, default: no)
+  - `HashKnownHosts` - Hash hostnames in known_hosts file to prevent hostname disclosure if compromised (default: no)
+  - `CheckHostIP` - Check host IP address in known_hosts for DNS spoofing detection (deprecated in OpenSSH 8.5+, retained for legacy compatibility)
+  - `VisualHostKey` - Display ASCII art of host key fingerprint for visual verification (default: no)
+  - `HostKeyAlias` - Specify alias for host key lookup in known_hosts (useful for load-balanced services with shared keys)
+  - `VerifyHostKeyDNS` - Verify host keys using DNS SSHFP records (yes/no/ask, default: no)
+  - `UpdateHostKeys` - Accept updated host keys from server automatically (yes/no/ask, default: no)
+
+- **SSH Configuration: Additional Authentication Options**
+  - `NumberOfPasswordPrompts` - Control password authentication retry attempts (valid range: 1-10, default: 3)
+  - `EnableSSHKeysign` - Enable ssh-keysign for host-based authentication (yes/no, default: no)
+
+- **SSH Configuration: Network & Connection Options**
+  - `BindInterface` - Bind SSH connection to specific network interface (alternative to BindAddress for multi-homed hosts)
+  - `IPQoS` - Set IP type-of-service/DSCP values for interactive and bulk traffic (e.g., "lowdelay throughput")
+  - `RekeyLimit` - Control SSH session key renegotiation frequency (format: "data [time]", e.g., "1G 1h")
+
+- **SSH Configuration: X11 Forwarding Options**
+  - `ForwardX11Timeout` - Set timeout for untrusted X11 forwarding connections (time interval, default: 0 = no timeout)
+  - `ForwardX11Trusted` - Enable trusted X11 forwarding with full display access (yes/no, default: no)
+
 - **Security Enhancements**
   - Path validation to prevent usage of sensitive system files (e.g., /etc/passwd, /etc/shadow)
   - Memory exhaustion prevention with entry limits for certificates and forwarding rules
@@ -47,7 +69,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Enhanced SSH configuration merging logic with proper priority handling
 - Support for both "Option Value" and "Option=Value" syntax
 - Scalar options override in later blocks, vector options accumulate with deduplication
-- Comprehensive test coverage: 265 tests including parser, resolver, integration, and security tests
+- **SSH Configuration Coverage**: ~71 options (~69% of OpenSSH's 103 options)
+  - Basic options + Include + Match directives (structural)
+  - Certificate authentication and port forwarding (7 options)
+  - Command execution and automation (7 options)
+  - Host key verification, authentication, network, and X11 options (15 options)
+- Comprehensive test coverage: 278 tests including parser, resolver, integration, and security tests
+- Validation: NumberOfPasswordPrompts range checking (1-10), CheckHostIP deprecation warnings
 
 ## [0.9.1] - 2025-10-14
 

@@ -99,6 +99,80 @@ pub(super) fn parse_forwarding_option(
             }
             host.clear_all_forwardings = Some(parse_yes_no(&args[0], line_number)?);
         }
+        "forwardx11timeout" => {
+            if args.is_empty() {
+                anyhow::bail!("ForwardX11Timeout requires a value at line {line_number}");
+            }
+            // ForwardX11Timeout accepts:
+            // - "0" for unlimited
+            // - Number with optional time suffix (s/m/h/d/w)
+            // - Maximum reasonable timeout (e.g., 1 year)
+
+            let timeout = &args[0];
+
+            // Check for empty value
+            if timeout.is_empty() {
+                anyhow::bail!("ForwardX11Timeout cannot be empty at line {line_number}");
+            }
+
+            // Limit length to prevent memory issues
+            if timeout.len() > 20 {
+                anyhow::bail!(
+                    "ForwardX11Timeout value at line {} is too long (max 20 characters)",
+                    line_number
+                );
+            }
+
+            // Special case: "0" means unlimited
+            if timeout == "0" {
+                host.forward_x11_timeout = Some(timeout.clone());
+            } else {
+                // Validate time format: number with optional suffix
+                let valid_time = if let Some(stripped) = timeout.strip_suffix(&['s', 'S'][..]) {
+                    stripped.parse::<u64>().is_ok()
+                } else if let Some(stripped) = timeout.strip_suffix(&['m', 'M'][..]) {
+                    stripped.parse::<u64>().is_ok()
+                } else if let Some(stripped) = timeout.strip_suffix(&['h', 'H'][..]) {
+                    stripped.parse::<u64>().is_ok()
+                } else if let Some(stripped) = timeout.strip_suffix(&['d', 'D'][..]) {
+                    stripped.parse::<u64>().is_ok()
+                } else if let Some(stripped) = timeout.strip_suffix(&['w', 'W'][..]) {
+                    stripped.parse::<u64>().is_ok()
+                } else {
+                    // Plain number (seconds)
+                    timeout.parse::<u64>().is_ok()
+                };
+
+                if !valid_time {
+                    anyhow::bail!(
+                        "ForwardX11Timeout '{}' at line {} is invalid. \
+                         Use '0' for unlimited or a number with optional suffix (s/m/h/d/w)",
+                        timeout,
+                        line_number
+                    );
+                }
+
+                // Prevent shell metacharacters that could be used in attacks
+                if timeout.contains(
+                    &[
+                        '$', '`', ';', '|', '&', '>', '<', '\\', '"', '\'', '\n', '\r',
+                    ][..],
+                ) {
+                    anyhow::bail!(
+                        "ForwardX11Timeout at line {} contains dangerous characters",
+                        line_number
+                    );
+                }
+
+                host.forward_x11_timeout = Some(timeout.clone());
+            }
+        }
+        "forwardx11trusted" => {
+            if args.is_empty() {
+                anyhow::bail!("ForwardX11Trusted requires a value at line {line_number}");
+            }
+            host.forward_x11_trusted = Some(parse_yes_no(&args[0], line_number)?);
+        }
         _ => unreachable!("Unexpected keyword in parse_forwarding_option: {}", keyword),
     }
 

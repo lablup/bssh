@@ -122,6 +122,62 @@ pub(super) fn parse_authentication_option(
 
             host.hostbased_accepted_algorithms = algorithms;
         }
+        "numberofpasswordprompts" => {
+            if args.is_empty() {
+                anyhow::bail!("NumberOfPasswordPrompts requires a value at line {line_number}");
+            }
+            let num: u32 = args[0].parse().with_context(|| {
+                format!(
+                    "Invalid NumberOfPasswordPrompts value '{}' at line {}",
+                    args[0], line_number
+                )
+            })?;
+
+            // Security: Enforce reasonable limits to prevent DoS attacks
+            // OpenSSH default is 3, typical max is 10
+            const MAX_PASSWORD_PROMPTS: u32 = 100;
+
+            if num == 0 {
+                anyhow::bail!(
+                    "NumberOfPasswordPrompts at line {} must be at least 1",
+                    line_number
+                );
+            }
+
+            if num > MAX_PASSWORD_PROMPTS {
+                anyhow::bail!(
+                    "NumberOfPasswordPrompts {} at line {} exceeds maximum allowed value of {}",
+                    num,
+                    line_number,
+                    MAX_PASSWORD_PROMPTS
+                );
+            }
+
+            // Warn if outside typical range but still within limits
+            if !(1..=10).contains(&num) {
+                tracing::warn!(
+                    "NumberOfPasswordPrompts {} at line {} is outside typical range 1-10. \
+                     This may cause security issues or poor user experience",
+                    num,
+                    line_number
+                );
+            }
+
+            host.number_of_password_prompts = Some(num);
+        }
+        "enablesshkeysign" => {
+            if args.is_empty() {
+                anyhow::bail!("EnableSSHKeysign requires a value at line {line_number}");
+            }
+            let value = parse_yes_no(&args[0], line_number)?;
+            if value {
+                tracing::debug!(
+                    "EnableSSHKeysign enabled at line {} (security-sensitive: allows ssh-keysign for HostbasedAuthentication)",
+                    line_number
+                );
+            }
+            host.enable_ssh_keysign = Some(value);
+        }
         _ => unreachable!(
             "Unexpected keyword in parse_authentication_option: {}",
             keyword
