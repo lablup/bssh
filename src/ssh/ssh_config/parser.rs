@@ -691,11 +691,24 @@ pub(super) fn parse_option(
             if args.is_empty() {
                 anyhow::bail!("CASignatureAlgorithms requires a value at line {line_number}");
             }
-            host.ca_signature_algorithms = args
+            // Security: Limit the number of algorithms to prevent memory exhaustion
+            const MAX_ALGORITHMS: usize = 50;
+            let algorithms: Vec<String> = args
                 .join(",")
                 .split(',')
                 .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()) // Skip empty strings from malformed input
+                .take(MAX_ALGORITHMS)
                 .collect();
+
+            if args.join(",").split(',').count() > MAX_ALGORITHMS {
+                tracing::warn!(
+                    "CASignatureAlgorithms at line {} contains more than {} algorithms, truncated to first {}",
+                    line_number, MAX_ALGORITHMS, MAX_ALGORITHMS
+                );
+            }
+
+            host.ca_signature_algorithms = algorithms;
         }
         "gatewayports" => {
             if args.is_empty() {
@@ -741,11 +754,24 @@ pub(super) fn parse_option(
             if args.is_empty() {
                 anyhow::bail!("HostbasedAcceptedAlgorithms requires a value at line {line_number}");
             }
-            host.hostbased_accepted_algorithms = args
+            // Security: Limit the number of algorithms to prevent memory exhaustion
+            const MAX_ALGORITHMS: usize = 50;
+            let algorithms: Vec<String> = args
                 .join(",")
                 .split(',')
                 .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty()) // Skip empty strings from malformed input
+                .take(MAX_ALGORITHMS)
                 .collect();
+
+            if args.join(",").split(',').count() > MAX_ALGORITHMS {
+                tracing::warn!(
+                    "HostbasedAcceptedAlgorithms at line {} contains more than {} algorithms, truncated to first {}",
+                    line_number, MAX_ALGORITHMS, MAX_ALGORITHMS
+                );
+            }
+
+            host.hostbased_accepted_algorithms = algorithms;
         }
         _ => {
             // Unknown option - log a warning but continue

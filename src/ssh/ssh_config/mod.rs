@@ -31,6 +31,8 @@ mod path;
 mod pattern;
 mod resolver;
 mod security;
+#[cfg(test)]
+mod security_fix_tests;
 mod types;
 
 // Re-export public types

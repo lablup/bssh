@@ -141,6 +141,106 @@ pub fn validate_known_hosts_file_security(path: &Path, line_number: usize) -> Re
     Ok(())
 }
 
+/// Validate security properties of certificate files
+pub fn validate_certificate_file_security(path: &Path, line_number: usize) -> Result<()> {
+    let path_str = path.to_string_lossy();
+
+    // Block access to critical system files that should never be certificates
+    let forbidden_patterns = [
+        "/etc/passwd",
+        "/etc/shadow",
+        "/etc/group",
+        "/etc/sudoers",
+        "/etc/master.passwd", // BSD systems
+        "/etc/security/",
+        "/proc/",
+        "/sys/",
+        "/dev/",
+        "/boot/",
+        "/usr/bin/",
+        "/bin/",
+        "/sbin/",
+        "\\Windows\\System32\\",
+        "\\Windows\\SysWOW64\\",
+        "\\SAM", // Windows SAM database
+        ".bash_history",
+        ".zsh_history",
+        ".mysql_history",
+        ".psql_history",
+        "id_rsa", // Private keys should not be used as certificates
+        "id_dsa",
+        "id_ecdsa",
+        "id_ed25519",
+    ];
+
+    for pattern in &forbidden_patterns {
+        if path_str.contains(pattern) {
+            // Special handling for SSH key patterns
+            if pattern.starts_with("id_") {
+                // Check if this looks like a private key (not a certificate)
+                // Allow: id_rsa-cert.pub, id_rsa_cert.pub, etc.
+                // Block: id_rsa, id_rsa.pub (regular public key, not certificate)
+                if path_str.ends_with("-cert.pub")
+                    || path_str.ends_with("_cert.pub")
+                    || path_str.ends_with("-cert.pem")
+                {
+                    continue; // This is a certificate file, allow it
+                }
+
+                // Check if it's exactly the private key name without certificate suffix
+                if path_str.ends_with(pattern) || path_str.ends_with(&format!("{}.pub", pattern)) {
+                    anyhow::bail!(
+                        "Security violation: Certificate file path '{path_str}' at line {line_number} appears to be a private key or regular public key. \
+                         SSH certificate files should end with '-cert.pub' or similar suffix. Use CertificateFile for certificates, not regular keys."
+                    );
+                }
+                continue; // For other cases with id_* in path, allow them
+            }
+
+            anyhow::bail!(
+                "Security violation: Certificate file path '{path_str}' at line {line_number} points to forbidden system location. \
+                 System files and sensitive locations cannot be used as SSH certificates."
+            );
+        }
+    }
+
+    // Warn about unusual certificate file extensions
+    if !path_str.ends_with(".pub")
+        && !path_str.ends_with(".pem")
+        && !path_str.ends_with(".crt")
+        && !path_str.ends_with(".cert")
+    {
+        tracing::warn!(
+            "Security warning: Certificate file '{}' at line {} has an unusual extension. \
+             SSH certificates typically end with '.pub', '-cert.pub', '.pem', or '.crt'.",
+            path_str,
+            line_number
+        );
+    }
+
+    // Ensure certificate files are in reasonable locations
+    let path_lower = path_str.to_lowercase();
+    if !path_lower.contains("ssh")
+        && !path_lower.contains("cert")
+        && !path_str.contains("/.")  // Hidden directories like ~/.ssh
+        && !path_str.starts_with("/etc/ssh/")
+        && !path_str.starts_with("/usr/")
+        && !path_str.contains("/home/")
+        && !path_str.contains("/Users/")  // macOS
+        && !path_str.contains("/var/lib/")
+    // System service directories
+    {
+        tracing::warn!(
+            "Security warning: Certificate file '{}' at line {} is in an unusual location. \
+             Ensure this is intentional and the file is a valid SSH certificate.",
+            path_str,
+            line_number
+        );
+    }
+
+    Ok(())
+}
+
 /// Validate security properties of general files
 pub fn validate_general_file_security(path: &Path, line_number: usize) -> Result<()> {
     let path_str = path.to_string_lossy();

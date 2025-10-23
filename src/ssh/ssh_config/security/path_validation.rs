@@ -102,6 +102,10 @@ pub fn secure_validate_path(path: &str, path_type: &str, line_number: usize) -> 
         "known_hosts" => {
             checks::validate_known_hosts_file_security(&canonical_path, line_number)?;
         }
+        "certificate" => {
+            // Certificate files need special validation
+            checks::validate_certificate_file_security(&canonical_path, line_number)?;
+        }
         _ => {
             // General path validation for other file types
             checks::validate_general_file_security(&canonical_path, line_number)?;

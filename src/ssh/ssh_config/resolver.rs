@@ -228,9 +228,22 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
     }
     // Phase 2: Certificate authentication and advanced port forwarding options
     if !overlay.certificate_files.is_empty() {
-        // For certificate files, we append them like identity files
-        base.certificate_files
-            .extend(overlay.certificate_files.iter().cloned());
+        // For certificate files, we append them like identity files with deduplication and limit
+        const MAX_CERTIFICATE_FILES: usize = 100; // Reasonable limit to prevent memory exhaustion
+
+        for cert_file in &overlay.certificate_files {
+            // Skip if already present (deduplication)
+            if !base.certificate_files.contains(cert_file) {
+                if base.certificate_files.len() >= MAX_CERTIFICATE_FILES {
+                    tracing::warn!(
+                        "Maximum number of certificate files ({}) reached, ignoring additional entries",
+                        MAX_CERTIFICATE_FILES
+                    );
+                    break;
+                }
+                base.certificate_files.push(cert_file.clone());
+            }
+        }
     }
     if !overlay.ca_signature_algorithms.is_empty() {
         base.ca_signature_algorithms = overlay.ca_signature_algorithms.clone();
@@ -242,9 +255,22 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
         base.exit_on_forward_failure = overlay.exit_on_forward_failure;
     }
     if !overlay.permit_remote_open.is_empty() {
-        // For PermitRemoteOpen, we append them
-        base.permit_remote_open
-            .extend(overlay.permit_remote_open.iter().cloned());
+        // For PermitRemoteOpen, we append them with deduplication and limit
+        const MAX_PERMIT_REMOTE_OPEN: usize = 1000; // Reasonable limit to prevent memory exhaustion
+
+        for entry in &overlay.permit_remote_open {
+            // Skip if already present (deduplication)
+            if !base.permit_remote_open.contains(entry) {
+                if base.permit_remote_open.len() >= MAX_PERMIT_REMOTE_OPEN {
+                    tracing::warn!(
+                        "Maximum number of PermitRemoteOpen entries ({}) reached, ignoring additional entries",
+                        MAX_PERMIT_REMOTE_OPEN
+                    );
+                    break;
+                }
+                base.permit_remote_open.push(entry.clone());
+            }
+        }
     }
     if overlay.hostbased_authentication.is_some() {
         base.hostbased_authentication = overlay.hostbased_authentication;
