@@ -2059,6 +2059,98 @@ Command execution options enable sophisticated automation workflows:
 - **SessionType**: Control session type (none/subsystem/default)
 - **StdinNull**: Redirect stdin from /dev/null for scripting
 
+#### Phase 4: Additional Useful SSH Configuration Options (Completed)
+Phase 4 adds 15 commonly-used SSH configuration options that enhance security, authentication control, and network behavior. These options complete ~70% OpenSSH compatibility coverage.
+
+##### Host Key Verification & Security (7 options)
+- **NoHostAuthenticationForLocalhost**: Skip host key verification for localhost connections (yes/no)
+  - Convenient for local development and testing
+  - Reduces known_hosts clutter
+  - Default: no
+
+- **HashKnownHosts**: Hash hostnames in known_hosts file (yes/no)
+  - Security enhancement: prevents hostname disclosure if file is compromised
+  - Default: no
+
+- **CheckHostIP**: Check host IP address in known_hosts (yes/no)
+  - **Deprecated** in OpenSSH 8.5+ (2021)
+  - Detects DNS spoofing
+  - Retained for legacy compatibility
+
+- **VisualHostKey**: Display ASCII art of host key fingerprint (yes/no)
+  - Helps users visually verify host identity
+  - Default: no
+
+- **HostKeyAlias**: Alias for host key lookup in known_hosts
+  - Useful for load-balanced services sharing host keys
+  - Single string value
+
+- **VerifyHostKeyDNS**: Verify host keys using DNS SSHFP records (yes/no/ask)
+  - Validates host keys against DNS records
+  - Default: no
+
+- **UpdateHostKeys**: Accept updated host keys from server (yes/no/ask)
+  - Controls automatic acceptance of key updates
+  - Default: no
+
+##### Authentication Options (2 options)
+- **NumberOfPasswordPrompts**: Password retry attempts (1-10)
+  - Controls password authentication retries
+  - Validation: warns if outside typical range
+  - Default: 3 (OpenSSH standard)
+
+- **EnableSSHKeysign**: Enable ssh-keysign for host-based authentication (yes/no)
+  - Required for host-based authentication
+  - Default: no
+
+##### Network & Connection Options (3 options)
+- **BindInterface**: Bind connection to specific network interface
+  - Alternative to BindAddress for multi-homed hosts
+  - Useful for VPN scenarios
+  - String value (interface name)
+
+- **IPQoS**: IP type-of-service/DSCP values
+  - Two values: interactive and bulk traffic
+  - Quality of Service control
+  - Format: "value1 value2" (e.g., "lowdelay throughput")
+
+- **RekeyLimit**: SSH session key renegotiation control
+  - Format: "data [time]" with K/M/G suffixes
+  - Security tuning option
+  - Default: "default none"
+
+##### X11 Forwarding Options (2 options)
+- **ForwardX11Timeout**: Timeout for untrusted X11 forwarding
+  - Time interval format (e.g., "1h", "30m")
+  - Default: 0 (no timeout)
+
+- **ForwardX11Trusted**: Enable trusted X11 forwarding (yes/no)
+  - Controls X11 security extension restrictions
+  - Default: no
+
+##### Implementation Details
+**Files Modified:**
+- `src/ssh/ssh_config/types.rs`: Added 15 new fields to SshHostConfig
+- `src/ssh/ssh_config/parser/options/security.rs`: 7 host key/security parsers
+- `src/ssh/ssh_config/parser/options/authentication.rs`: 2 authentication parsers
+- `src/ssh/ssh_config/parser/options/connection.rs`: 3 network option parsers
+- `src/ssh/ssh_config/parser/options/forwarding.rs`: 2 X11 forwarding parsers
+- `src/ssh/ssh_config/resolver.rs`: Merge logic for all new options
+
+**Testing:**
+- 7 comprehensive test functions covering all Phase 4 options
+- Parsing validation, config merging, precedence, error handling
+- Option=Value syntax compatibility (from Phase 1)
+- Total test count: 278 tests passing
+
+**Coverage Achievement:**
+After Phase 4 completion:
+- Phase 1: Basic options + Include + Match (structural)
+- Phase 2: Certificate authentication and port forwarding (7 options)
+- Phase 3: Command execution and automation (7 options)
+- Phase 4: Additional useful options (15 options)
+- **Total: ~71 options** (~69% of OpenSSH's 103 options)
+
 ### Security Model
 
 The parser implements multiple layers of security validation:

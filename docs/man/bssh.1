@@ -458,6 +458,165 @@ Useful for background operations and scripting. Default is no.
 Example:
 .I StdinNull yes
 
+.SS Host Key Verification & Security Options
+.TP
+.B NoHostAuthenticationForLocalhost
+Specifies whether to skip host key verification for localhost connections.
+Convenient for local development and testing environments.
+Reduces known_hosts clutter for local connections. Default is no.
+.br
+Example:
+.I NoHostAuthenticationForLocalhost yes
+
+.TP
+.B HashKnownHosts
+Specifies whether to hash hostnames in the known_hosts file.
+When enabled, hostnames are hashed to prevent hostname disclosure
+if the known_hosts file is compromised. Recommended for security-conscious users.
+Default is no.
+.br
+Example:
+.I HashKnownHosts yes
+
+.TP
+.B CheckHostIP
+Specifies whether to check the host IP address in the known_hosts file.
+Helps detect DNS spoofing attacks by verifying the IP address matches the known_hosts entry.
+.br
+.B Note:
+This option has been deprecated in OpenSSH 8.5+ (2021) and is disabled by default
+in modern OpenSSH. It is retained for legacy compatibility.
+.br
+Example:
+.I CheckHostIP no
+
+.TP
+.B VisualHostKey
+Specifies whether to display an ASCII art representation of the remote host key fingerprint.
+Helps users visually verify host identity. Useful for security-conscious users
+who can recognize the pattern of trusted hosts. Default is no.
+.br
+Example:
+.I VisualHostKey yes
+
+.TP
+.B HostKeyAlias
+Specifies an alias to use for host key lookup instead of the actual hostname.
+Useful when multiple hosts share the same host key (e.g., load-balanced services).
+The specified alias is used for looking up the host key in the known_hosts file.
+.br
+Example:
+.I HostKeyAlias lb.example.com
+
+.TP
+.B VerifyHostKeyDNS
+Specifies whether to verify the remote host key using DNS SSHFP resource records.
+Possible values:
+.RS
+.IP \[bu] 2
+.B yes
+- DNS records are used and must be valid
+.IP \[bu] 2
+.B no
+- DNS records are not used (default)
+.IP \[bu] 2
+.B ask
+- User is asked whether to trust DNS records
+.RE
+.IP
+Example:
+.I VerifyHostKeyDNS ask
+
+.TP
+.B UpdateHostKeys
+Specifies whether to accept updated host keys from the server.
+When the server offers new or additional host keys, this option controls
+whether they should be automatically accepted. Possible values:
+.RS
+.IP \[bu] 2
+.B yes
+- Automatically accept updated host keys
+.IP \[bu] 2
+.B no
+- Reject updated host keys (default)
+.IP \[bu] 2
+.B ask
+- Ask the user before accepting
+.RE
+.IP
+Example:
+.I UpdateHostKeys ask
+
+.SS Additional Authentication Options
+.TP
+.B NumberOfPasswordPrompts
+Specifies the number of password prompts before giving up when using password authentication.
+Valid range is 1-10. Default is 3 in OpenSSH.
+Setting this to 1 is useful for automated scripts to fail quickly.
+.br
+Example:
+.I NumberOfPasswordPrompts 1
+
+.TP
+.B EnableSSHKeysign
+Specifies whether to enable ssh-keysign for host-based authentication.
+ssh-keysign is used to access the local host keys and generate the digital signature
+required for host-based authentication. Default is no.
+.br
+Example:
+.I EnableSSHKeysign yes
+
+.SS Network & Connection Options
+.TP
+.B BindInterface
+Specifies the network interface to bind the connection to.
+Alternative to BindAddress for multi-homed hosts.
+Useful for VPN scenarios or systems with multiple network interfaces
+where you want to force connections through a specific interface.
+.br
+Example:
+.I BindInterface tun0
+
+.TP
+.B IPQoS
+Specifies the IP type-of-service (ToS) or DSCP (Differentiated Services Code Point) values.
+Two values are specified: one for interactive traffic and one for bulk traffic.
+Valid values include: af11, af12, af13, af21, af22, af23, af31, af32, af33, af41, af42, af43,
+cs0-cs7, ef, lowdelay, throughput, reliability, or numeric values.
+.br
+Example:
+.I IPQoS lowdelay throughput
+
+.TP
+.B RekeyLimit
+Specifies the maximum amount of data that may be transmitted or received before the session key
+is renegotiated, optionally followed by a maximum amount of time that may pass.
+Format: "data [time]" where data can use K, M, or G suffixes for kilobytes, megabytes, or gigabytes.
+Time can use s, m, h, d, or w suffixes. Default is "default none" (no rekeying based on data or time).
+.br
+Example:
+.I RekeyLimit 1G 1h
+
+.SS X11 Forwarding Options
+.TP
+.B ForwardX11Timeout
+Specifies a timeout for untrusted X11 forwarding connections.
+After this time, untrusted X11 connections will be refused.
+The timeout is specified as a time interval (e.g., 1h, 30m, 600s).
+A value of zero means no timeout (default).
+.br
+Example:
+.I ForwardX11Timeout 1h
+
+.TP
+.B ForwardX11Trusted
+Specifies whether to enable trusted X11 forwarding.
+When enabled, the remote X11 clients will have full access to the local X11 display.
+When disabled (default), X11 forwarding is subject to X11 SECURITY extension restrictions.
+.br
+Example:
+.I ForwardX11Trusted yes
+
 .SS SSH Config Example with New Options
 .nf
 # ~/.ssh/config
@@ -499,6 +658,38 @@ Host tunnel
     SessionType none
     LocalForward 8080 internal-server:80
     StdinNull yes
+
+# Local development environment
+Host localhost 127.0.0.1 ::1
+    NoHostAuthenticationForLocalhost yes
+    NumberOfPasswordPrompts 1
+
+# Security-hardened configuration
+Host *.secure.example.com
+    HashKnownHosts yes
+    VisualHostKey yes
+    VerifyHostKeyDNS ask
+    UpdateHostKeys ask
+    CheckHostIP no
+
+# Load-balanced service with shared host key
+Host lb-node-*
+    HostKeyAlias lb.example.com
+
+# Multi-homed host with specific interface
+Host vpn-only
+    BindInterface tun0
+    IPQoS lowdelay throughput
+
+# High-security session with frequent rekeying
+Host sensitive-data
+    RekeyLimit 500M 30m
+
+# X11 forwarding with timeout and trust
+Host graphics-workstation
+    ForwardX11 yes
+    ForwardX11Trusted yes
+    ForwardX11Timeout 2h
 .fi
 
 .SH BACKEND.AI INTEGRATION
