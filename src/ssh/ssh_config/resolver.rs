@@ -347,6 +347,27 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
     if overlay.forward_x11_trusted.is_some() {
         base.forward_x11_trusted = overlay.forward_x11_trusted;
     }
+    // Phase 5: High-priority practical SSH config options
+    // Authentication & agent management
+    if overlay.identities_only.is_some() {
+        base.identities_only = overlay.identities_only;
+    }
+    if overlay.add_keys_to_agent.is_some() {
+        base.add_keys_to_agent = overlay.add_keys_to_agent.clone();
+    }
+    if overlay.identity_agent.is_some() {
+        base.identity_agent = overlay.identity_agent.clone();
+    }
+    // Security & algorithm management
+    if !overlay.pubkey_accepted_algorithms.is_empty() {
+        base.pubkey_accepted_algorithms = overlay.pubkey_accepted_algorithms.clone();
+    }
+    if overlay.required_rsa_size.is_some() {
+        base.required_rsa_size = overlay.required_rsa_size;
+    }
+    if overlay.fingerprint_hash.is_some() {
+        base.fingerprint_hash = overlay.fingerprint_hash.clone();
+    }
 }
 
 /// Get the effective hostname (resolves HostName directive)
