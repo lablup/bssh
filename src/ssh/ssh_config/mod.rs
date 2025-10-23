@@ -30,6 +30,8 @@ mod parser;
 mod path;
 mod pattern;
 mod resolver;
+#[cfg(test)]
+mod resolver_tests;
 mod security;
 #[cfg(test)]
 mod security_fix_tests;

@@ -4,3 +4,4 @@
 //! for SSH configuration functionality.
 
 mod env_cache_integration_test;
+mod phase2_integration_test;
