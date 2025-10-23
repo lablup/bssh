@@ -1986,6 +1986,151 @@ forwarding:
    - `BSSH_FORWARD_RETRIES`: Retry attempts
    - `BSSH_FORWARD_BUFFER`: Buffer size
 
+## SSH Configuration Parser
+
+The SSH configuration parser provides comprehensive support for OpenSSH configuration files, implementing various configuration options in multiple phases for maintainability and feature completeness.
+
+### Architecture
+
+The parser is implemented as a modular system with the following structure:
+
+```
+src/ssh/ssh_config/
+├── parser/
+│   ├── core.rs           # Core parsing logic with 2-pass strategy
+│   ├── helpers.rs        # Helper functions (parse_yes_no, etc.)
+│   ├── options/          # Option parsing modules
+│   │   ├── authentication.rs
+│   │   ├── basic.rs
+│   │   ├── command.rs    # Phase 3: Command execution options
+│   │   ├── connection.rs
+│   │   ├── control.rs
+│   │   ├── environment.rs
+│   │   ├── forwarding.rs
+│   │   ├── proxy.rs
+│   │   ├── security.rs
+│   │   └── ui.rs
+│   └── tests.rs
+├── security/             # Security validation
+│   ├── string_validation.rs
+│   └── path_validation.rs
+├── types.rs             # Core data structures
+└── resolver.rs          # Host configuration resolution
+```
+
+### Implementation Phases
+
+The SSH configuration parser has been implemented in multiple phases:
+
+#### Phase 1: Basic Options (Completed)
+- **Option=Value syntax**: Support for both space and equals-separated options
+- **Basic options**: Hostname, User, Port, IdentityFile
+- **Authentication**: PubkeyAuthentication, PasswordAuthentication
+- **Connection**: ServerAliveInterval, ConnectTimeout, etc.
+
+#### Phase 2: Certificate Authentication and Port Forwarding (Completed)
+- **Certificate support**: CertificateFile, CASignatureAlgorithms
+- **Advanced forwarding**: GatewayPorts, ExitOnForwardFailure, PermitRemoteOpen
+- **Hostbased auth**: HostbasedAuthentication, HostbasedAcceptedAlgorithms
+
+#### Phase 3: Command Execution and Automation (Completed)
+Command execution options enable sophisticated automation workflows:
+
+##### LocalCommand and PermitLocalCommand
+- **Purpose**: Execute commands locally after SSH connection
+- **Security**: Requires explicit PermitLocalCommand=yes
+- **Token substitution**: Supports %h, %H, %n, %p, %r, %u tokens
+- **Validation**: Commands are validated against injection attacks
+- **Use cases**: File synchronization, notifications, environment setup
+
+##### RemoteCommand
+- **Purpose**: Execute command on remote host instead of shell
+- **Security**: No local validation (runs on remote)
+- **Use cases**: Auto-attach tmux, enter specific environments
+
+##### KnownHostsCommand
+- **Purpose**: Dynamically fetch host keys
+- **Security**: Command path validation, timeout protection
+- **Token substitution**: Supports %h and %H tokens
+- **Use cases**: Cloud environments, certificate authorities
+
+##### Additional Automation Options
+- **ForkAfterAuthentication**: Fork SSH into background after auth
+- **SessionType**: Control session type (none/subsystem/default)
+- **StdinNull**: Redirect stdin from /dev/null for scripting
+
+### Security Model
+
+The parser implements multiple layers of security validation:
+
+#### Command Injection Prevention
+```rust
+// Security validation for executable commands
+fn validate_executable_string(value: &str, option_name: &str, line_number: usize) -> Result<()> {
+    // Check for dangerous shell metacharacters
+    const DANGEROUS_CHARS: &[char] = &[
+        ';',  // Command separator
+        '&',  // Background/separator
+        '|',  // Pipe
+        '`',  // Command substitution
+        '$',  // Variable/command expansion
+        '>',  // Redirection
+        '<',  // Redirection
+        '\n', // Newline
+        '\r', // Carriage return
+        '\0', // Null byte
+    ];
+    // ... validation logic
+}
+```
+
+#### Token Substitution Security
+The parser validates SSH tokens while preventing injection:
+- **Valid tokens**: %h (hostname), %H (hostname), %n (original), %p (port), %r (remote user), %u (local user), %% (literal %)
+- **Invalid patterns**: Detected and rejected during parsing
+- **Substitution timing**: Tokens are validated but not substituted by parser (client responsibility)
+
+#### Path Validation
+- Tilde expansion support with security checks
+- Prevention of path traversal attacks
+- Validation against sensitive system paths
+- Symlink resolution safety
+
+### Testing Strategy
+
+Comprehensive test coverage includes:
+
+1. **Unit tests**: Each option parser module has internal tests
+2. **Integration tests**: Full configuration parsing scenarios
+3. **Security tests**: Injection attempts, malformed input
+4. **Edge cases**: Empty values, whitespace, special characters
+
+Test files:
+- `src/ssh/ssh_config/parser/options/command.rs`: Unit tests for command options
+- `tests/ssh_config_command_options_test.rs`: Integration tests for Phase 3
+
+### Performance Considerations
+
+- **Two-pass parsing**: Handles Include directives efficiently
+- **Lazy resolution**: Configuration merging only when needed
+- **String allocation**: Minimized through careful use of references
+- **Validation caching**: Results cached where possible
+
+### Future Enhancements
+
+Planned phases for complete OpenSSH compatibility:
+
+#### Phase 4: Include and Match Directives
+- **Include**: Recursive configuration file inclusion
+- **Match**: Conditional configuration blocks
+- **Pattern matching**: Host patterns with wildcards
+
+#### Phase 5: Advanced Features
+- **ProxyCommand**: Custom proxy commands
+- **ProxyJump**: Multi-hop SSH connections
+- **ControlMaster**: Connection multiplexing
+- **Additional options**: As needed for compatibility
+
 ## Dependencies and Licensing
 
 All dependencies are compatible with Apache-2.0 licensing:
