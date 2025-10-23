@@ -34,7 +34,13 @@ pub(super) fn parse_security_option(
             if args.is_empty() {
                 anyhow::bail!("StrictHostKeyChecking requires a value at line {line_number}");
             }
-            host.strict_host_key_checking = Some(args[0].clone());
+            let value = &args[0];
+            tracing::debug!(
+                "Setting StrictHostKeyChecking to '{}' at line {} (security-sensitive)",
+                value,
+                line_number
+            );
+            host.strict_host_key_checking = Some(value.clone());
         }
         "userknownhostsfile" => {
             if args.is_empty() {
@@ -125,7 +131,14 @@ pub(super) fn parse_security_option(
                     "NoHostAuthenticationForLocalhost requires a value at line {line_number}"
                 );
             }
-            host.no_host_authentication_for_localhost = Some(parse_yes_no(&args[0], line_number)?);
+            let value = parse_yes_no(&args[0], line_number)?;
+            if value {
+                tracing::debug!(
+                    "NoHostAuthenticationForLocalhost enabled at line {} - skipping host verification for localhost (security-sensitive)",
+                    line_number
+                );
+            }
+            host.no_host_authentication_for_localhost = Some(value);
         }
         "hashknownhosts" => {
             if args.is_empty() {
@@ -182,6 +195,10 @@ pub(super) fn parse_security_option(
                     line_number
                 );
             }
+            tracing::debug!(
+                "Setting HostKeyAlias to '{}' at line {} (security-sensitive: affects host key verification)",
+                alias, line_number
+            );
             host.host_key_alias = Some(alias.clone());
         }
         "verifyhostkeydns" => {

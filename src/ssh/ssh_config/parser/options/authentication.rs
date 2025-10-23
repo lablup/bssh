@@ -169,7 +169,14 @@ pub(super) fn parse_authentication_option(
             if args.is_empty() {
                 anyhow::bail!("EnableSSHKeysign requires a value at line {line_number}");
             }
-            host.enable_ssh_keysign = Some(parse_yes_no(&args[0], line_number)?);
+            let value = parse_yes_no(&args[0], line_number)?;
+            if value {
+                tracing::debug!(
+                    "EnableSSHKeysign enabled at line {} (security-sensitive: allows ssh-keysign for HostbasedAuthentication)",
+                    line_number
+                );
+            }
+            host.enable_ssh_keysign = Some(value);
         }
         _ => unreachable!(
             "Unexpected keyword in parse_authentication_option: {}",
