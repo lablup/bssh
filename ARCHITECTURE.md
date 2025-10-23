@@ -582,6 +582,100 @@ pub fn find_host_config(hosts: &[SshHostConfig], hostname: &str) -> SshHostConfi
 - Security: exec validation, path traversal prevention
 - **Total:** 62 tests passing
 
+#### Supported SSH Configuration Options
+
+bssh supports 40+ SSH configuration directives organized into categories:
+
+**Connection Options:**
+- `HostName` - Remote hostname or IP address
+- `Port` - SSH port (default: 22)
+- `User` - Remote username
+- `ConnectTimeout` - Connection timeout in seconds
+- `ServerAliveInterval` - Keepalive interval
+- `ServerAliveCountMax` - Keepalive retry count
+
+**Authentication Options:**
+- `IdentityFile` - SSH private key file (multiple allowed)
+- `CertificateFile` - SSH certificate file for PKI auth (max 100, Phase 2)
+- `HostbasedAuthentication` - Enable host-based auth (yes/no, Phase 2)
+- `HostbasedAcceptedAlgorithms` - Host-based auth algorithms (max 50, Phase 2)
+- `PubkeyAuthentication` - Enable public key auth
+- `PasswordAuthentication` - Enable password auth
+- `PreferredAuthentications` - Authentication method priority
+
+**Security Options:**
+- `StrictHostKeyChecking` - Host key verification (yes/no/accept-new)
+- `UserKnownHostsFile` - Known hosts file path
+- `HashKnownHosts` - Hash hostnames in known_hosts
+- `CASignatureAlgorithms` - CA signature algorithms (max 50, Phase 2)
+- `HostKeyAlgorithms` - Accepted host key types
+- `PubkeyAcceptedAlgorithms` - Accepted public key types
+
+**Port Forwarding Options:**
+- `LocalForward` - Local port forwarding (-L)
+- `RemoteForward` - Remote port forwarding (-R)
+- `DynamicForward` - SOCKS proxy (-D)
+- `GatewayPorts` - Remote forwarding access control (yes/no/clientspecified, Phase 2)
+- `ExitOnForwardFailure` - Terminate on forwarding failure (yes/no, Phase 2)
+- `PermitRemoteOpen` - Allowed remote forward destinations (max 1000, Phase 2)
+
+**Jump Host Options:**
+- `ProxyJump` - Jump host specification (-J)
+- `ProxyCommand` - Custom proxy command
+
+**PTY and Session Options:**
+- `RequestTTY` - PTY allocation (yes/no/force/auto)
+- `ForwardAgent` - Agent forwarding
+- `ForwardX11` - X11 forwarding
+- `SendEnv` - Environment variables to send
+- `SetEnv` - Environment variables to set
+
+**Option Value Formats:**
+All options support both OpenSSH-compatible syntaxes:
+- `Option Value` - Traditional space-separated format
+- `Option=Value` - Alternative equals-sign format
+
+**Security Limits (Phase 2):**
+- CertificateFile: Maximum 100 entries per configuration
+- CASignatureAlgorithms: Maximum 50 algorithms
+- HostbasedAcceptedAlgorithms: Maximum 50 algorithms
+- PermitRemoteOpen: Maximum 1000 destination entries
+- Path validation prevents usage of sensitive system files
+- Automatic deduplication for multi-valued options
+
+**Configuration Merging Rules:**
+- **Scalar options** (Port, User, HostName): First match wins (SSH-compatible)
+- **Vector options** (IdentityFile, CertificateFile, PermitRemoteOpen): Accumulate across matches with deduplication
+- **Algorithm lists** (CASignatureAlgorithms, HostbasedAcceptedAlgorithms): Later matches override earlier ones
+- CLI arguments always take precedence over config file options
+
+**Example Configuration:**
+```ssh
+# ~/.ssh/config
+
+# Global defaults
+Host *
+    ServerAliveInterval 60
+    ServerAliveCountMax 3
+    HostbasedAuthentication no
+
+# Production servers with certificate authentication
+Host *.prod.example.com
+    User admin
+    CertificateFile ~/.ssh/prod-user-cert.pub
+    CertificateFile ~/.ssh/prod-host-cert.pub
+    CASignatureAlgorithms ssh-ed25519,rsa-sha2-512
+    HostbasedAuthentication yes
+    HostbasedAcceptedAlgorithms ssh-ed25519,rsa-sha2-512
+
+# Secure hosts with strict port forwarding
+Match host *.secure.prod.example.com
+    GatewayPorts clientspecified
+    ExitOnForwardFailure yes
+    PermitRemoteOpen localhost:8080
+    PermitRemoteOpen db.internal:5432
+```
+
 ### 7. SSH Configuration Caching (`ssh/config_cache/*`)
 
 **Status:** Implemented (2025-08-28), Refactored (2025-10-17)

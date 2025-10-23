@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **SSH Configuration: Certificate Authentication Options**
+  - `CertificateFile` - Specify SSH certificate files for PKI authentication (maximum 100 certificates)
+  - `CASignatureAlgorithms` - Define CA signature algorithms for certificate validation (maximum 50 algorithms)
+  - `HostbasedAuthentication` - Enable/disable host-based authentication
+  - `HostbasedAcceptedAlgorithms` - Specify accepted algorithms for host-based authentication (maximum 50 algorithms)
+
+- **SSH Configuration: Advanced Port Forwarding Control**
+  - `GatewayPorts` - Control remote port forwarding access (yes/no/clientspecified)
+  - `ExitOnForwardFailure` - Terminate connection when port forwarding fails
+  - `PermitRemoteOpen` - Specify allowed destinations for remote TCP port forwarding (maximum 1000 entries)
+
+- **Security Enhancements**
+  - Path validation to prevent usage of sensitive system files (e.g., /etc/passwd, /etc/shadow)
+  - Memory exhaustion prevention with entry limits for certificates and forwarding rules
+  - Algorithm list validation with maximum entry limits
+  - Deduplication for certificate files and remote forwarding destinations
+
+### Changed
+- **SSH Config Parser**: Refactored into modular structure for better maintainability
+  - Split oversized parser.rs (1706 lines) into category-based modules (~200-350 lines each)
+  - Organized option parsing by categories: authentication, security, forwarding, connection, etc.
+  - Improved code organization and maintainability
+
+### Technical Details
+- Enhanced SSH configuration merging logic with proper priority handling
+- Support for both "Option Value" and "Option=Value" syntax
+- Scalar options override in later blocks, vector options accumulate with deduplication
+- Comprehensive test coverage: 265 tests including parser, resolver, integration, and security tests
+
 ## [0.9.1] - 2025-10-14
 
 ### Added
