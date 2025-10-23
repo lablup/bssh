@@ -154,7 +154,35 @@ pub(super) fn parse_security_option(
             if args.is_empty() {
                 anyhow::bail!("HostKeyAlias requires a value at line {line_number}");
             }
-            host.host_key_alias = Some(args[0].clone());
+            // Security: Validate HostKeyAlias to prevent injection attacks
+            // Only allow alphanumeric, dots, hyphens, and underscores (valid hostname characters)
+            let alias = &args[0];
+            if alias.is_empty() {
+                anyhow::bail!("HostKeyAlias cannot be empty at line {line_number}");
+            }
+            if alias.len() > 255 {
+                anyhow::bail!(
+                    "HostKeyAlias at line {line_number} exceeds maximum length of 255 characters"
+                );
+            }
+            // Check for dangerous characters that could be used in injection attacks
+            if !alias
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_')
+            {
+                anyhow::bail!(
+                    "HostKeyAlias at line {} contains invalid characters. Only alphanumeric, dots, hyphens, and underscores are allowed",
+                    line_number
+                );
+            }
+            // Prevent directory traversal
+            if alias.contains("..") {
+                anyhow::bail!(
+                    "HostKeyAlias at line {} contains '..' which could be used for path traversal attacks",
+                    line_number
+                );
+            }
+            host.host_key_alias = Some(alias.clone());
         }
         "verifyhostkeydns" => {
             if args.is_empty() {
