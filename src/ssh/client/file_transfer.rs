@@ -600,8 +600,15 @@ impl SshClient {
         );
 
         // Determine authentication method based on parameters
+        // Note: use_keychain is set to false for file transfers to avoid prompts
         let auth_method = self
-            .determine_auth_method(key_path, use_agent, use_password)
+            .determine_auth_method(
+                key_path,
+                use_agent,
+                use_password,
+                #[cfg(target_os = "macos")]
+                false,
+            )
             .await?;
 
         // Set up host key checking
@@ -641,8 +648,15 @@ impl SshClient {
         jump_hosts_spec: Option<&str>,
     ) -> Result<Client> {
         // Determine authentication method
+        // Note: use_keychain is set to false for file transfers to avoid prompts
         let auth_method = self
-            .determine_auth_method(key_path, use_agent, use_password)
+            .determine_auth_method(
+                key_path,
+                use_agent,
+                use_password,
+                #[cfg(target_os = "macos")]
+                false,
+            )
             .await?;
 
         let strict_mode = strict_mode.unwrap_or(StrictHostKeyChecking::AcceptNew);

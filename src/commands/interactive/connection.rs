@@ -25,12 +25,46 @@ use crate::jump::{parse_jump_hosts, JumpHostChain};
 use crate::node::Node;
 use crate::ssh::{
     known_hosts::get_check_method,
-    tokio_client::{AuthMethod, Client},
+    tokio_client::{AuthMethod, Client, ServerCheckMethod},
 };
 
 use super::types::{InteractiveCommand, NodeSession};
 
 impl InteractiveCommand {
+    /// Helper function to establish SSH connection with proper error handling and rate limiting
+    /// This eliminates code duplication across different connection paths and prevents brute-force attacks
+    async fn establish_connection(
+        addr: (&str, u16),
+        username: &str,
+        auth_method: AuthMethod,
+        check_method: ServerCheckMethod,
+        host: &str,
+        port: u16,
+    ) -> Result<Client> {
+        const SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
+        let connect_timeout = Duration::from_secs(SSH_CONNECT_TIMEOUT_SECS);
+
+        // SECURITY: Add a small delay before connection attempts to prevent rapid-fire attempts
+        // This helps mitigate brute-force attacks and prevents triggering fail2ban too quickly
+        // Using exponential backoff would be ideal for retries, but since we don't retry here,
+        // a fixed small delay is sufficient to prevent abuse
+        const RATE_LIMIT_DELAY: Duration = Duration::from_millis(100);
+        tokio::time::sleep(RATE_LIMIT_DELAY).await;
+
+        timeout(
+            connect_timeout,
+            Client::connect(addr, username, auth_method, check_method),
+        )
+        .await
+        .with_context(|| {
+            format!(
+                "Connection timeout: Failed to connect to {}:{} after {} seconds",
+                host, port, SSH_CONNECT_TIMEOUT_SECS
+            )
+        })?
+        .with_context(|| format!("SSH connection failed to {}:{}", host, port))
+    }
+
     /// Determine authentication method based on node and config (same logic as exec mode)
     pub(super) async fn determine_auth_method(&self, node: &Node) -> Result<AuthMethod> {
         // Use centralized authentication logic from auth module
@@ -49,6 +83,12 @@ impl InteractiveCommand {
         auth_ctx = auth_ctx
             .with_agent(self.use_agent)
             .with_password(self.use_password);
+
+        // Set macOS Keychain integration if available
+        #[cfg(target_os = "macos")]
+        {
+            auth_ctx = auth_ctx.with_keychain(self.use_keychain);
+        }
 
         auth_ctx.determine_method().await
     }
@@ -97,13 +137,6 @@ impl InteractiveCommand {
 
         // Connect with timeout
         let addr = (node.host.as_str(), node.port);
-        // SSH connection timeout design:
-        // - 30 seconds balances user patience with network reliability
-        // - Sufficient for slow networks, DNS resolution, SSH negotiation
-        // - Industry standard timeout for interactive SSH connections
-        // - Prevents indefinite hang on unreachable hosts
-        const SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
-        let connect_timeout = Duration::from_secs(SSH_CONNECT_TIMEOUT_SECS);
 
         // Create client connection - either direct or through jump hosts
         let client = if let Some(ref jump_spec) = self.jump_hosts {
@@ -114,18 +147,17 @@ impl InteractiveCommand {
 
             if jump_hosts.is_empty() {
                 tracing::debug!("No valid jump hosts found, using direct connection");
-                timeout(
-                    connect_timeout,
-                    Client::connect(addr, &node.username, auth_method, check_method),
+
+                // Use the helper function to establish connection
+                Self::establish_connection(
+                    addr,
+                    &node.username,
+                    auth_method.clone(),
+                    check_method.clone(),
+                    &node.host,
+                    node.port,
                 )
-                .await
-                .with_context(|| {
-                    format!(
-                        "Connection timeout: Failed to connect to {}:{} after 30 seconds",
-                        node.host, node.port
-                    )
-                })?
-                .with_context(|| format!("SSH connection failed to {}:{}", node.host, node.port))?
+                .await?
             } else {
                 tracing::info!(
                     "Connecting to {}:{} via {} jump host(s) for interactive session",
@@ -190,18 +222,17 @@ impl InteractiveCommand {
         } else {
             // Direct connection
             tracing::debug!("Using direct connection (no jump hosts)");
-            timeout(
-                connect_timeout,
-                Client::connect(addr, &node.username, auth_method, check_method),
+
+            // Use the helper function to establish connection
+            Self::establish_connection(
+                addr,
+                &node.username,
+                auth_method,
+                check_method,
+                &node.host,
+                node.port,
             )
-            .await
-            .with_context(|| {
-                format!(
-                    "Connection timeout: Failed to connect to {}:{} after 30 seconds",
-                    node.host, node.port
-                )
-            })?
-            .with_context(|| format!("SSH connection failed to {}:{}", node.host, node.port))?
+            .await?
         };
 
         // Get terminal dimensions
@@ -242,13 +273,6 @@ impl InteractiveCommand {
 
         // Connect with timeout
         let addr = (node.host.as_str(), node.port);
-        // SSH connection timeout design:
-        // - 30 seconds balances user patience with network reliability
-        // - Sufficient for slow networks, DNS resolution, SSH negotiation
-        // - Industry standard timeout for interactive SSH connections
-        // - Prevents indefinite hang on unreachable hosts
-        const SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
-        let connect_timeout = Duration::from_secs(SSH_CONNECT_TIMEOUT_SECS);
 
         // Create client connection - either direct or through jump hosts
         let client = if let Some(ref jump_spec) = self.jump_hosts {
@@ -259,18 +283,17 @@ impl InteractiveCommand {
 
             if jump_hosts.is_empty() {
                 tracing::debug!("No valid jump hosts found, using direct connection for PTY");
-                timeout(
-                    connect_timeout,
-                    Client::connect(addr, &node.username, auth_method, check_method),
+
+                // Use the helper function to establish connection
+                Self::establish_connection(
+                    addr,
+                    &node.username,
+                    auth_method.clone(),
+                    check_method.clone(),
+                    &node.host,
+                    node.port,
                 )
-                .await
-                .with_context(|| {
-                    format!(
-                        "Connection timeout: Failed to connect to {}:{} after 30 seconds",
-                        node.host, node.port
-                    )
-                })?
-                .with_context(|| format!("SSH connection failed to {}:{}", node.host, node.port))?
+                .await?
             } else {
                 tracing::info!(
                     "Connecting to {}:{} via {} jump host(s) for PTY session",
@@ -335,18 +358,17 @@ impl InteractiveCommand {
         } else {
             // Direct connection
             tracing::debug!("Using direct connection for PTY (no jump hosts)");
-            timeout(
-                connect_timeout,
-                Client::connect(addr, &node.username, auth_method, check_method),
+
+            // Use the helper function to establish connection
+            Self::establish_connection(
+                addr,
+                &node.username,
+                auth_method,
+                check_method,
+                &node.host,
+                node.port,
             )
-            .await
-            .with_context(|| {
-                format!(
-                    "Connection timeout: Failed to connect to {}:{} after 30 seconds",
-                    node.host, node.port
-                )
-            })?
-            .with_context(|| format!("SSH connection failed to {}:{}", node.host, node.port))?
+            .await?
         };
 
         // Get terminal dimensions

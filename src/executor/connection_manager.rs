@@ -31,6 +31,8 @@ pub(crate) struct ExecutionConfig<'a> {
     pub strict_mode: StrictHostKeyChecking,
     pub use_agent: bool,
     pub use_password: bool,
+    #[cfg(target_os = "macos")]
+    pub use_keychain: bool,
     pub timeout: Option<u64>,
     pub jump_hosts: Option<&'a str>,
 }
@@ -50,6 +52,8 @@ pub(crate) async fn execute_on_node_with_jump_hosts(
         strict_mode: Some(config.strict_mode),
         use_agent: config.use_agent,
         use_password: config.use_password,
+        #[cfg(target_os = "macos")]
+        use_keychain: config.use_keychain,
         timeout_seconds: config.timeout,
         jump_hosts_spec: config.jump_hosts,
     };

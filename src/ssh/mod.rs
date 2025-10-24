@@ -21,6 +21,9 @@ pub mod pool;
 pub mod ssh_config;
 pub mod tokio_client;
 
+#[cfg(target_os = "macos")]
+pub mod keychain_macos;
+
 pub use auth::AuthContext;
 pub use client::SshClient;
 pub use config_cache::{CacheConfig, CacheStats, SshConfigCache, GLOBAL_CACHE};

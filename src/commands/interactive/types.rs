@@ -53,6 +53,8 @@ pub struct InteractiveCommand {
     pub key_path: Option<PathBuf>,
     pub use_agent: bool,
     pub use_password: bool,
+    #[cfg(target_os = "macos")]
+    pub use_keychain: bool,
     pub strict_mode: StrictHostKeyChecking,
     // Jump hosts
     pub jump_hosts: Option<String>,

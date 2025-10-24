@@ -60,7 +60,8 @@ pub fn parse_option(
         | "hostbasedauthentication"
         | "hostbasedacceptedalgorithms"
         | "numberofpasswordprompts"
-        | "enablesshkeysign" => {
+        | "enablesshkeysign"
+        | "usekeychain" => {
             authentication::parse_authentication_option(host, keyword, args, line_number)
         }
 

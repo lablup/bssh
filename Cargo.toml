@@ -48,6 +48,10 @@ fastrand = "2.2"
 tokio-util = "0.7"
 shell-words = "1.1"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "2.9"
+libc = "0.2"
+
 [dev-dependencies]
 tempfile = "3"
 mockito = "1"

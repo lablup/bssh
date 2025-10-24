@@ -34,6 +34,8 @@ async fn test_interactive_command_creation() {
         key_path: None,
         use_agent: false,
         use_password: false,
+        #[cfg(target_os = "macos")]
+        use_keychain: false,
         strict_mode: StrictHostKeyChecking::AcceptNew,
         pty_config: PtyConfig::default(),
         use_pty: None,
@@ -60,6 +62,8 @@ async fn test_interactive_with_no_nodes() {
         key_path: None,
         use_agent: false,
         use_password: false,
+        #[cfg(target_os = "macos")]
+        use_keychain: false,
         strict_mode: StrictHostKeyChecking::AcceptNew,
         pty_config: PtyConfig::default(),
         use_pty: None,

@@ -361,6 +361,10 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
     if overlay.identity_agent.is_some() {
         base.identity_agent = overlay.identity_agent.clone();
     }
+    #[cfg(target_os = "macos")]
+    if overlay.use_keychain.is_some() {
+        base.use_keychain = overlay.use_keychain;
+    }
     // Security & algorithm management
     if !overlay.pubkey_accepted_algorithms.is_empty() {
         base.pubkey_accepted_algorithms = overlay.pubkey_accepted_algorithms.clone();

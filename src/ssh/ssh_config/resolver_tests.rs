@@ -359,4 +359,100 @@ Host example.com
         );
         assert_eq!(config.proxy_use_fdpass, Some(true));
     }
+
+    // UseKeychain merge tests (macOS-specific option)
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_use_keychain_override() {
+        let content = r#"
+Host *
+    UseKeychain no
+
+Host example.com
+    UseKeychain yes
+"#;
+        let hosts = parse(content).unwrap();
+        let config = find_host_config(&hosts, "example.com");
+
+        // Should override to true (yes)
+        assert_eq!(config.use_keychain, Some(true));
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_use_keychain_inherits_from_global() {
+        // Test that UseKeychain is inherited from global config when not overridden
+        let content = r#"
+Host *
+    UseKeychain yes
+
+Host example.com
+    AddKeysToAgent yes
+"#;
+        let hosts = parse(content).unwrap();
+        let config = find_host_config(&hosts, "example.com");
+
+        // Should inherit UseKeychain from global block
+        assert_eq!(config.add_keys_to_agent, Some("yes".to_string()));
+        assert_eq!(config.use_keychain, Some(true));
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_use_keychain_last_match_wins() {
+        // SSH config merges all matching blocks, with later values overriding earlier ones
+        let content = r#"
+Host example.com
+    UseKeychain yes
+
+Host example.com
+    UseKeychain no
+"#;
+        let hosts = parse(content).unwrap();
+        let config = find_host_config(&hosts, "example.com");
+
+        // Should use the last matching value (no) due to merge logic
+        assert_eq!(config.use_keychain, Some(false));
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_use_keychain_with_identity_files() {
+        // UseKeychain is commonly used with IdentityFile
+        let content = r#"
+Host *
+    IdentityFile ~/.ssh/id_rsa
+    UseKeychain yes
+
+Host example.com
+    IdentityFile ~/.ssh/id_ed25519
+"#;
+        let hosts = parse(content).unwrap();
+        let config = find_host_config(&hosts, "example.com");
+
+        // Should merge identity files and inherit UseKeychain
+        assert_eq!(config.identity_files.len(), 2);
+        assert!(config.identity_files[0]
+            .to_string_lossy()
+            .contains("id_rsa"));
+        assert!(config.identity_files[1]
+            .to_string_lossy()
+            .contains("id_ed25519"));
+        assert_eq!(config.use_keychain, Some(true));
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_use_keychain_default_none() {
+        // Verify that UseKeychain defaults to None when not specified
+        let content = r#"
+Host example.com
+    User testuser
+"#;
+        let hosts = parse(content).unwrap();
+        let config = find_host_config(&hosts, "example.com");
+
+        assert_eq!(config.use_keychain, None);
+    }
 }

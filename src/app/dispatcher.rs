@@ -30,6 +30,8 @@ use bssh::{
 };
 use std::path::{Path, PathBuf};
 
+#[cfg(target_os = "macos")]
+use super::initialization::determine_use_keychain;
 use super::initialization::{determine_ssh_key_path, AppContext};
 use super::utils::format_duration;
 
@@ -232,6 +234,9 @@ async fn handle_interactive_command(
         None
     };
 
+    #[cfg(target_os = "macos")]
+    let use_keychain = determine_use_keychain(&ctx.ssh_config, hostname.as_deref());
+
     let interactive_cmd = InteractiveCommand {
         single_node: merged_mode.0,
         multiplex: merged_mode.1,
@@ -245,6 +250,8 @@ async fn handle_interactive_command(
         key_path,
         use_agent: cli.use_agent,
         use_password: cli.password,
+        #[cfg(target_os = "macos")]
+        use_keychain,
         strict_mode: ctx.strict_mode,
         jump_hosts: cli.jump_hosts.clone(),
         pty_config,
@@ -289,6 +296,9 @@ async fn handle_exec_command(cli: &Cli, ctx: &AppContext, command: &str) -> Resu
             None
         };
 
+        #[cfg(target_os = "macos")]
+        let use_keychain = determine_use_keychain(&ctx.ssh_config, hostname.as_deref());
+
         let interactive_cmd = InteractiveCommand {
             single_node: true,
             multiplex: false,
@@ -302,6 +312,8 @@ async fn handle_exec_command(cli: &Cli, ctx: &AppContext, command: &str) -> Resu
             key_path,
             use_agent: cli.use_agent,
             use_password: cli.password,
+            #[cfg(target_os = "macos")]
+            use_keychain,
             strict_mode: ctx.strict_mode,
             jump_hosts: cli.jump_hosts.clone(),
             pty_config,
@@ -345,6 +357,10 @@ async fn handle_exec_command(cli: &Cli, ctx: &AppContext, command: &str) -> Resu
             ctx.cluster_name.as_deref().or(cli.cluster.as_deref()),
         );
 
+        // Determine if we should use macOS Keychain for passphrases
+        #[cfg(target_os = "macos")]
+        let use_keychain = determine_use_keychain(&ctx.ssh_config, hostname.as_deref());
+
         let params = ExecuteCommandParams {
             nodes: ctx.nodes.clone(),
             command,
@@ -354,6 +370,8 @@ async fn handle_exec_command(cli: &Cli, ctx: &AppContext, command: &str) -> Resu
             strict_mode: ctx.strict_mode,
             use_agent: cli.use_agent,
             use_password: cli.password,
+            #[cfg(target_os = "macos")]
+            use_keychain,
             output_dir: cli.output_dir.as_deref(),
             timeout,
             jump_hosts: cli.jump_hosts.as_deref(),

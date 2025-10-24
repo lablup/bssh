@@ -22,6 +22,8 @@ pub struct ConnectionConfig<'a> {
     pub strict_mode: Option<StrictHostKeyChecking>,
     pub use_agent: bool,
     pub use_password: bool,
+    #[cfg(target_os = "macos")]
+    pub use_keychain: bool,
     pub timeout_seconds: Option<u64>,
     pub jump_hosts_spec: Option<&'a str>,
 }

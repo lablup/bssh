@@ -370,6 +370,40 @@ pub(super) fn parse_authentication_option(
             }
             host.enable_ssh_keysign = Some(value);
         }
+        "usekeychain" => {
+            if args.is_empty() {
+                anyhow::bail!("UseKeychain requires a value at line {line_number}");
+            }
+
+            // Security: Warn on non-macOS systems
+            #[cfg(not(target_os = "macos"))]
+            {
+                tracing::warn!(
+                    "UseKeychain at line {} is a macOS-only option and will be ignored on this platform. \
+                     Consider using IgnoreUnknown UseKeychain in your SSH config for cross-platform compatibility.",
+                    line_number
+                );
+            }
+
+            let value = parse_yes_no(&args[0], line_number)?;
+
+            // Only store on macOS platforms
+            #[cfg(target_os = "macos")]
+            {
+                if value {
+                    tracing::debug!(
+                        "UseKeychain enabled at line {} (Note: Currently supports parsing only. \
+                         Keychain integration will be implemented in a future release)",
+                        line_number
+                    );
+                }
+                host.use_keychain = Some(value);
+            }
+
+            // Prevent unused variable warning on non-macOS
+            #[cfg(not(target_os = "macos"))]
+            let _ = value;
+        }
         _ => unreachable!(
             "Unexpected keyword in parse_authentication_option: {}",
             keyword

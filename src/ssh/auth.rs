@@ -58,6 +58,9 @@ pub struct AuthContext {
     pub use_agent: bool,
     /// Whether to use password authentication
     pub use_password: bool,
+    /// Whether to use macOS Keychain for passphrase storage/retrieval (macOS only)
+    #[cfg(target_os = "macos")]
+    pub use_keychain: bool,
     /// Username for authentication prompts (validated)
     pub username: String,
     /// Host for authentication prompts (validated)
@@ -96,6 +99,8 @@ impl AuthContext {
             key_path: None,
             use_agent: false,
             use_password: false,
+            #[cfg(target_os = "macos")]
+            use_keychain: false,
             username,
             host,
         })
@@ -137,24 +142,39 @@ impl AuthContext {
         self
     }
 
+    /// Enable macOS Keychain integration for passphrase storage/retrieval.
+    ///
+    /// This method is only available on macOS.
+    #[cfg(target_os = "macos")]
+    pub fn with_keychain(mut self, use_keychain: bool) -> Self {
+        self.use_keychain = use_keychain;
+        self
+    }
+
     /// Determine the appropriate authentication method based on the context.
     ///
     /// This method implements the standard authentication priority with security hardening:
-    /// 1. Password authentication (if explicitly requested)
+    /// 1. Password authentication (if explicitly requested via --password flag)
     /// 2. SSH agent (if explicitly requested and available)
     /// 3. Specified key file (if provided and valid)
     /// 4. SSH agent auto-detection (if use_agent is true)
     /// 5. Default key locations (~/.ssh/id_ed25519, ~/.ssh/id_rsa, etc.)
+    /// 6. Password authentication fallback (interactive terminal only, matches OpenSSH behavior)
+    ///
+    /// The password fallback (step 6) matches standard OpenSSH behavior where password
+    /// authentication is attempted as a last resort when all key-based methods fail.
+    /// This only occurs in interactive terminals (when stdin is a TTY).
     ///
     /// # Security
     /// - All file operations use canonical paths
     /// - Authentication timing is normalized to prevent timing attacks
     /// - Credentials are securely zeroized after use
+    /// - Password prompts only appear in interactive terminals
     ///
     /// # Errors
     ///
     /// Returns an error if:
-    /// - No authentication method is available
+    /// - No authentication method is available (non-interactive environment)
     /// - SSH key file cannot be read or is invalid
     /// - Password/passphrase prompt fails or times out
     /// - SSH agent is requested but not available (Windows)
@@ -174,7 +194,7 @@ impl AuthContext {
     }
 
     async fn determine_method_internal(&self) -> Result<AuthMethod> {
-        // Priority 1: Password authentication
+        // Priority 1: Password authentication (explicit request)
         if self.use_password {
             return self.password_auth().await;
         }
@@ -200,7 +220,106 @@ impl AuthContext {
         }
 
         // Priority 5: Default key locations
-        self.default_key_auth().await
+        match self.default_key_auth().await {
+            Ok(auth) => Ok(auth),
+            Err(_) => {
+                // Priority 6: Fallback to password authentication WITH USER CONSENT
+                // Unlike OpenSSH, we ask for explicit consent before password fallback for security
+                // Check if we're in an interactive terminal
+                if atty::is(atty::Stream::Stdin) && self.prompt_password_fallback_consent().await? {
+                    tracing::debug!("User consented to password authentication fallback");
+                    self.password_auth().await
+                } else if atty::is(atty::Stream::Stdin) {
+                    // User declined password fallback
+                    anyhow::bail!(
+                        "SSH authentication failed: All key-based methods failed.\n\
+                         \n\
+                         Tried:\n\
+                         - SSH agent: {}\n\
+                         - Default SSH keys: Not found or not authorized\n\
+                         \n\
+                         User declined password authentication fallback.\n\
+                         \n\
+                         Solutions:\n\
+                         - Use --password flag to explicitly enable password authentication\n\
+                         - Start SSH agent and add keys with 'ssh-add'\n\
+                         - Specify a key file with -i/--identity\n\
+                         - Ensure ~/.ssh/id_ed25519 or ~/.ssh/id_rsa exists and is authorized",
+                        if cfg!(target_os = "windows") {
+                            "Not supported on Windows"
+                        } else if std::env::var_os("SSH_AUTH_SOCK").is_some() {
+                            "Available but no identities authorized"
+                        } else {
+                            "Not available (SSH_AUTH_SOCK not set)"
+                        }
+                    )
+                } else {
+                    // Non-interactive environment - cannot prompt for password
+                    anyhow::bail!(
+                        "SSH authentication failed: No authentication method available.\n\
+                         \n\
+                         Tried:\n\
+                         - SSH agent: {}\n\
+                         - Default SSH keys: Not found or not authorized\n\
+                         \n\
+                         Solutions:\n\
+                         - Use --password for password authentication\n\
+                         - Start SSH agent and add keys with 'ssh-add'\n\
+                         - Specify a key file with -i/--identity\n\
+                         - Ensure ~/.ssh/id_ed25519 or ~/.ssh/id_rsa exists and is authorized",
+                        if cfg!(target_os = "windows") {
+                            "Not supported on Windows"
+                        } else if std::env::var_os("SSH_AUTH_SOCK").is_some() {
+                            "Available but no identities authorized"
+                        } else {
+                            "Not available (SSH_AUTH_SOCK not set)"
+                        }
+                    )
+                }
+            }
+        }
+    }
+
+    /// Prompt user for consent to fall back to password authentication.
+    ///
+    /// Returns true if user consents, false otherwise.
+    async fn prompt_password_fallback_consent(&self) -> Result<bool> {
+        use std::io::{self, Write};
+
+        tracing::info!(
+            "All SSH key-based authentication methods failed for {}@{}",
+            self.username,
+            self.host
+        );
+
+        // SECURITY: Add rate limiting before password fallback to prevent rapid attempts
+        // This helps prevent brute-force attacks and gives servers time to process
+        const FALLBACK_DELAY: Duration = Duration::from_secs(1);
+        tokio::time::sleep(FALLBACK_DELAY).await;
+
+        // Run consent prompt in blocking task
+        let consent_future = tokio::task::spawn_blocking({
+            let username = self.username.clone();
+            let host = self.host.clone();
+            move || -> Result<bool> {
+                println!("\n⚠️  SSH key authentication failed for {username}@{host}");
+                println!("Would you like to try password authentication? (yes/no): ");
+                io::stdout().flush()?;
+
+                let mut response = String::new();
+                io::stdin().read_line(&mut response)?;
+                let response = response.trim().to_lowercase();
+
+                Ok(response == "yes" || response == "y")
+            }
+        });
+
+        // Use a shorter timeout for consent prompt
+        const CONSENT_TIMEOUT: Duration = Duration::from_secs(30);
+        timeout(CONSENT_TIMEOUT, consent_future)
+            .await
+            .context("Consent prompt timed out after 30 seconds")?
+            .context("Consent prompt task failed")?
     }
 
     /// Attempt password authentication with timeout.
@@ -279,28 +398,73 @@ impl AuthContext {
             .with_context(|| format!("Failed to read SSH key file: {key_path:?}"))?;
 
         let passphrase = if Self::is_key_encrypted(&key_contents) {
-            tracing::debug!("Detected encrypted SSH key, prompting for passphrase");
+            tracing::debug!("Detected encrypted SSH key");
 
-            // Run passphrase prompt with timeout
-            let key_path_str = key_path.display().to_string();
-            let prompt_future =
-                tokio::task::spawn_blocking(move || -> Result<Zeroizing<String>> {
-                    // Use Zeroizing for passphrase security
-                    let pass = Zeroizing::new(
-                        rpassword::prompt_password(format!(
-                            "Enter passphrase for key {key_path_str}: "
-                        ))
-                        .with_context(|| "Failed to read passphrase")?,
-                    );
-                    Ok(pass)
-                });
+            // Try to retrieve passphrase from Keychain first (macOS only)
+            #[cfg(target_os = "macos")]
+            let keychain_passphrase = if self.use_keychain {
+                tracing::debug!("Attempting to retrieve passphrase from Keychain");
+                match super::keychain_macos::retrieve_passphrase(key_path).await {
+                    Ok(Some(pass)) => {
+                        tracing::info!("Successfully retrieved passphrase from Keychain");
+                        Some(pass)
+                    }
+                    Ok(None) => {
+                        tracing::debug!("No passphrase found in Keychain");
+                        None
+                    }
+                    Err(err) => {
+                        tracing::warn!("Failed to retrieve passphrase from Keychain: {err}");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
 
-            let pass = timeout(AUTH_PROMPT_TIMEOUT, prompt_future)
-                .await
-                .context("Passphrase prompt timed out")?
-                .context("Passphrase prompt task failed")??;
+            #[cfg(not(target_os = "macos"))]
+            let keychain_passphrase: Option<Zeroizing<String>> = None;
 
-            Some(pass)
+            // If we got passphrase from Keychain, use it; otherwise prompt
+            if let Some(pass) = keychain_passphrase {
+                Some(pass)
+            } else {
+                tracing::debug!("Prompting for passphrase");
+
+                // Run passphrase prompt with timeout
+                let key_path_str = key_path.display().to_string();
+                let prompt_future =
+                    tokio::task::spawn_blocking(move || -> Result<Zeroizing<String>> {
+                        // Use Zeroizing for passphrase security
+                        let pass = Zeroizing::new(
+                            rpassword::prompt_password(format!(
+                                "Enter passphrase for key {key_path_str}: "
+                            ))
+                            .with_context(|| "Failed to read passphrase")?,
+                        );
+                        Ok(pass)
+                    });
+
+                let pass = timeout(AUTH_PROMPT_TIMEOUT, prompt_future)
+                    .await
+                    .context("Passphrase prompt timed out")?
+                    .context("Passphrase prompt task failed")??;
+
+                // Store passphrase in Keychain if enabled (macOS only)
+                #[cfg(target_os = "macos")]
+                if self.use_keychain {
+                    tracing::debug!("Storing passphrase in Keychain");
+                    if let Err(err) = super::keychain_macos::store_passphrase(key_path, &pass).await
+                    {
+                        tracing::warn!("Failed to store passphrase in Keychain: {err}");
+                        // Continue even if storage fails - the passphrase was entered successfully
+                    } else {
+                        tracing::info!("Successfully stored passphrase in Keychain");
+                    }
+                }
+
+                Some(pass)
+            }
         } else {
             None
         };
@@ -353,26 +517,74 @@ impl AuthContext {
                     .with_context(|| format!("Failed to read SSH key file: {canonical_key:?}"))?;
 
                 let passphrase = if Self::is_key_encrypted(&key_contents) {
-                    tracing::debug!("Detected encrypted SSH key, prompting for passphrase");
+                    tracing::debug!("Detected encrypted SSH key");
 
-                    let key_path_str = canonical_key.display().to_string();
-                    let prompt_future =
-                        tokio::task::spawn_blocking(move || -> Result<Zeroizing<String>> {
-                            let pass = Zeroizing::new(
-                                rpassword::prompt_password(format!(
-                                    "Enter passphrase for key {key_path_str}: "
-                                ))
-                                .with_context(|| "Failed to read passphrase")?,
-                            );
-                            Ok(pass)
-                        });
+                    // Try to retrieve passphrase from Keychain first (macOS only)
+                    #[cfg(target_os = "macos")]
+                    let keychain_passphrase = if self.use_keychain {
+                        tracing::debug!("Attempting to retrieve passphrase from Keychain");
+                        match super::keychain_macos::retrieve_passphrase(&canonical_key).await {
+                            Ok(Some(pass)) => {
+                                tracing::info!("Successfully retrieved passphrase from Keychain");
+                                Some(pass)
+                            }
+                            Ok(None) => {
+                                tracing::debug!("No passphrase found in Keychain");
+                                None
+                            }
+                            Err(err) => {
+                                tracing::warn!(
+                                    "Failed to retrieve passphrase from Keychain: {err}"
+                                );
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    };
 
-                    let pass = timeout(AUTH_PROMPT_TIMEOUT, prompt_future)
-                        .await
-                        .context("Passphrase prompt timed out")?
-                        .context("Passphrase prompt task failed")??;
+                    #[cfg(not(target_os = "macos"))]
+                    let keychain_passphrase: Option<Zeroizing<String>> = None;
 
-                    Some(pass)
+                    // If we got passphrase from Keychain, use it; otherwise prompt
+                    if let Some(pass) = keychain_passphrase {
+                        Some(pass)
+                    } else {
+                        tracing::debug!("Prompting for passphrase");
+
+                        let key_path_str = canonical_key.display().to_string();
+                        let prompt_future =
+                            tokio::task::spawn_blocking(move || -> Result<Zeroizing<String>> {
+                                let pass = Zeroizing::new(
+                                    rpassword::prompt_password(format!(
+                                        "Enter passphrase for key {key_path_str}: "
+                                    ))
+                                    .with_context(|| "Failed to read passphrase")?,
+                                );
+                                Ok(pass)
+                            });
+
+                        let pass = timeout(AUTH_PROMPT_TIMEOUT, prompt_future)
+                            .await
+                            .context("Passphrase prompt timed out")?
+                            .context("Passphrase prompt task failed")??;
+
+                        // Store passphrase in Keychain if enabled (macOS only)
+                        #[cfg(target_os = "macos")]
+                        if self.use_keychain {
+                            tracing::debug!("Storing passphrase in Keychain");
+                            if let Err(err) =
+                                super::keychain_macos::store_passphrase(&canonical_key, &pass).await
+                            {
+                                tracing::warn!("Failed to store passphrase in Keychain: {err}");
+                                // Continue even if storage fails - the passphrase was entered successfully
+                            } else {
+                                tracing::info!("Successfully stored passphrase in Keychain");
+                            }
+                        }
+
+                        Some(pass)
+                    }
                 } else {
                     None
                 };
@@ -560,5 +772,42 @@ mod tests {
 
         // Should take at least 50ms due to timing normalization
         assert!(duration >= Duration::from_millis(50));
+    }
+
+    #[tokio::test]
+    async fn test_password_fallback_in_non_interactive() {
+        // Save original environment variables
+        let original_home = std::env::var("HOME").ok();
+        let original_ssh_auth_sock = std::env::var("SSH_AUTH_SOCK").ok();
+
+        // Create a fake home directory WITHOUT default keys (to trigger fallback)
+        let temp_dir = TempDir::new().unwrap();
+        let ssh_dir = temp_dir.path().join(".ssh");
+        std::fs::create_dir_all(&ssh_dir).unwrap();
+        // Intentionally NOT creating any key files
+
+        // Set test environment
+        std::env::set_var("HOME", temp_dir.path().to_str().unwrap());
+        std::env::remove_var("SSH_AUTH_SOCK");
+
+        let ctx = AuthContext::new("user".to_string(), "host".to_string()).unwrap();
+
+        // In non-interactive environment (like tests), should fail with helpful error
+        let result = ctx.determine_method().await;
+        assert!(result.is_err());
+
+        // Error message should mention authentication failure
+        let error_msg = result.unwrap_err().to_string();
+        assert!(error_msg.contains("authentication"));
+
+        // Restore original environment variables
+        if let Some(home) = original_home {
+            std::env::set_var("HOME", home);
+        } else {
+            std::env::remove_var("HOME");
+        }
+        if let Some(sock) = original_ssh_auth_sock {
+            std::env::set_var("SSH_AUTH_SOCK", sock);
+        }
     }
 }

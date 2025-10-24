@@ -677,6 +677,31 @@ Example:
 .I AddKeysToAgent yes
 
 .TP
+.B UseKeychain
+.B (macOS only)
+Specifies whether to use the macOS Keychain for storing SSH key passphrases.
+This is an Apple-specific patch to OpenSSH and is only available on macOS systems.
+When enabled, passphrases are automatically retrieved from and stored in the macOS Keychain.
+.RS
+.IP \[bu] 2
+.B Implementation:
+Fully integrated with macOS Keychain via Security Framework. Passphrases are securely stored after successful authentication and retrieved on subsequent connections.
+.IP \[bu] 2
+.B Cross-platform compatibility:
+Use
+.I IgnoreUnknown UseKeychain
+before
+.I UseKeychain
+in your SSH config to prevent errors on non-macOS systems.
+.RE
+.IP
+Example:
+.nf
+.I IgnoreUnknown UseKeychain
+.I UseKeychain yes
+.fi
+
+.TP
 .B IdentityAgent
 Specifies the path to the SSH agent socket to use for authentication.
 Allows integration with custom agent implementations like 1Password, gpg-agent, etc.

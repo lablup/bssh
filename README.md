@@ -479,6 +479,7 @@ These options provide essential authentication management, security enforcement,
 |--------|-------------|---------|
 | **IdentitiesOnly** | Only use identity files specified in config, ignore SSH agent (yes/no) | `IdentitiesOnly yes` |
 | **AddKeysToAgent** | Auto-add keys to SSH agent (yes/no/ask/confirm) | `AddKeysToAgent yes` |
+| **UseKeychain** | **[macOS only]** Use macOS Keychain for SSH key passphrases (yes/no) | `UseKeychain yes` |
 | **IdentityAgent** | Custom SSH agent socket path or "none" | `IdentityAgent ~/.1password/agent.sock` |
 | **PubkeyAcceptedAlgorithms** | Restrict allowed public key algorithms (max 50) | `PubkeyAcceptedAlgorithms ssh-ed25519,rsa-sha2-512` |
 | **RequiredRSASize** | Minimum RSA key size in bits (1024-16384, warns <2048) | `RequiredRSASize 2048` |
@@ -487,10 +488,17 @@ These options provide essential authentication management, security enforcement,
 **Key Benefits:**
 - **IdentitiesOnly**: Solves multi-account authentication conflicts
 - **AddKeysToAgent**: Eliminates manual ssh-add commands
+- **UseKeychain**: Seamlessly integrates with macOS Keychain for passphrase management (Apple-specific OpenSSH extension)
 - **IdentityAgent**: Enables modern agent tools (1Password, gpg-agent, etc.)
 - **PubkeyAcceptedAlgorithms**: Enforces security policies
 - **RequiredRSASize**: Prevents weak RSA keys
 - **FingerprintHash**: Flexibility for legacy systems
+
+**Platform Notes:**
+- **UseKeychain** is an Apple-specific patch to OpenSSH and only available on macOS
+- Fully integrated with macOS Keychain via Security Framework for secure passphrase storage and retrieval
+- Passphrases are automatically stored after successful authentication and retrieved from Keychain on subsequent connections
+- For cross-platform configurations, use `IgnoreUnknown UseKeychain` to prevent errors on non-macOS systems
 
 ### SSH Config Examples
 
@@ -621,6 +629,12 @@ Host personal
 # Auto-add keys to SSH agent for convenience
 Host *
     AddKeysToAgent yes
+
+# macOS-specific: Use Keychain for SSH key passphrases
+# For cross-platform configs, add IgnoreUnknown to prevent errors on non-macOS systems
+Host *
+    IgnoreUnknown UseKeychain
+    UseKeychain yes
 
 # Custom SSH agent integration (1Password, gpg-agent)
 Host secure-*

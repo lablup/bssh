@@ -39,6 +39,8 @@ pub struct ParallelExecutor {
     pub(crate) strict_mode: StrictHostKeyChecking,
     pub(crate) use_agent: bool,
     pub(crate) use_password: bool,
+    #[cfg(target_os = "macos")]
+    pub(crate) use_keychain: bool,
     pub(crate) timeout: Option<u64>,
     pub(crate) jump_hosts: Option<String>,
 }
@@ -68,6 +70,8 @@ impl ParallelExecutor {
             strict_mode,
             use_agent: false,
             use_password: false,
+            #[cfg(target_os = "macos")]
+            use_keychain: false,
             timeout: None,
             jump_hosts: None,
         }
@@ -88,6 +92,8 @@ impl ParallelExecutor {
             strict_mode,
             use_agent,
             use_password: false,
+            #[cfg(target_os = "macos")]
+            use_keychain: false,
             timeout: None,
             jump_hosts: None,
         }
@@ -109,6 +115,8 @@ impl ParallelExecutor {
             strict_mode,
             use_agent,
             use_password,
+            #[cfg(target_os = "macos")]
+            use_keychain: false,
             timeout: None,
             jump_hosts: None,
         }
@@ -123,6 +131,13 @@ impl ParallelExecutor {
     /// Set jump hosts for connections.
     pub fn with_jump_hosts(mut self, jump_hosts: Option<String>) -> Self {
         self.jump_hosts = jump_hosts;
+        self
+    }
+
+    /// Set whether to use macOS Keychain for passphrase storage/retrieval (macOS only).
+    #[cfg(target_os = "macos")]
+    pub fn with_keychain(mut self, use_keychain: bool) -> Self {
+        self.use_keychain = use_keychain;
         self
     }
 
@@ -142,6 +157,8 @@ impl ParallelExecutor {
                 let strict_mode = self.strict_mode;
                 let use_agent = self.use_agent;
                 let use_password = self.use_password;
+                #[cfg(target_os = "macos")]
+                let use_keychain = self.use_keychain;
                 let timeout = self.timeout;
                 let jump_hosts = self.jump_hosts.clone();
                 let semaphore = Arc::clone(&semaphore);
@@ -153,6 +170,8 @@ impl ParallelExecutor {
                         strict_mode,
                         use_agent,
                         use_password,
+                        #[cfg(target_os = "macos")]
+                        use_keychain,
                         timeout,
                         jump_hosts: jump_hosts.as_deref(),
                     };
