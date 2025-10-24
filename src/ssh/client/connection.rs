@@ -33,6 +33,7 @@ impl SshClient {
         key_path: Option<&Path>,
         use_agent: bool,
         use_password: bool,
+        #[cfg(target_os = "macos")] use_keychain: bool,
     ) -> Result<AuthMethod> {
         // Use centralized authentication logic from auth module
         let mut auth_ctx =
@@ -49,6 +50,11 @@ impl SshClient {
         }
 
         auth_ctx = auth_ctx.with_agent(use_agent).with_password(use_password);
+
+        #[cfg(target_os = "macos")]
+        {
+            auth_ctx = auth_ctx.with_keychain(use_keychain);
+        }
 
         auth_ctx.determine_method().await
     }
@@ -217,7 +223,13 @@ mod tests {
 
         let client = SshClient::new("test.com".to_string(), 22, "user".to_string());
         let auth = client
-            .determine_auth_method(Some(&key_path), false, false)
+            .determine_auth_method(
+                Some(&key_path),
+                false,
+                false,
+                #[cfg(target_os = "macos")]
+                false,
+            )
             .await
             .unwrap();
 
@@ -243,7 +255,13 @@ mod tests {
 
         let client = SshClient::new("test.com".to_string(), 22, "user".to_string());
         let auth = client
-            .determine_auth_method(None, true, false)
+            .determine_auth_method(
+                None,
+                true,
+                false,
+                #[cfg(target_os = "macos")]
+                false,
+            )
             .await
             .unwrap();
 
@@ -283,7 +301,13 @@ mod tests {
 
         let client = SshClient::new("test.com".to_string(), 22, "user".to_string());
         let auth = client
-            .determine_auth_method(None, false, false)
+            .determine_auth_method(
+                None,
+                false,
+                false,
+                #[cfg(target_os = "macos")]
+                false,
+            )
             .await
             .unwrap();
 

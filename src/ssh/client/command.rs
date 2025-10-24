@@ -54,6 +54,8 @@ impl SshClient {
             strict_mode,
             use_agent,
             use_password,
+            #[cfg(target_os = "macos")]
+            use_keychain: false, // Not supported in this legacy API
             timeout_seconds,
             jump_hosts_spec: None, // No jump hosts
         };
@@ -72,7 +74,13 @@ impl SshClient {
 
         // Determine authentication method based on parameters
         let auth_method = self
-            .determine_auth_method(config.key_path, config.use_agent, config.use_password)
+            .determine_auth_method(
+                config.key_path,
+                config.use_agent,
+                config.use_password,
+                #[cfg(target_os = "macos")]
+                config.use_keychain,
+            )
             .await?;
 
         let strict_mode = config

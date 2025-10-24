@@ -204,3 +204,30 @@ pub fn determine_ssh_key_path(
         .get_ssh_key(cluster_name)
         .map(|ssh_key| bssh::config::expand_tilde(std::path::Path::new(&ssh_key)))
 }
+
+/// Determine whether to use macOS Keychain for SSH key passphrases
+///
+/// This checks the SSH config for the UseKeychain option for a specific hostname.
+/// The option is only available on macOS.
+///
+/// # Arguments
+/// * `ssh_config` - The loaded SSH configuration
+/// * `hostname` - The target hostname to check (optional)
+///
+/// # Returns
+/// `true` if UseKeychain is enabled in SSH config, `false` otherwise
+#[cfg(target_os = "macos")]
+pub fn determine_use_keychain(ssh_config: &SshConfig, hostname: Option<&str>) -> bool {
+    if let Some(host) = hostname {
+        let host_config = ssh_config.find_host_config(host);
+        host_config.use_keychain.unwrap_or(false)
+    } else {
+        false
+    }
+}
+
+/// Non-macOS version of determine_use_keychain (always returns false)
+#[cfg(not(target_os = "macos"))]
+pub fn determine_use_keychain(_ssh_config: &SshConfig, _hostname: Option<&str>) -> bool {
+    false
+}

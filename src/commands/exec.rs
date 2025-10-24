@@ -31,6 +31,8 @@ pub struct ExecuteCommandParams<'a> {
     pub strict_mode: StrictHostKeyChecking,
     pub use_agent: bool,
     pub use_password: bool,
+    #[cfg(target_os = "macos")]
+    pub use_keychain: bool,
     pub output_dir: Option<&'a Path>,
     pub timeout: Option<u64>,
     pub jump_hosts: Option<&'a str>,
@@ -185,7 +187,7 @@ async fn execute_command_with_forwarding(params: ExecuteCommandParams<'_>) -> Re
 /// Execute command without port forwarding (original implementation)
 async fn execute_command_without_forwarding(params: ExecuteCommandParams<'_>) -> Result<()> {
     let key_path = params.key_path.map(|p| p.to_string_lossy().to_string());
-    let executor = ParallelExecutor::new_with_all_options(
+    let mut executor = ParallelExecutor::new_with_all_options(
         params.nodes,
         params.max_parallel,
         key_path,
@@ -195,6 +197,12 @@ async fn execute_command_without_forwarding(params: ExecuteCommandParams<'_>) ->
     )
     .with_timeout(params.timeout)
     .with_jump_hosts(params.jump_hosts.map(|s| s.to_string()));
+
+    // Set keychain usage if on macOS
+    #[cfg(target_os = "macos")]
+    {
+        executor = executor.with_keychain(params.use_keychain);
+    }
 
     let results = executor.execute(params.command).await?;
 

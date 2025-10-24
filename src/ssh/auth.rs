@@ -58,6 +58,9 @@ pub struct AuthContext {
     pub use_agent: bool,
     /// Whether to use password authentication
     pub use_password: bool,
+    /// Whether to use macOS Keychain for passphrase storage/retrieval (macOS only)
+    #[cfg(target_os = "macos")]
+    pub use_keychain: bool,
     /// Username for authentication prompts (validated)
     pub username: String,
     /// Host for authentication prompts (validated)
@@ -96,6 +99,8 @@ impl AuthContext {
             key_path: None,
             use_agent: false,
             use_password: false,
+            #[cfg(target_os = "macos")]
+            use_keychain: false,
             username,
             host,
         })
@@ -134,6 +139,15 @@ impl AuthContext {
     /// Enable password authentication.
     pub fn with_password(mut self, use_password: bool) -> Self {
         self.use_password = use_password;
+        self
+    }
+
+    /// Enable macOS Keychain integration for passphrase storage/retrieval.
+    ///
+    /// This method is only available on macOS.
+    #[cfg(target_os = "macos")]
+    pub fn with_keychain(mut self, use_keychain: bool) -> Self {
+        self.use_keychain = use_keychain;
         self
     }
 
@@ -279,28 +293,73 @@ impl AuthContext {
             .with_context(|| format!("Failed to read SSH key file: {key_path:?}"))?;
 
         let passphrase = if Self::is_key_encrypted(&key_contents) {
-            tracing::debug!("Detected encrypted SSH key, prompting for passphrase");
+            tracing::debug!("Detected encrypted SSH key");
 
-            // Run passphrase prompt with timeout
-            let key_path_str = key_path.display().to_string();
-            let prompt_future =
-                tokio::task::spawn_blocking(move || -> Result<Zeroizing<String>> {
-                    // Use Zeroizing for passphrase security
-                    let pass = Zeroizing::new(
-                        rpassword::prompt_password(format!(
-                            "Enter passphrase for key {key_path_str}: "
-                        ))
-                        .with_context(|| "Failed to read passphrase")?,
-                    );
-                    Ok(pass)
-                });
+            // Try to retrieve passphrase from Keychain first (macOS only)
+            #[cfg(target_os = "macos")]
+            let keychain_passphrase = if self.use_keychain {
+                tracing::debug!("Attempting to retrieve passphrase from Keychain");
+                match super::keychain_macos::retrieve_passphrase(key_path).await {
+                    Ok(Some(pass)) => {
+                        tracing::info!("Successfully retrieved passphrase from Keychain");
+                        Some(pass)
+                    }
+                    Ok(None) => {
+                        tracing::debug!("No passphrase found in Keychain");
+                        None
+                    }
+                    Err(err) => {
+                        tracing::warn!("Failed to retrieve passphrase from Keychain: {err}");
+                        None
+                    }
+                }
+            } else {
+                None
+            };
 
-            let pass = timeout(AUTH_PROMPT_TIMEOUT, prompt_future)
-                .await
-                .context("Passphrase prompt timed out")?
-                .context("Passphrase prompt task failed")??;
+            #[cfg(not(target_os = "macos"))]
+            let keychain_passphrase: Option<Zeroizing<String>> = None;
 
-            Some(pass)
+            // If we got passphrase from Keychain, use it; otherwise prompt
+            if let Some(pass) = keychain_passphrase {
+                Some(pass)
+            } else {
+                tracing::debug!("Prompting for passphrase");
+
+                // Run passphrase prompt with timeout
+                let key_path_str = key_path.display().to_string();
+                let prompt_future =
+                    tokio::task::spawn_blocking(move || -> Result<Zeroizing<String>> {
+                        // Use Zeroizing for passphrase security
+                        let pass = Zeroizing::new(
+                            rpassword::prompt_password(format!(
+                                "Enter passphrase for key {key_path_str}: "
+                            ))
+                            .with_context(|| "Failed to read passphrase")?,
+                        );
+                        Ok(pass)
+                    });
+
+                let pass = timeout(AUTH_PROMPT_TIMEOUT, prompt_future)
+                    .await
+                    .context("Passphrase prompt timed out")?
+                    .context("Passphrase prompt task failed")??;
+
+                // Store passphrase in Keychain if enabled (macOS only)
+                #[cfg(target_os = "macos")]
+                if self.use_keychain {
+                    tracing::debug!("Storing passphrase in Keychain");
+                    if let Err(err) = super::keychain_macos::store_passphrase(key_path, &pass).await
+                    {
+                        tracing::warn!("Failed to store passphrase in Keychain: {err}");
+                        // Continue even if storage fails - the passphrase was entered successfully
+                    } else {
+                        tracing::info!("Successfully stored passphrase in Keychain");
+                    }
+                }
+
+                Some(pass)
+            }
         } else {
             None
         };
@@ -353,26 +412,74 @@ impl AuthContext {
                     .with_context(|| format!("Failed to read SSH key file: {canonical_key:?}"))?;
 
                 let passphrase = if Self::is_key_encrypted(&key_contents) {
-                    tracing::debug!("Detected encrypted SSH key, prompting for passphrase");
+                    tracing::debug!("Detected encrypted SSH key");
 
-                    let key_path_str = canonical_key.display().to_string();
-                    let prompt_future =
-                        tokio::task::spawn_blocking(move || -> Result<Zeroizing<String>> {
-                            let pass = Zeroizing::new(
-                                rpassword::prompt_password(format!(
-                                    "Enter passphrase for key {key_path_str}: "
-                                ))
-                                .with_context(|| "Failed to read passphrase")?,
-                            );
-                            Ok(pass)
-                        });
+                    // Try to retrieve passphrase from Keychain first (macOS only)
+                    #[cfg(target_os = "macos")]
+                    let keychain_passphrase = if self.use_keychain {
+                        tracing::debug!("Attempting to retrieve passphrase from Keychain");
+                        match super::keychain_macos::retrieve_passphrase(&canonical_key).await {
+                            Ok(Some(pass)) => {
+                                tracing::info!("Successfully retrieved passphrase from Keychain");
+                                Some(pass)
+                            }
+                            Ok(None) => {
+                                tracing::debug!("No passphrase found in Keychain");
+                                None
+                            }
+                            Err(err) => {
+                                tracing::warn!(
+                                    "Failed to retrieve passphrase from Keychain: {err}"
+                                );
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    };
 
-                    let pass = timeout(AUTH_PROMPT_TIMEOUT, prompt_future)
-                        .await
-                        .context("Passphrase prompt timed out")?
-                        .context("Passphrase prompt task failed")??;
+                    #[cfg(not(target_os = "macos"))]
+                    let keychain_passphrase: Option<Zeroizing<String>> = None;
 
-                    Some(pass)
+                    // If we got passphrase from Keychain, use it; otherwise prompt
+                    if let Some(pass) = keychain_passphrase {
+                        Some(pass)
+                    } else {
+                        tracing::debug!("Prompting for passphrase");
+
+                        let key_path_str = canonical_key.display().to_string();
+                        let prompt_future =
+                            tokio::task::spawn_blocking(move || -> Result<Zeroizing<String>> {
+                                let pass = Zeroizing::new(
+                                    rpassword::prompt_password(format!(
+                                        "Enter passphrase for key {key_path_str}: "
+                                    ))
+                                    .with_context(|| "Failed to read passphrase")?,
+                                );
+                                Ok(pass)
+                            });
+
+                        let pass = timeout(AUTH_PROMPT_TIMEOUT, prompt_future)
+                            .await
+                            .context("Passphrase prompt timed out")?
+                            .context("Passphrase prompt task failed")??;
+
+                        // Store passphrase in Keychain if enabled (macOS only)
+                        #[cfg(target_os = "macos")]
+                        if self.use_keychain {
+                            tracing::debug!("Storing passphrase in Keychain");
+                            if let Err(err) =
+                                super::keychain_macos::store_passphrase(&canonical_key, &pass).await
+                            {
+                                tracing::warn!("Failed to store passphrase in Keychain: {err}");
+                                // Continue even if storage fails - the passphrase was entered successfully
+                            } else {
+                                tracing::info!("Successfully stored passphrase in Keychain");
+                            }
+                        }
+
+                        Some(pass)
+                    }
                 } else {
                     None
                 };

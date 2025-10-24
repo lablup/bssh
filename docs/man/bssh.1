@@ -684,8 +684,8 @@ This is an Apple-specific patch to OpenSSH and is only available on macOS system
 When enabled, passphrases are automatically retrieved from and stored in the macOS Keychain.
 .RS
 .IP \[bu] 2
-.B Note:
-Currently supports parsing only. Keychain integration will be implemented in a future release.
+.B Implementation:
+Fully integrated with macOS Keychain via Security Framework. Passphrases are securely stored after successful authentication and retrieved on subsequent connections.
 .IP \[bu] 2
 .B Cross-platform compatibility:
 Use

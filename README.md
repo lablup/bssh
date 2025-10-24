@@ -496,7 +496,8 @@ These options provide essential authentication management, security enforcement,
 
 **Platform Notes:**
 - **UseKeychain** is an Apple-specific patch to OpenSSH and only available on macOS
-- Currently supports parsing only; Keychain integration will be implemented in a future release
+- Fully integrated with macOS Keychain via Security Framework for secure passphrase storage and retrieval
+- Passphrases are automatically stored after successful authentication and retrieved from Keychain on subsequent connections
 - For cross-platform configurations, use `IgnoreUnknown UseKeychain` to prevent errors on non-macOS systems
 
 ### SSH Config Examples

@@ -30,7 +30,7 @@ use bssh::{
 };
 use std::path::{Path, PathBuf};
 
-use super::initialization::{determine_ssh_key_path, AppContext};
+use super::initialization::{determine_ssh_key_path, determine_use_keychain, AppContext};
 use super::utils::format_duration;
 
 /// Dispatch commands to their appropriate handlers
@@ -345,6 +345,10 @@ async fn handle_exec_command(cli: &Cli, ctx: &AppContext, command: &str) -> Resu
             ctx.cluster_name.as_deref().or(cli.cluster.as_deref()),
         );
 
+        // Determine if we should use macOS Keychain for passphrases
+        #[cfg(target_os = "macos")]
+        let use_keychain = determine_use_keychain(&ctx.ssh_config, hostname.as_deref());
+
         let params = ExecuteCommandParams {
             nodes: ctx.nodes.clone(),
             command,
@@ -354,6 +358,8 @@ async fn handle_exec_command(cli: &Cli, ctx: &AppContext, command: &str) -> Resu
             strict_mode: ctx.strict_mode,
             use_agent: cli.use_agent,
             use_password: cli.password,
+            #[cfg(target_os = "macos")]
+            use_keychain,
             output_dir: cli.output_dir.as_deref(),
             timeout,
             jump_hosts: cli.jump_hosts.as_deref(),
