@@ -292,6 +292,11 @@ impl AuthContext {
             self.host
         );
 
+        // SECURITY: Add rate limiting before password fallback to prevent rapid attempts
+        // This helps prevent brute-force attacks and gives servers time to process
+        const FALLBACK_DELAY: Duration = Duration::from_secs(1);
+        tokio::time::sleep(FALLBACK_DELAY).await;
+
         // Run consent prompt in blocking task
         let consent_future = tokio::task::spawn_blocking({
             let username = self.username.clone();

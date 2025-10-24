@@ -31,8 +31,8 @@ use crate::ssh::{
 use super::types::{InteractiveCommand, NodeSession};
 
 impl InteractiveCommand {
-    /// Helper function to establish SSH connection with proper error handling
-    /// This eliminates code duplication across different connection paths
+    /// Helper function to establish SSH connection with proper error handling and rate limiting
+    /// This eliminates code duplication across different connection paths and prevents brute-force attacks
     async fn establish_connection(
         addr: (&str, u16),
         username: &str,
@@ -43,6 +43,13 @@ impl InteractiveCommand {
     ) -> Result<Client> {
         const SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
         let connect_timeout = Duration::from_secs(SSH_CONNECT_TIMEOUT_SECS);
+
+        // SECURITY: Add a small delay before connection attempts to prevent rapid-fire attempts
+        // This helps mitigate brute-force attacks and prevents triggering fail2ban too quickly
+        // Using exponential backoff would be ideal for retries, but since we don't retry here,
+        // a fixed small delay is sufficient to prevent abuse
+        const RATE_LIMIT_DELAY: Duration = Duration::from_millis(100);
+        tokio::time::sleep(RATE_LIMIT_DELAY).await;
 
         timeout(
             connect_timeout,
