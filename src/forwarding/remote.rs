@@ -23,10 +23,10 @@
 //!
 //! # Implementation Status
 //!
-//! **Phase 2 - Placeholder Implementation**
+//! **Placeholder Implementation**
 //! This is a placeholder implementation that provides the basic structure
 //! and error handling. The full SSH tcpip-forward protocol implementation
-//! will be completed in Phase 2.
+//! will be completed in a future update.
 
 use super::{
     ForwardingConfig, ForwardingMessage, ForwardingStats, ForwardingStatus, ForwardingType,
@@ -45,7 +45,7 @@ use uuid::Uuid;
 
 /// Remote port forwarder implementation
 #[derive(Debug)]
-#[allow(dead_code)] // Phase 2 implementation
+#[allow(dead_code)] // Future implementation
 pub struct RemoteForwarder {
     session_id: Uuid,
     bind_addr: SocketAddr,
@@ -60,7 +60,7 @@ pub struct RemoteForwarder {
 
 /// Statistics specific to remote forwarding
 #[derive(Debug, Default)]
-#[allow(dead_code)] // Phase 2 fields
+#[allow(dead_code)] // Future implementation fields
 struct RemoteForwarderStats {
     /// Total connections forwarded
     connections_forwarded: AtomicU64,
@@ -259,7 +259,7 @@ impl RemoteForwarder {
             .forward_requests_sent
             .fetch_add(1, Ordering::Relaxed);
 
-        // **Phase 2 Implementation**: Request remote port forward from SSH server
+        // **TODO**: Request remote port forward from SSH server
         info!(
             "Requesting remote port forward: {}:{}",
             self.bind_addr.ip(),
@@ -315,7 +315,7 @@ impl RemoteForwarder {
             self.local_port
         );
 
-        // **Phase 2 Implementation**: Handle forwarded-tcpip channel requests
+        // **TODO**: Handle forwarded-tcpip channel requests
         // For now, we'll wait for cancellation since russh doesn't have direct support
         // for handling incoming channel requests in the client handler yet
 
@@ -347,7 +347,7 @@ impl RemoteForwarder {
             }
         }
 
-        // **Phase 2 Implementation**: Clean up remote port forward
+        // **TODO**: Clean up remote port forward
         // Try to cancel the remote port forward
         if let Err(e) = self
             .ssh_client
@@ -379,7 +379,7 @@ impl RemoteForwarder {
     }
 
     /// Send statistics update to ForwardingManager
-    #[allow(dead_code)] // Used in Phase 2
+    #[allow(dead_code)] // Used in future implementation
     async fn send_stats_update(&self) {
         let stats = ForwardingStats {
             active_connections: self.stats.active_connections.load(Ordering::Relaxed) as usize,
@@ -400,7 +400,7 @@ impl RemoteForwarder {
     }
 }
 
-// **Phase 2 Implementation Notes:**
+// **Implementation Notes:**
 //
 // The full remote forwarding implementation will require:
 //
@@ -447,7 +447,7 @@ mod tests {
         };
 
         // Note: This test will fail in the current state since we can't actually
-        // create an SSH client without a real connection. In Phase 2, we'll need
+        // create an SSH client without a real connection. In future implementation, we'll need
         // to implement proper mocking for SSH client testing.
 
         let config = ForwardingConfig::default();
@@ -456,7 +456,7 @@ mod tests {
         let session_id = Uuid::new_v4();
 
         // For now, we'll just test the creation with a mock
-        // In Phase 2, implement proper SSH client mocking
+        // In future implementation, implement proper SSH client mocking
         let ssh_client = Arc::new(
             Client::connect(
                 ("127.0.0.1", 22),

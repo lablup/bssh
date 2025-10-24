@@ -226,7 +226,7 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
     if overlay.control_persist.is_some() {
         base.control_persist = overlay.control_persist.clone();
     }
-    // Phase 2: Certificate authentication and advanced port forwarding options
+    // Certificate authentication and advanced port forwarding options
     if !overlay.certificate_files.is_empty() {
         // For certificate files, we append them like identity files with deduplication and limit
         const MAX_CERTIFICATE_FILES: usize = 100; // Reasonable limit to prevent memory exhaustion
@@ -278,7 +278,7 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
     if !overlay.hostbased_accepted_algorithms.is_empty() {
         base.hostbased_accepted_algorithms = overlay.hostbased_accepted_algorithms.clone();
     }
-    // Phase 3: Command execution and automation options
+    // Command execution and automation options
     if overlay.permit_local_command.is_some() {
         base.permit_local_command = overlay.permit_local_command;
     }
@@ -300,7 +300,7 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
     if overlay.stdin_null.is_some() {
         base.stdin_null = overlay.stdin_null;
     }
-    // Phase 4: Remaining useful SSH config options
+    // Host key verification, authentication, and network options
     // Host key verification & security
     if overlay.no_host_authentication_for_localhost.is_some() {
         base.no_host_authentication_for_localhost = overlay.no_host_authentication_for_localhost;
@@ -347,7 +347,7 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
     if overlay.forward_x11_trusted.is_some() {
         base.forward_x11_trusted = overlay.forward_x11_trusted;
     }
-    // Phase 5: High-priority practical SSH config options
+    // Authentication and security management options
     // Authentication & agent management
     if overlay.identities_only.is_some() {
         base.identities_only = overlay.identities_only;

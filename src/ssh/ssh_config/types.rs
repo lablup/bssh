@@ -77,7 +77,7 @@ pub struct SshHostConfig {
     pub control_master: Option<String>,
     pub control_path: Option<String>,
     pub control_persist: Option<String>,
-    // Phase 2: Certificate authentication and advanced port forwarding
+    // Certificate authentication and advanced port forwarding
     pub certificate_files: Vec<PathBuf>,
     pub ca_signature_algorithms: Vec<String>,
     pub gateway_ports: Option<String>,
@@ -85,7 +85,7 @@ pub struct SshHostConfig {
     pub permit_remote_open: Vec<String>,
     pub hostbased_authentication: Option<bool>,
     pub hostbased_accepted_algorithms: Vec<String>,
-    // Phase 3: Command execution and automation options
+    // Command execution and automation options
     pub permit_local_command: Option<bool>,
     pub local_command: Option<String>,
     pub remote_command: Option<String>,
@@ -93,7 +93,7 @@ pub struct SshHostConfig {
     pub fork_after_authentication: Option<bool>,
     pub session_type: Option<String>,
     pub stdin_null: Option<bool>,
-    // Phase 4: Remaining useful SSH config options
+    // Host key verification, authentication, and network options
     // Host key verification & security
     pub no_host_authentication_for_localhost: Option<bool>,
     pub hash_known_hosts: Option<bool>,
@@ -112,7 +112,7 @@ pub struct SshHostConfig {
     // X11 forwarding
     pub forward_x11_timeout: Option<String>,
     pub forward_x11_trusted: Option<bool>,
-    // Phase 5: High-priority practical SSH config options
+    // Authentication and security management options
     // Authentication & agent management
     pub identities_only: Option<bool>,
     pub add_keys_to_agent: Option<String>, // yes/no/ask/confirm

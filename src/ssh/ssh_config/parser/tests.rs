@@ -928,7 +928,7 @@ Host example.com
     assert!(err_msg.contains("line 3"));
 }
 
-// Phase 5: High-priority practical SSH config options tests
+// Authentication and security management options tests
 
 #[test]
 fn test_parse_identities_only_yes() {
@@ -1347,8 +1347,8 @@ Host example.com
 }
 
 #[test]
-fn test_parse_phase5_combined() {
-    // Test all Phase 5 options together
+fn test_parse_auth_security_combined() {
+    // Test all authentication and security management options together
     let content = r#"
 Host secure-server
     IdentitiesOnly yes
@@ -1371,7 +1371,7 @@ Host secure-server
     assert_eq!(hosts[0].fingerprint_hash, Some("sha256".to_string()));
 }
 
-// Security tests for Phase 5 options
+// Security tests for authentication and security management options
 #[test]
 fn test_parse_identity_agent_path_traversal_attack() {
     // Test that path traversal attempts are rejected
@@ -1510,7 +1510,7 @@ fn test_parse_ca_signature_algorithms_memory_limit() {
 }
 
 #[test]
-fn test_parse_phase5_with_match_block() {
+fn test_parse_auth_security_with_match_block() {
     use crate::ssh::ssh_config::types::ConfigBlock;
 
     let content = r#"

@@ -24,13 +24,13 @@
 //!
 //! # Implementation Status
 //!
-//! **Phase 2 - Placeholder Implementation**
+//! **Placeholder Implementation**
 //! This is a placeholder implementation that provides the basic structure.
-//! The full SOCKS protocol implementation will be completed in Phase 2.
+//! The full SOCKS protocol implementation will be completed in a future update.
 //!
 //! # SOCKS Protocol Support
 //!
-//! **Phase 2 Features:**
+//! **Planned Features:**
 //! - SOCKS4 protocol support
 //! - SOCKS5 protocol support with authentication
 //! - DNS resolution through remote connection

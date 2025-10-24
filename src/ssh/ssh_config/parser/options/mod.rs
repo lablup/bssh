@@ -130,7 +130,7 @@ pub fn parse_option(
             ui::parse_ui_option(host, keyword, args, line_number)
         }
 
-        // Command execution options (Phase 3)
+        // Command execution options
         "permitlocalcommand"
         | "localcommand"
         | "remotecommand"

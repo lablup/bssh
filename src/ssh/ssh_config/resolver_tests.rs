@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Tests for resolver functionality with Phase 2 options
+//! Tests for resolver functionality with certificate and forwarding options
 
 #[cfg(test)]
 mod tests {
