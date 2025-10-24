@@ -20,7 +20,7 @@ use uuid::Uuid;
 
 /// Dynamic port forwarder implementation (SOCKS proxy)
 #[derive(Debug)]
-#[allow(dead_code)] // Phase 2 implementation
+#[allow(dead_code)] // Future implementation
 pub struct DynamicForwarder {
     pub(crate) session_id: Uuid,
     pub(crate) bind_addr: SocketAddr,
@@ -72,7 +72,7 @@ impl DynamicForwarder {
 
     /// Main entry point for running dynamic port forwarding
     ///
-    /// **Phase 2 Implementation Note:**
+    /// **Implementation Note:**
     /// This is currently a placeholder implementation. The full implementation
     /// will include:
     /// 1. SOCKS v4/v5 protocol parser
@@ -255,7 +255,7 @@ impl DynamicForwarder {
     }
 
     /// Send statistics update to ForwardingManager
-    #[allow(dead_code)] // Used in Phase 2
+    #[allow(dead_code)] // Used in future implementation
     async fn send_stats_update(&self) {
         let stats = ForwardingStats {
             active_connections: self.stats.active_connections() as usize,

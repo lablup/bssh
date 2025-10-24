@@ -111,7 +111,7 @@ pub async fn handle_socks5_connection(
 ) -> Result<super::super::tunnel::TunnelStats> {
     debug!("Handling SOCKS5 connection from {}", peer_addr);
 
-    // Phase 1: Authentication negotiation
+    // Step 1: Authentication negotiation
     // Read client's authentication methods: VER(1) + NMETHODS(1) + METHODS(1-255)
     let mut auth_request = [0u8; 2];
     tcp_stream.read_exact(&mut auth_request).await?;
@@ -142,7 +142,7 @@ pub async fn handle_socks5_connection(
         return Err(anyhow::anyhow!("No acceptable authentication method"));
     }
 
-    // Phase 2: Connection request
+    // Step 2: Connection request
     // Read SOCKS5 request: VER(1) + CMD(1) + RSV(1) + ATYP(1) + DST.ADDR(variable) + DST.PORT(2)
     let mut request_header = [0u8; 4];
     tcp_stream.read_exact(&mut request_header).await?;
@@ -233,7 +233,7 @@ pub async fn handle_socks5_connection(
     Tunnel::run(tcp_stream, ssh_channel, cancel_token).await
 }
 
-// **Phase 2 Implementation Notes:**
+// **SOCKS Protocol Implementation Notes:**
 //
 // The full dynamic forwarding implementation will require:
 //
@@ -242,8 +242,8 @@ pub async fn handle_socks5_connection(
 //      * Request format: [VER, CMD, DST.PORT, DST.IP, USER_ID, NULL]
 //      * Response format: [VER, STATUS, DST.PORT, DST.IP]
 //    - SOCKS5: Advanced protocol with authentication and hostname support
-//      * Authentication negotiation phase
-//      * Connection request phase with multiple address types
+//      * Authentication negotiation step
+//      * Connection request step with multiple address types
 //      * Support for CONNECT, BIND, and UDP ASSOCIATE commands
 //
 // 2. **DNS Resolution:**

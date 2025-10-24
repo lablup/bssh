@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Statistics specific to dynamic forwarding
 #[derive(Debug, Default)]
-#[allow(dead_code)] // Phase 2 fields
+#[allow(dead_code)] // Future implementation fields
 pub struct DynamicForwarderStats {
     /// Total SOCKS connections accepted
     pub(crate) socks_connections_accepted: AtomicU64,

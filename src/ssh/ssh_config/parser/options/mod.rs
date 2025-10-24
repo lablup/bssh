@@ -48,6 +48,9 @@ pub fn parse_option(
         // Authentication options
         "identityfile"
         | "identitiesonly"
+        | "addkeystoagent"
+        | "identityagent"
+        | "pubkeyacceptedalgorithms"
         | "certificatefile"
         | "pubkeyauthentication"
         | "passwordauthentication"
@@ -76,7 +79,9 @@ pub fn parse_option(
         | "visualhostkey"
         | "hostkeyalias"
         | "verifyhostkeydns"
-        | "updatehostkeys" => security::parse_security_option(host, keyword, args, line_number),
+        | "updatehostkeys"
+        | "requiredrsasize"
+        | "fingerprinthash" => security::parse_security_option(host, keyword, args, line_number),
 
         // Forwarding options
         "forwardagent"
@@ -125,7 +130,7 @@ pub fn parse_option(
             ui::parse_ui_option(host, keyword, args, line_number)
         }
 
-        // Command execution options (Phase 3)
+        // Command execution options
         "permitlocalcommand"
         | "localcommand"
         | "remotecommand"

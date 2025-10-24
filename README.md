@@ -459,6 +459,27 @@ These options control X11 display forwarding behavior:
 | **ForwardX11Timeout** | Timeout for untrusted X11 forwarding (0 = no timeout) | `ForwardX11Timeout 1h` |
 | **ForwardX11Trusted** | Enable trusted X11 forwarding (yes/no, default: no) | `ForwardX11Trusted yes` |
 
+### Authentication and Security Management Options
+
+These options provide essential authentication management, security enforcement, and user convenience features:
+
+| Option | Description | Example |
+|--------|-------------|---------|
+| **IdentitiesOnly** | Only use identity files specified in config, ignore SSH agent (yes/no) | `IdentitiesOnly yes` |
+| **AddKeysToAgent** | Auto-add keys to SSH agent (yes/no/ask/confirm) | `AddKeysToAgent yes` |
+| **IdentityAgent** | Custom SSH agent socket path or "none" | `IdentityAgent ~/.1password/agent.sock` |
+| **PubkeyAcceptedAlgorithms** | Restrict allowed public key algorithms (max 50) | `PubkeyAcceptedAlgorithms ssh-ed25519,rsa-sha2-512` |
+| **RequiredRSASize** | Minimum RSA key size in bits (1024-16384, warns <2048) | `RequiredRSASize 2048` |
+| **FingerprintHash** | Fingerprint hash algorithm (md5/sha256) | `FingerprintHash sha256` |
+
+**Key Benefits:**
+- **IdentitiesOnly**: Solves multi-account authentication conflicts
+- **AddKeysToAgent**: Eliminates manual ssh-add commands
+- **IdentityAgent**: Enables modern agent tools (1Password, gpg-agent, etc.)
+- **PubkeyAcceptedAlgorithms**: Enforces security policies
+- **RequiredRSASize**: Prevents weak RSA keys
+- **FingerprintHash**: Flexibility for legacy systems
+
 ### SSH Config Examples
 
 #### Certificate-based Authentication
@@ -515,7 +536,7 @@ Host tunnel
     StdinNull yes
 ```
 
-#### Phase 4: Host Key Verification, Authentication, and Network Options
+#### Host Key Verification, Authentication, and Network Options
 
 ```ssh-config
 # Local development environment - skip localhost verification
@@ -549,6 +570,50 @@ Host graphics-workstation
     ForwardX11 yes
     ForwardX11Trusted yes
     ForwardX11Timeout 2h
+```
+
+#### Authentication and Security Best Practices
+
+```ssh-config
+# Multi-account setup - prevent agent key conflicts
+Host work
+    HostName work.example.com
+    IdentityFile ~/.ssh/work_rsa
+    IdentitiesOnly yes
+
+Host personal
+    HostName github.com
+    User git
+    IdentityFile ~/.ssh/personal_ed25519
+    IdentitiesOnly yes
+
+# Auto-add keys to SSH agent for convenience
+Host *
+    AddKeysToAgent yes
+
+# Custom SSH agent integration (1Password, gpg-agent)
+Host secure-*
+    IdentityAgent ~/.1password/agent.sock
+
+# Disable SSH agent for specific hosts
+Host no-agent-host
+    IdentityAgent none
+
+# Security-hardened production servers
+Host *.prod.example.com
+    # Only allow modern, secure algorithms
+    PubkeyAcceptedAlgorithms ssh-ed25519,rsa-sha2-512,rsa-sha2-256
+    # Enforce strong RSA keys
+    RequiredRSASize 2048
+    # Use modern fingerprint hashing
+    FingerprintHash sha256
+
+# Legacy system compatibility
+Host legacy.example.com
+    # Allow older RSA keys
+    RequiredRSASize 1024
+    # Use MD5 for legacy fingerprint verification
+    FingerprintHash md5
 ```
 
 #### Complete Example with Include and Match

@@ -252,8 +252,8 @@ Host test.example.com
     }
 
     #[test]
-    fn test_parse_phase2_certificate_and_forwarding_options() {
-        // Test parsing of Phase 2 options: certificate authentication and advanced port forwarding
+    fn test_parse_certificate_and_forwarding_options() {
+        // Test parsing of certificate authentication and advanced port forwarding options
         let config_content = r#"
 Host *.secure.example.com
     CertificateFile ~/.ssh/id_rsa-cert.pub
@@ -299,8 +299,8 @@ Host web1.secure.example.com
     }
 
     #[test]
-    fn test_merge_phase2_options() {
-        // Test that Phase 2 options are properly merged according to SSH config precedence
+    fn test_merge_certificate_and_forwarding_options() {
+        // Test that certificate and forwarding options are properly merged according to SSH config precedence
         let config_content = r#"
 Host *.example.com
     CertificateFile ~/.ssh/default-cert.pub
@@ -346,8 +346,8 @@ Host web1.example.com
     }
 
     #[test]
-    fn test_parse_phase4_host_key_verification_options() {
-        // Test parsing of Phase 4 host key verification options
+    fn test_parse_host_key_verification_options() {
+        // Test parsing of host key verification options
         let config_content = r#"
 Host localhost 127.0.0.1
     NoHostAuthenticationForLocalhost yes
@@ -382,8 +382,8 @@ Host *.example.com
     }
 
     #[test]
-    fn test_parse_phase4_authentication_options() {
-        // Test parsing of Phase 4 authentication options
+    fn test_parse_authentication_options() {
+        // Test parsing of authentication options
         let config_content = r#"
 Host automated-server
     NumberOfPasswordPrompts 1
@@ -409,8 +409,8 @@ Host secure-server
     }
 
     #[test]
-    fn test_parse_phase4_network_options() {
-        // Test parsing of Phase 4 network options
+    fn test_parse_network_options() {
+        // Test parsing of network options
         let config_content = r#"
 Host vpn-server
     BindInterface tun0
@@ -440,8 +440,8 @@ Host backup-server
     }
 
     #[test]
-    fn test_parse_phase4_x11_forwarding_options() {
-        // Test parsing of Phase 4 X11 forwarding options
+    fn test_parse_x11_forwarding_options() {
+        // Test parsing of X11 forwarding options
         let config_content = r#"
 Host gui-server
     ForwardX11 yes
@@ -471,8 +471,8 @@ Host desktop-server
     }
 
     #[test]
-    fn test_merge_phase4_options() {
-        // Test that Phase 4 options are properly merged according to SSH config precedence
+    fn test_merge_host_key_and_network_options() {
+        // Test that host key verification and network options are properly merged according to SSH config precedence
         let config_content = r#"
 Host *
     HashKnownHosts yes
@@ -533,8 +533,8 @@ Host web1.example.com
     }
 
     #[test]
-    fn test_phase4_validation_errors() {
-        // Test validation of Phase 4 options
+    fn test_host_key_and_network_validation_errors() {
+        // Test validation of host key verification and network options
 
         // Invalid VerifyHostKeyDNS value
         let config_content = r#"
@@ -559,8 +559,8 @@ Host test
     }
 
     #[test]
-    fn test_phase4_option_value_syntax() {
-        // Test Option=Value syntax for Phase 4 options
+    fn test_host_key_and_network_option_value_syntax() {
+        // Test Option=Value syntax for host key verification and network options
         let config_content = r#"
 Host test
     NoHostAuthenticationForLocalhost=yes
@@ -582,7 +582,7 @@ Host test
     }
 
     #[test]
-    fn test_phase4_security_validations() {
+    fn test_host_key_and_network_security_validations() {
         // Test HostKeyAlias - should reject shell metacharacters
         let config_content = r#"
 Host test

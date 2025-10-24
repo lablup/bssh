@@ -170,9 +170,9 @@ impl Client {
         self.connection_handle.is_closed()
     }
 
-    /// Request remote port forwarding (tcpip-forward) - Phase 2 Implementation Placeholder
+    /// Request remote port forwarding (tcpip-forward) - Future Implementation Placeholder
     ///
-    /// **Phase 2 TODO**: This method needs to be implemented once russh provides
+    /// **TODO**: This method needs to be implemented once russh provides
     /// global request functionality or we find the appropriate API.
     ///
     /// This sends a global request to the SSH server to bind a port on the remote end
@@ -189,15 +189,15 @@ impl Client {
         _bind_address: String,
         _bind_port: u32,
     ) -> Result<u32, super::Error> {
-        // **Phase 2 TODO**: Implement actual tcpip-forward global request
+        // **TODO**: Implement actual tcpip-forward global request
         // For now, return an error indicating this is not yet implemented
-        tracing::warn!("Remote port forwarding request not yet implemented - Phase 2 TODO");
+        tracing::warn!("Remote port forwarding request not yet implemented - TODO");
         Err(super::Error::PortForwardingNotSupported)
     }
 
-    /// Cancel remote port forwarding (cancel-tcpip-forward) - Phase 2 Implementation Placeholder
+    /// Cancel remote port forwarding (cancel-tcpip-forward) - Future Implementation Placeholder
     ///
-    /// **Phase 2 TODO**: This method needs to be implemented once russh provides
+    /// **TODO**: This method needs to be implemented once russh provides
     /// global request functionality or we find the appropriate API.
     ///
     /// This sends a global request to cancel a previously established remote port forward.
@@ -210,9 +210,9 @@ impl Client {
         _bind_address: String,
         _bind_port: u32,
     ) -> Result<(), super::Error> {
-        // **Phase 2 TODO**: Implement actual cancel-tcpip-forward global request
+        // **TODO**: Implement actual cancel-tcpip-forward global request
         // For now, return an error indicating this is not yet implemented
-        tracing::warn!("Cancel remote port forwarding not yet implemented - Phase 2 TODO");
+        tracing::warn!("Cancel remote port forwarding not yet implemented - TODO");
         Err(super::Error::PortForwardingNotSupported)
     }
 }
