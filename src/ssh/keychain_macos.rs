@@ -121,6 +121,39 @@ pub async fn store_passphrase(key_path: impl AsRef<Path>, passphrase: &str) -> R
         .await
         .with_context(|| format!("Failed to resolve SSH key path: {key_path:?}"))?;
 
+    // SECURITY: Validate that the SSH key file is owned by the current user
+    // This prevents storing passphrases for keys owned by other users
+    let metadata = tokio::fs::metadata(&canonical_path)
+        .await
+        .with_context(|| format!("Failed to read SSH key file metadata: {canonical_path:?}"))?;
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let current_uid = unsafe { libc::getuid() };
+        let file_uid = metadata.uid();
+
+        if file_uid != current_uid {
+            anyhow::bail!(
+                "Security error: SSH key file is not owned by current user (file uid: {}, current uid: {}). \
+                 Only the owner of an SSH key should be able to store its passphrase.",
+                file_uid,
+                current_uid
+            );
+        }
+
+        // Also check that the file is not world-readable (common SSH security requirement)
+        let mode = metadata.mode();
+        if mode & 0o044 != 0 {
+            tracing::warn!(
+                "SSH key file has overly permissive permissions: {:o}. \
+                 Consider restricting with: chmod 600 {}",
+                mode & 0o777,
+                canonical_path.display()
+            );
+        }
+    }
+
     let account_name = canonical_path.to_str().ok_or_else(|| {
         anyhow::anyhow!("SSH key path contains invalid UTF-8: {canonical_path:?}")
     })?;
@@ -133,11 +166,10 @@ pub async fn store_passphrase(key_path: impl AsRef<Path>, passphrase: &str) -> R
     // Perform Keychain operation in blocking task to avoid blocking async runtime
     let service_name = KEYCHAIN_SERVICE_NAME.to_string();
     let account_name_owned = account_name.to_string();
-    let passphrase_owned = passphrase_bytes.clone();
 
     tokio::task::spawn_blocking(move || -> Result<()> {
         // The security-framework crate will update the existing item if it exists
-        set_generic_password(&service_name, &account_name_owned, &passphrase_owned).with_context(
+        set_generic_password(&service_name, &account_name_owned, &passphrase_bytes).with_context(
             || {
                 "Failed to store passphrase in Keychain. \
              This may happen if Keychain access is denied or the Keychain is locked."
