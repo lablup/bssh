@@ -1277,6 +1277,109 @@ Host example.com
     assert!(err_msg.contains("RequiredRSASize"));
 }
 
+// UseKeychain tests (macOS-specific option)
+
+#[test]
+#[cfg(target_os = "macos")]
+fn test_parse_use_keychain_yes() {
+    let content = r#"
+Host example.com
+    UseKeychain yes
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0].use_keychain, Some(true));
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn test_parse_use_keychain_no() {
+    let content = r#"
+Host example.com
+    UseKeychain no
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0].use_keychain, Some(false));
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn test_parse_use_keychain_case_insensitive() {
+    let content = r#"
+Host example.com
+    UseKeychain YES
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0].use_keychain, Some(true));
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn test_parse_use_keychain_with_equals() {
+    let content = r#"
+Host example.com
+    UseKeychain=yes
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0].use_keychain, Some(true));
+}
+
+#[test]
+fn test_parse_use_keychain_empty_value() {
+    let content = r#"
+Host example.com
+    UseKeychain
+"#;
+    let result = parse(content);
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+    assert!(err_msg.contains("UseKeychain"));
+}
+
+#[test]
+fn test_parse_use_keychain_invalid_value() {
+    let content = r#"
+Host example.com
+    UseKeychain invalid
+"#;
+    let result = parse(content);
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+    assert!(err_msg.contains("UseKeychain"));
+    assert!(err_msg.contains("invalid"));
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn test_parse_use_keychain_with_add_keys_to_agent() {
+    // UseKeychain is often used together with AddKeysToAgent
+    let content = r#"
+Host example.com
+    AddKeysToAgent yes
+    UseKeychain yes
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0].add_keys_to_agent, Some("yes".to_string()));
+    assert_eq!(hosts[0].use_keychain, Some(true));
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn test_parse_use_keychain_default_none() {
+    // Verify that UseKeychain defaults to None when not specified
+    let content = r#"
+Host example.com
+    User testuser
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0].use_keychain, None);
+}
+
 #[test]
 fn test_parse_fingerprint_hash_sha256() {
     let content = r#"
