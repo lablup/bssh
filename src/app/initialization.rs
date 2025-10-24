@@ -228,6 +228,7 @@ pub fn determine_use_keychain(ssh_config: &SshConfig, hostname: Option<&str>) ->
 
 /// Non-macOS version of determine_use_keychain (always returns false)
 #[cfg(not(target_os = "macos"))]
+#[allow(dead_code)]
 pub fn determine_use_keychain(_ssh_config: &SshConfig, _hostname: Option<&str>) -> bool {
     false
 }

@@ -30,7 +30,9 @@ use bssh::{
 };
 use std::path::{Path, PathBuf};
 
-use super::initialization::{determine_ssh_key_path, determine_use_keychain, AppContext};
+#[cfg(target_os = "macos")]
+use super::initialization::determine_use_keychain;
+use super::initialization::{determine_ssh_key_path, AppContext};
 use super::utils::format_duration;
 
 /// Dispatch commands to their appropriate handlers
