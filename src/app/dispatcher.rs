@@ -232,6 +232,9 @@ async fn handle_interactive_command(
         None
     };
 
+    #[cfg(target_os = "macos")]
+    let use_keychain = determine_use_keychain(&ctx.ssh_config, hostname.as_deref());
+
     let interactive_cmd = InteractiveCommand {
         single_node: merged_mode.0,
         multiplex: merged_mode.1,
@@ -245,6 +248,8 @@ async fn handle_interactive_command(
         key_path,
         use_agent: cli.use_agent,
         use_password: cli.password,
+        #[cfg(target_os = "macos")]
+        use_keychain,
         strict_mode: ctx.strict_mode,
         jump_hosts: cli.jump_hosts.clone(),
         pty_config,
@@ -289,6 +294,9 @@ async fn handle_exec_command(cli: &Cli, ctx: &AppContext, command: &str) -> Resu
             None
         };
 
+        #[cfg(target_os = "macos")]
+        let use_keychain = determine_use_keychain(&ctx.ssh_config, hostname.as_deref());
+
         let interactive_cmd = InteractiveCommand {
             single_node: true,
             multiplex: false,
@@ -302,6 +310,8 @@ async fn handle_exec_command(cli: &Cli, ctx: &AppContext, command: &str) -> Resu
             key_path,
             use_agent: cli.use_agent,
             use_password: cli.password,
+            #[cfg(target_os = "macos")]
+            use_keychain,
             strict_mode: ctx.strict_mode,
             jump_hosts: cli.jump_hosts.clone(),
             pty_config,

@@ -50,6 +50,12 @@ impl InteractiveCommand {
             .with_agent(self.use_agent)
             .with_password(self.use_password);
 
+        // Set macOS Keychain integration if available
+        #[cfg(target_os = "macos")]
+        {
+            auth_ctx = auth_ctx.with_keychain(self.use_keychain);
+        }
+
         auth_ctx.determine_method().await
     }
 

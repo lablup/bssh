@@ -53,6 +53,8 @@ async fn main() -> anyhow::Result<()> {
         key_path: None,
         use_agent: false,
         use_password: false,
+        #[cfg(target_os = "macos")]
+        use_keychain: false,
         strict_mode: StrictHostKeyChecking::AcceptNew,
         jump_hosts: None,
         pty_config: PtyConfig::default(),
