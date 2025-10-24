@@ -154,21 +154,27 @@ impl AuthContext {
     /// Determine the appropriate authentication method based on the context.
     ///
     /// This method implements the standard authentication priority with security hardening:
-    /// 1. Password authentication (if explicitly requested)
+    /// 1. Password authentication (if explicitly requested via --password flag)
     /// 2. SSH agent (if explicitly requested and available)
     /// 3. Specified key file (if provided and valid)
     /// 4. SSH agent auto-detection (if use_agent is true)
     /// 5. Default key locations (~/.ssh/id_ed25519, ~/.ssh/id_rsa, etc.)
+    /// 6. Password authentication fallback (interactive terminal only, matches OpenSSH behavior)
+    ///
+    /// The password fallback (step 6) matches standard OpenSSH behavior where password
+    /// authentication is attempted as a last resort when all key-based methods fail.
+    /// This only occurs in interactive terminals (when stdin is a TTY).
     ///
     /// # Security
     /// - All file operations use canonical paths
     /// - Authentication timing is normalized to prevent timing attacks
     /// - Credentials are securely zeroized after use
+    /// - Password prompts only appear in interactive terminals
     ///
     /// # Errors
     ///
     /// Returns an error if:
-    /// - No authentication method is available
+    /// - No authentication method is available (non-interactive environment)
     /// - SSH key file cannot be read or is invalid
     /// - Password/passphrase prompt fails or times out
     /// - SSH agent is requested but not available (Windows)
@@ -188,7 +194,7 @@ impl AuthContext {
     }
 
     async fn determine_method_internal(&self) -> Result<AuthMethod> {
-        // Priority 1: Password authentication
+        // Priority 1: Password authentication (explicit request)
         if self.use_password {
             return self.password_auth().await;
         }
@@ -214,7 +220,42 @@ impl AuthContext {
         }
 
         // Priority 5: Default key locations
-        self.default_key_auth().await
+        match self.default_key_auth().await {
+            Ok(auth) => Ok(auth),
+            Err(_) => {
+                // Priority 6: Fallback to password authentication
+                // This matches OpenSSH behavior where password is tried as last resort
+                // Check if we're in an interactive terminal
+                if atty::is(atty::Stream::Stdin) {
+                    tracing::debug!(
+                        "All key-based authentication methods failed, falling back to password"
+                    );
+                    self.password_auth().await
+                } else {
+                    // Non-interactive environment - cannot prompt for password
+                    anyhow::bail!(
+                        "SSH authentication failed: No authentication method available.\n\
+                         \n\
+                         Tried:\n\
+                         - SSH agent: {}\n\
+                         - Default SSH keys: Not found or not authorized\n\
+                         \n\
+                         Solutions:\n\
+                         - Use --password for password authentication\n\
+                         - Start SSH agent and add keys with 'ssh-add'\n\
+                         - Specify a key file with -i/--identity\n\
+                         - Ensure ~/.ssh/id_ed25519 or ~/.ssh/id_rsa exists and is authorized",
+                        if cfg!(target_os = "windows") {
+                            "Not supported on Windows"
+                        } else if std::env::var_os("SSH_AUTH_SOCK").is_some() {
+                            "Available but no identities authorized"
+                        } else {
+                            "Not available (SSH_AUTH_SOCK not set)"
+                        }
+                    )
+                }
+            }
+        }
     }
 
     /// Attempt password authentication with timeout.
@@ -667,5 +708,42 @@ mod tests {
 
         // Should take at least 50ms due to timing normalization
         assert!(duration >= Duration::from_millis(50));
+    }
+
+    #[tokio::test]
+    async fn test_password_fallback_in_non_interactive() {
+        // Save original environment variables
+        let original_home = std::env::var("HOME").ok();
+        let original_ssh_auth_sock = std::env::var("SSH_AUTH_SOCK").ok();
+
+        // Create a fake home directory WITHOUT default keys (to trigger fallback)
+        let temp_dir = TempDir::new().unwrap();
+        let ssh_dir = temp_dir.path().join(".ssh");
+        std::fs::create_dir_all(&ssh_dir).unwrap();
+        // Intentionally NOT creating any key files
+
+        // Set test environment
+        std::env::set_var("HOME", temp_dir.path().to_str().unwrap());
+        std::env::remove_var("SSH_AUTH_SOCK");
+
+        let ctx = AuthContext::new("user".to_string(), "host".to_string()).unwrap();
+
+        // In non-interactive environment (like tests), should fail with helpful error
+        let result = ctx.determine_method().await;
+        assert!(result.is_err());
+
+        // Error message should mention authentication failure
+        let error_msg = result.unwrap_err().to_string();
+        assert!(error_msg.contains("authentication"));
+
+        // Restore original environment variables
+        if let Some(home) = original_home {
+            std::env::set_var("HOME", home);
+        } else {
+            std::env::remove_var("HOME");
+        }
+        if let Some(sock) = original_ssh_auth_sock {
+            std::env::set_var("SSH_AUTH_SOCK", sock);
+        }
     }
 }
