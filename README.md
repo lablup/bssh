@@ -403,6 +403,8 @@ These options control SSH proxy connection behavior:
 
 **ProxyUseFdpass** optimizes ProxyCommand usage by eliminating an unnecessary lingering process and reducing I/O overhead. When enabled, the proxy command passes the established connection file descriptor directly to ssh and exits, rather than remaining active to relay data throughout the session. This is particularly useful with proxy commands like netcat that support file descriptor passing (nc -F).
 
+*Note: This option is currently parsed from SSH configuration files for compatibility but is not yet utilized in bssh's SSH client implementation, as proxy connections are not yet supported.*
+
 ### Command Execution and Automation Options
 
 These options enable powerful automation workflows and command execution features:
