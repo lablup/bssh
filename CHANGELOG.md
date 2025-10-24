@@ -5,6 +5,61 @@ All notable changes to bssh will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2025-10-24
+
+### Added
+- **macOS Keychain Integration** (Issue #59, PR #61)
+  - Automatic passphrase storage in macOS Keychain after successful SSH key authentication
+  - Automatic passphrase retrieval before prompting user
+  - Secure memory handling with `Zeroizing` for all sensitive data
+  - Integration with SSH config `UseKeychain` option per host
+  - New module `src/ssh/keychain_macos.rs` with complete Keychain API wrapper
+- **ProxyUseFdpass SSH Option** (Issue #58, PR #60)
+  - Added `ProxyUseFdpass` SSH configuration option support
+  - Optimizes ProxyCommand usage by passing connected file descriptors back to ssh
+  - Reduces overhead from lingering processes and extra read/write operations
+- **Password Authentication Fallback**
+  - Automatic password retry when publickey authentication fails
+  - Matches OpenSSH standard behavior for seamless user experience
+  - Interactive terminal detection with TTY checks
+  - Works for both exec and interactive modes
+
+### Security
+- **SSH Key File Ownership Validation** (PR #61)
+  - Prevents storing passphrases for SSH keys owned by other users
+  - Added macOS user ID checks using libc
+  - World-readable SSH key permission warnings
+- **User Consent for Password Fallback** (PR #61)
+  - Explicit user consent prompt before attempting password authentication
+  - 30-second timeout for consent prompt
+  - Prevents unexpected password prompts that could lead to credential exposure
+- **Rate Limiting** (PR #61)
+  - 100ms delay before initial connection attempts
+  - 1 second delay before password fallback
+  - Prevents brute-force attacks and fail2ban triggers
+
+### Improved
+- **Code Quality** (PR #61)
+  - Eliminated 251 lines of code duplication in connection logic
+  - Created `establish_connection()` helper function
+  - Centralized authentication logic in auth module
+  - 60% reduction in connection.rs complexity
+- **Cross-Platform Support**
+  - All macOS-specific code properly isolated with `#[cfg(target_os = "macos")]`
+  - Conditional imports to prevent unused code warnings on non-macOS platforms
+  - Stub functions for API consistency across platforms
+
+### Fixed
+- Fixed clippy warnings on non-macOS platforms (unused_mut, unused_imports, dead_code)
+  - Variable shadowing for macOS-specific code paths
+  - Conditional imports for platform-specific functions
+- Fixed interactive mode missing `use_keychain` field causing authentication failures
+- Fixed password prompt not appearing when connecting to new servers in interactive mode
+
+### Dependencies
+- Added `security-framework = "2.12.1"` for macOS Keychain API integration
+- Added `libc` for macOS user ID checks (conditional on macOS)
+
 ## [1.0.0] - 2025-10-24
 
 ### Added
@@ -309,7 +364,8 @@ None
 - russh library for native SSH implementation
 - Cross-platform support (Linux and macOS)
 
-[Unreleased]: https://github.com/lablup/bssh/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/lablup/bssh/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/lablup/bssh/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/lablup/bssh/compare/v0.9.1...v1.0.0
 [0.9.1]: https://github.com/lablup/bssh/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/lablup/bssh/compare/v0.8.0...v0.9.0

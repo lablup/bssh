@@ -1,3 +1,40 @@
+bssh (1.1.0-1~jammy1) jammy; urgency=medium
+
+  * v1.1.0
+  ### New Features
+  - **macOS Keychain Integration**: Complete Phase 2 implementation of UseKeychain SSH option
+    - Automatic passphrase storage in macOS Keychain after successful authentication
+    - Automatic passphrase retrieval before prompting user
+    - Secure memory handling with Zeroizing for all sensitive data
+    - Integration with SSH config UseKeychain option per host
+  - **ProxyUseFdpass Support**: Added ProxyUseFdpass SSH configuration option
+    - Optimizes ProxyCommand usage by passing connected file descriptors
+    - Reduces overhead from lingering processes and extra read/write operations
+  - **Password Authentication Fallback**: Automatic password retry when key-based auth fails
+    - Matches OpenSSH standard behavior
+    - Interactive terminal detection with TTY checks
+    - Works for both exec and interactive modes
+
+  ### Improvements
+  - **Security Enhancements**: Multiple security improvements from PR review
+    - SSH key file ownership validation (prevents storing passphrases for others' keys)
+    - User consent prompt before password fallback authentication
+    - Rate limiting between authentication attempts (prevents brute-force)
+    - World-readable SSH key permission warnings
+  - **Code Quality**: Eliminated 251 lines of code duplication in connection logic
+  - **Cross-Platform**: All macOS-specific code properly isolated with conditional compilation
+
+  ### Bug Fixes
+  - Fixed clippy warnings (unused_mut, unused_imports, dead_code) on non-macOS platforms
+  - Fixed interactive mode missing use_keychain field causing authentication failures
+  - Fixed password prompt not appearing when connecting to new servers
+
+  ### Dependencies
+  - Added security-framework crate for macOS Keychain API integration
+  - Added libc crate for macOS user ID checks
+
+ -- Jeongkyu Shin <inureyes@gmail.com>  Fri, 24 Oct 2025 17:31:48 +0900
+
 bssh (1.0.0-1~jammy1) jammy; urgency=medium
 
   * v1.0.0
