@@ -111,6 +111,11 @@ impl InteractiveCommand {
         const SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
         let connect_timeout = Duration::from_secs(SSH_CONNECT_TIMEOUT_SECS);
 
+        // Track if we should attempt password fallback
+        let should_try_password_fallback = !self.use_password
+            && !matches!(auth_method, AuthMethod::Password(_))
+            && atty::is(atty::Stream::Stdin);
+
         // Create client connection - either direct or through jump hosts
         let client = if let Some(ref jump_spec) = self.jump_hosts {
             // Parse jump hosts
@@ -120,18 +125,63 @@ impl InteractiveCommand {
 
             if jump_hosts.is_empty() {
                 tracing::debug!("No valid jump hosts found, using direct connection");
-                timeout(
+
+                // Try initial authentication method
+                let connect_result = timeout(
                     connect_timeout,
-                    Client::connect(addr, &node.username, auth_method, check_method),
+                    Client::connect(
+                        addr,
+                        &node.username,
+                        auth_method.clone(),
+                        check_method.clone(),
+                    ),
                 )
-                .await
-                .with_context(|| {
-                    format!(
-                        "Connection timeout: Failed to connect to {}:{} after 30 seconds",
-                        node.host, node.port
-                    )
-                })?
-                .with_context(|| format!("SSH connection failed to {}:{}", node.host, node.port))?
+                .await;
+
+                // If initial authentication fails and we can try password, retry with password
+                match connect_result {
+                    Ok(Ok(client)) => client,
+                    Ok(Err(_)) | Err(_) if should_try_password_fallback => {
+                        tracing::info!(
+                            "Initial authentication failed for {}@{}:{}, attempting password authentication",
+                            node.username, node.host, node.port
+                        );
+
+                        // Retry with password authentication
+                        let password_auth =
+                            crate::ssh::AuthContext::new(node.username.clone(), node.host.clone())?
+                                .with_password(true)
+                                .determine_method()
+                                .await?;
+
+                        timeout(
+                            connect_timeout,
+                            Client::connect(addr, &node.username, password_auth, check_method),
+                        )
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "Connection timeout: Failed to connect to {}:{} after 30 seconds",
+                                node.host, node.port
+                            )
+                        })?
+                        .with_context(|| {
+                            format!("SSH connection failed to {}:{}", node.host, node.port)
+                        })?
+                    }
+                    Ok(Err(e)) => {
+                        return Err(e).with_context(|| {
+                            format!("SSH connection failed to {}:{}", node.host, node.port)
+                        });
+                    }
+                    Err(_) => {
+                        anyhow::bail!(
+                            "Connection timeout: Failed to connect to {}:{} after 30 seconds",
+                            node.host,
+                            node.port
+                        );
+                    }
+                }
             } else {
                 tracing::info!(
                     "Connecting to {}:{} via {} jump host(s) for interactive session",
@@ -196,18 +246,63 @@ impl InteractiveCommand {
         } else {
             // Direct connection
             tracing::debug!("Using direct connection (no jump hosts)");
-            timeout(
+
+            // Try initial authentication method
+            let connect_result = timeout(
                 connect_timeout,
-                Client::connect(addr, &node.username, auth_method, check_method),
+                Client::connect(
+                    addr,
+                    &node.username,
+                    auth_method.clone(),
+                    check_method.clone(),
+                ),
             )
-            .await
-            .with_context(|| {
-                format!(
-                    "Connection timeout: Failed to connect to {}:{} after 30 seconds",
-                    node.host, node.port
-                )
-            })?
-            .with_context(|| format!("SSH connection failed to {}:{}", node.host, node.port))?
+            .await;
+
+            // If initial authentication fails and we can try password, retry with password
+            match connect_result {
+                Ok(Ok(client)) => client,
+                Ok(Err(_)) | Err(_) if should_try_password_fallback => {
+                    tracing::info!(
+                        "Initial authentication failed for {}@{}:{}, attempting password authentication",
+                        node.username, node.host, node.port
+                    );
+
+                    // Retry with password authentication
+                    let password_auth =
+                        crate::ssh::AuthContext::new(node.username.clone(), node.host.clone())?
+                            .with_password(true)
+                            .determine_method()
+                            .await?;
+
+                    timeout(
+                        connect_timeout,
+                        Client::connect(addr, &node.username, password_auth, check_method),
+                    )
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "Connection timeout: Failed to connect to {}:{} after 30 seconds",
+                            node.host, node.port
+                        )
+                    })?
+                    .with_context(|| {
+                        format!("SSH connection failed to {}:{}", node.host, node.port)
+                    })?
+                }
+                Ok(Err(e)) => {
+                    return Err(e).with_context(|| {
+                        format!("SSH connection failed to {}:{}", node.host, node.port)
+                    });
+                }
+                Err(_) => {
+                    anyhow::bail!(
+                        "Connection timeout: Failed to connect to {}:{} after 30 seconds",
+                        node.host,
+                        node.port
+                    );
+                }
+            }
         };
 
         // Get terminal dimensions
@@ -256,6 +351,11 @@ impl InteractiveCommand {
         const SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
         let connect_timeout = Duration::from_secs(SSH_CONNECT_TIMEOUT_SECS);
 
+        // Track if we should attempt password fallback
+        let should_try_password_fallback = !self.use_password
+            && !matches!(auth_method, AuthMethod::Password(_))
+            && atty::is(atty::Stream::Stdin);
+
         // Create client connection - either direct or through jump hosts
         let client = if let Some(ref jump_spec) = self.jump_hosts {
             // Parse jump hosts
@@ -265,18 +365,63 @@ impl InteractiveCommand {
 
             if jump_hosts.is_empty() {
                 tracing::debug!("No valid jump hosts found, using direct connection for PTY");
-                timeout(
+
+                // Try initial authentication method
+                let connect_result = timeout(
                     connect_timeout,
-                    Client::connect(addr, &node.username, auth_method, check_method),
+                    Client::connect(
+                        addr,
+                        &node.username,
+                        auth_method.clone(),
+                        check_method.clone(),
+                    ),
                 )
-                .await
-                .with_context(|| {
-                    format!(
-                        "Connection timeout: Failed to connect to {}:{} after 30 seconds",
-                        node.host, node.port
-                    )
-                })?
-                .with_context(|| format!("SSH connection failed to {}:{}", node.host, node.port))?
+                .await;
+
+                // If initial authentication fails and we can try password, retry with password
+                match connect_result {
+                    Ok(Ok(client)) => client,
+                    Ok(Err(_)) | Err(_) if should_try_password_fallback => {
+                        tracing::info!(
+                            "Initial authentication failed for {}@{}:{}, attempting password authentication",
+                            node.username, node.host, node.port
+                        );
+
+                        // Retry with password authentication
+                        let password_auth =
+                            crate::ssh::AuthContext::new(node.username.clone(), node.host.clone())?
+                                .with_password(true)
+                                .determine_method()
+                                .await?;
+
+                        timeout(
+                            connect_timeout,
+                            Client::connect(addr, &node.username, password_auth, check_method),
+                        )
+                        .await
+                        .with_context(|| {
+                            format!(
+                                "Connection timeout: Failed to connect to {}:{} after 30 seconds",
+                                node.host, node.port
+                            )
+                        })?
+                        .with_context(|| {
+                            format!("SSH connection failed to {}:{}", node.host, node.port)
+                        })?
+                    }
+                    Ok(Err(e)) => {
+                        return Err(e).with_context(|| {
+                            format!("SSH connection failed to {}:{}", node.host, node.port)
+                        });
+                    }
+                    Err(_) => {
+                        anyhow::bail!(
+                            "Connection timeout: Failed to connect to {}:{} after 30 seconds",
+                            node.host,
+                            node.port
+                        );
+                    }
+                }
             } else {
                 tracing::info!(
                     "Connecting to {}:{} via {} jump host(s) for PTY session",
@@ -341,18 +486,63 @@ impl InteractiveCommand {
         } else {
             // Direct connection
             tracing::debug!("Using direct connection for PTY (no jump hosts)");
-            timeout(
+
+            // Try initial authentication method
+            let connect_result = timeout(
                 connect_timeout,
-                Client::connect(addr, &node.username, auth_method, check_method),
+                Client::connect(
+                    addr,
+                    &node.username,
+                    auth_method.clone(),
+                    check_method.clone(),
+                ),
             )
-            .await
-            .with_context(|| {
-                format!(
-                    "Connection timeout: Failed to connect to {}:{} after 30 seconds",
-                    node.host, node.port
-                )
-            })?
-            .with_context(|| format!("SSH connection failed to {}:{}", node.host, node.port))?
+            .await;
+
+            // If initial authentication fails and we can try password, retry with password
+            match connect_result {
+                Ok(Ok(client)) => client,
+                Ok(Err(_)) | Err(_) if should_try_password_fallback => {
+                    tracing::info!(
+                        "Initial authentication failed for {}@{}:{}, attempting password authentication",
+                        node.username, node.host, node.port
+                    );
+
+                    // Retry with password authentication
+                    let password_auth =
+                        crate::ssh::AuthContext::new(node.username.clone(), node.host.clone())?
+                            .with_password(true)
+                            .determine_method()
+                            .await?;
+
+                    timeout(
+                        connect_timeout,
+                        Client::connect(addr, &node.username, password_auth, check_method),
+                    )
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "Connection timeout: Failed to connect to {}:{} after 30 seconds",
+                            node.host, node.port
+                        )
+                    })?
+                    .with_context(|| {
+                        format!("SSH connection failed to {}:{}", node.host, node.port)
+                    })?
+                }
+                Ok(Err(e)) => {
+                    return Err(e).with_context(|| {
+                        format!("SSH connection failed to {}:{}", node.host, node.port)
+                    });
+                }
+                Err(_) => {
+                    anyhow::bail!(
+                        "Connection timeout: Failed to connect to {}:{} after 30 seconds",
+                        node.host,
+                        node.port
+                    );
+                }
+            }
         };
 
         // Get terminal dimensions
