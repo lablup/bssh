@@ -223,14 +223,36 @@ impl AuthContext {
         match self.default_key_auth().await {
             Ok(auth) => Ok(auth),
             Err(_) => {
-                // Priority 6: Fallback to password authentication
-                // This matches OpenSSH behavior where password is tried as last resort
+                // Priority 6: Fallback to password authentication WITH USER CONSENT
+                // Unlike OpenSSH, we ask for explicit consent before password fallback for security
                 // Check if we're in an interactive terminal
-                if atty::is(atty::Stream::Stdin) {
-                    tracing::debug!(
-                        "All key-based authentication methods failed, falling back to password"
-                    );
+                if atty::is(atty::Stream::Stdin) && self.prompt_password_fallback_consent().await? {
+                    tracing::debug!("User consented to password authentication fallback");
                     self.password_auth().await
+                } else if atty::is(atty::Stream::Stdin) {
+                    // User declined password fallback
+                    anyhow::bail!(
+                        "SSH authentication failed: All key-based methods failed.\n\
+                         \n\
+                         Tried:\n\
+                         - SSH agent: {}\n\
+                         - Default SSH keys: Not found or not authorized\n\
+                         \n\
+                         User declined password authentication fallback.\n\
+                         \n\
+                         Solutions:\n\
+                         - Use --password flag to explicitly enable password authentication\n\
+                         - Start SSH agent and add keys with 'ssh-add'\n\
+                         - Specify a key file with -i/--identity\n\
+                         - Ensure ~/.ssh/id_ed25519 or ~/.ssh/id_rsa exists and is authorized",
+                        if cfg!(target_os = "windows") {
+                            "Not supported on Windows"
+                        } else if std::env::var_os("SSH_AUTH_SOCK").is_some() {
+                            "Available but no identities authorized"
+                        } else {
+                            "Not available (SSH_AUTH_SOCK not set)"
+                        }
+                    )
                 } else {
                     // Non-interactive environment - cannot prompt for password
                     anyhow::bail!(
@@ -256,6 +278,43 @@ impl AuthContext {
                 }
             }
         }
+    }
+
+    /// Prompt user for consent to fall back to password authentication.
+    ///
+    /// Returns true if user consents, false otherwise.
+    async fn prompt_password_fallback_consent(&self) -> Result<bool> {
+        use std::io::{self, Write};
+
+        tracing::info!(
+            "All SSH key-based authentication methods failed for {}@{}",
+            self.username,
+            self.host
+        );
+
+        // Run consent prompt in blocking task
+        let consent_future = tokio::task::spawn_blocking({
+            let username = self.username.clone();
+            let host = self.host.clone();
+            move || -> Result<bool> {
+                println!("\n⚠️  SSH key authentication failed for {username}@{host}");
+                println!("Would you like to try password authentication? (yes/no): ");
+                io::stdout().flush()?;
+
+                let mut response = String::new();
+                io::stdin().read_line(&mut response)?;
+                let response = response.trim().to_lowercase();
+
+                Ok(response == "yes" || response == "y")
+            }
+        });
+
+        // Use a shorter timeout for consent prompt
+        const CONSENT_TIMEOUT: Duration = Duration::from_secs(30);
+        timeout(CONSENT_TIMEOUT, consent_future)
+            .await
+            .context("Consent prompt timed out after 30 seconds")?
+            .context("Consent prompt task failed")?
     }
 
     /// Attempt password authentication with timeout.
