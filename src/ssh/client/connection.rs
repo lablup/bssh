@@ -242,7 +242,7 @@ mod tests {
         }
     }
 
-    #[cfg(not(target_os = "windows"))]
+    #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn test_determine_auth_method_with_agent() {
         // Create a temporary socket file to simulate agent
@@ -262,6 +262,34 @@ mod tests {
                 #[cfg(target_os = "macos")]
                 false,
             )
+            .await
+            .unwrap();
+
+        match auth {
+            AuthMethod::Agent => {}
+            _ => panic!("Expected Agent auth method"),
+        }
+
+        std::env::remove_var("SSH_AUTH_SOCK");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn test_determine_auth_method_with_agent() {
+        use std::os::unix::net::UnixListener;
+
+        // Create a temporary directory for the socket
+        let temp_dir = TempDir::new().unwrap();
+        let socket_path = temp_dir.path().join("ssh-agent.sock");
+
+        // Create a real Unix domain socket (required on Linux)
+        let _listener = UnixListener::bind(&socket_path).unwrap();
+
+        std::env::set_var("SSH_AUTH_SOCK", socket_path.to_str().unwrap());
+
+        let client = SshClient::new("test.com".to_string(), 22, "user".to_string());
+        let auth = client
+            .determine_auth_method(None, true, false)
             .await
             .unwrap();
 
