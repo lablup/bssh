@@ -1531,3 +1531,170 @@ Match host *.secure.com
         _ => panic!("Expected Match block"),
     }
 }
+
+// Tests for ProxyUseFdpass option (Issue #58)
+#[test]
+fn test_parse_proxy_use_fdpass_yes() {
+    let content = r#"
+Host proxy.example.com
+    ProxyCommand ssh -W %h:%p bastion.example.com
+    ProxyUseFdpass yes
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0].proxy_use_fdpass, Some(true));
+}
+
+#[test]
+fn test_parse_proxy_use_fdpass_no() {
+    let content = r#"
+Host proxy.example.com
+    ProxyCommand ssh -W %h:%p bastion.example.com
+    ProxyUseFdpass no
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0].proxy_use_fdpass, Some(false));
+}
+
+#[test]
+fn test_parse_proxy_use_fdpass_case_insensitive() {
+    let content = r#"
+Host proxy1.example.com
+    PROXYUSEFDPASS yes
+
+Host proxy2.example.com
+    ProxyUseFdpass YES
+
+Host proxy3.example.com
+    proxyusefdpass No
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 3);
+    assert_eq!(hosts[0].proxy_use_fdpass, Some(true));
+    assert_eq!(hosts[1].proxy_use_fdpass, Some(true));
+    assert_eq!(hosts[2].proxy_use_fdpass, Some(false));
+}
+
+#[test]
+fn test_parse_proxy_use_fdpass_with_proxy_jump() {
+    let content = r#"
+Host target.example.com
+    ProxyJump bastion.example.com
+    ProxyUseFdpass yes
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0].proxy_jump, Some("bastion.example.com".to_string()));
+    assert_eq!(hosts[0].proxy_use_fdpass, Some(true));
+}
+
+#[test]
+fn test_parse_proxy_use_fdpass_with_proxy_command() {
+    let content = r#"
+Host target.example.com
+    ProxyCommand ssh -W %h:%p bastion.example.com
+    ProxyUseFdpass yes
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(
+        hosts[0].proxy_command,
+        Some("ssh -W %h:%p bastion.example.com".to_string())
+    );
+    assert_eq!(hosts[0].proxy_use_fdpass, Some(true));
+}
+
+#[test]
+fn test_parse_proxy_use_fdpass_invalid_value() {
+    let content = r#"
+Host proxy.example.com
+    ProxyUseFdpass invalid
+"#;
+    let result = parse(content);
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+    // The error message includes the line context and the parse_yes_no error
+    assert!(err_msg.contains("ProxyUseFdpass"));
+    assert!(err_msg.contains("yes/no") || err_msg.contains("invalid"));
+}
+
+#[test]
+fn test_parse_proxy_use_fdpass_missing_value() {
+    let content = r#"
+Host proxy.example.com
+    ProxyUseFdpass
+"#;
+    let result = parse(content);
+    assert!(result.is_err());
+    let err_msg = result.unwrap_err().to_string();
+    // When a value is missing, the parser generates an error
+    // The error message includes the line number and keyword
+    assert!(err_msg.contains("line 3"));
+    assert!(err_msg.contains("ProxyUseFdpass"));
+}
+
+#[test]
+fn test_parse_proxy_use_fdpass_true_alternatives() {
+    let content = r#"
+Host proxy1.example.com
+    ProxyUseFdpass true
+
+Host proxy2.example.com
+    ProxyUseFdpass 1
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 2);
+    assert_eq!(hosts[0].proxy_use_fdpass, Some(true));
+    assert_eq!(hosts[1].proxy_use_fdpass, Some(true));
+}
+
+#[test]
+fn test_parse_proxy_use_fdpass_false_alternatives() {
+    let content = r#"
+Host proxy1.example.com
+    ProxyUseFdpass false
+
+Host proxy2.example.com
+    ProxyUseFdpass 0
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 2);
+    assert_eq!(hosts[0].proxy_use_fdpass, Some(false));
+    assert_eq!(hosts[1].proxy_use_fdpass, Some(false));
+}
+
+#[test]
+fn test_parse_proxy_use_fdpass_with_match_block() {
+    use crate::ssh::ssh_config::types::ConfigBlock;
+
+    let content = r#"
+Match host *.prod.example.com exec "test -f /tmp/use_proxy"
+    ProxyCommand ssh -W %h:%p bastion.prod.example.com
+    ProxyUseFdpass yes
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 1);
+
+    match &hosts[0].block_type {
+        Some(ConfigBlock::Match(_)) => {
+            assert_eq!(
+                hosts[0].proxy_command,
+                Some("ssh -W %h:%p bastion.prod.example.com".to_string())
+            );
+            assert_eq!(hosts[0].proxy_use_fdpass, Some(true));
+        }
+        _ => panic!("Expected Match block"),
+    }
+}
+
+#[test]
+fn test_parse_proxy_use_fdpass_default_none() {
+    let content = r#"
+Host proxy.example.com
+    ProxyCommand ssh -W %h:%p bastion.example.com
+"#;
+    let hosts = parse(content).unwrap();
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(hosts[0].proxy_use_fdpass, None);
+}

@@ -40,6 +40,7 @@ pub struct SshHostConfig {
     pub identity_files: Vec<PathBuf>,
     pub proxy_jump: Option<String>,
     pub proxy_command: Option<String>,
+    pub proxy_use_fdpass: Option<bool>,
     pub strict_host_key_checking: Option<String>,
     pub user_known_hosts_file: Option<PathBuf>,
     pub global_known_hosts_file: Option<PathBuf>,

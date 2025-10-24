@@ -14,9 +14,10 @@
 
 //! SSH proxy options parsing
 //!
-//! Handles proxy-related configuration options including ProxyJump
-//! and ProxyCommand settings.
+//! Handles proxy-related configuration options including ProxyJump,
+//! ProxyCommand, and ProxyUseFdpass settings.
 
+use crate::ssh::ssh_config::parser::helpers::parse_yes_no;
 use crate::ssh::ssh_config::security::validate_executable_string;
 use crate::ssh::ssh_config::types::SshHostConfig;
 use anyhow::Result;
@@ -42,6 +43,13 @@ pub(super) fn parse_proxy_option(
             let command = args.join(" ");
             validate_executable_string(&command, "ProxyCommand", line_number)?;
             host.proxy_command = Some(command);
+        }
+        "proxyusefdpass" => {
+            if args.is_empty() {
+                anyhow::bail!("ProxyUseFdpass requires a value at line {line_number}");
+            }
+            let value = parse_yes_no(&args[0], line_number)?;
+            host.proxy_use_fdpass = Some(value);
         }
         _ => unreachable!("Unexpected keyword in parse_proxy_option: {}", keyword),
     }

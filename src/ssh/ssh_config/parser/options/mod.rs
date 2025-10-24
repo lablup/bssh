@@ -113,7 +113,9 @@ pub fn parse_option(
         | "rekeylimit" => connection::parse_connection_option(host, keyword, args, line_number),
 
         // Proxy options
-        "proxyjump" | "proxycommand" => proxy::parse_proxy_option(host, keyword, args, line_number),
+        "proxyjump" | "proxycommand" | "proxyusefdpass" => {
+            proxy::parse_proxy_option(host, keyword, args, line_number)
+        }
 
         // Control options
         "controlmaster" | "controlpath" | "controlpersist" => {
