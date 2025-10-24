@@ -40,6 +40,9 @@ pub struct SshHostConfig {
     pub identity_files: Vec<PathBuf>,
     pub proxy_jump: Option<String>,
     pub proxy_command: Option<String>,
+    /// ProxyUseFdpass option - specifies whether ProxyCommand will pass a file descriptor
+    /// Note: This option is parsed from SSH config but not yet used in the actual SSH
+    /// client implementation as bssh doesn't currently support proxy connections.
     pub proxy_use_fdpass: Option<bool>,
     pub strict_host_key_checking: Option<String>,
     pub user_known_hosts_file: Option<PathBuf>,
