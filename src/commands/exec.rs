@@ -187,7 +187,7 @@ async fn execute_command_with_forwarding(params: ExecuteCommandParams<'_>) -> Re
 /// Execute command without port forwarding (original implementation)
 async fn execute_command_without_forwarding(params: ExecuteCommandParams<'_>) -> Result<()> {
     let key_path = params.key_path.map(|p| p.to_string_lossy().to_string());
-    let mut executor = ParallelExecutor::new_with_all_options(
+    let executor = ParallelExecutor::new_with_all_options(
         params.nodes,
         params.max_parallel,
         key_path,
@@ -200,9 +200,7 @@ async fn execute_command_without_forwarding(params: ExecuteCommandParams<'_>) ->
 
     // Set keychain usage if on macOS
     #[cfg(target_os = "macos")]
-    {
-        executor = executor.with_keychain(params.use_keychain);
-    }
+    let executor = executor.with_keychain(params.use_keychain);
 
     let results = executor.execute(params.command).await?;
 
