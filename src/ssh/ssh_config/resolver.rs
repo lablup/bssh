@@ -111,6 +111,9 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
     if overlay.proxy_command.is_some() {
         base.proxy_command = overlay.proxy_command.clone();
     }
+    if overlay.proxy_use_fdpass.is_some() {
+        base.proxy_use_fdpass = overlay.proxy_use_fdpass;
+    }
     if overlay.strict_host_key_checking.is_some() {
         base.strict_host_key_checking = overlay.strict_host_key_checking.clone();
     }

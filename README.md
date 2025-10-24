@@ -393,6 +393,18 @@ These options provide fine-grained control over SSH port forwarding:
 | **ExitOnForwardFailure** | Terminate connection if port forwarding fails (yes/no) | `ExitOnForwardFailure yes` |
 | **PermitRemoteOpen** | Allowed destinations for remote forwarding (max 1000) | `PermitRemoteOpen localhost:8080` |
 
+### Proxy Options
+
+These options control SSH proxy connection behavior:
+
+| Option | Description | Example |
+|--------|-------------|---------|
+| **ProxyUseFdpass** | Pass connected file descriptor from ProxyCommand to ssh(1) instead of continuing execution (yes/no, default: no, OpenSSH 6.5+) | `ProxyUseFdpass yes` |
+
+**ProxyUseFdpass** optimizes ProxyCommand usage by eliminating an unnecessary lingering process and reducing I/O overhead. When enabled, the proxy command passes the established connection file descriptor directly to ssh and exits, rather than remaining active to relay data throughout the session. This is particularly useful with proxy commands like netcat that support file descriptor passing (nc -F).
+
+*Note: This option is currently parsed from SSH configuration files for compatibility but is not yet utilized in bssh's SSH client implementation, as proxy connections are not yet supported.*
+
 ### Command Execution and Automation Options
 
 These options enable powerful automation workflows and command execution features:
@@ -507,6 +519,25 @@ Host *.secure.prod.example.com
     PermitRemoteOpen localhost:8080
     PermitRemoteOpen db.internal:5432
     PermitRemoteOpen cache.internal:6379
+```
+
+#### Proxy Connection Optimization
+
+```ssh-config
+# Optimized proxy connection with file descriptor passing
+Host internal-server
+    ProxyCommand nc -X connect -x proxy.example.com:1080 -F %h %p
+    ProxyUseFdpass yes
+
+# SOCKS proxy with netcat (reduces overhead)
+Host *.internal.example.com
+    ProxyCommand nc -x socks.example.com:1080 -F %h %p
+    ProxyUseFdpass yes
+
+# Jump host with ProxyCommand and fd passing
+Host bastion-optimized
+    ProxyCommand ssh -W %h:%p jump.example.com
+    ProxyUseFdpass yes
 ```
 
 #### Command Execution and Automation

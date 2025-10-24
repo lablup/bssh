@@ -315,4 +315,48 @@ Host example.com
         assert_eq!(config.hostbased_authentication, None);
         assert_eq!(config.hostbased_accepted_algorithms.len(), 0);
     }
+
+    #[test]
+    fn test_proxy_use_fdpass_merging() {
+        // Test that ProxyUseFdpass properly merges across multiple host blocks
+        let content = r#"
+Host *
+    ProxyCommand ssh -W %h:%p bastion1.example.com
+    ProxyUseFdpass no
+
+Host example.com
+    ProxyCommand ssh -W %h:%p bastion2.example.com
+    ProxyUseFdpass yes
+"#;
+        let hosts = parse(content).unwrap();
+        let config = find_host_config(&hosts, "example.com");
+
+        // The more specific block should override both ProxyCommand and ProxyUseFdpass
+        assert_eq!(
+            config.proxy_command,
+            Some("ssh -W %h:%p bastion2.example.com".to_string())
+        );
+        assert_eq!(config.proxy_use_fdpass, Some(true));
+    }
+
+    #[test]
+    fn test_proxy_use_fdpass_inherits_from_global() {
+        // Test that ProxyUseFdpass is inherited from global config when not overridden
+        let content = r#"
+Host *
+    ProxyUseFdpass yes
+
+Host example.com
+    ProxyCommand ssh -W %h:%p bastion.example.com
+"#;
+        let hosts = parse(content).unwrap();
+        let config = find_host_config(&hosts, "example.com");
+
+        // Should inherit ProxyUseFdpass from global block
+        assert_eq!(
+            config.proxy_command,
+            Some("ssh -W %h:%p bastion.example.com".to_string())
+        );
+        assert_eq!(config.proxy_use_fdpass, Some(true));
+    }
 }

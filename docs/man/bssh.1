@@ -364,6 +364,30 @@ Example:
 .br
 .I PermitRemoteOpen db.internal:5432
 
+.SS Proxy Options
+.TP
+.B ProxyUseFdpass
+Specifies that ProxyCommand will pass a connected file descriptor back to ssh(1)
+instead of continuing to execute and relay data.
+This reduces overhead by avoiding an unnecessary lingering process and extra I/O operations.
+When enabled, the proxy command establishes a connection, passes the file descriptor
+to ssh via the fdpass mechanism, and exits. The ssh process then communicates directly
+with the connection, eliminating the intermediate proxy process.
+.br
+Default is no.
+.br
+Introduced in OpenSSH 6.5 (January 2014).
+.br
+This is particularly useful with proxy commands like netcat that support file descriptor
+passing via the -F option (nc.openbsd).
+.br
+Example:
+.I ProxyUseFdpass yes
+.br
+Note: This option is currently parsed from SSH configuration files for compatibility
+but is not yet utilized in bssh's SSH client implementation, as proxy connections
+are not yet supported.
+
 .SS Command Execution and Automation Options
 .TP
 .B PermitLocalCommand
@@ -725,6 +749,16 @@ Host *.secure.prod.example.com
     ExitOnForwardFailure yes
     PermitRemoteOpen localhost:8080
     PermitRemoteOpen db.internal:5432
+
+# Optimized proxy connection with file descriptor passing
+Host internal-server
+    ProxyCommand nc -X connect -x proxy.example.com:1080 -F %h %p
+    ProxyUseFdpass yes
+
+# SOCKS proxy with netcat (reduces overhead)
+Host *.internal.example.com
+    ProxyCommand nc -x socks.example.com:1080 -F %h %p
+    ProxyUseFdpass yes
 
 # Development server with automatic file sync
 Host dev-server
