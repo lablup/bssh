@@ -1,3 +1,53 @@
+bssh (1.0.0-1~jammy1) jammy; urgency=medium
+
+  * v1.0.0
+  ### New Features
+  - **Comprehensive SSH Configuration Support**: Added ~71 SSH configuration options (~69% coverage of OpenSSH's 103 options)
+    - Certificate Authentication Options: CertificateFile, CASignatureAlgorithms, HostbasedAuthentication, HostbasedAcceptedAlgorithms
+    - Advanced Port Forwarding Control: GatewayPorts, ExitOnForwardFailure, PermitRemoteOpen
+    - Command Execution and Automation: PermitLocalCommand, LocalCommand, RemoteCommand, KnownHostsCommand, ForkAfterAuthentication, SessionType, StdinNull
+    - Host Key Verification & Security: NoHostAuthenticationForLocalhost, HashKnownHosts, CheckHostIP, VisualHostKey, HostKeyAlias, VerifyHostKeyDNS, UpdateHostKeys
+    - Additional Authentication Options: NumberOfPasswordPrompts, EnableSSHKeysign
+    - Network & Connection Options: BindInterface, IPQoS, RekeyLimit
+    - X11 Forwarding Options: ForwardX11Timeout, ForwardX11Trusted
+    - Authentication and Security Management: IdentitiesOnly, AddKeysToAgent, IdentityAgent, PubkeyAcceptedAlgorithms, RequiredRSASize, FingerprintHash
+    - Include and Match directive support for flexible configuration
+    - Support for both "Option Value" and "Option=Value" syntax
+
+  ### Improvements
+  - **Modular SSH Config Parser**: Refactored oversized parser.rs (1706 lines) into category-based modules (~200-350 lines each)
+  - **Enhanced Security**: Comprehensive security hardening for SSH configuration
+    - Path validation to prevent usage of sensitive system files
+    - Memory exhaustion prevention with entry limits
+    - Command injection prevention for LocalCommand and KnownHostsCommand
+    - Token validation and dangerous character detection
+    - Algorithm list validation with deduplication
+  - **Terminology Cleanup**: Removed phase terminology from codebase and documentation for better clarity
+
+  ### Bug Fixes
+  - Fixed critical security vulnerabilities in SSH config parser (Priority: CRITICAL/HIGH)
+  - Enhanced input validation and error handling
+
+  ### CI/CD Improvements
+  None
+
+  ### Technical Details
+  - Enhanced SSH configuration merging logic with proper priority handling
+  - Comprehensive test coverage: 278 tests including parser, resolver, integration, and security tests
+  - Improved code organization and maintainability with modular structure
+  - Support for scalar option override and vector option accumulation with deduplication
+
+  ### Dependencies
+  None
+
+  ### Breaking Changes
+  None
+
+  ### Known Issues
+  None
+
+ -- Jeongkyu Shin <inureyes@gmail.com>  Thu, 24 Oct 2025 00:00:00 +0900
+
 bssh (0.9.1-1~jammy1) jammy; urgency=medium
 
   * v0.9.1
