@@ -1,3 +1,40 @@
+bssh (1.2.0-1~jammy1) jammy; urgency=medium
+
+  * v1.2.0
+  ### BREAKING CHANGES
+  - **Exit Code Behavior Changed**: Now returns main rank's actual exit code by default
+    - Old behavior (v1.0-v1.1): Returns 0 only if all nodes succeed, 1 if any fail
+    - New behavior (v1.2.0+): Returns main rank's actual exit code (matches MPI standard)
+    - Migration: Use --require-all-success flag to preserve old behavior
+    - Benefit: Preserves actual exit codes (139=SIGSEGV, 137=OOM, 124=timeout)
+
+  ### New Features
+  - **Exit Code Strategy**: Main rank exit code returned by default
+    - Matches MPI standard tools (mpirun, srun, mpiexec)
+    - Preserves actual exit codes for better diagnostics
+    - --require-all-success flag for legacy behavior
+    - --check-all-nodes flag for hybrid mode
+    - Automatic main rank detection via BACKENDAI_CLUSTER_ROLE
+  - **Example Scripts**: Added mpi_exit_code.sh and health_check.sh examples
+
+  ### Improvements
+  - Exit code behavior aligns with HPC and distributed computing best practices
+  - Enables sophisticated error handling in shell scripts and CI/CD pipelines
+
+  ### Bug Fixes
+  - Fixed security-framework dependency version (downgraded from 3.5.1 to 2.12.1)
+  - Fixed cargo clippy warnings in test code
+
+  ### Testing
+  - Added comprehensive exit code tests (86 total test cases)
+  - Added serial test runner for environment-dependent tests
+  - Documentation updates for breaking changes in README, CHANGELOG, ARCHITECTURE
+
+  ### Dependencies
+  - Updated security-framework to 2.12.1 for better compatibility
+
+ -- Jeongkyu Shin <inureyes@gmail.com>  Sun, 27 Oct 2025 21:00:00 +0900
+
 bssh (1.1.0-1~jammy1) jammy; urgency=medium
 
   * v1.1.0

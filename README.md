@@ -1029,6 +1029,7 @@ See the [LICENSE](./LICENSE) file for details.
 ## Changelog
 
 ### Recent Updates
+- **v1.2.0 (2025/10/27):** Add exit code strategy with main rank exit code (matching MPI tools), comprehensive tests, and improved documentation
 - **v1.1.0 (2025/10/24):** Add macOS Keychain integration for SSH key passphrases (UseKeychain option) with automatic password fallback and ProxyUseFdpass support
 - **v1.0.0 (2025/10/24):** Major milestone release with comprehensive SSH configuration support (~71 options), certificate authentication, advanced security features, and modular parser architecture
 - **v0.9.1 (2025/10/14):** Complete PTY terminal modes implementation with Shift key input support
