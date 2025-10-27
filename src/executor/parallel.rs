@@ -29,6 +29,7 @@ use super::execution_strategy::{
     create_progress_style, download_file_task, execute_command_task, setup_download_progress_bar,
     setup_progress_bar, upload_file_task,
 };
+use super::rank_detector::RankDetector;
 use super::result_types::{DownloadResult, ExecutionResult, UploadResult};
 
 /// Parallel executor for running commands across multiple nodes.
@@ -392,6 +393,16 @@ impl ParallelExecutor {
                 }
             }
         }
+
+        // Identify and mark the main rank
+        if let Some(main_idx) = RankDetector::identify_main_rank(&self.nodes) {
+            // Find the result corresponding to the main rank node
+            // The results should be in the same order as nodes
+            if let Some(main_result) = execution_results.get_mut(main_idx) {
+                main_result.is_main_rank = true;
+            }
+        }
+
         Ok(execution_results)
     }
 
