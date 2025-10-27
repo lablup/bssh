@@ -27,17 +27,13 @@ pub fn validate_glob_pattern(pattern: &str) -> Result<()> {
     // Check for excessive wildcards that could cause exponential expansion
     let wildcard_count = pattern.chars().filter(|&c| c == '*').count();
     if wildcard_count > 5 {
-        anyhow::bail!(
-            "Too many wildcards in pattern '{pattern}'. Maximum 5 wildcards allowed."
-        );
+        anyhow::bail!("Too many wildcards in pattern '{pattern}'. Maximum 5 wildcards allowed.");
     }
 
     // Check for overly broad patterns that could match system files
     // But allow common SSH config patterns like ~/.ssh/config.d/*
     if (pattern == "*" || pattern == "/*") && !pattern.contains("ssh") {
-        anyhow::bail!(
-            "Pattern '{pattern}' is too broad and could match system files"
-        );
+        anyhow::bail!("Pattern '{pattern}' is too broad and could match system files");
     }
 
     // Check pattern length

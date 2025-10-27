@@ -324,9 +324,7 @@ pub(super) fn parse_authentication_option(
             const MAX_PASSWORD_PROMPTS: u32 = 100;
 
             if num == 0 {
-                anyhow::bail!(
-                    "NumberOfPasswordPrompts at line {line_number} must be at least 1"
-                );
+                anyhow::bail!("NumberOfPasswordPrompts at line {line_number} must be at least 1");
             }
 
             if num > MAX_PASSWORD_PROMPTS {

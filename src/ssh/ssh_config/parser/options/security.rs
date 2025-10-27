@@ -344,9 +344,7 @@ pub(super) fn parse_security_option(
             }
 
             if macs.is_empty() {
-                anyhow::bail!(
-                    "MACs at line {line_number} must contain at least one valid MAC"
-                );
+                anyhow::bail!("MACs at line {line_number} must contain at least one valid MAC");
             }
 
             host.macs = macs;

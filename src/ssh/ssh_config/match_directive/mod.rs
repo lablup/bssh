@@ -136,9 +136,7 @@ impl MatchCondition {
         };
 
         if conditions_str.is_empty() {
-            anyhow::bail!(
-                "Match directive requires conditions at line {line_number}"
-            );
+            anyhow::bail!("Match directive requires conditions at line {line_number}");
         }
 
         // Parse conditions
@@ -195,17 +193,13 @@ impl MatchCondition {
                     conditions.push(MatchCondition::All);
                 }
                 _ => {
-                    anyhow::bail!(
-                        "Unknown Match condition '{keyword}' at line {line_number}"
-                    );
+                    anyhow::bail!("Unknown Match condition '{keyword}' at line {line_number}");
                 }
             }
         }
 
         if conditions.is_empty() {
-            anyhow::bail!(
-                "Match directive requires at least one condition at line {line_number}"
-            );
+            anyhow::bail!("Match directive requires at least one condition at line {line_number}");
         }
 
         Ok(conditions)

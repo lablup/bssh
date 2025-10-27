@@ -266,9 +266,7 @@ pub(super) fn parse_connection_option(
             // Limit total length to prevent memory exhaustion
             let combined = args.join(" ");
             if combined.len() > 100 {
-                anyhow::bail!(
-                    "IPQoS value at line {line_number} is too long (max 100 characters)"
-                );
+                anyhow::bail!("IPQoS value at line {line_number} is too long (max 100 characters)");
             }
 
             host.ipqos = Some(combined);
