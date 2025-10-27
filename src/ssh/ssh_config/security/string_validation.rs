@@ -228,10 +228,8 @@ fn validate_local_executable_command(
         || lower_value.contains("telnet ")
     {
         anyhow::bail!(
-            "Security violation: {} contains network command at line {}. \
-             Commands like curl, wget, nc could be used for data exfiltration or downloading malicious content.",
-            option_name,
-            line_number
+            "Security violation: {option_name} contains network command at line {line_number}. \
+             Commands like curl, wget, nc could be used for data exfiltration or downloading malicious content."
         );
     }
 
@@ -242,10 +240,8 @@ fn validate_local_executable_command(
         || lower_value.contains("format ")
     {
         anyhow::bail!(
-            "Security violation: {} contains potentially destructive command at line {}. \
-             Commands like rm, dd, mkfs could cause data loss.",
-            option_name,
-            line_number
+            "Security violation: {option_name} contains potentially destructive command at line {line_number}. \
+             Commands like rm, dd, mkfs could cause data loss."
         );
     }
 

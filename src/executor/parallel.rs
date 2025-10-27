@@ -29,6 +29,7 @@ use super::execution_strategy::{
     create_progress_style, download_file_task, execute_command_task, setup_download_progress_bar,
     setup_progress_bar, upload_file_task,
 };
+use super::rank_detector::RankDetector;
 use super::result_types::{DownloadResult, ExecutionResult, UploadResult};
 
 /// Parallel executor for running commands across multiple nodes.
@@ -383,15 +384,41 @@ impl ParallelExecutor {
         &self,
         results: Vec<Result<ExecutionResult, tokio::task::JoinError>>,
     ) -> Result<Vec<ExecutionResult>> {
+        // Identify main rank before collecting results
+        let main_idx = RankDetector::identify_main_rank(&self.nodes);
+
         let mut execution_results = Vec::new();
-        for result in results {
+        for (idx, result) in results.into_iter().enumerate() {
             match result {
-                Ok(exec_result) => execution_results.push(exec_result),
+                Ok(mut exec_result) => {
+                    // Mark as main rank if this index matches
+                    if Some(idx) == main_idx {
+                        exec_result.is_main_rank = true;
+                    }
+                    execution_results.push(exec_result);
+                }
                 Err(e) => {
-                    tracing::error!("Task failed: {}", e);
+                    tracing::error!(
+                        "Task failed for node {}: {}",
+                        self.nodes
+                            .get(idx)
+                            .map(|n| n.host.as_str())
+                            .unwrap_or("unknown"),
+                        e
+                    );
+                    // Create a failed result to maintain index mapping
+                    if let Some(node) = self.nodes.get(idx) {
+                        let failed_result = ExecutionResult {
+                            node: node.clone(),
+                            result: Err(anyhow::anyhow!("Task execution failed: {e}")),
+                            is_main_rank: Some(idx) == main_idx,
+                        };
+                        execution_results.push(failed_result);
+                    }
                 }
             }
         }
+
         Ok(execution_results)
     }
 

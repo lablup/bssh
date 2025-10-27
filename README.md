@@ -213,6 +213,42 @@ bssh -C production upload local.txt /tmp/
 bssh -H "host1,host2" download /etc/hosts ./backups/
 ```
 
+## Breaking Changes in v1.2.0
+
+**⚠️ Exit Code Behavior Changed**: v1.2.0 now returns the main rank's exit code by default (matching MPI standard tools like mpirun/srun/mpiexec).
+
+### What Changed
+
+| Version | Behavior | Use Case |
+|---------|----------|----------|
+| **v1.0-v1.1** | Returns 0 if all succeed, 1 if any fails | Health checks |
+| **v1.2.0+** (default) | Returns main rank's actual exit code | MPI workloads, CI/CD |
+
+### Migration Guide
+
+**MPI Workloads** - ✅ No changes needed:
+```bash
+# Now returns actual exit codes: 0, 139 (SIGSEGV), 137 (OOM), etc.
+bssh exec "mpirun ./simulation"
+```
+
+**Health Checks** - Add `--require-all-success` flag:
+```bash
+# v1.0-v1.1
+bssh exec "health-check"
+
+# v1.2.0+ (preserve old behavior)
+bssh --require-all-success exec "health-check"
+```
+
+### Available Strategies
+
+- **Default**: Return main rank's exit code (MPI standard)
+- **`--require-all-success`**: Return 0 only if all nodes succeed
+- **`--check-all-nodes`**: Return main rank code, or 1 if main OK but others failed
+
+See [examples/mpi_exit_code.sh](examples/mpi_exit_code.sh) and [examples/health_check.sh](examples/health_check.sh) for detailed examples.
+
 ## Authentication
 
 bssh supports multiple authentication methods:

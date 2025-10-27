@@ -56,16 +56,14 @@ Host example.com
         // Create 50 Host blocks that all match "test.example.com"
         for i in 0..50 {
             content.push_str(&format!(
-                "Host *.example.com\n    CertificateFile ~/.ssh/cert_{}.pub\n\n",
-                i
+                "Host *.example.com\n    CertificateFile ~/.ssh/cert_{i}.pub\n\n"
             ));
         }
 
         // Add more specific patterns that also match
         for i in 50..60 {
             content.push_str(&format!(
-                "Host test.example.com\n    CertificateFile ~/.ssh/specific_cert_{}.pub\n\n",
-                i
+                "Host test.example.com\n    CertificateFile ~/.ssh/specific_cert_{i}.pub\n\n"
             ));
         }
 
@@ -140,17 +138,16 @@ Host test.example.com
         // Test that algorithm lists are limited
         let mut algorithms = vec![];
         for i in 0..100 {
-            algorithms.push(format!("algo-{}", i));
+            algorithms.push(format!("algo-{i}"));
         }
         let algo_list = algorithms.join(",");
 
         let content = format!(
             r#"
 Host example.com
-    CASignatureAlgorithms {}
-    HostbasedAcceptedAlgorithms {}
-"#,
-            algo_list, algo_list
+    CASignatureAlgorithms {algo_list}
+    HostbasedAcceptedAlgorithms {algo_list}
+"#
         );
 
         let config = SshConfig::parse(&content).unwrap();
@@ -213,14 +210,12 @@ Host example.com
         ];
 
         for (input, expected) in test_cases {
-            let content = format!("Host example.com\n    GatewayPorts {}", input);
+            let content = format!("Host example.com\n    GatewayPorts {input}");
             let config = SshConfig::parse(&content).unwrap();
             assert_eq!(
                 config.hosts[0].gateway_ports,
                 Some(expected.to_string()),
-                "GatewayPorts should normalize '{}' to '{}'",
-                input,
-                expected
+                "GatewayPorts should normalize '{input}' to '{expected}'"
             );
         }
     }
@@ -242,12 +237,11 @@ Host example.com
         ];
 
         for value in invalid_values {
-            let content = format!("Host example.com\n    GatewayPorts {}", value);
+            let content = format!("Host example.com\n    GatewayPorts {value}");
             let result = SshConfig::parse(&content);
             assert!(
                 result.is_err(),
-                "Should reject invalid GatewayPorts value: {}",
-                value
+                "Should reject invalid GatewayPorts value: {value}"
             );
             // The important thing is that it's rejected
         }
@@ -268,12 +262,11 @@ Host example.com
         ];
 
         for path in sensitive_paths {
-            let content = format!("Host example.com\n    CertificateFile {}", path);
+            let content = format!("Host example.com\n    CertificateFile {path}");
             let result = SshConfig::parse(&content);
             assert!(
                 result.is_err(),
-                "Should reject sensitive path as certificate: {}",
-                path
+                "Should reject sensitive path as certificate: {path}"
             );
         }
     }

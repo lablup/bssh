@@ -58,11 +58,10 @@ impl InteractiveCommand {
         .await
         .with_context(|| {
             format!(
-                "Connection timeout: Failed to connect to {}:{} after {} seconds",
-                host, port, SSH_CONNECT_TIMEOUT_SECS
+                "Connection timeout: Failed to connect to {host}:{port} after {SSH_CONNECT_TIMEOUT_SECS} seconds"
             )
         })?
-        .with_context(|| format!("SSH connection failed to {}:{}", host, port))
+        .with_context(|| format!("SSH connection failed to {host}:{port}"))
     }
 
     /// Determine authentication method based on node and config (same logic as exec mode)

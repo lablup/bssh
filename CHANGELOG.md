@@ -5,6 +5,30 @@ All notable changes to bssh will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### BREAKING CHANGES
+- **Exit code behavior changed** (Issue #62)
+  - **Old behavior (v1.0-v1.1)**: Returns 0 only if all nodes succeeded, 1 if any failed
+  - **New behavior (v1.2.0+)**: Returns main rank's actual exit code (matches MPI standard: mpirun, srun, mpiexec)
+  - **Impact**: Users relying on "all nodes must succeed" semantics must add `--require-all-success` flag
+  - **Benefit**: Preserves actual exit codes (139=SIGSEGV, 137=OOM, 124=timeout) for better diagnostics
+  - **MPI users**: No changes needed - behavior improved and matches standard tools
+  - **Health checks**: Add `--require-all-success` flag to preserve old behavior
+
+### Added
+- **Exit Code Strategy** (Issue #62)
+  - Main rank exit code returned by default (matches MPI standard: mpirun, srun, mpiexec)
+  - Preserves actual exit codes: 139 (SIGSEGV), 137 (OOM), 124 (timeout), etc.
+  - `--require-all-success` flag for v1.0-v1.1 behavior (returns 0 only if all nodes succeed)
+  - `--check-all-nodes` flag for hybrid mode (main rank code + all-node check)
+  - Automatic main rank detection via `BACKENDAI_CLUSTER_ROLE` environment variable
+  - Example scripts: `examples/mpi_exit_code.sh`, `examples/health_check.sh`
+
+### Changed
+- Exit code behavior now aligns with HPC and distributed computing best practices
+- Enables sophisticated error handling in shell scripts and CI/CD pipelines
+
 ## [1.1.0] - 2025-10-24
 
 ### Added

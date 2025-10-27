@@ -15,7 +15,7 @@
 use anyhow::Result;
 use std::path::Path;
 
-use crate::executor::ParallelExecutor;
+use crate::executor::{ExitCodeStrategy, ParallelExecutor, RankDetector};
 use crate::forwarding::ForwardingType;
 use crate::node::Node;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
@@ -37,6 +37,8 @@ pub struct ExecuteCommandParams<'a> {
     pub timeout: Option<u64>,
     pub jump_hosts: Option<&'a str>,
     pub port_forwards: Option<Vec<ForwardingType>>,
+    pub require_all_success: bool,
+    pub check_all_nodes: bool,
 }
 
 pub async fn execute_command(params: ExecuteCommandParams<'_>) -> Result<()> {
@@ -186,6 +188,9 @@ async fn execute_command_with_forwarding(params: ExecuteCommandParams<'_>) -> Re
 
 /// Execute command without port forwarding (original implementation)
 async fn execute_command_without_forwarding(params: ExecuteCommandParams<'_>) -> Result<()> {
+    // Save nodes for later use (before moving into executor)
+    let nodes_for_rank_detection = params.nodes.clone();
+
     let key_path = params.key_path.map(|p| p.to_string_lossy().to_string());
     let executor = ParallelExecutor::new_with_all_options(
         params.nodes,
@@ -223,8 +228,24 @@ async fn execute_command_without_forwarding(params: ExecuteCommandParams<'_>) ->
         OutputFormatter::format_summary(results.len(), success_count, failed_count)
     );
 
-    if failed_count > 0 {
-        std::process::exit(1);
+    // Determine exit code strategy from CLI flags
+    let strategy = if params.require_all_success {
+        ExitCodeStrategy::RequireAllSuccess
+    } else if params.check_all_nodes {
+        ExitCodeStrategy::MainRankWithFailureCheck
+    } else {
+        ExitCodeStrategy::MainRank // Default in v1.2.0+
+    };
+
+    // Identify main rank
+    let main_idx = RankDetector::identify_main_rank(&nodes_for_rank_detection);
+
+    // Calculate exit code using the strategy
+    let exit_code = strategy.calculate(&results, main_idx);
+
+    // Exit with the calculated exit code
+    if exit_code != 0 {
+        std::process::exit(exit_code);
     }
 
     Ok(())

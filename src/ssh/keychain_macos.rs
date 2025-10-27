@@ -54,7 +54,7 @@
 
 use anyhow::{Context, Result};
 use security_framework::passwords::{
-    delete_generic_password, get_generic_password, set_generic_password,
+    delete_generic_password, generic_password, set_generic_password, PasswordOptions,
 };
 use std::path::Path;
 use zeroize::Zeroizing;
@@ -135,10 +135,8 @@ pub async fn store_passphrase(key_path: impl AsRef<Path>, passphrase: &str) -> R
 
         if file_uid != current_uid {
             anyhow::bail!(
-                "Security error: SSH key file is not owned by current user (file uid: {}, current uid: {}). \
-                 Only the owner of an SSH key should be able to store its passphrase.",
-                file_uid,
-                current_uid
+                "Security error: SSH key file is not owned by current user (file uid: {file_uid}, current uid: {current_uid}). \
+                 Only the owner of an SSH key should be able to store its passphrase."
             );
         }
 
@@ -243,7 +241,8 @@ pub async fn retrieve_passphrase(key_path: impl AsRef<Path>) -> Result<Option<Ze
     let account_name_owned = account_name.to_string();
 
     let result = tokio::task::spawn_blocking(move || -> Result<Option<Zeroizing<Vec<u8>>>> {
-        match get_generic_password(&service_name, &account_name_owned) {
+        let options = PasswordOptions::new_generic_password(&service_name, &account_name_owned);
+        match generic_password(options) {
             Ok(passphrase_bytes) => {
                 tracing::info!(
                     "Successfully retrieved passphrase from Keychain for key: {account_name_owned}"

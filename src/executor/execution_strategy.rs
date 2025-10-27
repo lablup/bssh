@@ -64,6 +64,7 @@ pub(crate) async fn execute_command_task(
             return ExecutionResult {
                 node,
                 result: Err(anyhow::anyhow!("Semaphore acquisition failed: {e}")),
+                is_main_rank: false, // Will be updated by caller
             };
         }
     };
@@ -96,7 +97,11 @@ pub(crate) async fn execute_command_task(
         }
     }
 
-    ExecutionResult { node, result }
+    ExecutionResult {
+        node,
+        result,
+        is_main_rank: false, // Will be updated by caller
+    }
 }
 
 /// Upload a file task to a single node with progress tracking.

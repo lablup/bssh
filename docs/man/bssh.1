@@ -1,6 +1,6 @@
 .\" Manpage for bssh
 .\" Contact the maintainers to correct errors or typos.
-.TH BSSH 1 "October 2025" "v1.1.0" "bssh Manual"
+.TH BSSH 1 "October 2025" "v1.2.0" "bssh Manual"
 
 .SH NAME
 bssh \- Broadcast SSH - SSH-compatible client with parallel execution capabilities
@@ -165,6 +165,24 @@ Print help information
 .TP
 .BR \-V ", " \-\-version
 Print version information
+
+.SS Exit Code Strategy Options (v1.2.0+)
+.TP
+.BR \-\-require\-all\-success
+Require all nodes to succeed (v1.0-v1.1 behavior).
+By default (v1.2+), bssh returns the main rank's exit code, matching
+standard MPI tools like mpirun and srun. When this flag is specified,
+bssh returns exit code 0 only if ALL nodes succeed, and exit code 1
+if ANY node fails. This is useful for health checks and monitoring
+where you need to ensure all nodes are operational.
+
+.TP
+.BR \-\-check\-all\-nodes
+Return main rank exit code but also check all nodes.
+If the main rank succeeds but other nodes fail, returns exit code 1.
+If the main rank fails, returns the main rank's actual exit code.
+This hybrid strategy provides detailed error codes from the main rank
+while maintaining awareness of failures on other nodes.
 
 .SH COMMANDS
 In multi-server mode (-H or -C), commands can be executed directly without the 'exec' subcommand.
@@ -1108,6 +1126,58 @@ Interactive mode with initial working directory:
 Sets initial working directory to /var/www on all nodes
 .RE
 
+.SS Exit Code Handling Examples (v1.2.0+)
+
+.TP
+MPI job with intelligent error handling:
+.nf
+.B bssh -C cluster "mpirun -n 16 ./simulation"
+.B EXIT_CODE=$?
+.B
+.B case $EXIT_CODE in
+.B     0)   echo "Success!" ;;
+.B     139) echo "Segmentation fault!"; collect_core_dump ;;
+.B     137) echo "Out of memory!"; increase_memory; retry ;;
+.B     124) echo "Command timeout!"; extend_time_limit ;;
+.B     *)   echo "Failed with code $EXIT_CODE"; exit $EXIT_CODE ;;
+.B esac
+.fi
+
+.TP
+Health check requiring all nodes (legacy behavior):
+.nf
+.B bssh --require-all-success -C production "disk-check"
+.B if [ $? -ne 0 ]; then
+.B     alert_ops "One or more nodes unhealthy"
+.B fi
+.fi
+
+.TP
+Hybrid mode - preserve main exit code but detect failures:
+.nf
+.B bssh --check-all-nodes -C cluster "mpirun ./program"
+.B EXIT_CODE=$?
+.B
+.B if [ $EXIT_CODE -eq 1 ]; then
+.B     echo "Main succeeded but other nodes failed"
+.B elif [ $EXIT_CODE -ne 0 ]; then
+.B     echo "Main rank failed with code: $EXIT_CODE"
+.B fi
+.fi
+
+.TP
+CI/CD pipeline integration (no changes needed):
+.nf
+.B # Works exactly like mpirun
+.B if bssh -C cluster "mpirun ./tests"; then
+.B     echo "Tests passed"
+.B     deploy_to_production
+.B else
+.B     echo "Tests failed with exit code $?"
+.B     rollback
+.B fi
+.fi
+
 .SS Interactive Mode Special Commands
 When in interactive mode, the following special commands are available (default prefix is !):
 .IP "!all"
@@ -1128,6 +1198,57 @@ Exit interactive mode
 Note: The special command prefix can be customized in the configuration file.
 
 .SH EXIT STATUS
+.B bssh
+uses different exit code strategies depending on command-line flags.
+
+.SS Default Behavior (v1.2.0+)
+Returns the exit code from the main rank (rank 0 or first node).
+This matches standard MPI tool behavior (mpirun, srun, mpiexec).
+
+.TP
+.B 0
+Main rank succeeded
+
+.TP
+.B 1-255
+Main rank failed with this exit code.
+.br
+Common exit codes:
+.RS
+.IP \(bu 2
+.B 1
+\- General error
+.IP \(bu 2
+.B 2
+\- Misuse of shell command
+.IP \(bu 2
+.B 124
+\- Command timeout
+.IP \(bu 2
+.B 126
+\- Command cannot execute
+.IP \(bu 2
+.B 127
+\- Command not found
+.IP \(bu 2
+.B 130
+\- Terminated by Ctrl+C (SIGINT)
+.IP \(bu 2
+.B 137
+\- Killed by SIGKILL (often Out of Memory)
+.IP \(bu 2
+.B 139
+\- Segmentation fault (SIGSEGV)
+.IP \(bu 2
+.B 143
+\- Terminated by SIGTERM
+.RE
+
+.SS Legacy Behavior (--require-all-success)
+When using the
+.B --require-all-success
+flag, bssh uses the v1.0-v1.1 behavior:
+
 .TP
 .B 0
 Success - all commands executed successfully on all nodes
@@ -1135,6 +1256,23 @@ Success - all commands executed successfully on all nodes
 .TP
 .B 1
 Failure - one or more commands failed or connection errors occurred
+
+.SS Hybrid Mode (--check-all-nodes)
+When using the
+.B --check-all-nodes
+flag:
+
+.TP
+.B 0
+All nodes succeeded (main rank and all other nodes)
+
+.TP
+.B 1
+Main rank succeeded but other nodes failed
+
+.TP
+.B 2-255
+Main rank failed with this exit code
 
 .SH OUTPUT FILES
 When using the
@@ -1250,6 +1388,44 @@ with SSH's -c (cipher) option. Update your scripts accordingly.
 .B Parallel option changed:
 The -p option now specifies port (SSH compatibility). For parallel connections,
 use --parallel instead.
+
+.SS Breaking Changes (v1.2.0)
+.TP
+.B Exit code behavior changed:
+The default exit code behavior has changed to match standard MPI tools.
+.RS
+.IP \(bu 2
+.B Old behavior (v1.0-v1.1):
+Returns 0 if all nodes succeeded, 1 if any node failed
+.IP \(bu 2
+.B New behavior (v1.2+):
+Returns main rank's actual exit code (matches mpirun/srun/mpiexec)
+.IP \(bu 2
+.B Migration:
+Use
+.I --require-all-success
+flag to preserve old behavior
+.IP \(bu 2
+.B Why this change?
+This change aligns bssh with industry-standard MPI tools, preserves actual exit codes
+for better error diagnosis (139=segfault, 137=OOM, etc.), enables exit-code-based
+automation in CI/CD pipelines, and improves integration with shell scripts and
+monitoring systems.
+.RE
+
+.TP
+.B Main Rank Detection:
+The main rank is automatically identified using the following priority order:
+.RS
+.IP 1. 4
+.B BACKENDAI_CLUSTER_ROLE=main
+environment variable (Backend.AI multi-node sessions)
+.IP 2. 4
+.B BACKENDAI_CLUSTER_HOST
+matching with the node list
+.IP 3. 4
+First node in the list (fallback)
+.RE
 
 .SS SFTP Requirements
 The upload and download commands require SFTP subsystem to be enabled on the remote SSH servers.

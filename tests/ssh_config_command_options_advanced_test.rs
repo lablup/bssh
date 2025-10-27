@@ -128,9 +128,8 @@ fn test_very_long_command() {
     let config = format!(
         r#"
 Host test
-    RemoteCommand {}
-"#,
-        long_cmd
+    RemoteCommand {long_cmd}
+"#
     );
 
     let config_parsed = SshConfig::parse(&config).unwrap();

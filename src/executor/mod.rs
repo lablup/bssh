@@ -19,7 +19,12 @@ mod execution_strategy;
 mod parallel;
 mod result_types;
 
+pub mod exit_strategy;
+pub mod rank_detector;
+
 // Re-export public types
 pub use connection_manager::download_dir_from_node;
+pub use exit_strategy::ExitCodeStrategy;
 pub use parallel::ParallelExecutor;
+pub use rank_detector::RankDetector;
 pub use result_types::{DownloadResult, ExecutionResult, UploadResult};

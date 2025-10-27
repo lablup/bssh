@@ -68,11 +68,7 @@ pub(super) fn parse_without_includes(content: &str) -> Result<Vec<SshHostConfig>
 
         // Security: Check line length to prevent DoS
         if line.len() > MAX_LINE_LENGTH {
-            anyhow::bail!(
-                "Line {} exceeds maximum length of {} bytes",
-                line_number,
-                MAX_LINE_LENGTH
-            );
+            anyhow::bail!("Line {line_number} exceeds maximum length of {MAX_LINE_LENGTH} bytes");
         }
 
         let line = line.trim();
@@ -205,30 +201,24 @@ pub(super) fn parse_host_line(line: &str, line_number: usize) -> Result<Vec<Stri
     let patterns_str = if let Some(pos) = line.find('=') {
         // Host=pattern syntax
         if line[..pos].trim().to_lowercase() != "host" {
-            anyhow::bail!("Invalid Host directive at line {}", line_number);
+            anyhow::bail!("Invalid Host directive at line {line_number}");
         }
         line[pos + 1..].trim()
     } else {
         // Host pattern syntax
         let parts: Vec<&str> = line.split_whitespace().collect();
         if parts.is_empty() || parts[0].to_lowercase() != "host" {
-            anyhow::bail!("Invalid Host directive at line {}", line_number);
+            anyhow::bail!("Invalid Host directive at line {line_number}");
         }
         if parts.len() < 2 {
-            anyhow::bail!(
-                "Host directive requires at least one pattern at line {}",
-                line_number
-            );
+            anyhow::bail!("Host directive requires at least one pattern at line {line_number}");
         }
         // Join all parts after "Host"
         line[parts[0].len()..].trim()
     };
 
     if patterns_str.is_empty() {
-        anyhow::bail!(
-            "Host directive requires at least one pattern at line {}",
-            line_number
-        );
+        anyhow::bail!("Host directive requires at least one pattern at line {line_number}");
     }
 
     // Split into individual patterns
@@ -278,9 +268,7 @@ pub(super) fn parse_config_line(
         // Security: Check value length
         if trimmed_value.len() > max_value_length {
             anyhow::bail!(
-                "Value at line {} exceeds maximum length of {} bytes",
-                line_number,
-                max_value_length
+                "Value at line {line_number} exceeds maximum length of {max_value_length} bytes"
             );
         }
 

@@ -49,7 +49,7 @@ tokio-util = "0.7"
 shell-words = "1.1"
 
 [target.'cfg(target_os = "macos")'.dependencies]
-security-framework = "2.9"
+security-framework = "3.5.1"
 libc = "0.2"
 
 [dev-dependencies]

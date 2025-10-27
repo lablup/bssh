@@ -27,11 +27,42 @@ use crate::ui::OutputFormatter;
 pub struct ExecutionResult {
     pub node: Node,
     pub result: Result<CommandResult>,
+    /// Whether this node is identified as the main rank.
+    ///
+    /// The main rank (rank 0) is typically the coordinator in distributed computing.
+    /// Its exit code is used as the final exit code in MainRank strategy.
+    pub is_main_rank: bool,
 }
 
 impl ExecutionResult {
     pub fn is_success(&self) -> bool {
         matches!(&self.result, Ok(cmd_result) if cmd_result.is_success())
+    }
+
+    /// Get the exit code for this result.
+    ///
+    /// Returns the actual exit code from the command, or 1 if there was a connection error.
+    ///
+    /// Note: Exit codes are clamped to valid i32 range. On Unix systems, exit codes
+    /// are typically 0-255, but we handle larger values defensively.
+    pub fn get_exit_code(&self) -> i32 {
+        match &self.result {
+            Ok(cmd_result) => {
+                // Safely convert u32 to i32, clamping to i32::MAX if needed
+                // In practice, exit codes should be 0-255 on Unix systems
+                if cmd_result.exit_status > i32::MAX as u32 {
+                    tracing::warn!(
+                        "Exit status {} exceeds i32::MAX, clamping to {}",
+                        cmd_result.exit_status,
+                        i32::MAX
+                    );
+                    i32::MAX
+                } else {
+                    cmd_result.exit_status as i32
+                }
+            }
+            Err(_) => 1, // Connection/execution error treated as exit code 1
+        }
     }
 
     pub fn print_output(&self, verbose: bool) {

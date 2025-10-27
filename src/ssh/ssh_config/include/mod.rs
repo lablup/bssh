@@ -71,15 +71,13 @@ impl IncludeContext {
     fn can_include(&self) -> Result<()> {
         if self.depth >= MAX_INCLUDE_DEPTH {
             anyhow::bail!(
-                "Maximum include depth ({}) exceeded. This may indicate an include cycle or misconfiguration.",
-                MAX_INCLUDE_DEPTH
+                "Maximum include depth ({MAX_INCLUDE_DEPTH}) exceeded. This may indicate an include cycle or misconfiguration."
             );
         }
 
         if self.file_count >= MAX_INCLUDED_FILES {
             anyhow::bail!(
-                "Maximum number of included files ({}) exceeded. This limit exists to prevent DoS attacks.",
-                MAX_INCLUDED_FILES
+                "Maximum number of included files ({MAX_INCLUDED_FILES}) exceeded. This limit exists to prevent DoS attacks."
             );
         }
 
@@ -391,14 +389,13 @@ mod tests {
         let err_display = result.as_ref().unwrap_err().to_string();
         // Check the full error chain for cycle detection message
         let err_chain = format!("{:?}", result.unwrap_err());
-        println!("Error display: {}", err_display); // Debug output
-        println!("Error chain: {}", err_chain); // Debug output
+        println!("Error display: {err_display}"); // Debug output
+        println!("Error chain: {err_chain}"); // Debug output
         assert!(
             err_chain.contains("cycle")
                 || err_chain.contains("already been processed")
                 || err_chain.contains("Include cycle"),
-            "Expected cycle detection in error chain but got: {}",
-            err_chain
+            "Expected cycle detection in error chain but got: {err_chain}"
         );
     }
 
@@ -411,7 +408,7 @@ mod tests {
         let mut prev_content = String::new();
 
         for i in 0..=MAX_INCLUDE_DEPTH + 1 {
-            let file = temp_dir.path().join(format!("level{}.conf", i));
+            let file = temp_dir.path().join(format!("level{i}.conf"));
             let content = if i == 0 {
                 "Host start\n".to_string()
             } else {
@@ -429,7 +426,7 @@ mod tests {
         assert!(result.is_err());
         let error = result.unwrap_err();
         // Check the full error chain since the depth error is in the cause
-        let err_chain = format!("{:?}", error);
+        let err_chain = format!("{error:?}");
         assert!(err_chain.contains("depth") || err_chain.contains("Maximum include depth"));
     }
 

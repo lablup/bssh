@@ -129,17 +129,14 @@ impl MatchCondition {
             if line[..pos].trim().to_lowercase() == "match" {
                 line[pos + 1..].trim()
             } else {
-                anyhow::bail!("Invalid Match directive at line {}", line_number);
+                anyhow::bail!("Invalid Match directive at line {line_number}");
             }
         } else {
-            anyhow::bail!("Invalid Match directive at line {}", line_number);
+            anyhow::bail!("Invalid Match directive at line {line_number}");
         };
 
         if conditions_str.is_empty() {
-            anyhow::bail!(
-                "Match directive requires conditions at line {}",
-                line_number
-            );
+            anyhow::bail!("Match directive requires conditions at line {line_number}");
         }
 
         // Parse conditions
@@ -153,21 +150,21 @@ impl MatchCondition {
                 "host" => {
                     let patterns = collect_patterns(&mut parts)?;
                     if patterns.is_empty() {
-                        anyhow::bail!("Match host requires patterns at line {}", line_number);
+                        anyhow::bail!("Match host requires patterns at line {line_number}");
                     }
                     conditions.push(MatchCondition::Host(patterns));
                 }
                 "user" => {
                     let patterns = collect_patterns(&mut parts)?;
                     if patterns.is_empty() {
-                        anyhow::bail!("Match user requires patterns at line {}", line_number);
+                        anyhow::bail!("Match user requires patterns at line {line_number}");
                     }
                     conditions.push(MatchCondition::User(patterns));
                 }
                 "localuser" => {
                     let patterns = collect_patterns(&mut parts)?;
                     if patterns.is_empty() {
-                        anyhow::bail!("Match localuser requires patterns at line {}", line_number);
+                        anyhow::bail!("Match localuser requires patterns at line {line_number}");
                     }
                     conditions.push(MatchCondition::LocalUser(patterns));
                 }
@@ -175,7 +172,7 @@ impl MatchCondition {
                     // Exec condition takes the rest of the line as command
                     let remaining: Vec<&str> = parts.collect();
                     if remaining.is_empty() {
-                        anyhow::bail!("Match exec requires a command at line {}", line_number);
+                        anyhow::bail!("Match exec requires a command at line {line_number}");
                     }
 
                     // Check if the command is quoted
@@ -196,20 +193,13 @@ impl MatchCondition {
                     conditions.push(MatchCondition::All);
                 }
                 _ => {
-                    anyhow::bail!(
-                        "Unknown Match condition '{}' at line {}",
-                        keyword,
-                        line_number
-                    );
+                    anyhow::bail!("Unknown Match condition '{keyword}' at line {line_number}");
                 }
             }
         }
 
         if conditions.is_empty() {
-            anyhow::bail!(
-                "Match directive requires at least one condition at line {}",
-                line_number
-            );
+            anyhow::bail!("Match directive requires at least one condition at line {line_number}");
         }
 
         Ok(conditions)
