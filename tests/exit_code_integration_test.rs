@@ -51,6 +51,7 @@ fn failure_result(host: &str, exit_code: u32) -> ExecutionResult {
 }
 
 #[test]
+#[serial]
 fn test_main_rank_strategy_preserves_exit_code() {
     let nodes = vec![
         Node::new("host1".to_string(), 22, "user".to_string()),
@@ -72,6 +73,7 @@ fn test_main_rank_strategy_preserves_exit_code() {
 }
 
 #[test]
+#[serial]
 fn test_require_all_success_any_failure() {
     let nodes = vec![
         Node::new("host1".to_string(), 22, "user".to_string()),
@@ -88,6 +90,7 @@ fn test_require_all_success_any_failure() {
 }
 
 #[test]
+#[serial]
 fn test_hybrid_strategy_main_ok_others_fail() {
     let nodes = vec![
         Node::new("host1".to_string(), 22, "user".to_string()),
@@ -112,6 +115,7 @@ fn test_hybrid_strategy_main_ok_others_fail() {
 }
 
 #[test]
+#[serial]
 fn test_hybrid_strategy_main_fails() {
     let nodes = vec![
         Node::new("host1".to_string(), 22, "user".to_string()),
@@ -156,6 +160,7 @@ fn test_backendai_main_rank_detection() {
 }
 
 #[test]
+#[serial]
 fn test_exit_code_strategy_comprehensive() {
     // Test matrix covering all strategies and scenarios
     let test_cases = vec![
@@ -222,6 +227,7 @@ fn test_exit_code_strategy_comprehensive() {
 }
 
 #[test]
+#[serial]
 fn test_main_rank_marking_in_results() {
     // Verify that main rank is properly identified and marked in results
     let nodes = vec![
@@ -316,6 +322,7 @@ fn test_main_rank_marking_with_backendai_env() {
 }
 
 #[test]
+#[serial]
 fn test_strategy_with_all_connection_errors() {
     use anyhow::anyhow;
 
@@ -360,6 +367,7 @@ fn test_strategy_with_all_connection_errors() {
 }
 
 #[test]
+#[serial]
 fn test_strategy_with_mixed_errors() {
     use anyhow::anyhow;
 
@@ -402,6 +410,7 @@ fn test_strategy_with_mixed_errors() {
 }
 
 #[test]
+#[serial]
 fn test_main_rank_index_boundary() {
     // Test with main rank at last position
     let results = vec![
@@ -420,6 +429,7 @@ fn test_main_rank_index_boundary() {
 }
 
 #[test]
+#[serial]
 fn test_strategy_selection_logic() {
     // This tests the logic that would be in exec.rs for selecting strategy based on flags
     // Simulating the flag combinations:
