@@ -141,6 +141,19 @@ pub struct Cli {
     pub timeout: u64,
 
     #[arg(
+        long,
+        help = "Require all nodes to succeed (v1.0-v1.1 behavior)\nDefault: return main rank's exit code (v1.2+)\nUseful for health checks and monitoring where all nodes must be operational"
+    )]
+    pub require_all_success: bool,
+
+    #[arg(
+        long,
+        conflicts_with = "require_all_success",
+        help = "Check all nodes but preserve main rank exit code\nReturns main rank's exit code if non-zero, or 1 if main succeeded but others failed\nHybrid approach for production deployments"
+    )]
+    pub check_all_nodes: bool,
+
+    #[arg(
         trailing_var_arg = true,
         help = "Command to execute on remote hosts",
         allow_hyphen_values = true
