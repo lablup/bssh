@@ -215,75 +215,39 @@ bssh -H "host1,host2" download /etc/hosts ./backups/
 
 ## Breaking Changes in v1.2.0
 
-### Exit Code Behavior Changed
+**⚠️ Exit Code Behavior Changed**: v1.2.0 now returns the main rank's exit code by default (matching MPI standard tools like mpirun/srun/mpiexec).
 
-**⚠️ Important**: The default exit code behavior has changed in v1.2.0 to match standard MPI tools (mpirun, srun, mpiexec).
+### What Changed
 
-#### Old Behavior (v1.0-v1.1)
-- Returns exit code **0** only if **ALL nodes** succeeded
-- Returns exit code **1** if **ANY node** failed (actual exit codes discarded)
+| Version | Behavior | Use Case |
+|---------|----------|----------|
+| **v1.0-v1.1** | Returns 0 if all succeed, 1 if any fails | Health checks |
+| **v1.2.0+** (default) | Returns main rank's actual exit code | MPI workloads, CI/CD |
 
-#### New Behavior (v1.2.0+)
-- Returns the **main rank's actual exit code** (matching MPI standard)
-- Preserves specific exit codes: 139 (SIGSEGV), 137 (OOM), 124 (timeout), etc.
-- Enables intelligent error handling in scripts
+### Migration Guide
 
-#### Migration Guide
-
-**For MPI Workloads** - ✅ No changes needed (behavior improved):
+**MPI Workloads** - ✅ No changes needed:
 ```bash
-# Now preserves actual exit codes for better diagnostics
-bssh exec "mpirun -n 16 ./simulation"
-EXIT_CODE=$?
-
-case $EXIT_CODE in
-    0)   echo "Success!" ;;
-    139) echo "Segfault!"; collect_core_dump ;;
-    137) echo "OOM!"; retry_with_more_memory ;;
-    *)   echo "Failed: $EXIT_CODE" ;;
-esac
+# Now returns actual exit codes: 0, 139 (SIGSEGV), 137 (OOM), etc.
+bssh exec "mpirun ./simulation"
 ```
 
-**For Health Checks** - ⚠️ Add `--require-all-success` flag:
+**Health Checks** - Add `--require-all-success` flag:
 ```bash
-# Old code (v1.0-v1.1)
+# v1.0-v1.1
 bssh exec "health-check"
 
-# New code (v1.2.0+) - add flag to preserve old behavior
+# v1.2.0+ (preserve old behavior)
 bssh --require-all-success exec "health-check"
 ```
 
-#### Exit Code Strategies
+### Available Strategies
 
-Three strategies are available via CLI flags:
+- **Default**: Return main rank's exit code (MPI standard)
+- **`--require-all-success`**: Return 0 only if all nodes succeed
+- **`--check-all-nodes`**: Return main rank code, or 1 if main OK but others failed
 
-1. **Default (MainRank)** - Returns main rank's exit code
-   ```bash
-   bssh exec "mpirun ./program"
-   # Returns: main rank's actual exit code (0, 139, 137, etc.)
-   ```
-
-2. **RequireAllSuccess** - Old behavior (all must succeed)
-   ```bash
-   bssh --require-all-success exec "health-check"
-   # Returns: 0 if all succeeded, 1 if any failed
-   ```
-
-3. **Hybrid (MainRankWithFailureCheck)** - Best of both worlds
-   ```bash
-   bssh --check-all-nodes exec "mpirun ./program"
-   # Returns: main rank's exit code if non-zero, or 1 if main OK but others failed
-   ```
-
-#### Benefits
-
-- ✅ **MPI Standard Compliance**: Works like mpirun/srun/mpiexec
-- ✅ **Better Diagnostics**: Actual exit codes preserved (139, 137, 124, etc.)
-- ✅ **CI/CD Ready**: Exit-code-based decisions work naturally
-- ✅ **Backward Compatible**: `--require-all-success` flag available
-- ✅ **Backend.AI Native**: Auto-detects main rank in multi-node sessions
-
-See [examples/mpi_exit_code.sh](examples/mpi_exit_code.sh) and [examples/health_check.sh](examples/health_check.sh) for detailed usage examples.
+See [examples/mpi_exit_code.sh](examples/mpi_exit_code.sh) and [examples/health_check.sh](examples/health_check.sh) for detailed examples.
 
 ## Authentication
 

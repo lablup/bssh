@@ -188,7 +188,7 @@ pub fn validate_certificate_file_security(path: &Path, line_number: usize) -> Re
                 }
 
                 // Check if it's exactly the private key name without certificate suffix
-                if path_str.ends_with(pattern) || path_str.ends_with(&format!("{}.pub", pattern)) {
+                if path_str.ends_with(pattern) || path_str.ends_with(&format!("{pattern}.pub")) {
                     anyhow::bail!(
                         "Security violation: Certificate file path '{path_str}' at line {line_number} appears to be a private key or regular public key. \
                          SSH certificate files should end with '-cert.pub' or similar suffix. Use CertificateFile for certificates, not regular keys."

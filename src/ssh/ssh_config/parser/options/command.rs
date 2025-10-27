@@ -87,9 +87,7 @@ pub(super) fn parse_command_option(
                 }
                 _ => {
                     anyhow::bail!(
-                        "Invalid SessionType value '{}' at line {} (expected: none, subsystem, or default)",
-                        value,
-                        line_number
+                        "Invalid SessionType value '{value}' at line {line_number} (expected: none, subsystem, or default)"
                     );
                 }
             }
@@ -207,12 +205,8 @@ fn validate_command_with_tokens(
     const MAX_TOKENS: usize = 50; // Reasonable limit for token expansion
     if token_count > MAX_TOKENS {
         anyhow::bail!(
-            "Security violation: {} contains excessive token usage ({} tokens) at line {}. \
-             Maximum allowed is {} tokens to prevent resource exhaustion.",
-            option_name,
-            token_count,
-            line_number,
-            MAX_TOKENS
+            "Security violation: {option_name} contains excessive token usage ({token_count} tokens) at line {line_number}. \
+             Maximum allowed is {MAX_TOKENS} tokens to prevent resource exhaustion."
         );
     }
 
@@ -222,12 +216,8 @@ fn validate_command_with_tokens(
     let potential_length = command.len() + (token_count * 255);
     if potential_length > MAX_EXPANDED_LENGTH {
         anyhow::bail!(
-            "Security violation: {} could expand to {} bytes at line {}. \
-             Maximum allowed expanded length is {} bytes.",
-            option_name,
-            potential_length,
-            line_number,
-            MAX_EXPANDED_LENGTH
+            "Security violation: {option_name} could expand to {potential_length} bytes at line {line_number}. \
+             Maximum allowed expanded length is {MAX_EXPANDED_LENGTH} bytes."
         );
     }
 

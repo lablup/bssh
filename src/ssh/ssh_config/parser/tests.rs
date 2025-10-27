@@ -252,7 +252,7 @@ Host example.com
 fn test_parse_very_long_line() {
     // Test line length limit enforcement
     let long_line = "User=".to_string() + &"a".repeat(9000);
-    let content = format!("Host example.com\n    {}", long_line);
+    let content = format!("Host example.com\n    {long_line}");
     let result = parse(&content);
     assert!(result.is_err());
     assert!(result
@@ -265,7 +265,7 @@ fn test_parse_very_long_line() {
 fn test_parse_very_long_value() {
     // Test value length limit enforcement
     let long_value = "a".repeat(5000);
-    let content = format!("Host example.com\n    User={}", long_value);
+    let content = format!("Host example.com\n    User={long_value}");
     let result = parse(&content);
     assert!(result.is_err());
     assert!(result
@@ -1486,11 +1486,10 @@ Host example.com
     assert!(result.is_err());
     let error = result.unwrap_err();
     // Check both the main error and any causes in the error chain
-    let full_error = format!("{:#}", error);
+    let full_error = format!("{error:#}");
     assert!(
         full_error.contains("Security violation") || full_error.contains("directory traversal"),
-        "Expected security error, got: {}",
-        full_error
+        "Expected security error, got: {full_error}"
     );
 }
 
@@ -1501,11 +1500,10 @@ fn test_parse_identity_agent_null_byte_injection() {
     let result = parse(content);
     assert!(result.is_err());
     let error = result.unwrap_err();
-    let full_error = format!("{:#}", error);
+    let full_error = format!("{error:#}");
     assert!(
         full_error.contains("Security violation") || full_error.contains("null byte"),
-        "Expected security error for null byte, got: {}",
-        full_error
+        "Expected security error for null byte, got: {full_error}"
     );
 }
 
@@ -1519,11 +1517,10 @@ Host example.com
     let result = parse(content);
     assert!(result.is_err());
     let error = result.unwrap_err();
-    let full_error = format!("{:#}", error);
+    let full_error = format!("{error:#}");
     assert!(
         full_error.contains("invalid characters"),
-        "Expected invalid characters error, got: {}",
-        full_error
+        "Expected invalid characters error, got: {full_error}"
     );
 }
 
@@ -1532,7 +1529,7 @@ fn test_parse_pubkey_accepted_algorithms_memory_exhaustion() {
     // Test that excessive algorithms are truncated
     let mut algorithms = Vec::new();
     for i in 0..100 {
-        algorithms.push(format!("algo-{}", i));
+        algorithms.push(format!("algo-{i}"));
     }
     let content = format!(
         "Host example.com\n    PubkeyAcceptedAlgorithms {}\n",
@@ -1549,8 +1546,7 @@ fn test_parse_algorithm_name_length_limit() {
     // Test that excessively long algorithm names are skipped
     let long_name = "a".repeat(300);
     let content = format!(
-        "Host example.com\n    PubkeyAcceptedAlgorithms ssh-ed25519,{},rsa-sha2-256\n",
-        long_name
+        "Host example.com\n    PubkeyAcceptedAlgorithms ssh-ed25519,{long_name},rsa-sha2-256\n"
     );
     let hosts = parse(&content).unwrap();
     assert_eq!(hosts.len(), 1);
@@ -1570,11 +1566,10 @@ Host example.com
     let result = parse(content);
     assert!(result.is_err());
     let error = result.unwrap_err();
-    let full_error = format!("{:#}", error);
+    let full_error = format!("{error:#}");
     assert!(
         full_error.contains("must contain at least one valid algorithm"),
-        "Expected empty algorithm list error, got: {}",
-        full_error
+        "Expected empty algorithm list error, got: {full_error}"
     );
 }
 
@@ -1588,11 +1583,10 @@ Host example.com
     let result = parse(content);
     assert!(result.is_err());
     let error = result.unwrap_err();
-    let full_error = format!("{:#}", error);
+    let full_error = format!("{error:#}");
     assert!(
         full_error.contains("invalid characters"),
-        "Expected invalid characters error, got: {}",
-        full_error
+        "Expected invalid characters error, got: {full_error}"
     );
 }
 
@@ -1601,7 +1595,7 @@ fn test_parse_ca_signature_algorithms_memory_limit() {
     // Test CASignatureAlgorithms memory limits
     let mut algorithms = Vec::new();
     for i in 0..60 {
-        algorithms.push(format!("ca-algo-{}", i));
+        algorithms.push(format!("ca-algo-{i}"));
     }
     let content = format!(
         "Host example.com\n    CASignatureAlgorithms {}\n",

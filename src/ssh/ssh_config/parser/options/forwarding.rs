@@ -118,8 +118,7 @@ pub(super) fn parse_forwarding_option(
             // Limit length to prevent memory issues
             if timeout.len() > 20 {
                 anyhow::bail!(
-                    "ForwardX11Timeout value at line {} is too long (max 20 characters)",
-                    line_number
+                    "ForwardX11Timeout value at line {line_number} is too long (max 20 characters)"
                 );
             }
 
@@ -145,10 +144,8 @@ pub(super) fn parse_forwarding_option(
 
                 if !valid_time {
                     anyhow::bail!(
-                        "ForwardX11Timeout '{}' at line {} is invalid. \
-                         Use '0' for unlimited or a number with optional suffix (s/m/h/d/w)",
-                        timeout,
-                        line_number
+                        "ForwardX11Timeout '{timeout}' at line {line_number} is invalid. \
+                         Use '0' for unlimited or a number with optional suffix (s/m/h/d/w)"
                     );
                 }
 
@@ -159,8 +156,7 @@ pub(super) fn parse_forwarding_option(
                     ][..],
                 ) {
                     anyhow::bail!(
-                        "ForwardX11Timeout at line {} contains dangerous characters",
-                        line_number
+                        "ForwardX11Timeout at line {line_number} contains dangerous characters"
                     );
                 }
 

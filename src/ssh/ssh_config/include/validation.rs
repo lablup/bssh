@@ -28,8 +28,7 @@ pub fn validate_glob_pattern(pattern: &str) -> Result<()> {
     let wildcard_count = pattern.chars().filter(|&c| c == '*').count();
     if wildcard_count > 5 {
         anyhow::bail!(
-            "Too many wildcards in pattern '{}'. Maximum 5 wildcards allowed.",
-            pattern
+            "Too many wildcards in pattern '{pattern}'. Maximum 5 wildcards allowed."
         );
     }
 
@@ -37,8 +36,7 @@ pub fn validate_glob_pattern(pattern: &str) -> Result<()> {
     // But allow common SSH config patterns like ~/.ssh/config.d/*
     if (pattern == "*" || pattern == "/*") && !pattern.contains("ssh") {
         anyhow::bail!(
-            "Pattern '{}' is too broad and could match system files",
-            pattern
+            "Pattern '{pattern}' is too broad and could match system files"
         );
     }
 

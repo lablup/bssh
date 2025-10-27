@@ -135,10 +135,8 @@ pub async fn store_passphrase(key_path: impl AsRef<Path>, passphrase: &str) -> R
 
         if file_uid != current_uid {
             anyhow::bail!(
-                "Security error: SSH key file is not owned by current user (file uid: {}, current uid: {}). \
-                 Only the owner of an SSH key should be able to store its passphrase.",
-                file_uid,
-                current_uid
+                "Security error: SSH key file is not owned by current user (file uid: {file_uid}, current uid: {current_uid}). \
+                 Only the owner of an SSH key should be able to store its passphrase."
             );
         }
 

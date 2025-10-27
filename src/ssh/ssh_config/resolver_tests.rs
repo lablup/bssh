@@ -71,7 +71,7 @@ Host example.com
         // Create a config with more than 100 certificate files
         let mut config_lines = vec!["Host example.com".to_string()];
         for i in 0..110 {
-            config_lines.push(format!("    CertificateFile ~/.ssh/cert-{}.pub", i));
+            config_lines.push(format!("    CertificateFile ~/.ssh/cert-{i}.pub"));
         }
         let content = config_lines.join("\n");
 

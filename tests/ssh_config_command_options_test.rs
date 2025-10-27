@@ -103,11 +103,10 @@ fn test_parse_local_command_security() {
     ];
 
     for cmd in dangerous_commands {
-        let config = format!("Host test\n    {}\n", cmd);
+        let config = format!("Host test\n    {cmd}\n");
         assert!(
             SshConfig::parse(&config).is_err(),
-            "Should reject dangerous command: {}",
-            cmd
+            "Should reject dangerous command: {cmd}"
         );
     }
 }
@@ -122,12 +121,11 @@ fn test_parse_local_command_invalid_tokens() {
     ];
 
     for cmd in invalid_tokens {
-        let config = format!("Host test\n    {}\n", cmd);
+        let config = format!("Host test\n    {cmd}\n");
         let result = SshConfig::parse(&config);
         assert!(
             result.is_err(),
-            "Should reject invalid token in command: {}",
-            cmd
+            "Should reject invalid token in command: {cmd}"
         );
     }
 }
@@ -215,11 +213,10 @@ fn test_parse_known_hosts_command_security() {
     ];
 
     for cmd in dangerous_commands {
-        let config = format!("Host test\n    {}\n", cmd);
+        let config = format!("Host test\n    {cmd}\n");
         assert!(
             SshConfig::parse(&config).is_err(),
-            "Should reject dangerous KnownHostsCommand: {}",
-            cmd
+            "Should reject dangerous KnownHostsCommand: {cmd}"
         );
     }
 }
@@ -291,11 +288,10 @@ fn test_parse_session_type_invalid() {
     ];
 
     for cmd in invalid_values {
-        let config = format!("Host test\n    {}\n", cmd);
+        let config = format!("Host test\n    {cmd}\n");
         assert!(
             SshConfig::parse(&config).is_err(),
-            "Should reject invalid SessionType value: {}",
-            cmd
+            "Should reject invalid SessionType value: {cmd}"
         );
     }
 }
@@ -434,8 +430,7 @@ fn test_parse_empty_values_error() {
     for config in empty_configs {
         assert!(
             SshConfig::parse(config).is_err(),
-            "Should reject empty value for: {}",
-            config
+            "Should reject empty value for: {config}"
         );
     }
 }
@@ -452,8 +447,7 @@ fn test_parse_whitespace_command() {
     for config in whitespace_configs {
         assert!(
             SshConfig::parse(config).is_err(),
-            "Should reject whitespace-only command: {}",
-            config
+            "Should reject whitespace-only command: {config}"
         );
     }
 

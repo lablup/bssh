@@ -105,9 +105,8 @@ pub(super) fn parse_security_option(
                             || c == '+'
                     }) {
                         anyhow::bail!(
-                            "HostKeyAlgorithms at line {} contains invalid characters in algorithm name '{}'. \
-                             Only alphanumeric characters, hyphens, dots, underscores, @ and + are allowed",
-                            line_number, trimmed
+                            "HostKeyAlgorithms at line {line_number} contains invalid characters in algorithm name '{trimmed}'. \
+                             Only alphanumeric characters, hyphens, dots, underscores, @ and + are allowed"
                         );
                     }
 
@@ -129,8 +128,7 @@ pub(super) fn parse_security_option(
 
             if algorithms.is_empty() {
                 anyhow::bail!(
-                    "HostKeyAlgorithms at line {} must contain at least one valid algorithm",
-                    line_number
+                    "HostKeyAlgorithms at line {line_number} must contain at least one valid algorithm"
                 );
             }
 
@@ -179,9 +177,8 @@ pub(super) fn parse_security_option(
                             || c == '+'
                     }) {
                         anyhow::bail!(
-                            "KexAlgorithms at line {} contains invalid characters in algorithm name '{}'. \
-                             Only alphanumeric characters, hyphens, dots, underscores, @ and + are allowed",
-                            line_number, trimmed
+                            "KexAlgorithms at line {line_number} contains invalid characters in algorithm name '{trimmed}'. \
+                             Only alphanumeric characters, hyphens, dots, underscores, @ and + are allowed"
                         );
                     }
 
@@ -203,8 +200,7 @@ pub(super) fn parse_security_option(
 
             if algorithms.is_empty() {
                 anyhow::bail!(
-                    "KexAlgorithms at line {} must contain at least one valid algorithm",
-                    line_number
+                    "KexAlgorithms at line {line_number} must contain at least one valid algorithm"
                 );
             }
 
@@ -253,9 +249,8 @@ pub(super) fn parse_security_option(
                             || c == '+'
                     }) {
                         anyhow::bail!(
-                            "Ciphers at line {} contains invalid characters in cipher name '{}'. \
-                             Only alphanumeric characters, hyphens, dots, underscores, @ and + are allowed",
-                            line_number, trimmed
+                            "Ciphers at line {line_number} contains invalid characters in cipher name '{trimmed}'. \
+                             Only alphanumeric characters, hyphens, dots, underscores, @ and + are allowed"
                         );
                     }
 
@@ -277,8 +272,7 @@ pub(super) fn parse_security_option(
 
             if ciphers.is_empty() {
                 anyhow::bail!(
-                    "Ciphers at line {} must contain at least one valid cipher",
-                    line_number
+                    "Ciphers at line {line_number} must contain at least one valid cipher"
                 );
             }
 
@@ -328,9 +322,8 @@ pub(super) fn parse_security_option(
                             || c == '+'
                     }) {
                         anyhow::bail!(
-                            "MACs at line {} contains invalid characters in MAC name '{}'. \
-                             Only alphanumeric characters, hyphens, dots, underscores, @ and + are allowed",
-                            line_number, trimmed
+                            "MACs at line {line_number} contains invalid characters in MAC name '{trimmed}'. \
+                             Only alphanumeric characters, hyphens, dots, underscores, @ and + are allowed"
                         );
                     }
 
@@ -352,8 +345,7 @@ pub(super) fn parse_security_option(
 
             if macs.is_empty() {
                 anyhow::bail!(
-                    "MACs at line {} must contain at least one valid MAC",
-                    line_number
+                    "MACs at line {line_number} must contain at least one valid MAC"
                 );
             }
 
@@ -410,9 +402,8 @@ pub(super) fn parse_security_option(
                             || c == '+'
                     }) {
                         anyhow::bail!(
-                            "CASignatureAlgorithms at line {} contains invalid characters in algorithm name '{}'. \
-                             Only alphanumeric characters, hyphens, dots, underscores, @ and + are allowed",
-                            line_number, trimmed
+                            "CASignatureAlgorithms at line {line_number} contains invalid characters in algorithm name '{trimmed}'. \
+                             Only alphanumeric characters, hyphens, dots, underscores, @ and + are allowed"
                         );
                     }
 
@@ -434,8 +425,7 @@ pub(super) fn parse_security_option(
             // Ensure we have at least one algorithm
             if algorithms.is_empty() {
                 anyhow::bail!(
-                    "CASignatureAlgorithms at line {} must contain at least one valid algorithm",
-                    line_number
+                    "CASignatureAlgorithms at line {line_number} must contain at least one valid algorithm"
                 );
             }
 
@@ -500,15 +490,13 @@ pub(super) fn parse_security_option(
                 .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_')
             {
                 anyhow::bail!(
-                    "HostKeyAlias at line {} contains invalid characters. Only alphanumeric, dots, hyphens, and underscores are allowed",
-                    line_number
+                    "HostKeyAlias at line {line_number} contains invalid characters. Only alphanumeric, dots, hyphens, and underscores are allowed"
                 );
             }
             // Prevent directory traversal
             if alias.contains("..") {
                 anyhow::bail!(
-                    "HostKeyAlias at line {} contains '..' which could be used for path traversal attacks",
-                    line_number
+                    "HostKeyAlias at line {line_number} contains '..' which could be used for path traversal attacks"
                 );
             }
             tracing::debug!(
@@ -566,19 +554,13 @@ pub(super) fn parse_security_option(
 
             if size < MIN_RSA_SIZE {
                 anyhow::bail!(
-                    "RequiredRSASize {} at line {} is below minimum allowed value of {}",
-                    size,
-                    line_number,
-                    MIN_RSA_SIZE
+                    "RequiredRSASize {size} at line {line_number} is below minimum allowed value of {MIN_RSA_SIZE}"
                 );
             }
 
             if size > MAX_RSA_SIZE {
                 anyhow::bail!(
-                    "RequiredRSASize {} at line {} exceeds maximum allowed value of {}",
-                    size,
-                    line_number,
-                    MAX_RSA_SIZE
+                    "RequiredRSASize {size} at line {line_number} exceeds maximum allowed value of {MAX_RSA_SIZE}"
                 );
             }
 

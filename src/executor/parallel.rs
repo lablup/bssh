@@ -410,7 +410,7 @@ impl ParallelExecutor {
                     if let Some(node) = self.nodes.get(idx) {
                         let failed_result = ExecutionResult {
                             node: node.clone(),
-                            result: Err(anyhow::anyhow!("Task execution failed: {}", e)),
+                            result: Err(anyhow::anyhow!("Task execution failed: {e}")),
                             is_main_rank: Some(idx) == main_idx,
                         };
                         execution_results.push(failed_result);

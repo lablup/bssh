@@ -72,18 +72,16 @@ pub(super) fn parse_authentication_option(
                 // Security: Check for path traversal attempts without expanding the path
                 if value.contains("../") || value.contains("..\\") {
                     anyhow::bail!(
-                        "Security violation: IdentityAgent path contains directory traversal sequence '..' at line {}. \
-                         Path traversal attacks are not allowed.",
-                        line_number
+                        "Security violation: IdentityAgent path contains directory traversal sequence '..' at line {line_number}. \
+                         Path traversal attacks are not allowed."
                     );
                 }
 
                 // Check for null bytes and other dangerous characters
                 if value.contains('\0') {
                     anyhow::bail!(
-                        "Security violation: IdentityAgent path contains null byte at line {}. \
-                         This could be used for path truncation attacks.",
-                        line_number
+                        "Security violation: IdentityAgent path contains null byte at line {line_number}. \
+                         This could be used for path truncation attacks."
                     );
                 }
 
@@ -151,9 +149,8 @@ pub(super) fn parse_authentication_option(
                             || c == '+'
                     }) {
                         anyhow::bail!(
-                            "PubkeyAcceptedAlgorithms at line {} contains invalid characters in algorithm name '{}'. \
-                             Only alphanumeric characters, hyphens, dots, underscores, @ and + are allowed",
-                            line_number, trimmed
+                            "PubkeyAcceptedAlgorithms at line {line_number} contains invalid characters in algorithm name '{trimmed}'. \
+                             Only alphanumeric characters, hyphens, dots, underscores, @ and + are allowed"
                         );
                     }
 
@@ -175,8 +172,7 @@ pub(super) fn parse_authentication_option(
             // Ensure we have at least one algorithm
             if algorithms.is_empty() {
                 anyhow::bail!(
-                    "PubkeyAcceptedAlgorithms at line {} must contain at least one valid algorithm",
-                    line_number
+                    "PubkeyAcceptedAlgorithms at line {line_number} must contain at least one valid algorithm"
                 );
             }
 
@@ -283,9 +279,8 @@ pub(super) fn parse_authentication_option(
                             || c == '+'
                     }) {
                         anyhow::bail!(
-                            "HostbasedAcceptedAlgorithms at line {} contains invalid characters in algorithm name '{}'. \
-                             Only alphanumeric characters, hyphens, dots, underscores, @ and + are allowed",
-                            line_number, trimmed
+                            "HostbasedAcceptedAlgorithms at line {line_number} contains invalid characters in algorithm name '{trimmed}'. \
+                             Only alphanumeric characters, hyphens, dots, underscores, @ and + are allowed"
                         );
                     }
 
@@ -307,8 +302,7 @@ pub(super) fn parse_authentication_option(
             // Ensure we have at least one algorithm
             if algorithms.is_empty() {
                 anyhow::bail!(
-                    "HostbasedAcceptedAlgorithms at line {} must contain at least one valid algorithm",
-                    line_number
+                    "HostbasedAcceptedAlgorithms at line {line_number} must contain at least one valid algorithm"
                 );
             }
 
@@ -331,17 +325,13 @@ pub(super) fn parse_authentication_option(
 
             if num == 0 {
                 anyhow::bail!(
-                    "NumberOfPasswordPrompts at line {} must be at least 1",
-                    line_number
+                    "NumberOfPasswordPrompts at line {line_number} must be at least 1"
                 );
             }
 
             if num > MAX_PASSWORD_PROMPTS {
                 anyhow::bail!(
-                    "NumberOfPasswordPrompts {} at line {} exceeds maximum allowed value of {}",
-                    num,
-                    line_number,
-                    MAX_PASSWORD_PROMPTS
+                    "NumberOfPasswordPrompts {num} at line {line_number} exceeds maximum allowed value of {MAX_PASSWORD_PROMPTS}"
                 );
             }
 

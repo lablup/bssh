@@ -82,7 +82,7 @@ pub async fn resolve_include_pattern(
     // Convert to string for glob
     let pattern_str = search_path
         .to_str()
-        .ok_or_else(|| anyhow::anyhow!("Invalid UTF-8 in path: {:?}", search_path))?;
+        .ok_or_else(|| anyhow::anyhow!("Invalid UTF-8 in path: {search_path:?}"))?;
 
     // Additional validation after expansion
     validate_glob_pattern(pattern_str)?;
@@ -99,13 +99,12 @@ pub async fn resolve_include_pattern(
     };
 
     for entry in glob::glob_with(pattern_str, glob_options)
-        .with_context(|| format!("Invalid glob pattern: {}", pattern_str))?
+        .with_context(|| format!("Invalid glob pattern: {pattern_str}"))?
     {
         if files.len() >= MAX_GLOB_RESULTS {
             anyhow::bail!(
-                "Glob pattern '{}' matched too many files (>{MAX_GLOB_RESULTS}). \
-                 Please use a more specific pattern.",
-                pattern
+                "Glob pattern '{pattern}' matched too many files (>{MAX_GLOB_RESULTS}). \
+                 Please use a more specific pattern."
             );
         }
 

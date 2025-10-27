@@ -17,41 +17,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Health checks**: Add `--require-all-success` flag to preserve old behavior
 
 ### Added
-- **Main Rank Exit Code Strategy** (Issue #62)
-  - Default strategy: Return main rank's exit code (MPI standard compliance)
-  - `--require-all-success` flag for v1.0-v1.1 behavior (all must succeed)
-  - `--check-all-nodes` flag for hybrid mode (main rank code + all node check)
+- **Exit Code Strategy** (Issue #62)
+  - Main rank exit code returned by default (matches MPI standard: mpirun, srun, mpiexec)
+  - Preserves actual exit codes: 139 (SIGSEGV), 137 (OOM), 124 (timeout), etc.
+  - `--require-all-success` flag for v1.0-v1.1 behavior (returns 0 only if all nodes succeed)
+  - `--check-all-nodes` flag for hybrid mode (main rank code + all-node check)
   - Automatic main rank detection via `BACKENDAI_CLUSTER_ROLE` environment variable
-  - Fallback to first node as main rank (standard convention)
-- **Exit Code Preservation**
-  - Actual exit codes preserved and returned (not just 0/1)
-  - Enables sophisticated error handling in shell scripts
-  - Supports CI/CD exit-code-based decisions
-  - Examples: 139 (SIGSEGV), 137 (OOM), 124 (timeout)
-- **Infrastructure**
-  - New module `src/executor/rank_detector.rs` for main rank identification
-  - New module `src/executor/exit_strategy.rs` with three strategies
-  - `ExecutionResult.is_main_rank` field for rank marking
-  - `ExecutionResult.get_exit_code()` method
-- **Documentation**
-  - Comprehensive "Exit Code Strategy Architecture" section in ARCHITECTURE.md
-  - Migration guide for different use cases
-  - Strategy comparison table
   - Example scripts: `examples/mpi_exit_code.sh`, `examples/health_check.sh`
-- **Testing**
-  - Unit tests in rank_detector.rs (8 tests)
-  - Unit tests in exit_strategy.rs (18 tests)
-  - Integration tests in tests/exit_code_integration_test.rs (6 tests)
-  - Comprehensive test matrix for all strategies and scenarios
 
 ### Changed
-- **Better Error Diagnostics**
-  - Exit codes now provide specific error information
-  - Shell scripts can handle different error types appropriately
-  - Aligns with HPC and distributed computing best practices
-- **Backend.AI Integration**
-  - Automatic main rank detection in multi-node sessions
-  - Native support for `BACKENDAI_CLUSTER_ROLE` and `BACKENDAI_CLUSTER_HOST`
+- Exit code behavior now aligns with HPC and distributed computing best practices
+- Enables sophisticated error handling in shell scripts and CI/CD pipelines
 
 ## [1.1.0] - 2025-10-24
 

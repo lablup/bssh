@@ -36,7 +36,7 @@ pub fn execute_match_command(command: &str, context: &MatchContext) -> Result<bo
 
     // Parse command into program and args using shell parsing for proper handling
     let parts = shell_words::split(&expanded_command)
-        .with_context(|| format!("Failed to parse command: {}", expanded_command))?;
+        .with_context(|| format!("Failed to parse command: {expanded_command}"))?;
 
     if parts.is_empty() {
         anyhow::bail!("Empty command for Match exec");
@@ -203,9 +203,8 @@ pub fn validate_exec_command(command: &str) -> Result<()> {
     for pattern in DANGEROUS_PATTERNS {
         if command.contains(pattern) {
             anyhow::bail!(
-                "Match exec command contains potentially dangerous pattern '{}'. \
-                 This is blocked for security reasons.",
-                pattern
+                "Match exec command contains potentially dangerous pattern '{pattern}'. \
+                 This is blocked for security reasons."
             );
         }
     }
@@ -264,11 +263,10 @@ pub fn validate_exec_command(command: &str) -> Result<()> {
 
     // Check against blocked commands
     for blocked in BLOCKED_COMMANDS {
-        if first_word == *blocked || first_word.ends_with(&format!("/{}", blocked)) {
+        if first_word == *blocked || first_word.ends_with(&format!("/{blocked}")) {
             anyhow::bail!(
-                "Match exec command uses blocked executable '{}'. \
-                 Executing shells or interpreters is not allowed for security.",
-                blocked
+                "Match exec command uses blocked executable '{blocked}'. \
+                 Executing shells or interpreters is not allowed for security."
             );
         }
     }
@@ -276,7 +274,7 @@ pub fn validate_exec_command(command: &str) -> Result<()> {
     // Warn about potentially sensitive commands
     const SENSITIVE_COMMANDS: &[&str] = &["sudo", "su", "doas", "passwd", "ssh", "scp", "sftp"];
     for cmd in SENSITIVE_COMMANDS {
-        if first_word == *cmd || first_word.ends_with(&format!("/{}", cmd)) {
+        if first_word == *cmd || first_word.ends_with(&format!("/{cmd}")) {
             tracing::warn!(
                 "Match exec command uses potentially sensitive command '{}'. \
                  Please ensure this is intentional and secure.",
@@ -292,7 +290,7 @@ pub fn validate_exec_command(command: &str) -> Result<()> {
     ];
     if !SAFE_COMMANDS
         .iter()
-        .any(|&safe| first_word == safe || first_word.ends_with(&format!("/{}", safe)))
+        .any(|&safe| first_word == safe || first_word.ends_with(&format!("/{safe}")))
     {
         tracing::info!(
             "Match exec command '{}' is not in the safe command allowlist. \
@@ -416,9 +414,7 @@ mod tests {
         );
         assert!(
             duration.as_secs() <= EXEC_TIMEOUT_SECS + 1,
-            "Should timeout within {} seconds, took {:?}",
-            EXEC_TIMEOUT_SECS,
-            duration
+            "Should timeout within {EXEC_TIMEOUT_SECS} seconds, took {duration:?}"
         );
     }
 

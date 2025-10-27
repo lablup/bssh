@@ -216,8 +216,275 @@ fn test_exit_code_strategy_comprehensive() {
 
         assert_eq!(
             exit_code, expected,
-            "Strategy {:?}: main_ok={}, others_ok={}, main_exit={} → expected {}",
-            strategy, main_ok, others_ok, main_exit, expected
+            "Strategy {strategy:?}: main_ok={main_ok}, others_ok={others_ok}, main_exit={main_exit} → expected {expected}"
         );
     }
+}
+
+#[test]
+fn test_main_rank_marking_in_results() {
+    // Verify that main rank is properly identified and marked in results
+    let nodes = vec![
+        Node::new("host1".to_string(), 22, "user".to_string()),
+        Node::new("host2".to_string(), 22, "user".to_string()),
+        Node::new("host3".to_string(), 22, "user".to_string()),
+    ];
+
+    let mut results = vec![
+        success_result("host1"),
+        success_result("host2"),
+        success_result("host3"),
+    ];
+
+    // Simulate marking by rank detector
+    let main_idx = RankDetector::identify_main_rank(&nodes);
+    assert_eq!(
+        main_idx,
+        Some(0),
+        "First node should be main rank by default"
+    );
+
+    // Mark the main rank (this is what parallel executor does)
+    if let Some(idx) = main_idx {
+        results[idx].is_main_rank = true;
+    }
+
+    // Verify marking
+    assert!(
+        results[0].is_main_rank,
+        "First result should be marked as main rank"
+    );
+    assert!(
+        !results[1].is_main_rank,
+        "Second result should not be main rank"
+    );
+    assert!(
+        !results[2].is_main_rank,
+        "Third result should not be main rank"
+    );
+}
+
+#[test]
+#[serial]
+fn test_main_rank_marking_with_backendai_env() {
+    // Test that Backend.AI environment affects rank marking
+    std::env::set_var("BACKENDAI_CLUSTER_ROLE", "main");
+    std::env::set_var("BACKENDAI_CLUSTER_HOST", "host3");
+
+    let nodes = vec![
+        Node::new("host1".to_string(), 22, "user".to_string()),
+        Node::new("host2".to_string(), 22, "user".to_string()),
+        Node::new("host3".to_string(), 22, "user".to_string()),
+    ];
+
+    let mut results = vec![
+        success_result("host1"),
+        success_result("host2"),
+        success_result("host3"),
+    ];
+
+    // Identify main rank with Backend.AI env
+    let main_idx = RankDetector::identify_main_rank(&nodes);
+    assert_eq!(
+        main_idx,
+        Some(2),
+        "host3 should be identified as main rank via Backend.AI env"
+    );
+
+    // Mark the main rank
+    if let Some(idx) = main_idx {
+        results[idx].is_main_rank = true;
+    }
+
+    // Verify marking
+    assert!(
+        !results[0].is_main_rank,
+        "host1 should not be marked as main rank"
+    );
+    assert!(
+        !results[1].is_main_rank,
+        "host2 should not be marked as main rank"
+    );
+    assert!(
+        results[2].is_main_rank,
+        "host3 should be marked as main rank"
+    );
+
+    // Cleanup
+    std::env::remove_var("BACKENDAI_CLUSTER_ROLE");
+    std::env::remove_var("BACKENDAI_CLUSTER_HOST");
+}
+
+#[test]
+fn test_strategy_with_all_connection_errors() {
+    use anyhow::anyhow;
+
+    let nodes = [
+        Node::new("host1".to_string(), 22, "user".to_string()),
+        Node::new("host2".to_string(), 22, "user".to_string()),
+    ];
+
+    // All nodes have connection errors
+    let results = vec![
+        ExecutionResult {
+            node: nodes[0].clone(),
+            result: Err(anyhow!("Connection timeout")),
+            is_main_rank: true, // Main rank has error
+        },
+        ExecutionResult {
+            node: nodes[1].clone(),
+            result: Err(anyhow!("Connection refused")),
+            is_main_rank: false,
+        },
+    ];
+
+    let main_idx = Some(0);
+
+    // MainRank strategy should return 1 (connection error treated as exit 1)
+    let exit_code = ExitCodeStrategy::MainRank.calculate(&results, main_idx);
+    assert_eq!(exit_code, 1, "Connection error should return exit code 1");
+
+    // RequireAllSuccess should also return 1
+    let exit_code = ExitCodeStrategy::RequireAllSuccess.calculate(&results, main_idx);
+    assert_eq!(
+        exit_code, 1,
+        "Any failure should return 1 in RequireAllSuccess"
+    );
+
+    // Hybrid strategy should return 0 for main rank (error treated as non-zero) or 1
+    let exit_code = ExitCodeStrategy::MainRankWithFailureCheck.calculate(&results, main_idx);
+    assert_eq!(
+        exit_code, 1,
+        "Main rank connection error should return 1 in hybrid mode"
+    );
+}
+
+#[test]
+fn test_strategy_with_mixed_errors() {
+    use anyhow::anyhow;
+
+    let nodes = [
+        Node::new("host1".to_string(), 22, "user".to_string()),
+        Node::new("host2".to_string(), 22, "user".to_string()),
+        Node::new("host3".to_string(), 22, "user".to_string()),
+    ];
+
+    // Mixed: success, connection error, exit code failure
+    let results = vec![
+        success_result("host1"), // Main rank succeeds
+        ExecutionResult {
+            node: nodes[1].clone(),
+            result: Err(anyhow!("Connection timeout")), // Connection error
+            is_main_rank: false,
+        },
+        failure_result("host3", 137), // OOM kill
+    ];
+
+    let main_idx = Some(0);
+
+    // MainRank: should return 0 (main succeeded)
+    let exit_code = ExitCodeStrategy::MainRank.calculate(&results, main_idx);
+    assert_eq!(exit_code, 0, "Main rank succeeded, should return 0");
+
+    // RequireAllSuccess: should return 1 (some nodes failed)
+    let exit_code = ExitCodeStrategy::RequireAllSuccess.calculate(&results, main_idx);
+    assert_eq!(
+        exit_code, 1,
+        "Some nodes failed, should return 1 in RequireAllSuccess"
+    );
+
+    // Hybrid: should return 1 (main OK but others failed)
+    let exit_code = ExitCodeStrategy::MainRankWithFailureCheck.calculate(&results, main_idx);
+    assert_eq!(
+        exit_code, 1,
+        "Main OK but others failed, should return 1 in hybrid mode"
+    );
+}
+
+#[test]
+fn test_main_rank_index_boundary() {
+    // Test with main rank at last position
+    let results = vec![
+        success_result("host1"),
+        failure_result("host2", 1),
+        failure_result("host3", 139), // Main rank at index 2
+    ];
+
+    let main_idx = Some(2); // Last node is main
+
+    let exit_code = ExitCodeStrategy::MainRank.calculate(&results, main_idx);
+    assert_eq!(
+        exit_code, 139,
+        "Should return exit code from last node (main rank)"
+    );
+}
+
+#[test]
+fn test_strategy_selection_logic() {
+    // This tests the logic that would be in exec.rs for selecting strategy based on flags
+    // Simulating the flag combinations:
+
+    // Default: neither flag set
+    let require_all_success = false;
+    let check_all_nodes = false;
+    let strategy = if require_all_success {
+        ExitCodeStrategy::RequireAllSuccess
+    } else if check_all_nodes {
+        ExitCodeStrategy::MainRankWithFailureCheck
+    } else {
+        ExitCodeStrategy::MainRank
+    };
+    assert_eq!(
+        strategy,
+        ExitCodeStrategy::MainRank,
+        "Default should be MainRank"
+    );
+
+    // --require-all-success flag
+    let require_all_success = true;
+    let check_all_nodes = false;
+    let strategy = if require_all_success {
+        ExitCodeStrategy::RequireAllSuccess
+    } else if check_all_nodes {
+        ExitCodeStrategy::MainRankWithFailureCheck
+    } else {
+        ExitCodeStrategy::MainRank
+    };
+    assert_eq!(
+        strategy,
+        ExitCodeStrategy::RequireAllSuccess,
+        "--require-all-success should select RequireAllSuccess"
+    );
+
+    // --check-all-nodes flag
+    let require_all_success = false;
+    let check_all_nodes = true;
+    let strategy = if require_all_success {
+        ExitCodeStrategy::RequireAllSuccess
+    } else if check_all_nodes {
+        ExitCodeStrategy::MainRankWithFailureCheck
+    } else {
+        ExitCodeStrategy::MainRank
+    };
+    assert_eq!(
+        strategy,
+        ExitCodeStrategy::MainRankWithFailureCheck,
+        "--check-all-nodes should select MainRankWithFailureCheck"
+    );
+
+    // Both flags set: --require-all-success takes precedence
+    let require_all_success = true;
+    let check_all_nodes = true;
+    let strategy = if require_all_success {
+        ExitCodeStrategy::RequireAllSuccess
+    } else if check_all_nodes {
+        ExitCodeStrategy::MainRankWithFailureCheck
+    } else {
+        ExitCodeStrategy::MainRank
+    };
+    assert_eq!(
+        strategy,
+        ExitCodeStrategy::RequireAllSuccess,
+        "When both flags set, --require-all-success should take precedence"
+    );
 }

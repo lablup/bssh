@@ -127,9 +127,7 @@ pub(super) fn parse_connection_option(
             // Maximum length is typically 15 characters on Linux (IFNAMSIZ - 1)
             if interface.len() > 15 {
                 anyhow::bail!(
-                    "BindInterface '{}' at line {} exceeds maximum interface name length of 15 characters",
-                    interface,
-                    line_number
+                    "BindInterface '{interface}' at line {line_number} exceeds maximum interface name length of 15 characters"
                 );
             }
 
@@ -139,28 +137,22 @@ pub(super) fn parse_connection_option(
                 .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' || c == ':')
             {
                 anyhow::bail!(
-                    "BindInterface '{}' at line {} contains invalid characters. \
-                     Network interface names can only contain alphanumeric characters, dots, hyphens, underscores, and colons",
-                    interface,
-                    line_number
+                    "BindInterface '{interface}' at line {line_number} contains invalid characters. \
+                     Network interface names can only contain alphanumeric characters, dots, hyphens, underscores, and colons"
                 );
             }
 
             // Additional validation: interface name shouldn't start with a dot or hyphen
             if interface.starts_with('.') || interface.starts_with('-') {
                 anyhow::bail!(
-                    "BindInterface '{}' at line {} cannot start with a dot or hyphen",
-                    interface,
-                    line_number
+                    "BindInterface '{interface}' at line {line_number} cannot start with a dot or hyphen"
                 );
             }
 
             // Prevent potential path traversal or command injection
             if interface.contains("..") || interface.contains("/") || interface.contains("\\") {
                 anyhow::bail!(
-                    "BindInterface '{}' at line {} contains dangerous characters that could be used for injection attacks",
-                    interface,
-                    line_number
+                    "BindInterface '{interface}' at line {line_number} contains dangerous characters that could be used for injection attacks"
                 );
             }
 
@@ -256,16 +248,14 @@ pub(super) fn parse_connection_option(
                                     }
                                 } else {
                                     anyhow::bail!(
-                                        "IPQoS value '{}' at line {} is not a valid hexadecimal number",
-                                        value, line_number
+                                        "IPQoS value '{value}' at line {line_number} is not a valid hexadecimal number"
                                     );
                                 }
                             } else {
                                 anyhow::bail!(
-                                    "IPQoS value '{}' at line {} is not valid. \
+                                    "IPQoS value '{value}' at line {line_number} is not valid. \
                                      Valid values are: af11-af43, cs0-cs7, ef, lowdelay, throughput, \
-                                     reliability, none, or numeric (0-63 for DSCP, specific ToS values)",
-                                    value, line_number
+                                     reliability, none, or numeric (0-63 for DSCP, specific ToS values)"
                                 );
                             }
                         }
@@ -277,8 +267,7 @@ pub(super) fn parse_connection_option(
             let combined = args.join(" ");
             if combined.len() > 100 {
                 anyhow::bail!(
-                    "IPQoS value at line {} is too long (max 100 characters)",
-                    line_number
+                    "IPQoS value at line {line_number} is too long (max 100 characters)"
                 );
             }
 
@@ -343,19 +332,15 @@ pub(super) fn parse_connection_option(
                             }
                         } else {
                             anyhow::bail!(
-                                "RekeyLimit data limit '{}' at line {} would overflow. \
-                                 Please use a smaller value",
-                                data_limit,
-                                line_number
+                                "RekeyLimit data limit '{data_limit}' at line {line_number} would overflow. \
+                                 Please use a smaller value"
                             );
                         }
                     }
                     Err(_) => {
                         anyhow::bail!(
-                            "RekeyLimit data limit '{}' at line {} is invalid. \
-                             Use 'default', 'none', or a number with optional suffix (K/M/G/T)",
-                            data_limit,
-                            line_number
+                            "RekeyLimit data limit '{data_limit}' at line {line_number} is invalid. \
+                             Use 'default', 'none', or a number with optional suffix (K/M/G/T)"
                         );
                     }
                 }
@@ -363,8 +348,7 @@ pub(super) fn parse_connection_option(
                 // Prevent absurdly long input strings
                 if data_limit.len() > 20 {
                     anyhow::bail!(
-                        "RekeyLimit data limit at line {} is too long (max 20 characters)",
-                        line_number
+                        "RekeyLimit data limit at line {line_number} is too long (max 20 characters)"
                     );
                 }
             }
@@ -412,19 +396,15 @@ pub(super) fn parse_connection_option(
                                 }
                             } else {
                                 anyhow::bail!(
-                                    "RekeyLimit time limit '{}' at line {} would overflow. \
-                                     Please use a smaller value",
-                                    time_limit,
-                                    line_number
+                                    "RekeyLimit time limit '{time_limit}' at line {line_number} would overflow. \
+                                     Please use a smaller value"
                                 );
                             }
                         }
                         Err(_) => {
                             anyhow::bail!(
-                                "RekeyLimit time limit '{}' at line {} is invalid. \
-                                 Use 'none' or a number with optional suffix (s/m/h/d/w)",
-                                time_limit,
-                                line_number
+                                "RekeyLimit time limit '{time_limit}' at line {line_number} is invalid. \
+                                 Use 'none' or a number with optional suffix (s/m/h/d/w)"
                             );
                         }
                     }
@@ -432,8 +412,7 @@ pub(super) fn parse_connection_option(
                     // Prevent absurdly long input strings
                     if time_limit.len() > 20 {
                         anyhow::bail!(
-                            "RekeyLimit time limit at line {} is too long (max 20 characters)",
-                            line_number
+                            "RekeyLimit time limit at line {line_number} is too long (max 20 characters)"
                         );
                     }
                 }
@@ -443,8 +422,7 @@ pub(super) fn parse_connection_option(
             let combined = args.join(" ");
             if combined.len() > 50 {
                 anyhow::bail!(
-                    "RekeyLimit value at line {} is too long (max 50 characters total)",
-                    line_number
+                    "RekeyLimit value at line {line_number} is too long (max 50 characters total)"
                 );
             }
 
