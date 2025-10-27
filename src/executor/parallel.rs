@@ -384,22 +384,38 @@ impl ParallelExecutor {
         &self,
         results: Vec<Result<ExecutionResult, tokio::task::JoinError>>,
     ) -> Result<Vec<ExecutionResult>> {
-        let mut execution_results = Vec::new();
-        for result in results {
-            match result {
-                Ok(exec_result) => execution_results.push(exec_result),
-                Err(e) => {
-                    tracing::error!("Task failed: {}", e);
-                }
-            }
-        }
+        // Identify main rank before collecting results
+        let main_idx = RankDetector::identify_main_rank(&self.nodes);
 
-        // Identify and mark the main rank
-        if let Some(main_idx) = RankDetector::identify_main_rank(&self.nodes) {
-            // Find the result corresponding to the main rank node
-            // The results should be in the same order as nodes
-            if let Some(main_result) = execution_results.get_mut(main_idx) {
-                main_result.is_main_rank = true;
+        let mut execution_results = Vec::new();
+        for (idx, result) in results.into_iter().enumerate() {
+            match result {
+                Ok(mut exec_result) => {
+                    // Mark as main rank if this index matches
+                    if Some(idx) == main_idx {
+                        exec_result.is_main_rank = true;
+                    }
+                    execution_results.push(exec_result);
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "Task failed for node {}: {}",
+                        self.nodes
+                            .get(idx)
+                            .map(|n| n.host.as_str())
+                            .unwrap_or("unknown"),
+                        e
+                    );
+                    // Create a failed result to maintain index mapping
+                    if let Some(node) = self.nodes.get(idx) {
+                        let failed_result = ExecutionResult {
+                            node: node.clone(),
+                            result: Err(anyhow::anyhow!("Task execution failed: {}", e)),
+                            is_main_rank: Some(idx) == main_idx,
+                        };
+                        execution_results.push(failed_result);
+                    }
+                }
             }
         }
 

@@ -101,6 +101,7 @@ impl RankDetector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn test_empty_nodes_returns_none() {
@@ -121,6 +122,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_backendai_role_detection() {
         // Set environment variable
         env::set_var("BACKENDAI_CLUSTER_ROLE", "main");
@@ -132,6 +134,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_backendai_role_case_insensitive() {
         env::set_var("BACKENDAI_CLUSTER_ROLE", "MAIN");
         assert!(RankDetector::is_backendai_main());
@@ -144,6 +147,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_backendai_role_non_main() {
         env::set_var("BACKENDAI_CLUSTER_ROLE", "sub");
         assert!(!RankDetector::is_backendai_main());
@@ -153,6 +157,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_backendai_host_matching() {
         let nodes = vec![
             Node::new("host1".to_string(), 22, "user".to_string()),
@@ -173,6 +178,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_backendai_host_not_found_fallback() {
         let nodes = vec![
             Node::new("host1".to_string(), 22, "user".to_string()),

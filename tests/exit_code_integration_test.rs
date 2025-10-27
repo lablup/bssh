@@ -20,6 +20,7 @@
 use bssh::executor::{ExecutionResult, ExitCodeStrategy, RankDetector};
 use bssh::node::Node;
 use bssh::ssh::client::CommandResult;
+use serial_test::serial;
 
 /// Helper to create a success result
 fn success_result(host: &str) -> ExecutionResult {
@@ -130,6 +131,7 @@ fn test_hybrid_strategy_main_fails() {
 }
 
 #[test]
+#[serial]
 fn test_backendai_main_rank_detection() {
     // Set Backend.AI environment
     std::env::set_var("BACKENDAI_CLUSTER_ROLE", "main");

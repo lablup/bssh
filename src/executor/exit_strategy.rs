@@ -391,4 +391,24 @@ mod tests {
         let exit_code = ExitCodeStrategy::MainRankWithFailureCheck.calculate(&results, None);
         assert_eq!(exit_code, 0);
     }
+
+    #[test]
+    fn test_large_exit_code() {
+        // Test with exit code that would overflow i32 if not handled properly
+        let large_exit_code = u32::MAX; // 4294967295
+        let results = vec![ExecutionResult {
+            node: Node::new("host1".to_string(), 22, "user".to_string()),
+            result: Ok(CommandResult {
+                host: "host1".to_string(),
+                output: Vec::new(),
+                stderr: Vec::new(),
+                exit_status: large_exit_code,
+            }),
+            is_main_rank: true,
+        }];
+
+        // Should handle large exit codes without panic
+        let exit_code = ExitCodeStrategy::MainRank.calculate(&results, Some(0));
+        assert_eq!(exit_code, i32::MAX); // Should be clamped to i32::MAX
+    }
 }
