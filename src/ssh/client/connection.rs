@@ -65,12 +65,19 @@ impl SshClient {
         auth_method: &AuthMethod,
         strict_mode: StrictHostKeyChecking,
     ) -> Result<Client> {
+        // SECURITY: Add rate limiting before connection attempts
+        const RATE_LIMIT_DELAY: Duration = Duration::from_millis(100);
+        tokio::time::sleep(RATE_LIMIT_DELAY).await;
+
+        // SECURITY: Capture start time for timing attack mitigation
+        let start_time = std::time::Instant::now();
+
         let addr = (self.host.as_str(), self.port);
         let check_method = crate::ssh::known_hosts::get_check_method(strict_mode);
 
         let connect_timeout = Duration::from_secs(SSH_CONNECT_TIMEOUT_SECS);
 
-        match tokio::time::timeout(
+        let result = match tokio::time::timeout(
             connect_timeout,
             Client::connect(addr, &self.username, auth_method.clone(), check_method),
         )
@@ -114,7 +121,17 @@ impl SshClient {
                 "Connection timeout after {SSH_CONNECT_TIMEOUT_SECS} seconds. \
                      Please check if the host is reachable and SSH service is running."
             )),
+        };
+
+        // SECURITY: Normalize timing to prevent timing attacks
+        // Ensure all authentication attempts take at least 500ms to complete
+        const MIN_AUTH_DURATION: Duration = Duration::from_millis(500);
+        let elapsed = start_time.elapsed();
+        if elapsed < MIN_AUTH_DURATION {
+            tokio::time::sleep(MIN_AUTH_DURATION - elapsed).await;
         }
+
+        result
     }
 
     /// Create an SSH connection through jump hosts
