@@ -33,6 +33,9 @@ use super::types::{InteractiveCommand, NodeSession};
 impl InteractiveCommand {
     /// Helper function to establish SSH connection with proper error handling and rate limiting
     /// This eliminates code duplication across different connection paths and prevents brute-force attacks
+    ///
+    /// If initial authentication fails and stdin is a TTY (interactive terminal), this function will
+    /// automatically retry with password authentication, matching OpenSSH behavior.
     async fn establish_connection(
         addr: (&str, u16),
         username: &str,
@@ -40,6 +43,7 @@ impl InteractiveCommand {
         check_method: ServerCheckMethod,
         host: &str,
         port: u16,
+        use_password_flag: bool,
     ) -> Result<Client> {
         const SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
         let connect_timeout = Duration::from_secs(SSH_CONNECT_TIMEOUT_SECS);
@@ -51,17 +55,57 @@ impl InteractiveCommand {
         const RATE_LIMIT_DELAY: Duration = Duration::from_millis(100);
         tokio::time::sleep(RATE_LIMIT_DELAY).await;
 
-        timeout(
+        // Try initial authentication method
+        let connect_result = timeout(
             connect_timeout,
-            Client::connect(addr, username, auth_method, check_method),
+            Client::connect(addr, username, auth_method.clone(), check_method.clone()),
         )
-        .await
-        .with_context(|| {
-            format!(
-                "Connection timeout: Failed to connect to {host}:{port} after {SSH_CONNECT_TIMEOUT_SECS} seconds"
-            )
-        })?
-        .with_context(|| format!("SSH connection failed to {host}:{port}"))
+        .await;
+
+        // Determine if we should attempt password fallback
+        // Only fallback if:
+        // 1. --password flag was NOT explicitly set (use_password_flag is false)
+        // 2. Current auth method is NOT already password
+        // 3. We're in an interactive terminal (stdin is TTY)
+        let should_try_password_fallback = !use_password_flag
+            && !matches!(auth_method, AuthMethod::Password(_))
+            && atty::is(atty::Stream::Stdin);
+
+        match connect_result {
+            Ok(Ok(client)) => Ok(client),
+            Ok(Err(_)) | Err(_) if should_try_password_fallback => {
+                tracing::info!(
+                    "Initial authentication failed for {username}@{host}:{port}, attempting password authentication"
+                );
+
+                // Retry with password authentication (will prompt user)
+                let password_auth =
+                    crate::ssh::AuthContext::new(username.to_string(), host.to_string())
+                        .with_context(|| format!("Invalid credentials for {username}@{host}"))?
+                        .with_password(true)
+                        .determine_method()
+                        .await
+                        .with_context(|| "Failed to determine password authentication method")?;
+
+                timeout(
+                    connect_timeout,
+                    Client::connect(addr, username, password_auth, check_method),
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "Connection timeout: Failed to connect to {host}:{port} after {SSH_CONNECT_TIMEOUT_SECS} seconds"
+                    )
+                })?
+                .with_context(|| format!("SSH connection failed to {host}:{port}"))
+            }
+            Ok(Err(e)) => Err(e).with_context(|| format!("SSH connection failed to {host}:{port}")),
+            Err(_) => {
+                anyhow::bail!(
+                    "Connection timeout: Failed to connect to {host}:{port} after {SSH_CONNECT_TIMEOUT_SECS} seconds"
+                )
+            }
+        }
     }
 
     /// Determine authentication method based on node and config (same logic as exec mode)
@@ -155,6 +199,7 @@ impl InteractiveCommand {
                     check_method.clone(),
                     &node.host,
                     node.port,
+                    self.use_password,
                 )
                 .await?
             } else {
@@ -230,6 +275,7 @@ impl InteractiveCommand {
                 check_method,
                 &node.host,
                 node.port,
+                self.use_password,
             )
             .await?
         };
@@ -291,6 +337,7 @@ impl InteractiveCommand {
                     check_method.clone(),
                     &node.host,
                     node.port,
+                    self.use_password,
                 )
                 .await?
             } else {
@@ -366,6 +413,7 @@ impl InteractiveCommand {
                 check_method,
                 &node.host,
                 node.port,
+                self.use_password,
             )
             .await?
         };
