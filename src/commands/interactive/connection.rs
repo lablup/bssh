@@ -51,7 +51,10 @@ impl InteractiveCommand {
         const RATE_LIMIT_DELAY: Duration = Duration::from_millis(100);
         tokio::time::sleep(RATE_LIMIT_DELAY).await;
 
-        timeout(
+        // SECURITY: Capture start time for timing attack mitigation
+        let start_time = std::time::Instant::now();
+
+        let result = timeout(
             connect_timeout,
             Client::connect(addr, username, auth_method, check_method),
         )
@@ -61,7 +64,19 @@ impl InteractiveCommand {
                 "Connection timeout: Failed to connect to {host}:{port} after {SSH_CONNECT_TIMEOUT_SECS} seconds"
             )
         })?
-        .with_context(|| format!("SSH connection failed to {host}:{port}"))
+        .with_context(|| format!("SSH connection failed to {host}:{port}"));
+
+        // SECURITY: Normalize timing to prevent timing attacks
+        // Ensure all authentication attempts take at least 500ms to complete
+        // This prevents attackers from inferring whether authentication failed due to
+        // invalid username vs invalid password based on response time
+        const MIN_AUTH_DURATION: Duration = Duration::from_millis(500);
+        let elapsed = start_time.elapsed();
+        if elapsed < MIN_AUTH_DURATION {
+            tokio::time::sleep(MIN_AUTH_DURATION - elapsed).await;
+        }
+
+        result
     }
 
     /// Determine authentication method based on node and config (same logic as exec mode)
