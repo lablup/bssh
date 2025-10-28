@@ -5,6 +5,18 @@ All notable changes to bssh will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.1] - 2025-10-28
+
+### Fixed
+- **Password Authentication Fallback in Interactive Mode** (PR #65)
+  - Re-implemented password authentication fallback logic for interactive mode
+  - Fixed issue where password prompt was not appearing after key-based authentication failed
+  - Ensured proper authentication flow in interactive sessions
+- **Test Race Condition** (commit d2e8ce9)
+  - Added `#[serial]` attribute to tests calling `RankDetector` to prevent environment variable race conditions
+  - Tests now run sequentially when accessing shared environment state
+  - Prevents intermittent test failures due to concurrent environment variable access
+
 ## [1.2.0] - 2025-10-27
 
 ### BREAKING CHANGES
@@ -388,6 +400,7 @@ None
 - russh library for native SSH implementation
 - Cross-platform support (Linux and macOS)
 
+[1.2.1]: https://github.com/lablup/bssh/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/lablup/bssh/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/lablup/bssh/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/lablup/bssh/compare/v0.9.1...v1.0.0

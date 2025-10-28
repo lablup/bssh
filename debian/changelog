@@ -1,3 +1,16 @@
+bssh (1.2.1-1~jammy1) jammy; urgency=medium
+
+  * v1.2.1
+  ### Bug Fixes
+  - **Password Authentication**: Fixed password authentication fallback in interactive mode
+    - Re-implemented proper password authentication fallback logic
+    - Ensured password prompt works correctly after key-based auth fails
+  - **Test Race Condition**: Fixed race condition in RankDetector tests
+    - Added #[serial] attribute to prevent environment variable conflicts
+    - Tests now run sequentially when accessing shared environment state
+
+ -- Jeongkyu Shin <inureyes@gmail.com>  Mon, 28 Oct 2025 00:00:00 +0900
+
 bssh (1.2.0-1~jammy1) jammy; urgency=medium
 
   * v1.2.0
