@@ -58,6 +58,8 @@ pub struct AuthContext {
     pub use_agent: bool,
     /// Whether to use password authentication
     pub use_password: bool,
+    /// Whether to allow automatic password fallback (for interactive mode)
+    pub allow_password_fallback: bool,
     /// Whether to use macOS Keychain for passphrase storage/retrieval (macOS only)
     #[cfg(target_os = "macos")]
     pub use_keychain: bool,
@@ -99,6 +101,7 @@ impl AuthContext {
             key_path: None,
             use_agent: false,
             use_password: false,
+            allow_password_fallback: false,
             #[cfg(target_os = "macos")]
             use_keychain: false,
             username,
@@ -139,6 +142,15 @@ impl AuthContext {
     /// Enable password authentication.
     pub fn with_password(mut self, use_password: bool) -> Self {
         self.use_password = use_password;
+        self
+    }
+
+    /// Enable automatic password fallback (for interactive mode).
+    ///
+    /// When enabled, password authentication will be attempted automatically
+    /// after SSH key authentication fails, matching OpenSSH behavior.
+    pub fn with_password_fallback(mut self, allow: bool) -> Self {
+        self.allow_password_fallback = allow;
         self
     }
 
@@ -223,36 +235,58 @@ impl AuthContext {
         match self.default_key_auth().await {
             Ok(auth) => Ok(auth),
             Err(_) => {
-                // Priority 6: Fallback to password authentication WITH USER CONSENT
-                // Unlike OpenSSH, we ask for explicit consent before password fallback for security
+                // Priority 6: Fallback to password authentication
                 // Check if we're in an interactive terminal
-                if atty::is(atty::Stream::Stdin) && self.prompt_password_fallback_consent().await? {
-                    tracing::debug!("User consented to password authentication fallback");
-                    self.password_auth().await
-                } else if atty::is(atty::Stream::Stdin) {
-                    // User declined password fallback
-                    anyhow::bail!(
-                        "SSH authentication failed: All key-based methods failed.\n\
-                         \n\
-                         Tried:\n\
-                         - SSH agent: {}\n\
-                         - Default SSH keys: Not found or not authorized\n\
-                         \n\
-                         User declined password authentication fallback.\n\
-                         \n\
-                         Solutions:\n\
-                         - Use --password flag to explicitly enable password authentication\n\
-                         - Start SSH agent and add keys with 'ssh-add'\n\
-                         - Specify a key file with -i/--identity\n\
-                         - Ensure ~/.ssh/id_ed25519 or ~/.ssh/id_rsa exists and is authorized",
-                        if cfg!(target_os = "windows") {
-                            "Not supported on Windows"
-                        } else if std::env::var_os("SSH_AUTH_SOCK").is_some() {
-                            "Available but no identities authorized"
-                        } else {
-                            "Not available (SSH_AUTH_SOCK not set)"
-                        }
-                    )
+                if atty::is(atty::Stream::Stdin) {
+                    // If allow_password_fallback is set (interactive mode), skip consent prompt
+                    // Otherwise, ask for explicit user consent for security
+                    let should_attempt_password = if self.allow_password_fallback {
+                        tracing::info!("SSH key authentication failed, falling back to password authentication");
+
+                        // SECURITY: Add rate limiting before password fallback to prevent rapid attempts
+                        const FALLBACK_DELAY: Duration = Duration::from_secs(1);
+                        tokio::time::sleep(FALLBACK_DELAY).await;
+                        true
+                    } else {
+                        self.prompt_password_fallback_consent().await?
+                    };
+
+                    if should_attempt_password {
+                        tracing::debug!("Attempting password authentication fallback");
+
+                        // SECURITY: Audit log the password fallback attempt
+                        tracing::warn!(
+                            "Password authentication fallback attempted for {}@{} after key auth failure",
+                            self.username,
+                            self.host
+                        );
+
+                        self.password_auth().await
+                    } else {
+                        // User declined password fallback
+                        anyhow::bail!(
+                            "SSH authentication failed: All key-based methods failed.\n\
+                             \n\
+                             Tried:\n\
+                             - SSH agent: {}\n\
+                             - Default SSH keys: Not found or not authorized\n\
+                             \n\
+                             User declined password authentication fallback.\n\
+                             \n\
+                             Solutions:\n\
+                             - Use --password flag to explicitly enable password authentication\n\
+                             - Start SSH agent and add keys with 'ssh-add'\n\
+                             - Specify a key file with -i/--identity\n\
+                             - Ensure ~/.ssh/id_ed25519 or ~/.ssh/id_rsa exists and is authorized",
+                            if cfg!(target_os = "windows") {
+                                "Not supported on Windows"
+                            } else if std::env::var_os("SSH_AUTH_SOCK").is_some() {
+                                "Available but no identities authorized"
+                            } else {
+                                "Not available (SSH_AUTH_SOCK not set)"
+                            }
+                        )
+                    }
                 } else {
                     // Non-interactive environment - cannot prompt for password
                     anyhow::bail!(
