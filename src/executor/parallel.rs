@@ -637,8 +637,44 @@ impl ParallelExecutor {
         use std::time::Duration;
         use tokio::fs;
 
-        // Create output directory if it doesn't exist
-        fs::create_dir_all(output_dir).await?;
+        // Validate output directory
+        if output_dir.exists() && !output_dir.is_dir() {
+            return Err(anyhow::anyhow!(
+                "Output path exists but is not a directory: {}",
+                output_dir.display()
+            ));
+        }
+
+        // Create output directory if it doesn't exist with proper error handling
+        if let Err(e) = fs::create_dir_all(output_dir).await {
+            return Err(anyhow::anyhow!(
+                "Failed to create output directory '{}': {} - Check permissions",
+                output_dir.display(),
+                e
+            ));
+        }
+
+        // Check if we can write to the directory
+        let test_file = output_dir.join(".bssh_test_write");
+        match fs::File::create(&test_file).await {
+            Ok(_) => {
+                // Clean up test file
+                let _ = fs::remove_file(&test_file).await;
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "Output directory '{}' is not writable: {}",
+                    output_dir.display(),
+                    e
+                ));
+            }
+        }
+
+        // Log output directory for user reference
+        tracing::info!(
+            "Writing node outputs to directory: {}",
+            output_dir.display()
+        );
 
         let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
 
@@ -664,27 +700,59 @@ impl ParallelExecutor {
             let stdout_path = output_dir.join(format!("{hostname}_{timestamp}.stdout"));
             let stderr_path = output_dir.join(format!("{hostname}_{timestamp}.stderr"));
 
-            // Write stdout
+            // Write stdout with error handling
             if !stream.stdout().is_empty() {
-                fs::write(&stdout_path, stream.stdout()).await?;
-                // Use synchronized output to prevent interleaving
-                let writer = super::output_sync::NodeOutputWriter::new(&stream.node.host);
-                if let Err(e) =
-                    writer.write_stdout(&format!("Output saved to {}", stdout_path.display()))
-                {
-                    tracing::error!("Failed to write status for {}: {}", stream.node.host, e);
+                match fs::write(&stdout_path, stream.stdout()).await {
+                    Ok(_) => {
+                        // Use synchronized output to prevent interleaving
+                        let writer = super::output_sync::NodeOutputWriter::new(&stream.node.host);
+                        if let Err(e) = writer
+                            .write_stdout(&format!("Output saved to {}", stdout_path.display()))
+                        {
+                            tracing::error!(
+                                "Failed to write status for {}: {}",
+                                stream.node.host,
+                                e
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "Failed to write stdout for {} to {}: {}",
+                            stream.node.host,
+                            stdout_path.display(),
+                            e
+                        );
+                        // Continue processing other nodes despite error
+                    }
                 }
             }
 
-            // Write stderr
+            // Write stderr with error handling
             if !stream.stderr().is_empty() {
-                fs::write(&stderr_path, stream.stderr()).await?;
-                // Use synchronized output to prevent interleaving
-                let writer = super::output_sync::NodeOutputWriter::new(&stream.node.host);
-                if let Err(e) =
-                    writer.write_stdout(&format!("Errors saved to {}", stderr_path.display()))
-                {
-                    tracing::error!("Failed to write status for {}: {}", stream.node.host, e);
+                match fs::write(&stderr_path, stream.stderr()).await {
+                    Ok(_) => {
+                        // Use synchronized output to prevent interleaving
+                        let writer = super::output_sync::NodeOutputWriter::new(&stream.node.host);
+                        if let Err(e) = writer
+                            .write_stdout(&format!("Errors saved to {}", stderr_path.display()))
+                        {
+                            tracing::error!(
+                                "Failed to write status for {}: {}",
+                                stream.node.host,
+                                e
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "Failed to write stderr for {} to {}: {}",
+                            stream.node.host,
+                            stderr_path.display(),
+                            e
+                        );
+                        // Continue processing other nodes despite error
+                    }
                 }
             }
 
