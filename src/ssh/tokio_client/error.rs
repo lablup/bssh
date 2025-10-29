@@ -51,6 +51,4 @@ pub enum Error {
     PortForwardingNotSupported,
     #[error("Global request failed: {0}")]
     GlobalRequestFailed(String),
-    #[error("Task join error: {0}")]
-    JoinError(#[from] tokio::task::JoinError),
 }
