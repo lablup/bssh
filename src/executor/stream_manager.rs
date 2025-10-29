@@ -22,6 +22,66 @@ use crate::node::Node;
 use crate::ssh::tokio_client::CommandOutput;
 use tokio::sync::mpsc;
 
+/// Maximum buffer size per stream (10MB)
+/// This prevents memory exhaustion when nodes produce large amounts of output
+const MAX_BUFFER_SIZE: usize = 10 * 1024 * 1024; // 10MB
+
+/// A rolling buffer that maintains a fixed maximum size
+/// When the buffer exceeds MAX_BUFFER_SIZE, old data is discarded
+#[derive(Debug)]
+struct RollingBuffer {
+    data: Vec<u8>,
+    total_bytes_received: usize,
+    bytes_dropped: usize,
+}
+
+impl RollingBuffer {
+    fn new() -> Self {
+        Self {
+            data: Vec::new(),
+            total_bytes_received: 0,
+            bytes_dropped: 0,
+        }
+    }
+
+    /// Append data to the buffer, dropping old data if necessary
+    fn append(&mut self, new_data: &[u8]) {
+        self.total_bytes_received += new_data.len();
+        self.data.extend_from_slice(new_data);
+
+        // If buffer exceeds maximum size, keep only the most recent data
+        if self.data.len() > MAX_BUFFER_SIZE {
+            let overflow = self.data.len() - MAX_BUFFER_SIZE;
+            self.bytes_dropped += overflow;
+
+            // Remove old data from the beginning
+            self.data.drain(0..overflow);
+
+            // Log warning about dropped data
+            tracing::warn!(
+                "Buffer overflow: dropped {} bytes (total dropped: {})",
+                overflow,
+                self.bytes_dropped
+            );
+        }
+    }
+
+    /// Get the current buffer contents
+    fn as_slice(&self) -> &[u8] {
+        &self.data
+    }
+
+    /// Take the buffer contents and clear it
+    fn take(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.data)
+    }
+
+    /// Check if data has been dropped
+    fn has_overflow(&self) -> bool {
+        self.bytes_dropped > 0
+    }
+}
+
 /// Execution status for a node's command
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExecutionStatus {
@@ -41,15 +101,18 @@ pub enum ExecutionStatus {
 /// along with execution status and exit code. This allows for
 /// independent processing of each node's output without blocking
 /// on other nodes.
+///
+/// Buffers are limited to MAX_BUFFER_SIZE to prevent memory exhaustion.
+/// When buffers exceed this limit, old data is automatically discarded.
 pub struct NodeStream {
     /// The node this stream is associated with
     pub node: Node,
     /// Channel receiver for command output
     receiver: mpsc::Receiver<CommandOutput>,
-    /// Buffer for standard output
-    stdout_buffer: Vec<u8>,
-    /// Buffer for standard error
-    stderr_buffer: Vec<u8>,
+    /// Buffer for standard output (with overflow protection)
+    stdout_buffer: RollingBuffer,
+    /// Buffer for standard error (with overflow protection)
+    stderr_buffer: RollingBuffer,
     /// Current execution status
     status: ExecutionStatus,
     /// Exit code (if completed)
@@ -64,8 +127,8 @@ impl NodeStream {
         Self {
             node,
             receiver,
-            stdout_buffer: Vec::new(),
-            stderr_buffer: Vec::new(),
+            stdout_buffer: RollingBuffer::new(),
+            stderr_buffer: RollingBuffer::new(),
             status: ExecutionStatus::Pending,
             exit_code: None,
             closed: false,
@@ -90,10 +153,22 @@ impl NodeStream {
                     received_data = true;
                     match output {
                         CommandOutput::StdOut(data) => {
-                            self.stdout_buffer.extend_from_slice(&data);
+                            self.stdout_buffer.append(&data);
+                            if self.stdout_buffer.has_overflow() {
+                                tracing::warn!(
+                                    "Node {} stdout buffer overflow - old data discarded",
+                                    self.node.host
+                                );
+                            }
                         }
                         CommandOutput::StdErr(data) => {
-                            self.stderr_buffer.extend_from_slice(&data);
+                            self.stderr_buffer.append(&data);
+                            if self.stderr_buffer.has_overflow() {
+                                tracing::warn!(
+                                    "Node {} stderr buffer overflow - old data discarded",
+                                    self.node.host
+                                );
+                            }
                         }
                     }
                 }
@@ -107,6 +182,7 @@ impl NodeStream {
                     if self.status != ExecutionStatus::Failed(String::new()) {
                         self.status = ExecutionStatus::Completed;
                     }
+                    tracing::debug!("Channel disconnected for node {}", self.node.host);
                     break;
                 }
             }
@@ -117,26 +193,26 @@ impl NodeStream {
 
     /// Get reference to stdout buffer
     pub fn stdout(&self) -> &[u8] {
-        &self.stdout_buffer
+        self.stdout_buffer.as_slice()
     }
 
     /// Get reference to stderr buffer
     pub fn stderr(&self) -> &[u8] {
-        &self.stderr_buffer
+        self.stderr_buffer.as_slice()
     }
 
     /// Take stdout buffer and clear it
     ///
     /// This is useful for consuming output in chunks while streaming
     pub fn take_stdout(&mut self) -> Vec<u8> {
-        std::mem::take(&mut self.stdout_buffer)
+        self.stdout_buffer.take()
     }
 
     /// Take stderr buffer and clear it
     ///
     /// This is useful for consuming output in chunks while streaming
     pub fn take_stderr(&mut self) -> Vec<u8> {
-        std::mem::take(&mut self.stderr_buffer)
+        self.stderr_buffer.take()
     }
 
     /// Get current execution status
