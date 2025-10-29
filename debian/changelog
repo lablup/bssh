@@ -1,3 +1,22 @@
+bssh (1.2.2-1~jammy1) jammy; urgency=medium
+
+  * v1.2.2
+  ### Bug Fixes
+  - **Backend.AI Auto-detection**: Improved host heuristics for Backend.AI environments
+    - Added localhost and localhost.localdomain detection
+    - Added IPv4 address validation (127.0.0.1, 192.168.x.x, etc.)
+    - Enhanced detection for user@host, host:port, FQDN, IPv6 patterns
+    - Users can now use `bssh localhost "command"` naturally in Backend.AI
+    - 16 comprehensive tests added for host detection logic
+
+  ### Technical Details
+  - Extracted testable `looks_like_host_specification()` function
+  - Added `is_ipv4_address()` helper with strict validation
+  - Performance optimized with early returns
+  - Updated ARCHITECTURE.md with detailed documentation
+
+ -- Jeongkyu Shin <inureyes@gmail.com>  Tue, 29 Oct 2025 00:00:00 +0900
+
 bssh (1.2.1-1~jammy1) jammy; urgency=medium
 
   * v1.2.1

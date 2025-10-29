@@ -1029,6 +1029,7 @@ See the [LICENSE](./LICENSE) file for details.
 ## Changelog
 
 ### Recent Updates
+- **v1.2.2 (2025/10/29):** Improve Backend.AI auto-detection with comprehensive host heuristics (localhost, IPv4, user@host, FQDN, IPv6)
 - **v1.2.1 (2025/10/28):** Fix password authentication fallback in interactive mode and test race condition with RankDetector
 - **v1.2.0 (2025/10/27):** Add exit code strategy with main rank exit code (matching MPI tools), comprehensive tests, and improved documentation
 - **v1.1.0 (2025/10/24):** Add macOS Keychain integration for SSH key passphrases (UseKeychain option) with automatic password fallback and ProxyUseFdpass support
