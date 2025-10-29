@@ -100,6 +100,103 @@ See "Issue #33 Refactoring Details" section below for comprehensive breakdown.
 - Environment variable support via `env` attribute
 - **Refactored (2025-08-22):** Separated command logic from main.rs
 - **Refactored (2025-10-17):** Further split into app modules for initialization, dispatching, and utilities
+- **Fixed (2025-10-29, Issue #66):** Backend.AI environment auto-detection now works correctly when executing commands
+
+**Backend.AI Auto-detection (Fixed in Issue #66):**
+
+The initialization flow (`app/initialization.rs`) performs early detection of Backend.AI environments with improved host specification heuristics:
+
+```rust
+// looks_like_host_specification() function detects:
+// 1. Special hostnames (localhost, localhost.localdomain)
+// 2. IPv4 addresses (e.g., 127.0.0.1, 192.168.1.1)
+// 3. user@host format (contains '@')
+// 4. host:port format (contains ':')
+// 5. SSH URI format (starts with 'ssh://')
+// 6. FQDN format (multiple dots, no spaces)
+// 7. IPv6 format (starts with '[')
+
+// Early Backend.AI environment detection in initialize_app()
+// Skip auto-detection if destination looks like a host specification
+let destination_looks_like_host = cli
+    .destination
+    .as_ref()
+    .is_some_and(|dest| looks_like_host_specification(dest));
+
+if Config::from_backendai_env().is_some()
+    && cli.cluster.is_none()
+    && cli.hosts.is_none()
+    && !destination_looks_like_host
+{
+    cli.cluster = Some("bai_auto".to_string());
+    tracing::debug!("Auto-detected Backend.AI environment, setting cluster to 'bai_auto'");
+}
+```
+
+**Host Detection Heuristics:**
+
+The `looks_like_host_specification()` function uses the following detection patterns (in order):
+
+1. **Special hostnames** (checked first for performance):
+   - `localhost`
+   - `localhost.localdomain`
+
+2. **IPv4 addresses** (validated format):
+   - Must have exactly 4 octets separated by dots
+   - Each octet must be 0-255 (valid u8)
+   - Examples: `127.0.0.1`, `192.168.1.1`, `10.0.0.1`
+
+3. **Early return patterns** (performance optimization):
+   - `user@host` format (contains `@`)
+   - IPv6 format (starts with `[`)
+   - SSH URI format (starts with `ssh://`)
+   - `host:port` format (contains `:`)
+
+4. **FQDN format** (last check):
+   - Multiple dots and no spaces
+   - Valid domain structure (not empty parts, no leading/trailing dots)
+
+**Key Points:**
+- Detection happens BEFORE mode determination (`is_ssh_mode()`)
+- Auto-sets `cli.cluster` to `"bai_auto"` when Backend.AI environment variables are present
+- Only activates when no explicit cluster (`-C`) or hosts (`-H`) specified
+- Skips auto-detection if destination contains host indicators
+- Prevents commands from being misinterpreted as hostnames in SSH mode
+- Respects explicit user configuration over auto-detection
+
+**Using SSH Single-Host Mode in Backend.AI Environments:**
+
+When Backend.AI environment variables are set but you want to use bssh as a regular SSH client:
+
+```bash
+# Method 1: localhost (now works directly!)
+bssh localhost "whoami"
+bssh localhost.localdomain "whoami"
+
+# Method 2: IPv4 address (now works directly!)
+bssh 127.0.0.1 "whoami"
+bssh 192.168.1.100 "whoami"
+
+# Method 3: user@host format
+bssh user@localhost "whoami"
+bssh user@192.168.1.1 "whoami"
+
+# Method 4: host:port format
+bssh localhost:22 "whoami"
+bssh 192.168.1.1:2222 "whoami"
+
+# Method 5: FQDN format
+bssh server.example.com "whoami"
+
+# Method 6: -H flag (explicit host specification)
+bssh -H myserver "whoami"
+
+# Method 7: Temporarily unset environment variables
+unset BACKENDAI_CLUSTER_HOSTS
+bssh myserver "whoami"
+```
+
+**Note:** With the improved heuristics (Issue #66), `localhost` and IPv4 addresses are now automatically recognized as host specifications, making SSH single-host mode more intuitive in Backend.AI environments. Simple hostnames without indicators (like `myserver`) should use `-H` flag or other methods above.
 
 **Implementation:**
 ```rust

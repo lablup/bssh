@@ -37,10 +37,123 @@ pub struct AppContext {
     pub max_parallel: usize,
 }
 
+/// Check if a string is a valid IPv4 address.
+///
+/// Validates that the string has exactly 4 octets separated by dots,
+/// and each octet is a valid u8 (0-255).
+///
+/// # Examples
+/// ```
+/// use bssh::app::initialization::is_ipv4_address;
+///
+/// assert!(is_ipv4_address("127.0.0.1"));
+/// assert!(is_ipv4_address("192.168.1.1"));
+/// assert!(is_ipv4_address("0.0.0.0"));
+/// assert!(is_ipv4_address("255.255.255.255"));
+/// assert!(!is_ipv4_address("999.999.999.999"));
+/// assert!(!is_ipv4_address("1.2.3"));
+/// assert!(!is_ipv4_address("1.2.3.4.5"));
+/// ```
+pub fn is_ipv4_address(s: &str) -> bool {
+    let parts: Vec<&str> = s.split('.').collect();
+
+    // Must have exactly 4 octets
+    if parts.len() != 4 {
+        return false;
+    }
+
+    // Each octet must be a valid u8 (0-255)
+    parts.iter().all(|part| part.parse::<u8>().is_ok())
+}
+
+/// Check if a string looks like a host specification rather than a command.
+///
+/// This heuristic detects explicit host patterns to avoid misinterpreting them as commands
+/// in Backend.AI auto-detection scenarios.
+///
+/// Detected patterns:
+/// - Special hostnames (`localhost`, `localhost.localdomain`)
+/// - IPv4 addresses (e.g., `127.0.0.1`, `192.168.1.1`)
+/// - `user@host` format (contains `@`)
+/// - `host:port` format (contains `:`)
+/// - SSH URI format (starts with `ssh://`)
+/// - FQDN format (multiple `.` and no spaces)
+/// - IPv6 format (starts with `[`)
+///
+/// # Examples
+/// ```
+/// use bssh::app::initialization::looks_like_host_specification;
+///
+/// assert!(looks_like_host_specification("localhost"));
+/// assert!(looks_like_host_specification("localhost.localdomain"));
+/// assert!(looks_like_host_specification("127.0.0.1"));
+/// assert!(looks_like_host_specification("192.168.1.1"));
+/// assert!(looks_like_host_specification("user@localhost"));
+/// assert!(looks_like_host_specification("localhost:22"));
+/// assert!(looks_like_host_specification("server.example.com"));
+/// assert!(looks_like_host_specification("ssh://host"));
+/// assert!(looks_like_host_specification("[::1]:22"));
+/// assert!(!looks_like_host_specification("whoami"));
+/// assert!(!looks_like_host_specification("echo hello"));
+/// ```
+pub fn looks_like_host_specification(s: &str) -> bool {
+    const MIN_FQDN_PARTS: usize = 2;
+
+    // Special hostnames (checked early for performance)
+    if s == "localhost" || s == "localhost.localdomain" {
+        return true;
+    }
+
+    // IPv4 address detection
+    if is_ipv4_address(s) {
+        return true;
+    }
+
+    // Early returns for most common patterns (performance optimization)
+    if s.contains('@') {
+        return true; // user@host format
+    }
+    if s.starts_with('[') {
+        return true; // IPv6 format like [::1]:22
+    }
+    if s.starts_with("ssh://") {
+        return true; // SSH URI format
+    }
+    if s.contains(':') {
+        return true; // host:port format
+    }
+
+    // FQDN format: multiple dots and no spaces (e.g., server.example.com)
+    // Also ensure it's not just dots or starts/ends with dot
+    s.contains('.')
+        && s.split('.').count() >= MIN_FQDN_PARTS
+        && !s.contains(' ')
+        && !s.starts_with('.')
+        && !s.ends_with('.')
+        && s.split('.').any(|part| !part.is_empty())
+}
+
 /// Initialize the application, load configs, and resolve nodes
-pub async fn initialize_app(cli: &Cli, args: &[String]) -> Result<AppContext> {
+pub async fn initialize_app(cli: &mut Cli, args: &[String]) -> Result<AppContext> {
     // Initialize logging
     init_logging(cli.verbose);
+
+    // Early Backend.AI environment detection
+    // Auto-set cluster if Backend.AI environment is detected and no explicit cluster/hosts specified
+    // Skip auto-detection if destination looks like a host specification (user@host, host:port, FQDN, etc.)
+    let destination_looks_like_host = cli
+        .destination
+        .as_ref()
+        .is_some_and(|dest| looks_like_host_specification(dest));
+
+    if Config::from_backendai_env().is_some()
+        && cli.cluster.is_none()
+        && cli.hosts.is_none()
+        && !destination_looks_like_host
+    {
+        cli.cluster = Some("bai_auto".to_string());
+        tracing::debug!("Auto-detected Backend.AI environment, setting cluster to 'bai_auto'");
+    }
 
     // Check if user explicitly specified options
     let has_explicit_config = args.iter().any(|arg| arg == "--config");
