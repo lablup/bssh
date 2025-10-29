@@ -37,6 +37,57 @@ pub struct AppContext {
     pub max_parallel: usize,
 }
 
+/// Check if a string looks like a host specification rather than a command.
+///
+/// This heuristic detects explicit host patterns to avoid misinterpreting them as commands
+/// in Backend.AI auto-detection scenarios.
+///
+/// Detected patterns:
+/// - `user@host` format (contains `@`)
+/// - `host:port` format (contains `:`)
+/// - SSH URI format (starts with `ssh://`)
+/// - FQDN format (multiple `.` and no spaces)
+/// - IPv6 format (starts with `[`)
+///
+/// # Examples
+/// ```
+/// use bssh::app::initialization::looks_like_host_specification;
+///
+/// assert!(looks_like_host_specification("user@localhost"));
+/// assert!(looks_like_host_specification("localhost:22"));
+/// assert!(looks_like_host_specification("server.example.com"));
+/// assert!(looks_like_host_specification("ssh://host"));
+/// assert!(looks_like_host_specification("[::1]:22"));
+/// assert!(!looks_like_host_specification("whoami"));
+/// assert!(!looks_like_host_specification("echo hello"));
+/// ```
+pub fn looks_like_host_specification(s: &str) -> bool {
+    const MIN_FQDN_PARTS: usize = 2;
+
+    // Early returns for most common patterns (performance optimization)
+    if s.contains('@') {
+        return true; // user@host format
+    }
+    if s.starts_with('[') {
+        return true; // IPv6 format like [::1]:22
+    }
+    if s.starts_with("ssh://") {
+        return true; // SSH URI format
+    }
+    if s.contains(':') {
+        return true; // host:port format
+    }
+
+    // FQDN format: multiple dots and no spaces (e.g., server.example.com)
+    // Also ensure it's not just dots or starts/ends with dot
+    s.contains('.')
+        && s.split('.').count() >= MIN_FQDN_PARTS
+        && !s.contains(' ')
+        && !s.starts_with('.')
+        && !s.ends_with('.')
+        && s.split('.').any(|part| !part.is_empty())
+}
+
 /// Initialize the application, load configs, and resolve nodes
 pub async fn initialize_app(cli: &mut Cli, args: &[String]) -> Result<AppContext> {
     // Initialize logging
@@ -45,13 +96,10 @@ pub async fn initialize_app(cli: &mut Cli, args: &[String]) -> Result<AppContext
     // Early Backend.AI environment detection
     // Auto-set cluster if Backend.AI environment is detected and no explicit cluster/hosts specified
     // Skip auto-detection if destination looks like a host specification (user@host, host:port, FQDN, etc.)
-    let destination_looks_like_host = cli.destination.as_ref().is_some_and(|dest| {
-        dest.contains('@')              // user@host format
-        || dest.contains(':')           // host:port format
-        || dest.starts_with("ssh://")   // SSH URI format
-        || (dest.contains('.') && dest.split('.').count() >= 2 && !dest.contains(' '))
-        // FQDN like example.com
-    });
+    let destination_looks_like_host = cli
+        .destination
+        .as_ref()
+        .is_some_and(|dest| looks_like_host_specification(dest));
 
     if Config::from_backendai_env().is_some()
         && cli.cluster.is_none()

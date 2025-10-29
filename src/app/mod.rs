@@ -23,3 +23,6 @@ pub mod initialization;
 pub mod nodes;
 pub mod query;
 pub mod utils;
+
+#[cfg(test)]
+mod initialization_tests;
