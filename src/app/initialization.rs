@@ -37,12 +37,43 @@ pub struct AppContext {
     pub max_parallel: usize,
 }
 
+/// Check if a string is a valid IPv4 address.
+///
+/// Validates that the string has exactly 4 octets separated by dots,
+/// and each octet is a valid u8 (0-255).
+///
+/// # Examples
+/// ```
+/// use bssh::app::initialization::is_ipv4_address;
+///
+/// assert!(is_ipv4_address("127.0.0.1"));
+/// assert!(is_ipv4_address("192.168.1.1"));
+/// assert!(is_ipv4_address("0.0.0.0"));
+/// assert!(is_ipv4_address("255.255.255.255"));
+/// assert!(!is_ipv4_address("999.999.999.999"));
+/// assert!(!is_ipv4_address("1.2.3"));
+/// assert!(!is_ipv4_address("1.2.3.4.5"));
+/// ```
+pub fn is_ipv4_address(s: &str) -> bool {
+    let parts: Vec<&str> = s.split('.').collect();
+
+    // Must have exactly 4 octets
+    if parts.len() != 4 {
+        return false;
+    }
+
+    // Each octet must be a valid u8 (0-255)
+    parts.iter().all(|part| part.parse::<u8>().is_ok())
+}
+
 /// Check if a string looks like a host specification rather than a command.
 ///
 /// This heuristic detects explicit host patterns to avoid misinterpreting them as commands
 /// in Backend.AI auto-detection scenarios.
 ///
 /// Detected patterns:
+/// - Special hostnames (`localhost`, `localhost.localdomain`)
+/// - IPv4 addresses (e.g., `127.0.0.1`, `192.168.1.1`)
 /// - `user@host` format (contains `@`)
 /// - `host:port` format (contains `:`)
 /// - SSH URI format (starts with `ssh://`)
@@ -53,6 +84,10 @@ pub struct AppContext {
 /// ```
 /// use bssh::app::initialization::looks_like_host_specification;
 ///
+/// assert!(looks_like_host_specification("localhost"));
+/// assert!(looks_like_host_specification("localhost.localdomain"));
+/// assert!(looks_like_host_specification("127.0.0.1"));
+/// assert!(looks_like_host_specification("192.168.1.1"));
 /// assert!(looks_like_host_specification("user@localhost"));
 /// assert!(looks_like_host_specification("localhost:22"));
 /// assert!(looks_like_host_specification("server.example.com"));
@@ -63,6 +98,16 @@ pub struct AppContext {
 /// ```
 pub fn looks_like_host_specification(s: &str) -> bool {
     const MIN_FQDN_PARTS: usize = 2;
+
+    // Special hostnames (checked early for performance)
+    if s == "localhost" || s == "localhost.localdomain" {
+        return true;
+    }
+
+    // IPv4 address detection
+    if is_ipv4_address(s) {
+        return true;
+    }
 
     // Early returns for most common patterns (performance optimization)
     if s.contains('@') {

@@ -16,7 +16,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::app::initialization::looks_like_host_specification;
+    use crate::app::initialization::{is_ipv4_address, looks_like_host_specification};
 
     #[test]
     fn test_looks_like_host_user_at_host_format() {
@@ -47,7 +47,8 @@ mod tests {
         assert!(looks_like_host_specification("server.example.com"));
         assert!(looks_like_host_specification("host.local"));
         assert!(looks_like_host_specification("sub.domain.example.org"));
-        assert!(looks_like_host_specification("192.168.1.1")); // IP with dots
+        // Note: IPv4 addresses are now detected separately via is_ipv4_address()
+        assert!(looks_like_host_specification("192.168.1.1"));
     }
 
     #[test]
@@ -76,10 +77,71 @@ mod tests {
     }
 
     #[test]
+    fn test_is_ipv4_address_valid() {
+        // Standard IPv4 addresses
+        assert!(is_ipv4_address("127.0.0.1"));
+        assert!(is_ipv4_address("192.168.1.1"));
+        assert!(is_ipv4_address("10.0.0.1"));
+        assert!(is_ipv4_address("172.16.0.1"));
+
+        // Edge cases - valid
+        assert!(is_ipv4_address("0.0.0.0"));
+        assert!(is_ipv4_address("255.255.255.255"));
+        assert!(is_ipv4_address("1.1.1.1"));
+        assert!(is_ipv4_address("8.8.8.8"));
+    }
+
+    #[test]
+    fn test_is_ipv4_address_invalid() {
+        // Invalid - out of range
+        assert!(!is_ipv4_address("999.999.999.999"));
+        assert!(!is_ipv4_address("256.1.1.1"));
+        assert!(!is_ipv4_address("1.256.1.1"));
+        assert!(!is_ipv4_address("1.1.256.1"));
+        assert!(!is_ipv4_address("1.1.1.256"));
+
+        // Invalid - wrong number of octets
+        assert!(!is_ipv4_address("1.2.3"));
+        assert!(!is_ipv4_address("1.2"));
+        assert!(!is_ipv4_address("1"));
+        assert!(!is_ipv4_address("1.2.3.4.5"));
+
+        // Invalid - non-numeric
+        assert!(!is_ipv4_address("a.b.c.d"));
+        assert!(!is_ipv4_address("192.168.1.x"));
+
+        // Invalid - empty or special characters
+        assert!(!is_ipv4_address(""));
+        assert!(!is_ipv4_address("..."));
+        assert!(!is_ipv4_address("1..1.1"));
+    }
+
+    #[test]
+    fn test_looks_like_host_localhost() {
+        // localhost variants should now be detected
+        assert!(looks_like_host_specification("localhost"));
+        assert!(looks_like_host_specification("localhost.localdomain"));
+    }
+
+    #[test]
+    fn test_looks_like_host_ipv4() {
+        // IPv4 addresses should be detected
+        assert!(looks_like_host_specification("127.0.0.1"));
+        assert!(looks_like_host_specification("192.168.1.1"));
+        assert!(looks_like_host_specification("10.0.0.1"));
+        assert!(looks_like_host_specification("0.0.0.0"));
+        assert!(looks_like_host_specification("255.255.255.255"));
+
+        // Invalid IPv4 should NOT be detected as IPv4, but might match FQDN pattern
+        assert!(!is_ipv4_address("999.999.999.999")); // Not a valid IPv4
+        assert!(!is_ipv4_address("1.2.3")); // Not a valid IPv4
+    }
+
+    #[test]
     fn test_not_host_simple_hostname() {
         // Simple hostnames without indicators are not detected as hosts
-        // This is a known limitation - users should use -H flag or add indicators
-        assert!(!looks_like_host_specification("localhost"));
+        // except for special cases like localhost
+        assert!(looks_like_host_specification("localhost")); // Now detected!
         assert!(!looks_like_host_specification("server"));
         assert!(!looks_like_host_specification("hostname"));
     }
