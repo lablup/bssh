@@ -233,13 +233,16 @@ impl Client {
                         Err(tokio::sync::mpsc::error::TrySendError::Full(output)) => {
                             // Channel is full - apply backpressure by waiting
                             // This prevents memory exhaustion on high-throughput commands
+                            tracing::trace!("Channel full, applying backpressure for stdout");
                             if sender.send(output).await.is_err() {
                                 // Receiver dropped - stop processing
+                                tracing::debug!("Receiver dropped, stopping stdout processing");
                                 break;
                             }
                         }
                         Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
                             // Receiver dropped - stop processing
+                            tracing::debug!("Channel closed, stopping stdout processing");
                             break;
                         }
                     }
@@ -251,13 +254,16 @@ impl Client {
                             Ok(_) => {}
                             Err(tokio::sync::mpsc::error::TrySendError::Full(output)) => {
                                 // Channel is full - apply backpressure by waiting
+                                tracing::trace!("Channel full, applying backpressure for stderr");
                                 if sender.send(output).await.is_err() {
                                     // Receiver dropped - stop processing
+                                    tracing::debug!("Receiver dropped, stopping stderr processing");
                                     break;
                                 }
                             }
                             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
                                 // Receiver dropped - stop processing
+                                tracing::debug!("Channel closed, stopping stderr processing");
                                 break;
                             }
                         }
@@ -278,6 +284,8 @@ impl Client {
         }
 
         // Drop sender to signal completion to receiver
+        // This is critical: dropping the sender causes receiver.recv() to return None,
+        // allowing the background task to finish collecting any remaining buffered data
         drop(sender);
 
         // If we received an exit code, report it back
