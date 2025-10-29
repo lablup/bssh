@@ -488,10 +488,12 @@ impl ParallelExecutor {
         let semaphore = Arc::new(Semaphore::new(self.max_parallel));
         let mut manager = MultiNodeStreamManager::new();
         let mut handles = Vec::new();
+        let mut channels = Vec::new(); // Keep track of senders for cleanup
 
         // Spawn tasks for each node with streaming
         for node in &self.nodes {
             let (tx, rx) = mpsc::channel(1000);
+            channels.push(tx.clone()); // Keep a reference for cleanup
             manager.add_stream(node.clone(), rx);
 
             let node_clone = node.clone();
@@ -507,8 +509,32 @@ impl ParallelExecutor {
             let semaphore = Arc::clone(&semaphore);
 
             let handle = tokio::spawn(async move {
-                // Acquire semaphore
-                let _permit = semaphore.acquire().await.ok();
+                // Use defer pattern to ensure cleanup even on panic
+                struct CleanupGuard<T> {
+                    _permit: Option<T>,
+                }
+
+                impl<T> Drop for CleanupGuard<T> {
+                    fn drop(&mut self) {
+                        tracing::trace!("Releasing semaphore permit in cleanup guard");
+                    }
+                }
+
+                // Acquire semaphore with guard
+                let permit = match semaphore.acquire().await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::error!("Failed to acquire semaphore: {}", e);
+                        return (
+                            node_clone,
+                            Err(anyhow::anyhow!("Semaphore acquisition failed")),
+                        );
+                    }
+                };
+
+                let _guard = CleanupGuard {
+                    _permit: Some(permit),
+                };
 
                 let mut client = SshClient::new(
                     node_clone.host.clone(),
@@ -527,30 +553,50 @@ impl ParallelExecutor {
                     jump_hosts_spec: jump_hosts.as_deref(),
                 };
 
-                match client
-                    .connect_and_execute_with_output_streaming(&command, &config, tx)
+                // Ensure channel is closed on all paths
+                let result = match client
+                    .connect_and_execute_with_output_streaming(&command, &config, tx.clone())
                     .await
                 {
-                    Ok(exit_status) => (node_clone, Ok(exit_status)),
-                    Err(e) => (node_clone, Err(e)),
-                }
+                    Ok(exit_status) => {
+                        tracing::debug!(
+                            "Command completed for {}: exit code {}",
+                            node_clone.host,
+                            exit_status
+                        );
+                        (node_clone, Ok(exit_status))
+                    }
+                    Err(e) => {
+                        tracing::error!("Command failed for {}: {}", node_clone.host, e);
+                        (node_clone, Err(e))
+                    }
+                };
+
+                // Explicitly drop the channel to signal completion
+                drop(tx);
+                result
             });
 
             handles.push(handle);
         }
 
-        // Stream mode: output in real-time with [node] prefixes
-        if output_mode.is_stream() {
+        // Execute based on mode and ensure cleanup
+        let result = if output_mode.is_stream() {
+            // Stream mode: output in real-time with [node] prefixes
             self.handle_stream_mode(&mut manager, handles).await
-        }
-        // File mode: save to per-node files
-        else if let Some(output_dir) = output_mode.output_dir() {
+        } else if let Some(output_dir) = output_mode.output_dir() {
+            // File mode: save to per-node files
             self.handle_file_mode(&mut manager, handles, output_dir)
                 .await
         } else {
             // Fallback to normal mode
             self.execute(command).await
-        }
+        };
+
+        // Ensure all channels are closed (important for cleanup)
+        drop(channels);
+
+        result
     }
 
     /// Handle stream mode output with [node] prefixes
@@ -594,8 +640,20 @@ impl ParallelExecutor {
                 }
             }
 
-            // Check for completed tasks
-            pending_handles.retain_mut(|handle| !handle.is_finished());
+            // Check for completed tasks and handle panics
+            let mut i = 0;
+            while i < pending_handles.len() {
+                if pending_handles[i].is_finished() {
+                    let handle = pending_handles.remove(i);
+                    // Check if task panicked
+                    if let Err(e) = &handle.await {
+                        tracing::error!("Task panicked: {}", e);
+                        // Continue processing other nodes
+                    }
+                } else {
+                    i += 1;
+                }
+            }
 
             // Small sleep to avoid busy waiting
             tokio::time::sleep(Duration::from_millis(50)).await;
