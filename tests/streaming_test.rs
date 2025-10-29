@@ -219,3 +219,108 @@ async fn test_streaming_with_stderr() {
         "Stderr should contain stderr message, got: {stderr}"
     );
 }
+
+#[tokio::test]
+async fn test_streaming_large_output_backpressure() {
+    if !can_ssh_to_localhost() {
+        eprintln!("Skipping large output test: Cannot SSH to localhost");
+        return;
+    }
+
+    // Get current username
+    let username = std::env::var("USER").unwrap_or_else(|_| "root".to_string());
+
+    // Create client
+    let client = Client::connect(
+        ("localhost", 22),
+        &username,
+        AuthMethod::Agent,
+        ServerCheckMethod::NoCheck,
+    )
+    .await;
+
+    if client.is_err() {
+        eprintln!("Skipping large output test: Cannot connect to localhost");
+        return;
+    }
+
+    let client = client.unwrap();
+
+    // Build output buffer for streaming
+    let (sender, receiver_task) = build_test_output_buffer();
+
+    // Execute command that generates large output to test backpressure
+    // Generate 10000 lines to ensure we exceed the channel buffer
+    let exit_status = client
+        .execute_streaming("for i in {1..10000}; do echo \"Line $i\"; done", sender)
+        .await;
+
+    assert!(
+        exit_status.is_ok(),
+        "Large output command should execute successfully"
+    );
+    let exit_status = exit_status.unwrap();
+    assert_eq!(exit_status, 0, "Command should exit with status 0");
+
+    // Wait for output collection
+    let (stdout_bytes, _stderr_bytes) = receiver_task.await.unwrap();
+    let stdout = String::from_utf8_lossy(&stdout_bytes);
+
+    // Verify we got all lines
+    assert!(stdout.contains("Line 1"), "Should contain first line");
+    assert!(stdout.contains("Line 10000"), "Should contain last line");
+
+    // Count lines to ensure no data loss
+    let line_count = stdout.lines().count();
+    assert_eq!(
+        line_count, 10000,
+        "Should have exactly 10000 lines, got: {line_count}"
+    );
+}
+
+#[tokio::test]
+async fn test_streaming_receiver_drop_handling() {
+    if !can_ssh_to_localhost() {
+        eprintln!("Skipping receiver drop test: Cannot SSH to localhost");
+        return;
+    }
+
+    // Get current username
+    let username = std::env::var("USER").unwrap_or_else(|_| "root".to_string());
+
+    // Create client
+    let client = Client::connect(
+        ("localhost", 22),
+        &username,
+        AuthMethod::Agent,
+        ServerCheckMethod::NoCheck,
+    )
+    .await;
+
+    if client.is_err() {
+        eprintln!("Skipping receiver drop test: Cannot connect to localhost");
+        return;
+    }
+
+    let client = client.unwrap();
+
+    // Create a channel but immediately drop the receiver
+    let (sender, receiver) = channel(100);
+
+    // Drop the receiver to simulate early termination
+    drop(receiver);
+
+    // Execute command - should handle receiver drop gracefully
+    let exit_status = client.execute_streaming("echo 'test output'", sender).await;
+
+    // Should still return exit status even though receiver dropped
+    assert!(
+        exit_status.is_ok(),
+        "Command should handle receiver drop gracefully"
+    );
+    let exit_status = exit_status.unwrap();
+    assert_eq!(
+        exit_status, 0,
+        "Command should still report correct exit status"
+    );
+}
