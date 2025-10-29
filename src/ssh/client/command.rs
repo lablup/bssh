@@ -16,11 +16,9 @@ use super::config::ConnectionConfig;
 use super::core::SshClient;
 use super::result::CommandResult;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
-use crate::ssh::tokio_client::CommandOutput;
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::time::Duration;
-use tokio::sync::mpsc::Sender;
 
 // SSH command execution timeout design:
 // - 5 minutes (300s) handles long-running commands
@@ -156,110 +154,6 @@ impl SshClient {
             tokio::time::timeout(
                 command_timeout,
                 client.execute(command)
-            )
-            .await
-            .with_context(|| format!("Command execution timeout: The command '{}' did not complete within 5 minutes on {}:{}", command, self.host, self.port))?
-            .with_context(|| format!("Failed to execute command '{}' on {}:{}. The SSH connection was successful but the command could not be executed.", command, self.host, self.port))
-        }
-    }
-
-    /// Execute a command with streaming output support
-    ///
-    /// This method provides real-time command output streaming through the provided sender channel.
-    /// Output is sent as `CommandOutput::StdOut` or `CommandOutput::StdErr` variants.
-    ///
-    /// # Arguments
-    /// * `command` - The command to execute
-    /// * `config` - Connection configuration
-    /// * `output_sender` - Channel sender for streaming output
-    ///
-    /// # Returns
-    /// The exit status of the command
-    pub async fn connect_and_execute_with_output_streaming(
-        &mut self,
-        command: &str,
-        config: &ConnectionConfig<'_>,
-        output_sender: Sender<CommandOutput>,
-    ) -> Result<u32> {
-        tracing::debug!("Connecting to {}:{}", self.host, self.port);
-
-        // Determine authentication method based on parameters
-        let auth_method = self
-            .determine_auth_method(
-                config.key_path,
-                config.use_agent,
-                config.use_password,
-                #[cfg(target_os = "macos")]
-                config.use_keychain,
-            )
-            .await?;
-
-        let strict_mode = config
-            .strict_mode
-            .unwrap_or(StrictHostKeyChecking::AcceptNew);
-
-        // Create client connection - either direct or through jump hosts
-        let client = self
-            .establish_connection(
-                &auth_method,
-                strict_mode,
-                config.jump_hosts_spec,
-                config.key_path,
-                config.use_agent,
-                config.use_password,
-            )
-            .await?;
-
-        tracing::debug!("Connected and authenticated successfully");
-        tracing::debug!("Executing command with streaming: {}", command);
-
-        // Execute command with streaming and timeout
-        let exit_status = self
-            .execute_streaming_with_timeout(&client, command, config.timeout_seconds, output_sender)
-            .await?;
-
-        tracing::debug!("Command execution completed with status: {}", exit_status);
-
-        Ok(exit_status)
-    }
-
-    /// Execute a command with streaming output and the specified timeout
-    async fn execute_streaming_with_timeout(
-        &self,
-        client: &crate::ssh::tokio_client::Client,
-        command: &str,
-        timeout_seconds: Option<u64>,
-        output_sender: Sender<CommandOutput>,
-    ) -> Result<u32> {
-        if let Some(timeout_secs) = timeout_seconds {
-            if timeout_secs == 0 {
-                // No timeout (unlimited)
-                tracing::debug!("Executing command with streaming, no timeout (unlimited)");
-                client.execute_streaming(command, output_sender)
-                    .await
-                    .with_context(|| format!("Failed to execute command '{}' on {}:{}. The SSH connection was successful but the command could not be executed.", command, self.host, self.port))
-            } else {
-                // With timeout
-                let command_timeout = Duration::from_secs(timeout_secs);
-                tracing::debug!(
-                    "Executing command with streaming, timeout of {} seconds",
-                    timeout_secs
-                );
-                tokio::time::timeout(
-                    command_timeout,
-                    client.execute_streaming(command, output_sender)
-                )
-                .await
-                .with_context(|| format!("Command execution timeout: The command '{}' did not complete within {} seconds on {}:{}", command, timeout_secs, self.host, self.port))?
-                .with_context(|| format!("Failed to execute command '{}' on {}:{}. The SSH connection was successful but the command could not be executed.", command, self.host, self.port))
-            }
-        } else {
-            // Default timeout if not specified
-            let command_timeout = Duration::from_secs(DEFAULT_COMMAND_TIMEOUT_SECS);
-            tracing::debug!("Executing command with streaming, default timeout of 300 seconds");
-            tokio::time::timeout(
-                command_timeout,
-                client.execute_streaming(command, output_sender)
             )
             .await
             .with_context(|| format!("Command execution timeout: The command '{}' did not complete within 5 minutes on {}:{}", command, self.host, self.port))?
