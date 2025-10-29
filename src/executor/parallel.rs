@@ -559,6 +559,7 @@ impl ParallelExecutor {
         manager: &mut super::stream_manager::MultiNodeStreamManager,
         handles: Vec<tokio::task::JoinHandle<(Node, Result<u32>)>>,
     ) -> Result<Vec<ExecutionResult>> {
+        use super::output_sync::NodeOutputWriter;
         use std::time::Duration;
 
         let mut pending_handles = handles;
@@ -569,24 +570,26 @@ impl ParallelExecutor {
             // Poll all streams for new output
             manager.poll_all();
 
-            // Output any new data with [node] prefixes
+            // Output any new data with [node] prefixes using synchronized writes
             for stream in manager.streams_mut() {
                 let stdout = stream.take_stdout();
                 let stderr = stream.take_stderr();
 
                 if !stdout.is_empty() {
-                    if let Ok(text) = String::from_utf8(stdout) {
-                        for line in text.lines() {
-                            println!("[{}] {}", stream.node.host, line);
-                        }
+                    // Use lossy conversion to handle non-UTF8 data gracefully
+                    let text = String::from_utf8_lossy(&stdout);
+                    let writer = NodeOutputWriter::new(&stream.node.host);
+                    if let Err(e) = writer.write_stdout_lines(&text) {
+                        tracing::error!("Failed to write stdout for {}: {}", stream.node.host, e);
                     }
                 }
 
                 if !stderr.is_empty() {
-                    if let Ok(text) = String::from_utf8(stderr) {
-                        for line in text.lines() {
-                            eprintln!("[{}] {}", stream.node.host, line);
-                        }
+                    // Use lossy conversion to handle non-UTF8 data gracefully
+                    let text = String::from_utf8_lossy(&stderr);
+                    let writer = NodeOutputWriter::new(&stream.node.host);
+                    if let Err(e) = writer.write_stderr_lines(&text) {
+                        tracing::error!("Failed to write stderr for {}: {}", stream.node.host, e);
                     }
                 }
             }
@@ -664,21 +667,25 @@ impl ParallelExecutor {
             // Write stdout
             if !stream.stdout().is_empty() {
                 fs::write(&stdout_path, stream.stdout()).await?;
-                println!(
-                    "[{}] Output saved to {}",
-                    stream.node.host,
-                    stdout_path.display()
-                );
+                // Use synchronized output to prevent interleaving
+                let writer = super::output_sync::NodeOutputWriter::new(&stream.node.host);
+                if let Err(e) =
+                    writer.write_stdout(&format!("Output saved to {}", stdout_path.display()))
+                {
+                    tracing::error!("Failed to write status for {}: {}", stream.node.host, e);
+                }
             }
 
             // Write stderr
             if !stream.stderr().is_empty() {
                 fs::write(&stderr_path, stream.stderr()).await?;
-                println!(
-                    "[{}] Errors saved to {}",
-                    stream.node.host,
-                    stderr_path.display()
-                );
+                // Use synchronized output to prevent interleaving
+                let writer = super::output_sync::NodeOutputWriter::new(&stream.node.host);
+                if let Err(e) =
+                    writer.write_stdout(&format!("Errors saved to {}", stderr_path.display()))
+                {
+                    tracing::error!("Failed to write status for {}: {}", stream.node.host, e);
+                }
             }
 
             let result =
