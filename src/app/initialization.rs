@@ -38,9 +38,29 @@ pub struct AppContext {
 }
 
 /// Initialize the application, load configs, and resolve nodes
-pub async fn initialize_app(cli: &Cli, args: &[String]) -> Result<AppContext> {
+pub async fn initialize_app(cli: &mut Cli, args: &[String]) -> Result<AppContext> {
     // Initialize logging
     init_logging(cli.verbose);
+
+    // Early Backend.AI environment detection
+    // Auto-set cluster if Backend.AI environment is detected and no explicit cluster/hosts specified
+    // Skip auto-detection if destination looks like a host specification (user@host, host:port, FQDN, etc.)
+    let destination_looks_like_host = cli.destination.as_ref().is_some_and(|dest| {
+        dest.contains('@')              // user@host format
+        || dest.contains(':')           // host:port format
+        || dest.starts_with("ssh://")   // SSH URI format
+        || (dest.contains('.') && dest.split('.').count() >= 2 && !dest.contains(' '))
+        // FQDN like example.com
+    });
+
+    if Config::from_backendai_env().is_some()
+        && cli.cluster.is_none()
+        && cli.hosts.is_none()
+        && !destination_looks_like_host
+    {
+        cli.cluster = Some("bai_auto".to_string());
+        tracing::debug!("Auto-detected Backend.AI environment, setting cluster to 'bai_auto'");
+    }
 
     // Check if user explicitly specified options
     let has_explicit_config = args.iter().any(|arg| arg == "--config");

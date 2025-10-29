@@ -33,7 +33,7 @@ async fn main() -> Result<()> {
         std::process::exit(0);
     }
 
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
 
     // Handle SSH query option (-Q)
     if let Some(ref query) = cli.query {
@@ -63,7 +63,7 @@ async fn main() -> Result<()> {
     }
 
     // Initialize the application and load all configurations
-    let ctx = initialize_app(&cli, &args).await?;
+    let ctx = initialize_app(&mut cli, &args).await?;
 
     // Dispatch to the appropriate command handler
     dispatch_command(&cli, &ctx).await

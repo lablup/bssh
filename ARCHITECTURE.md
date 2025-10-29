@@ -100,6 +100,63 @@ See "Issue #33 Refactoring Details" section below for comprehensive breakdown.
 - Environment variable support via `env` attribute
 - **Refactored (2025-08-22):** Separated command logic from main.rs
 - **Refactored (2025-10-17):** Further split into app modules for initialization, dispatching, and utilities
+- **Fixed (2025-10-29, Issue #66):** Backend.AI environment auto-detection now works correctly when executing commands
+
+**Backend.AI Auto-detection (Fixed in Issue #66):**
+
+The initialization flow (`app/initialization.rs`) performs early detection of Backend.AI environments:
+
+```rust
+// Early Backend.AI environment detection in initialize_app()
+// Skip auto-detection if destination looks like a host specification
+let destination_looks_like_host = cli.destination.as_ref().map_or(false, |dest| {
+    dest.contains('@')              // user@host format
+    || dest.contains(':')           // host:port format
+    || dest.starts_with("ssh://")   // SSH URI format
+    || (dest.contains('.') && dest.split('.').count() >= 2 && !dest.contains(' '))  // FQDN
+});
+
+if Config::from_backendai_env().is_some()
+    && cli.cluster.is_none()
+    && cli.hosts.is_none()
+    && !destination_looks_like_host
+{
+    cli.cluster = Some("bai_auto".to_string());
+    tracing::debug!("Auto-detected Backend.AI environment, setting cluster to 'bai_auto'");
+}
+```
+
+**Key Points:**
+- Detection happens BEFORE mode determination (`is_ssh_mode()`)
+- Auto-sets `cli.cluster` to `"bai_auto"` when Backend.AI environment variables are present
+- Only activates when no explicit cluster (`-C`) or hosts (`-H`) specified
+- Skips auto-detection if destination contains host indicators (`@`, `:`, FQDN format)
+- Prevents commands from being misinterpreted as hostnames in SSH mode
+- Respects explicit user configuration over auto-detection
+
+**Using SSH Single-Host Mode in Backend.AI Environments:**
+
+When Backend.AI environment variables are set but you want to use bssh as a regular SSH client:
+
+```bash
+# Method 1: user@host format (recommended)
+bssh user@localhost "whoami"
+
+# Method 2: host:port format
+bssh localhost:22 "whoami"
+
+# Method 3: FQDN format
+bssh server.example.com "whoami"
+
+# Method 4: -H flag (explicit host specification)
+bssh -H localhost "whoami"
+
+# Method 5: Temporarily unset environment variables
+unset BACKENDAI_CLUSTER_HOSTS
+bssh localhost "whoami"
+```
+
+**Note:** Simple hostnames like `localhost` without host indicators cannot be automatically distinguished from commands. Use one of the methods above for single-host SSH connections in Backend.AI environments.
 
 **Implementation:**
 ```rust
