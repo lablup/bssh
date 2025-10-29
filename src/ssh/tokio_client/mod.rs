@@ -23,7 +23,7 @@ mod to_socket_addrs_with_hostname;
 
 // Re-export public API types for backward compatibility
 pub use authentication::{AuthKeyboardInteractive, AuthMethod, ServerCheckMethod};
-pub use channel_manager::CommandExecutedResult;
+pub use channel_manager::{CommandExecutedResult, CommandOutput};
 pub use connection::{Client, ClientHandler};
 pub use error::Error;
 pub use to_socket_addrs_with_hostname::ToSocketAddrsWithHostname;
