@@ -16,8 +16,10 @@
 
 mod connection_manager;
 mod execution_strategy;
+mod output_mode;
 mod parallel;
 mod result_types;
+mod stream_manager;
 
 pub mod exit_strategy;
 pub mod rank_detector;
@@ -25,6 +27,8 @@ pub mod rank_detector;
 // Re-export public types
 pub use connection_manager::download_dir_from_node;
 pub use exit_strategy::ExitCodeStrategy;
+pub use output_mode::{is_tty, should_use_colors, OutputMode};
 pub use parallel::ParallelExecutor;
 pub use rank_detector::RankDetector;
 pub use result_types::{DownloadResult, ExecutionResult, UploadResult};
+pub use stream_manager::{ExecutionStatus, MultiNodeStreamManager, NodeStream};

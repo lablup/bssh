@@ -455,4 +455,251 @@ impl ParallelExecutor {
         }
         Ok(download_results)
     }
+
+    /// Execute a command with streaming output support
+    ///
+    /// This method enables real-time output streaming from all nodes with configurable
+    /// output modes:
+    /// - Normal: Traditional batch mode (same as execute())
+    /// - Stream: Real-time with [node] prefixes
+    /// - File: Save per-node output to files
+    ///
+    /// # Arguments
+    /// * `command` - The command to execute
+    /// * `output_mode` - How to handle output (Normal/Stream/File)
+    ///
+    /// # Returns
+    /// Vector of execution results, one per node
+    pub async fn execute_with_streaming(
+        &self,
+        command: &str,
+        output_mode: super::output_mode::OutputMode,
+    ) -> Result<Vec<ExecutionResult>> {
+        // For Normal mode, use existing execute() method for backward compatibility
+        if output_mode.is_normal() {
+            return self.execute(command).await;
+        }
+
+        use super::stream_manager::MultiNodeStreamManager;
+        use crate::ssh::client::ConnectionConfig;
+        use crate::ssh::SshClient;
+        use tokio::sync::mpsc;
+
+        let semaphore = Arc::new(Semaphore::new(self.max_parallel));
+        let mut manager = MultiNodeStreamManager::new();
+        let mut handles = Vec::new();
+
+        // Spawn tasks for each node with streaming
+        for node in &self.nodes {
+            let (tx, rx) = mpsc::channel(1000);
+            manager.add_stream(node.clone(), rx);
+
+            let node_clone = node.clone();
+            let command = command.to_string();
+            let key_path = self.key_path.clone();
+            let strict_mode = self.strict_mode;
+            let use_agent = self.use_agent;
+            let use_password = self.use_password;
+            #[cfg(target_os = "macos")]
+            let use_keychain = self.use_keychain;
+            let timeout = self.timeout;
+            let jump_hosts = self.jump_hosts.clone();
+            let semaphore = Arc::clone(&semaphore);
+
+            let handle = tokio::spawn(async move {
+                // Acquire semaphore
+                let _permit = semaphore.acquire().await.ok();
+
+                let mut client = SshClient::new(
+                    node_clone.host.clone(),
+                    node_clone.port,
+                    node_clone.username.clone(),
+                );
+
+                let config = ConnectionConfig {
+                    key_path: key_path.as_deref().map(Path::new),
+                    strict_mode: Some(strict_mode),
+                    use_agent,
+                    use_password,
+                    #[cfg(target_os = "macos")]
+                    use_keychain,
+                    timeout_seconds: timeout,
+                    jump_hosts_spec: jump_hosts.as_deref(),
+                };
+
+                match client
+                    .connect_and_execute_with_output_streaming(&command, &config, tx)
+                    .await
+                {
+                    Ok(exit_status) => (node_clone, Ok(exit_status)),
+                    Err(e) => (node_clone, Err(e)),
+                }
+            });
+
+            handles.push(handle);
+        }
+
+        // Stream mode: output in real-time with [node] prefixes
+        if output_mode.is_stream() {
+            self.handle_stream_mode(&mut manager, handles).await
+        }
+        // File mode: save to per-node files
+        else if let Some(output_dir) = output_mode.output_dir() {
+            self.handle_file_mode(&mut manager, handles, output_dir)
+                .await
+        } else {
+            // Fallback to normal mode
+            self.execute(command).await
+        }
+    }
+
+    /// Handle stream mode output with [node] prefixes
+    async fn handle_stream_mode(
+        &self,
+        manager: &mut super::stream_manager::MultiNodeStreamManager,
+        handles: Vec<tokio::task::JoinHandle<(Node, Result<u32>)>>,
+    ) -> Result<Vec<ExecutionResult>> {
+        use std::time::Duration;
+
+        let mut pending_handles = handles;
+        let mut results = Vec::new();
+
+        // Poll until all tasks complete
+        while !pending_handles.is_empty() || !manager.all_complete() {
+            // Poll all streams for new output
+            manager.poll_all();
+
+            // Output any new data with [node] prefixes
+            for stream in manager.streams_mut() {
+                let stdout = stream.take_stdout();
+                let stderr = stream.take_stderr();
+
+                if !stdout.is_empty() {
+                    if let Ok(text) = String::from_utf8(stdout) {
+                        for line in text.lines() {
+                            println!("[{}] {}", stream.node.host, line);
+                        }
+                    }
+                }
+
+                if !stderr.is_empty() {
+                    if let Ok(text) = String::from_utf8(stderr) {
+                        for line in text.lines() {
+                            eprintln!("[{}] {}", stream.node.host, line);
+                        }
+                    }
+                }
+            }
+
+            // Check for completed tasks
+            pending_handles.retain_mut(|handle| !handle.is_finished());
+
+            // Small sleep to avoid busy waiting
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        // Collect final results from all streams
+        for stream in manager.streams() {
+            use crate::ssh::client::CommandResult;
+
+            let result =
+                if let super::stream_manager::ExecutionStatus::Failed(err) = stream.status() {
+                    Err(anyhow::anyhow!("{err}"))
+                } else {
+                    Ok(CommandResult {
+                        host: stream.node.host.clone(),
+                        output: Vec::new(), // stdout already printed
+                        stderr: Vec::new(), // stderr already printed
+                        exit_status: stream.exit_code().unwrap_or(1),
+                    })
+                };
+
+            results.push(ExecutionResult {
+                node: stream.node.clone(),
+                result,
+                is_main_rank: false, // Will be set by collect_results
+            });
+        }
+
+        self.collect_results(results.into_iter().map(Ok).collect())
+    }
+
+    /// Handle file mode output - save to per-node files
+    async fn handle_file_mode(
+        &self,
+        manager: &mut super::stream_manager::MultiNodeStreamManager,
+        handles: Vec<tokio::task::JoinHandle<(Node, Result<u32>)>>,
+        output_dir: &Path,
+    ) -> Result<Vec<ExecutionResult>> {
+        use std::time::Duration;
+        use tokio::fs;
+
+        // Create output directory if it doesn't exist
+        fs::create_dir_all(output_dir).await?;
+
+        let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+
+        let mut pending_handles = handles;
+
+        // Poll until all tasks complete
+        while !pending_handles.is_empty() || !manager.all_complete() {
+            manager.poll_all();
+
+            // Check for completed tasks
+            pending_handles.retain_mut(|handle| !handle.is_finished());
+
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        // Write output files for each node
+        let mut results = Vec::new();
+
+        for stream in manager.streams() {
+            use crate::ssh::client::CommandResult;
+
+            let hostname = stream.node.host.replace([':', '/'], "_");
+            let stdout_path = output_dir.join(format!("{hostname}_{timestamp}.stdout"));
+            let stderr_path = output_dir.join(format!("{hostname}_{timestamp}.stderr"));
+
+            // Write stdout
+            if !stream.stdout().is_empty() {
+                fs::write(&stdout_path, stream.stdout()).await?;
+                println!(
+                    "[{}] Output saved to {}",
+                    stream.node.host,
+                    stdout_path.display()
+                );
+            }
+
+            // Write stderr
+            if !stream.stderr().is_empty() {
+                fs::write(&stderr_path, stream.stderr()).await?;
+                println!(
+                    "[{}] Errors saved to {}",
+                    stream.node.host,
+                    stderr_path.display()
+                );
+            }
+
+            let result =
+                if let super::stream_manager::ExecutionStatus::Failed(err) = stream.status() {
+                    Err(anyhow::anyhow!("{err}"))
+                } else {
+                    Ok(CommandResult {
+                        host: stream.node.host.clone(),
+                        output: stream.stdout().to_vec(),
+                        stderr: stream.stderr().to_vec(),
+                        exit_status: stream.exit_code().unwrap_or(0),
+                    })
+                };
+
+            results.push(ExecutionResult {
+                node: stream.node.clone(),
+                result,
+                is_main_rank: false,
+            });
+        }
+
+        self.collect_results(results.into_iter().map(Ok).collect())
+    }
 }

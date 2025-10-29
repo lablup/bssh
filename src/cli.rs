@@ -114,6 +114,12 @@ pub struct Cli {
 
     #[arg(
         long,
+        help = "Stream output in real-time with [node] prefixes\nEach line of output is prefixed with the node hostname and displayed as it arrives.\nUseful for monitoring long-running commands across multiple nodes.\nAutomatically disabled when output is piped or in CI environments."
+    )]
+    pub stream: bool,
+
+    #[arg(
+        long,
         help = "Output directory for per-node command results\nCreates timestamped files:\n  - hostname_TIMESTAMP.stdout (command output)\n  - hostname_TIMESTAMP.stderr (error output)\n  - hostname_TIMESTAMP.error (connection failures)\n  - summary_TIMESTAMP.txt (execution summary)"
     )]
     pub output_dir: Option<PathBuf>,
