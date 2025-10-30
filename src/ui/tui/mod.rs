@@ -63,6 +63,10 @@ pub async fn run_tui(
     result
 }
 
+/// Minimum terminal dimensions for TUI
+const MIN_TERMINAL_WIDTH: u16 = 40;
+const MIN_TERMINAL_HEIGHT: u16 = 10;
+
 /// Main event loop
 async fn run_event_loop(
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
@@ -75,8 +79,15 @@ async fn run_event_loop(
         // Poll all node streams for new output
         manager.poll_all();
 
-        // Render UI
-        terminal.draw(|f| render_ui(f, app, manager, cluster_name, command))?;
+        // Check terminal size before rendering
+        let size = terminal.size()?;
+        if size.width < MIN_TERMINAL_WIDTH || size.height < MIN_TERMINAL_HEIGHT {
+            // Render minimal error message for small terminal
+            terminal.draw(render_size_error)?;
+        } else {
+            // Render normal UI
+            terminal.draw(|f| render_ui(f, app, manager, cluster_name, command))?;
+        }
 
         // Handle keyboard input (with timeout)
         if let Some(key) = event::poll_event(Duration::from_millis(100))? {
@@ -181,6 +192,54 @@ fn render_help_overlay(f: &mut ratatui::Frame, app: &TuiApp) {
         .alignment(Alignment::Left);
 
     f.render_widget(help, area);
+}
+
+/// Render error message for terminal too small
+fn render_size_error(f: &mut ratatui::Frame) {
+    use ratatui::{
+        layout::Alignment,
+        style::{Color, Modifier, Style},
+        text::{Line, Span},
+        widgets::{Block, Borders, Paragraph},
+    };
+
+    let message = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "Terminal too small!",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(""),
+        Line::from(format!(
+            "Minimum size: {MIN_TERMINAL_WIDTH}x{MIN_TERMINAL_HEIGHT}"
+        )),
+        Line::from(format!(
+            "Current size: {}x{}",
+            f.area().width,
+            f.area().height
+        )),
+        Line::from(""),
+        Line::from("Please resize your terminal"),
+        Line::from("or press 'q' to quit"),
+    ];
+
+    let paragraph = Paragraph::new(message)
+        .block(
+            Block::default()
+                .title(" Error ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Red)),
+        )
+        .alignment(Alignment::Center);
+
+    // Try to center the message if there's enough space
+    let area = if f.area().width >= 30 && f.area().height >= 8 {
+        centered_rect(80, 60, f.area())
+    } else {
+        f.area()
+    };
+
+    f.render_widget(paragraph, area);
 }
 
 /// Helper function to create a centered rectangle
