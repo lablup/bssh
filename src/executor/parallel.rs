@@ -488,12 +488,10 @@ impl ParallelExecutor {
         let semaphore = Arc::new(Semaphore::new(self.max_parallel));
         let mut manager = MultiNodeStreamManager::new();
         let mut handles = Vec::new();
-        let mut channels = Vec::new(); // Keep track of senders for cleanup
 
         // Spawn tasks for each node with streaming
         for node in &self.nodes {
             let (tx, rx) = mpsc::channel(1000);
-            channels.push(tx.clone()); // Keep a reference for cleanup
             manager.add_stream(node.clone(), rx);
 
             let node_clone = node.clone();
@@ -595,9 +593,6 @@ impl ParallelExecutor {
             // Fallback to normal mode
             self.execute(command).await
         };
-
-        // Ensure all channels are closed (important for cleanup)
-        drop(channels);
 
         result
     }
