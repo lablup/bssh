@@ -15,7 +15,7 @@
 use anyhow::Result;
 use std::path::Path;
 
-use crate::executor::{ExitCodeStrategy, ParallelExecutor, RankDetector};
+use crate::executor::{ExitCodeStrategy, OutputMode, ParallelExecutor, RankDetector};
 use crate::forwarding::ForwardingType;
 use crate::node::Node;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
@@ -34,6 +34,7 @@ pub struct ExecuteCommandParams<'a> {
     #[cfg(target_os = "macos")]
     pub use_keychain: bool,
     pub output_dir: Option<&'a Path>,
+    pub stream: bool,
     pub timeout: Option<u64>,
     pub jump_hosts: Option<&'a str>,
     pub port_forwards: Option<Vec<ForwardingType>>,
@@ -207,16 +208,35 @@ async fn execute_command_without_forwarding(params: ExecuteCommandParams<'_>) ->
     #[cfg(target_os = "macos")]
     let executor = executor.with_keychain(params.use_keychain);
 
-    let results = executor.execute(params.command).await?;
+    // Determine output mode
+    let output_mode =
+        OutputMode::from_args(params.stream, params.output_dir.map(|p| p.to_path_buf()));
 
-    // Save outputs to files if output_dir is specified
+    // Execute with appropriate mode
+    let results = if output_mode.is_normal() {
+        // Use traditional execution for backward compatibility
+        executor.execute(params.command).await?
+    } else {
+        // Use streaming execution for --stream or --output-dir
+        executor
+            .execute_with_streaming(params.command, output_mode.clone())
+            .await?
+    };
+
+    // Save outputs to files if output_dir is specified and not already handled by file mode
+    // (File mode already saves outputs, so only save for normal mode with output_dir)
     if let Some(dir) = params.output_dir {
-        save_outputs_to_files(&results, dir, params.command).await?;
+        if !params.stream {
+            // Only save if not in stream mode (file mode saves automatically)
+            save_outputs_to_files(&results, dir, params.command).await?;
+        }
     }
 
-    // Print results
-    for result in &results {
-        result.print_output(params.verbose);
+    // Print results (skip if already printed in stream mode)
+    if !params.stream {
+        for result in &results {
+            result.print_output(params.verbose);
+        }
     }
 
     // Print summary

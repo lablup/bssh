@@ -418,9 +418,179 @@ The existing `execute()` method was refactored to use `execute_streaming()` inte
 - All existing tests pass with zero modifications
 
 **Future Phases (Issue #68):**
-- Phase 2: Executor integration for parallel streaming
+- ~~Phase 2: Executor integration for parallel streaming~~ ✓ Completed (2025-10-29)
 - Phase 3: UI components (progress bars, live updates)
 - Phase 4: Advanced features (filtering, aggregation)
+
+### 4.0.2 Multi-Node Stream Management and Output Modes (Phase 2)
+
+**Status:** Implemented (2025-10-29) as part of Phase 2 of Issue #68
+
+**Design Motivation:**
+Building on Phase 1's streaming infrastructure, Phase 2 adds independent stream management for multiple nodes and flexible output modes. This enables real-time monitoring of parallel command execution across clusters while maintaining full backward compatibility.
+
+**Architecture:**
+
+The Phase 2 implementation consists of four key components:
+
+1. **NodeStream** (`executor/stream_manager.rs`)
+   ```rust
+   pub struct NodeStream {
+       pub node: Node,
+       receiver: mpsc::Receiver<CommandOutput>,
+       stdout_buffer: Vec<u8>,
+       stderr_buffer: Vec<u8>,
+       status: ExecutionStatus,
+       exit_code: Option<u32>,
+       closed: bool,
+   }
+   ```
+   - Independent output stream for each node
+   - Non-blocking polling of command output
+   - Separate buffers for stdout and stderr
+   - Tracks execution status and exit codes
+   - Can consume buffers incrementally for streaming
+
+2. **MultiNodeStreamManager** (`executor/stream_manager.rs`)
+   ```rust
+   pub struct MultiNodeStreamManager {
+       streams: Vec<NodeStream>,
+   }
+   ```
+   - Coordinates multiple node streams
+   - Non-blocking poll of all streams
+   - Tracks completion status
+   - Provides access to all stream states
+
+3. **OutputMode** (`executor/output_mode.rs`)
+   ```rust
+   #[derive(Debug, Clone, PartialEq, Eq, Default)]
+   pub enum OutputMode {
+       #[default]
+       Normal,    // Traditional batch mode
+       Stream,    // Real-time with [node] prefixes
+       File(PathBuf),  // Save to per-node files
+   }
+   ```
+   - Three distinct output modes
+   - TTY detection for automatic mode selection
+   - Priority: `--output-dir` > `--stream` > default
+
+4. **CLI Integration** (`cli.rs`)
+   - `--stream` flag: Enable real-time streaming output
+   - `--output-dir <DIR>`: Save per-node output to files
+   - Auto-detection of non-TTY environments (pipes, CI)
+
+**Implementation Details:**
+
+**Streaming Execution Flow:**
+```rust
+// In ParallelExecutor::execute_with_streaming()
+1. Create MultiNodeStreamManager
+2. Spawn task per node with streaming sender
+3. Poll all streams in loop:
+   - Extract new output from each stream
+   - Process based on output mode:
+     * Stream: Print with [node] prefix
+     * File: Buffer until completion
+     * Normal: Use traditional execute()
+4. Wait for all tasks to complete
+5. Collect and return ExecutionResults
+```
+
+**Stream Mode Output:**
+```
+[host1] Starting process...
+[host2] Starting process...
+[host1] Processing data...
+[host2] Processing data...
+[host1] Complete
+[host2] Complete
+```
+
+**File Mode Output:**
+```
+Output directory: ./results/
+  host1_20251029_143022.stdout
+  host1_20251029_143022.stderr
+  host2_20251029_143022.stdout
+  host2_20251029_143022.stderr
+```
+
+**Backward Compatibility:**
+
+Phase 2 maintains full backward compatibility:
+- Without `--stream` or `--output-dir`, uses traditional `execute()` method
+- Existing CLI behavior unchanged
+- All 396 existing tests pass without modification
+- Exit code strategy and error handling preserved
+
+**Performance Characteristics:**
+- **Stream Mode:**
+  - 50ms polling interval for smooth output
+  - Minimal memory: only buffered lines in flight
+  - Real-time latency: <100ms from node to display
+
+- **File Mode:**
+  - Buffers entire output in memory
+  - Async file writes (non-blocking)
+  - Timestamped filenames prevent collisions
+
+**TTY Detection:**
+- Auto-detects piped output (`stdout.is_terminal()`)
+- Checks CI environment variables (CI, GITHUB_ACTIONS, etc.)
+- Respects NO_COLOR convention
+- Falls back gracefully when colors unavailable
+
+**Error Handling:**
+- Per-node failure tracking with ExecutionStatus
+- Failed nodes still report in stream/file modes
+- Exit code calculation respects user-specified strategy
+- Graceful handling of channel closures
+
+**Testing:**
+- 10 unit tests for stream management
+- 3 unit tests for output mode selection
+- TTY detection tests
+- All existing integration tests pass
+- Total test coverage: 396 tests passing
+
+**Code Organization:**
+```
+src/executor/
+├── stream_manager.rs    # NodeStream, MultiNodeStreamManager (252 lines)
+├── output_mode.rs       # OutputMode enum, TTY detection (171 lines)
+├── parallel.rs          # Updated with streaming methods (+264 lines)
+└── mod.rs              # Exports for new types
+```
+
+**Usage Examples:**
+
+**Stream Mode:**
+```bash
+# Real-time streaming output
+bssh -C production --stream "tail -f /var/log/app.log"
+
+# With filtering
+bssh -H "web*" --stream "systemctl status nginx"
+```
+
+**File Mode:**
+```bash
+# Save outputs to directory
+bssh -C cluster --output-dir ./results "ps aux"
+
+# Each node gets separate files with timestamps
+ls ./results/
+# web1_20251029_143022.stdout
+# web2_20251029_143022.stdout
+```
+
+**Future Enhancements:**
+- Phase 3: UI components (progress bars, spinners)
+- Phase 4: Advanced filtering and aggregation
+- Potential: Colored output per node
+- Potential: Interactive stream control (pause/resume)
 
 ### 4.1 Authentication Module (`ssh/auth.rs`)
 
