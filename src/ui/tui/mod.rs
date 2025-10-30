@@ -75,23 +75,37 @@ async fn run_event_loop(
     cluster_name: &str,
     command: &str,
 ) -> Result<()> {
+    // Force initial render
+    app.mark_needs_redraw();
+
     loop {
         // Poll all node streams for new output
         manager.poll_all();
 
+        // Check if data has changed
+        let streams = manager.streams();
+        let data_changed = app.check_data_changes(streams);
+
         // Check terminal size before rendering
         let size = terminal.size()?;
-        if size.width < MIN_TERMINAL_WIDTH || size.height < MIN_TERMINAL_HEIGHT {
-            // Render minimal error message for small terminal
-            terminal.draw(render_size_error)?;
-        } else {
-            // Render normal UI
-            terminal.draw(|f| render_ui(f, app, manager, cluster_name, command))?;
+        let size_ok = size.width >= MIN_TERMINAL_WIDTH && size.height >= MIN_TERMINAL_HEIGHT;
+
+        // Only render if needed (data changed, user input, or terminal resized)
+        if app.should_redraw() || data_changed {
+            if !size_ok {
+                // Render minimal error message for small terminal
+                terminal.draw(render_size_error)?;
+            } else {
+                // Render normal UI
+                terminal.draw(|f| render_ui(f, app, manager, cluster_name, command))?;
+            }
         }
 
         // Handle keyboard input (with timeout)
         if let Some(key) = event::poll_event(Duration::from_millis(100))? {
             event::handle_key_event(app, key, manager.total_count());
+            // Key events usually require redraw
+            app.mark_needs_redraw();
         }
 
         // Check exit conditions
@@ -100,6 +114,7 @@ async fn run_event_loop(
         }
 
         // Small delay to prevent CPU spinning
+        // This is our main loop interval
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
 

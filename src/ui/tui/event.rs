@@ -49,6 +49,7 @@ pub fn handle_key_event(app: &mut TuiApp, key: KeyEvent, num_nodes: usize) {
         KeyCode::Esc => {
             if app.show_help {
                 app.show_help = false;
+                app.mark_needs_redraw();
             } else {
                 app.show_summary();
             }

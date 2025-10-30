@@ -47,6 +47,10 @@ pub struct TuiApp {
     pub should_quit: bool,
     /// Whether to show help overlay
     pub show_help: bool,
+    /// Track if UI needs redraw (for performance optimization)
+    pub needs_redraw: bool,
+    /// Track last rendered data sizes for change detection
+    pub last_data_sizes: HashMap<usize, (usize, usize)>, // node_id -> (stdout_size, stderr_size)
 }
 
 impl TuiApp {
@@ -58,18 +62,61 @@ impl TuiApp {
             follow_mode: true, // Auto-scroll by default
             should_quit: false,
             show_help: false,
+            needs_redraw: true, // Initial draw needed
+            last_data_sizes: HashMap::new(),
+        }
+    }
+
+    /// Check if data has changed for any node
+    pub fn check_data_changes(&mut self, streams: &[crate::executor::NodeStream]) -> bool {
+        let mut has_changes = false;
+
+        for (idx, stream) in streams.iter().enumerate() {
+            let new_sizes = (stream.stdout().len(), stream.stderr().len());
+
+            if let Some(&old_sizes) = self.last_data_sizes.get(&idx) {
+                if old_sizes != new_sizes {
+                    has_changes = true;
+                    self.last_data_sizes.insert(idx, new_sizes);
+                    self.needs_redraw = true;
+                }
+            } else {
+                // New node, needs redraw
+                self.last_data_sizes.insert(idx, new_sizes);
+                has_changes = true;
+                self.needs_redraw = true;
+            }
+        }
+
+        has_changes
+    }
+
+    /// Mark that UI needs redrawing
+    pub fn mark_needs_redraw(&mut self) {
+        self.needs_redraw = true;
+    }
+
+    /// Check if redraw is needed and reset flag
+    pub fn should_redraw(&mut self) -> bool {
+        if self.needs_redraw {
+            self.needs_redraw = false;
+            true
+        } else {
+            false
         }
     }
 
     /// Switch to summary view
     pub fn show_summary(&mut self) {
         self.view_mode = ViewMode::Summary;
+        self.needs_redraw = true;
     }
 
     /// Switch to detail view for a specific node
     pub fn show_detail(&mut self, node_index: usize, num_nodes: usize) {
         if node_index < num_nodes {
             self.view_mode = ViewMode::Detail(node_index);
+            self.needs_redraw = true;
         }
     }
 
@@ -84,6 +131,7 @@ impl TuiApp {
 
         if valid_indices.len() >= 2 {
             self.view_mode = ViewMode::Split(valid_indices);
+            self.needs_redraw = true;
         }
     }
 
@@ -91,17 +139,20 @@ impl TuiApp {
     pub fn show_diff(&mut self, node_a: usize, node_b: usize, num_nodes: usize) {
         if node_a < num_nodes && node_b < num_nodes && node_a != node_b {
             self.view_mode = ViewMode::Diff(node_a, node_b);
+            self.needs_redraw = true;
         }
     }
 
     /// Toggle follow mode (auto-scroll)
     pub fn toggle_follow(&mut self) {
         self.follow_mode = !self.follow_mode;
+        self.needs_redraw = true;
     }
 
     /// Toggle help overlay
     pub fn toggle_help(&mut self) {
         self.show_help = !self.show_help;
+        self.needs_redraw = true;
     }
 
     /// Get scroll position for a node
@@ -134,6 +185,7 @@ impl TuiApp {
             self.set_scroll(idx, pos.saturating_sub(lines));
             // Disable follow mode when manually scrolling
             self.follow_mode = false;
+            self.needs_redraw = true;
         }
     }
 
@@ -145,6 +197,7 @@ impl TuiApp {
             self.set_scroll(idx, new_pos);
             // Disable follow mode when manually scrolling
             self.follow_mode = false;
+            self.needs_redraw = true;
         }
     }
 
@@ -153,6 +206,7 @@ impl TuiApp {
         if let ViewMode::Detail(idx) = self.view_mode {
             let next = (idx + 1) % num_nodes;
             self.view_mode = ViewMode::Detail(next);
+            self.needs_redraw = true;
         }
     }
 
@@ -161,6 +215,7 @@ impl TuiApp {
         if let ViewMode::Detail(idx) = self.view_mode {
             let prev = if idx == 0 { num_nodes - 1 } else { idx - 1 };
             self.view_mode = ViewMode::Detail(prev);
+            self.needs_redraw = true;
         }
     }
 
