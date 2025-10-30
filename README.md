@@ -15,12 +15,13 @@ A high-performance SSH client with **SSH-compatible syntax** for both single-hos
 - **Port Forwarding**: Full support for local (-L), remote (-R), and dynamic (-D) SSH port forwarding
 - **Jump Host Support**: Connect through bastion hosts using OpenSSH ProxyJump syntax (`-J`)
 - **Parallel Execution**: Execute commands across multiple nodes simultaneously
+- **Interactive Terminal UI (TUI)**: Real-time monitoring with 4 view modes (Summary/Detail/Split/Diff) for multi-node operations
 - **Cluster Management**: Define and manage node clusters via configuration files
-- **Progress Tracking**: Real-time progress indicators for each node
+- **Progress Tracking**: Real-time progress indicators with smart detection (percentages, fractions, apt/dpkg)
 - **Flexible Authentication**: Support for SSH keys, SSH agent, password authentication, and encrypted key passphrases
 - **Host Key Verification**: Secure host key checking with known_hosts support
 - **Cross-Platform**: Works on Linux and macOS
-- **Output Management**: Save command outputs to files per node with detailed logging
+- **Output Management**: Multiple output modes (TUI, stream, file, normal) with auto-detection
 - **Interactive Mode**: Interactive shell sessions with single-node or multiplexed multi-node support
 - **SSH Config Caching**: High-performance caching of SSH configurations with TTL and file modification detection
 - **Configurable Timeouts**: Set command execution timeouts with support for unlimited execution (timeout=0)
@@ -193,6 +194,70 @@ bssh -C production --timeout 10 "quick-check"
 
 # No timeout (unlimited execution time)
 bssh -C staging --timeout 0 "long-running-backup"
+```
+
+### Output Modes
+
+bssh automatically selects the best output mode based on your environment:
+
+#### TUI Mode (Default in Terminals)
+Interactive Terminal UI with real-time monitoring - automatically enabled when running in an interactive terminal.
+
+```bash
+# TUI mode automatically activates
+bssh -C production "apt-get update"
+
+# Features:
+# - Summary view: All nodes at a glance with progress bars
+# - Detail view (1-9): Full output from specific node with scrolling
+# - Split view (s): Monitor 2-4 nodes simultaneously
+# - Diff view (d): Compare output from two nodes side-by-side
+# - Auto-scroll (f): Toggle automatic scrolling
+# - Navigation: Arrow keys, PgUp/PgDn, Home/End
+# - Help: Press ? for keyboard shortcuts
+```
+
+**TUI Controls:**
+- `1-9`: Jump to node detail view
+- `s`: Enter split view mode
+- `d`: Enter diff view mode
+- `f`: Toggle auto-scroll
+- `↑/↓`: Scroll output
+- `←/→`: Switch between nodes
+- `Esc`: Return to summary view
+- `?`: Show help
+- `q`: Quit
+
+#### Stream Mode (Real-time with Node Prefixes)
+```bash
+# Enable stream mode explicitly
+bssh -C production --stream "tail -f /var/log/syslog"
+
+# Output:
+# [node1] Oct 30 10:15:23 systemd[1]: Started nginx.service
+# [node2] Oct 30 10:15:24 kernel: [UFW BLOCK] IN=eth0 OUT=
+# [node1] Oct 30 10:15:25 nginx: Configuration test successful
+```
+
+#### File Mode (Save to Per-Node Files)
+```bash
+# Save each node's output to timestamped files
+bssh -C production --output-dir ./logs "ps aux"
+
+# Creates:
+# ./logs/node1_20251030_101523.stdout
+# ./logs/node2_20251030_101523.stdout
+# ./logs/node1_20251030_101523.stderr (if there are errors)
+```
+
+#### Normal Mode (Traditional Output)
+```bash
+# Automatically used when output is piped or redirected
+bssh -C production "uptime" | tee results.txt
+bssh -C production "df -h" > disk-usage.log
+
+# Manually disable TUI in terminals
+CI=true bssh -C production "command"
 ```
 
 ### Built-in Commands

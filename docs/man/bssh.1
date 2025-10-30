@@ -24,7 +24,10 @@ common SSH options and automatically starting an interactive shell when no comma
 
 .B Multi-Server Mode:
 When used with clusters (-C) or multiple hosts (-H), bssh executes commands across multiple nodes
-simultaneously with real-time output streaming.
+simultaneously with real-time output monitoring. In interactive terminals, bssh automatically
+launches a Terminal User Interface (TUI) with multiple view modes (Summary, Detail, Split, Diff)
+for real-time monitoring. The TUI can be disabled with --stream (real-time text output) or
+--output-dir (save to files).
 
 The tool provides secure file transfer capabilities using SFTP protocol, supports multiple authentication
 methods (SSH keys with passphrase support, SSH agent, password), and automatically detects Backend.AI
@@ -148,7 +151,20 @@ Note: -p is now used for port (SSH compatibility)
 .TP
 .BR \-\-output\-dir " " \fIOUTPUT_DIR\fR
 Output directory for command results. When specified, saves command outputs
-to separate files for each node with stdout, stderr, and execution summary
+to separate files for each node with stdout, stderr, and execution summary.
+Creates timestamped files:
+.I hostname_TIMESTAMP.stdout
+(command output),
+.I hostname_TIMESTAMP.stderr
+(error output)
+
+.TP
+.BR \-\-stream
+Stream output in real-time with [node] prefixes. Each line of output is
+prefixed with the node hostname and displayed as it arrives. Useful for
+monitoring long-running commands across multiple nodes. Automatically
+disabled when output is piped or in CI environments. This disables the
+interactive TUI mode.
 
 .TP
 .BR \-v ", " \-\-verbose
@@ -1066,10 +1082,48 @@ Creates timestamped files per node:
 - hostname_TIMESTAMP.stdout (standard output)
 .br
 - hostname_TIMESTAMP.stderr (error output)
-.br  
+.br
 - hostname_TIMESTAMP.error (connection errors)
 .br
 - summary_TIMESTAMP.txt (execution summary)
+.RE
+
+.TP
+Interactive TUI mode (default in terminals):
+.B bssh -C production "apt-get update"
+.RS
+Automatically launches Terminal UI with real-time monitoring.
+.br
+TUI features:
+.br
+- Summary view: All nodes with progress bars
+.br
+- Detail view (press 1-9): Full output from specific node
+.br
+- Split view (press s): Monitor 2-4 nodes simultaneously
+.br
+- Diff view (press d): Compare outputs side-by-side
+.br
+- Keyboard navigation: arrows, PgUp/PgDn, Home/End
+.br
+- Auto-scroll (press f): Toggle automatic scrolling
+.br
+- Help (press ?): Show all keyboard shortcuts
+.RE
+
+.TP
+Stream mode with real-time prefixes:
+.B bssh -C production --stream "tail -f /var/log/syslog"
+.RS
+Disables TUI and streams output with [node] prefixes in real-time.
+.br
+Example output:
+.br
+[host1] Oct 30 10:15:23 systemd[1]: Started nginx
+.br
+[host2] Oct 30 10:15:24 kernel: [UFW BLOCK] IN=eth0
+.br
+Useful for monitoring long-running commands or when piping output.
 .RE
 
 .TP
