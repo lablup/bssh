@@ -35,6 +35,13 @@ lazy_static! {
 ///
 /// Returns progress as a percentage (0.0 to 100.0) or None if no progress detected.
 ///
+/// # Safety
+///
+/// This function is safe from ReDoS attacks because:
+/// - All regex patterns are pre-compiled with lazy_static
+/// - Patterns have no catastrophic backtracking (no nested quantifiers)
+/// - Input is limited to reasonable line lengths
+///
 /// # Examples
 ///
 /// ```
@@ -45,6 +52,12 @@ lazy_static! {
 /// assert_eq!(parse_progress("No progress here"), None);
 /// ```
 pub fn parse_progress(text: &str) -> Option<f32> {
+    // Limit input length to prevent potential DoS
+    // (though our regex patterns are safe, this is defense in depth)
+    const MAX_LINE_LENGTH: usize = 1000;
+    if text.len() > MAX_LINE_LENGTH {
+        return None;
+    }
     // Try apt-specific pattern first (more specific)
     if let Some(cap) = APT_PROGRESS.captures(text) {
         if let Ok(percent) = cap[1].parse::<f32>() {
