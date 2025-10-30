@@ -262,11 +262,14 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn test_determine_auth_method_with_agent() {
-        // Create a temporary socket file to simulate agent
+        use std::os::unix::net::UnixListener;
+
+        // Create a temporary directory for the socket
         let temp_dir = TempDir::new().unwrap();
         let socket_path = temp_dir.path().join("ssh-agent.sock");
-        // Create an empty file to simulate socket existence
-        std::fs::write(&socket_path, "").unwrap();
+
+        // Create a real Unix domain socket (required on macOS)
+        let _listener = UnixListener::bind(&socket_path).unwrap();
 
         std::env::set_var("SSH_AUTH_SOCK", socket_path.to_str().unwrap());
 
