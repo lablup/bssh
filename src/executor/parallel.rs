@@ -581,7 +581,10 @@ impl ParallelExecutor {
         }
 
         // Execute based on mode and ensure cleanup
-        let result = if output_mode.is_stream() {
+        let result = if output_mode.is_tui() {
+            // TUI mode: interactive terminal UI
+            self.handle_tui_mode(&mut manager, handles, command).await
+        } else if output_mode.is_stream() {
             // Stream mode: output in real-time with [node] prefixes
             self.handle_stream_mode(&mut manager, handles).await
         } else if let Some(output_dir) = output_mode.output_dir() {
@@ -672,6 +675,69 @@ impl ParallelExecutor {
                         output: Vec::new(), // stdout already printed
                         stderr: Vec::new(), // stderr already printed
                         exit_status: stream.exit_code().unwrap_or(1),
+                    })
+                };
+
+            results.push(ExecutionResult {
+                node: stream.node.clone(),
+                result,
+                is_main_rank: false, // Will be set by collect_results
+            });
+        }
+
+        self.collect_results(results.into_iter().map(Ok).collect())
+    }
+
+    /// Handle TUI mode output with interactive terminal UI
+    async fn handle_tui_mode(
+        &self,
+        manager: &mut super::stream_manager::MultiNodeStreamManager,
+        handles: Vec<tokio::task::JoinHandle<(Node, Result<u32>)>>,
+        command: &str,
+    ) -> Result<Vec<ExecutionResult>> {
+        use crate::ui::tui;
+
+        // Determine cluster name (use first node's host or "cluster" as default)
+        let cluster_name = self
+            .nodes
+            .first()
+            .map(|n| n.host.as_str())
+            .unwrap_or("cluster");
+
+        let mut pending_handles = handles;
+
+        // Run TUI event loop - this will block until user quits or all complete
+        // The TUI itself will handle polling the manager
+        if let Err(e) = tui::run_tui(manager, cluster_name, command).await {
+            tracing::error!("TUI error: {}", e);
+        }
+
+        // Clean up any remaining handles
+        for handle in pending_handles.drain(..) {
+            if let Err(e) = handle.await {
+                tracing::error!("Task error: {}", e);
+            }
+        }
+
+        // Collect final results from all streams
+        let mut results = Vec::new();
+        for stream in manager.streams() {
+            use crate::ssh::client::CommandResult;
+
+            let result =
+                if let super::stream_manager::ExecutionStatus::Failed(err) = stream.status() {
+                    Err(anyhow::anyhow!("{err}"))
+                } else {
+                    let output = stream.stdout().to_vec();
+                    let stderr = stream.stderr().to_vec();
+                    let exit_status = stream.exit_code().unwrap_or(0);
+                    let host = stream.node.host.clone();
+
+                    Ok(CommandResult {
+                        host,
+                        output,
+                        stderr,
+                        exit_status,
                     })
                 };
 

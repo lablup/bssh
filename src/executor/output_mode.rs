@@ -43,6 +43,13 @@ pub enum OutputMode {
     /// Each node's output is saved to a separate file in the specified
     /// directory. Files are named with hostname and timestamp.
     File(PathBuf),
+
+    /// TUI mode - interactive terminal UI with multiple view modes
+    ///
+    /// Provides an interactive ratatui-based terminal UI for real-time
+    /// monitoring of multiple nodes. Supports summary, detail, split, and
+    /// diff view modes with keyboard navigation.
+    Tui,
 }
 
 impl OutputMode {
@@ -51,12 +58,31 @@ impl OutputMode {
     /// Priority:
     /// 1. --output-dir (File mode)
     /// 2. --stream (Stream mode)
-    /// 3. Default (Normal mode)
+    /// 3. Auto-detect TUI if TTY and no explicit mode
+    /// 4. Default (Normal mode)
     pub fn from_args(stream: bool, output_dir: Option<PathBuf>) -> Self {
         if let Some(dir) = output_dir {
             OutputMode::File(dir)
         } else if stream {
             OutputMode::Stream
+        } else if is_tty() {
+            // Auto-enable TUI mode for interactive terminals
+            OutputMode::Tui
+        } else {
+            OutputMode::Normal
+        }
+    }
+
+    /// Create output mode with explicit TUI disable option
+    ///
+    /// Used when --no-tui or similar flags are present
+    pub fn from_args_explicit(stream: bool, output_dir: Option<PathBuf>, enable_tui: bool) -> Self {
+        if let Some(dir) = output_dir {
+            OutputMode::File(dir)
+        } else if stream {
+            OutputMode::Stream
+        } else if enable_tui && is_tty() {
+            OutputMode::Tui
         } else {
             OutputMode::Normal
         }
@@ -75,6 +101,11 @@ impl OutputMode {
     /// Check if this is file mode
     pub fn is_file(&self) -> bool {
         matches!(self, OutputMode::File(_))
+    }
+
+    /// Check if this is TUI mode
+    pub fn is_tui(&self) -> bool {
+        matches!(self, OutputMode::Tui)
     }
 
     /// Get output directory if in file mode
