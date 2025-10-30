@@ -21,46 +21,44 @@
 pub mod app;
 pub mod event;
 pub mod progress;
+pub mod terminal_guard;
 pub mod views;
 
 use crate::executor::MultiNodeStreamManager;
 use anyhow::Result;
 use app::{TuiApp, ViewMode};
-use crossterm::{
-    execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-};
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
 use std::time::Duration;
+use terminal_guard::TerminalGuard;
 
 /// Run the TUI event loop
 ///
 /// This function sets up the terminal, runs the event loop, and cleans up
 /// on exit. It handles keyboard input and updates the display based on the
-/// current view mode.
+/// current view mode. Terminal cleanup is guaranteed via RAII guards.
 pub async fn run_tui(
     manager: &mut MultiNodeStreamManager,
     cluster_name: &str,
     command: &str,
 ) -> Result<()> {
-    // Setup terminal
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-
-    let backend = CrosstermBackend::new(stdout);
+    // Setup terminal with automatic cleanup guard
+    let _terminal_guard = TerminalGuard::new()?;
+    let backend = CrosstermBackend::new(io::stdout());
     let mut terminal = Terminal::new(backend)?;
+
+    // Hide cursor during TUI operation
+    terminal.hide_cursor()?;
 
     let mut app = TuiApp::new();
 
     // Main event loop
     let result = run_event_loop(&mut terminal, &mut app, manager, cluster_name, command).await;
 
-    // Cleanup terminal
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    // Show cursor before exit (guard will handle the rest)
     terminal.show_cursor()?;
+
+    // The terminal guard will automatically clean up when dropped
 
     result
 }
