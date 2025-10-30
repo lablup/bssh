@@ -133,17 +133,26 @@ fn render_output(
         )));
     }
 
-    // Calculate scroll position
+    // Calculate scroll position with bounds checking
     let viewport_height = area.height.saturating_sub(2) as usize; // Minus borders
     let total_lines = lines.len();
 
+    // Ensure viewport height is at least 1 to avoid division by zero issues
+    let viewport_height = viewport_height.max(1);
+
+    // Calculate maximum scroll position
+    let max_scroll = total_lines.saturating_sub(viewport_height);
+
     let scroll = if follow_mode {
         // Auto-scroll to bottom
-        total_lines.saturating_sub(viewport_height)
+        max_scroll
     } else {
-        // Manual scroll position
-        scroll_pos.min(total_lines.saturating_sub(viewport_height))
+        // Manual scroll position with bounds checking
+        scroll_pos.min(max_scroll)
     };
+
+    // Ensure scroll is within valid range
+    let scroll = scroll.min(total_lines.saturating_sub(1));
 
     let paragraph = Paragraph::new(lines)
         .block(Block::default().borders(Borders::LEFT | Borders::RIGHT))

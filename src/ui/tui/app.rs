@@ -109,8 +109,21 @@ impl TuiApp {
         self.scroll_positions.get(&node_index).copied().unwrap_or(0)
     }
 
-    /// Set scroll position for a node
+    /// Set scroll position for a node with memory limit
     pub fn set_scroll(&mut self, node_index: usize, position: usize) {
+        // Limit HashMap size to prevent unbounded memory growth
+        // Keep only last 100 node scroll positions (more than enough for typical use)
+        const MAX_SCROLL_ENTRIES: usize = 100;
+
+        if self.scroll_positions.len() >= MAX_SCROLL_ENTRIES
+            && !self.scroll_positions.contains_key(&node_index)
+        {
+            // Remove oldest entry (arbitrary - could use LRU if needed)
+            if let Some(first_key) = self.scroll_positions.keys().next().copied() {
+                self.scroll_positions.remove(&first_key);
+            }
+        }
+
         self.scroll_positions.insert(node_index, position);
     }
 
