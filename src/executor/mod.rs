@@ -17,6 +17,7 @@
 mod connection_manager;
 mod execution_strategy;
 mod output_mode;
+mod output_sync;
 mod parallel;
 mod result_types;
 mod stream_manager;

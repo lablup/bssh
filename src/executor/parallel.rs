@@ -488,10 +488,12 @@ impl ParallelExecutor {
         let semaphore = Arc::new(Semaphore::new(self.max_parallel));
         let mut manager = MultiNodeStreamManager::new();
         let mut handles = Vec::new();
+        let mut channels = Vec::new(); // Keep track of senders for cleanup
 
         // Spawn tasks for each node with streaming
         for node in &self.nodes {
             let (tx, rx) = mpsc::channel(1000);
+            channels.push(tx.clone()); // Keep a reference for cleanup
             manager.add_stream(node.clone(), rx);
 
             let node_clone = node.clone();
@@ -507,8 +509,32 @@ impl ParallelExecutor {
             let semaphore = Arc::clone(&semaphore);
 
             let handle = tokio::spawn(async move {
-                // Acquire semaphore
-                let _permit = semaphore.acquire().await.ok();
+                // Use defer pattern to ensure cleanup even on panic
+                struct CleanupGuard<T> {
+                    _permit: Option<T>,
+                }
+
+                impl<T> Drop for CleanupGuard<T> {
+                    fn drop(&mut self) {
+                        tracing::trace!("Releasing semaphore permit in cleanup guard");
+                    }
+                }
+
+                // Acquire semaphore with guard
+                let permit = match semaphore.acquire().await {
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::error!("Failed to acquire semaphore: {}", e);
+                        return (
+                            node_clone,
+                            Err(anyhow::anyhow!("Semaphore acquisition failed")),
+                        );
+                    }
+                };
+
+                let _guard = CleanupGuard {
+                    _permit: Some(permit),
+                };
 
                 let mut client = SshClient::new(
                     node_clone.host.clone(),
@@ -527,30 +553,50 @@ impl ParallelExecutor {
                     jump_hosts_spec: jump_hosts.as_deref(),
                 };
 
-                match client
-                    .connect_and_execute_with_output_streaming(&command, &config, tx)
+                // Ensure channel is closed on all paths
+                let result = match client
+                    .connect_and_execute_with_output_streaming(&command, &config, tx.clone())
                     .await
                 {
-                    Ok(exit_status) => (node_clone, Ok(exit_status)),
-                    Err(e) => (node_clone, Err(e)),
-                }
+                    Ok(exit_status) => {
+                        tracing::debug!(
+                            "Command completed for {}: exit code {}",
+                            node_clone.host,
+                            exit_status
+                        );
+                        (node_clone, Ok(exit_status))
+                    }
+                    Err(e) => {
+                        tracing::error!("Command failed for {}: {}", node_clone.host, e);
+                        (node_clone, Err(e))
+                    }
+                };
+
+                // Explicitly drop the channel to signal completion
+                drop(tx);
+                result
             });
 
             handles.push(handle);
         }
 
-        // Stream mode: output in real-time with [node] prefixes
-        if output_mode.is_stream() {
+        // Execute based on mode and ensure cleanup
+        let result = if output_mode.is_stream() {
+            // Stream mode: output in real-time with [node] prefixes
             self.handle_stream_mode(&mut manager, handles).await
-        }
-        // File mode: save to per-node files
-        else if let Some(output_dir) = output_mode.output_dir() {
+        } else if let Some(output_dir) = output_mode.output_dir() {
+            // File mode: save to per-node files
             self.handle_file_mode(&mut manager, handles, output_dir)
                 .await
         } else {
             // Fallback to normal mode
             self.execute(command).await
-        }
+        };
+
+        // Ensure all channels are closed (important for cleanup)
+        drop(channels);
+
+        result
     }
 
     /// Handle stream mode output with [node] prefixes
@@ -559,6 +605,7 @@ impl ParallelExecutor {
         manager: &mut super::stream_manager::MultiNodeStreamManager,
         handles: Vec<tokio::task::JoinHandle<(Node, Result<u32>)>>,
     ) -> Result<Vec<ExecutionResult>> {
+        use super::output_sync::NodeOutputWriter;
         use std::time::Duration;
 
         let mut pending_handles = handles;
@@ -569,30 +616,44 @@ impl ParallelExecutor {
             // Poll all streams for new output
             manager.poll_all();
 
-            // Output any new data with [node] prefixes
+            // Output any new data with [node] prefixes using synchronized writes
             for stream in manager.streams_mut() {
                 let stdout = stream.take_stdout();
                 let stderr = stream.take_stderr();
 
                 if !stdout.is_empty() {
-                    if let Ok(text) = String::from_utf8(stdout) {
-                        for line in text.lines() {
-                            println!("[{}] {}", stream.node.host, line);
-                        }
+                    // Use lossy conversion to handle non-UTF8 data gracefully
+                    let text = String::from_utf8_lossy(&stdout);
+                    let writer = NodeOutputWriter::new(&stream.node.host);
+                    if let Err(e) = writer.write_stdout_lines(&text) {
+                        tracing::error!("Failed to write stdout for {}: {}", stream.node.host, e);
                     }
                 }
 
                 if !stderr.is_empty() {
-                    if let Ok(text) = String::from_utf8(stderr) {
-                        for line in text.lines() {
-                            eprintln!("[{}] {}", stream.node.host, line);
-                        }
+                    // Use lossy conversion to handle non-UTF8 data gracefully
+                    let text = String::from_utf8_lossy(&stderr);
+                    let writer = NodeOutputWriter::new(&stream.node.host);
+                    if let Err(e) = writer.write_stderr_lines(&text) {
+                        tracing::error!("Failed to write stderr for {}: {}", stream.node.host, e);
                     }
                 }
             }
 
-            // Check for completed tasks
-            pending_handles.retain_mut(|handle| !handle.is_finished());
+            // Check for completed tasks and handle panics
+            let mut i = 0;
+            while i < pending_handles.len() {
+                if pending_handles[i].is_finished() {
+                    let handle = pending_handles.remove(i);
+                    // Check if task panicked
+                    if let Err(e) = &handle.await {
+                        tracing::error!("Task panicked: {}", e);
+                        // Continue processing other nodes
+                    }
+                } else {
+                    i += 1;
+                }
+            }
 
             // Small sleep to avoid busy waiting
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -634,8 +695,44 @@ impl ParallelExecutor {
         use std::time::Duration;
         use tokio::fs;
 
-        // Create output directory if it doesn't exist
-        fs::create_dir_all(output_dir).await?;
+        // Validate output directory
+        if output_dir.exists() && !output_dir.is_dir() {
+            return Err(anyhow::anyhow!(
+                "Output path exists but is not a directory: {}",
+                output_dir.display()
+            ));
+        }
+
+        // Create output directory if it doesn't exist with proper error handling
+        if let Err(e) = fs::create_dir_all(output_dir).await {
+            return Err(anyhow::anyhow!(
+                "Failed to create output directory '{}': {} - Check permissions",
+                output_dir.display(),
+                e
+            ));
+        }
+
+        // Check if we can write to the directory
+        let test_file = output_dir.join(".bssh_test_write");
+        match fs::File::create(&test_file).await {
+            Ok(_) => {
+                // Clean up test file
+                let _ = fs::remove_file(&test_file).await;
+            }
+            Err(e) => {
+                return Err(anyhow::anyhow!(
+                    "Output directory '{}' is not writable: {}",
+                    output_dir.display(),
+                    e
+                ));
+            }
+        }
+
+        // Log output directory for user reference
+        tracing::info!(
+            "Writing node outputs to directory: {}",
+            output_dir.display()
+        );
 
         let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
 
@@ -661,24 +758,60 @@ impl ParallelExecutor {
             let stdout_path = output_dir.join(format!("{hostname}_{timestamp}.stdout"));
             let stderr_path = output_dir.join(format!("{hostname}_{timestamp}.stderr"));
 
-            // Write stdout
+            // Write stdout with error handling
             if !stream.stdout().is_empty() {
-                fs::write(&stdout_path, stream.stdout()).await?;
-                println!(
-                    "[{}] Output saved to {}",
-                    stream.node.host,
-                    stdout_path.display()
-                );
+                match fs::write(&stdout_path, stream.stdout()).await {
+                    Ok(_) => {
+                        // Use synchronized output to prevent interleaving
+                        let writer = super::output_sync::NodeOutputWriter::new(&stream.node.host);
+                        if let Err(e) = writer
+                            .write_stdout(&format!("Output saved to {}", stdout_path.display()))
+                        {
+                            tracing::error!(
+                                "Failed to write status for {}: {}",
+                                stream.node.host,
+                                e
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "Failed to write stdout for {} to {}: {}",
+                            stream.node.host,
+                            stdout_path.display(),
+                            e
+                        );
+                        // Continue processing other nodes despite error
+                    }
+                }
             }
 
-            // Write stderr
+            // Write stderr with error handling
             if !stream.stderr().is_empty() {
-                fs::write(&stderr_path, stream.stderr()).await?;
-                println!(
-                    "[{}] Errors saved to {}",
-                    stream.node.host,
-                    stderr_path.display()
-                );
+                match fs::write(&stderr_path, stream.stderr()).await {
+                    Ok(_) => {
+                        // Use synchronized output to prevent interleaving
+                        let writer = super::output_sync::NodeOutputWriter::new(&stream.node.host);
+                        if let Err(e) = writer
+                            .write_stdout(&format!("Errors saved to {}", stderr_path.display()))
+                        {
+                            tracing::error!(
+                                "Failed to write status for {}: {}",
+                                stream.node.host,
+                                e
+                            );
+                        }
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            "Failed to write stderr for {} to {}: {}",
+                            stream.node.host,
+                            stderr_path.display(),
+                            e
+                        );
+                        // Continue processing other nodes despite error
+                    }
+                }
             }
 
             let result =
