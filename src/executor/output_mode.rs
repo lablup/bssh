@@ -65,9 +65,10 @@ impl OutputMode {
             OutputMode::File(dir)
         } else if stream {
             OutputMode::Stream
+        } else if is_tty() {
+            // Auto-enable TUI mode for interactive terminals
+            OutputMode::Tui
         } else {
-            // Default to Normal mode
-            // TUI mode should be explicitly requested via --tui flag
             OutputMode::Normal
         }
     }

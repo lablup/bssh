@@ -657,6 +657,16 @@ impl ParallelExecutor {
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
 
+        // After all handles complete, do final polls to ensure all Disconnected messages are processed
+        // This handles race condition where task completes but rx hasn't detected channel closure yet
+        for _ in 0..5 {
+            manager.poll_all();
+            if manager.all_complete() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
         // Collect final results from all streams
         for stream in manager.streams() {
             use crate::ssh::client::CommandResult;
@@ -691,6 +701,7 @@ impl ParallelExecutor {
         command: &str,
     ) -> Result<Vec<ExecutionResult>> {
         use crate::ui::tui;
+        use std::time::Duration;
 
         // Determine cluster name (use first node's host or "cluster" as default)
         let cluster_name = self
@@ -712,6 +723,15 @@ impl ParallelExecutor {
             if let Err(e) = handle.await {
                 tracing::error!("Task error: {}", e);
             }
+        }
+
+        // Final polls to ensure all Disconnected messages are processed
+        for _ in 0..5 {
+            manager.poll_all();
+            if manager.all_complete() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
 
         // Collect final results from all streams
@@ -807,6 +827,15 @@ impl ParallelExecutor {
             pending_handles.retain_mut(|handle| !handle.is_finished());
 
             tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+
+        // Final polls to ensure all Disconnected messages are processed
+        for _ in 0..5 {
+            manager.poll_all();
+            if manager.all_complete() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
 
         // Write output files for each node
