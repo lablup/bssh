@@ -30,6 +30,7 @@ pub fn render(
     node_index: usize,
     scroll_pos: usize,
     follow_mode: bool,
+    all_tasks_completed: bool,
 ) {
     let chunks = Layout::default()
         .direction(ratatui::layout::Direction::Vertical)
@@ -42,7 +43,7 @@ pub fn render(
 
     render_header(f, chunks[0], stream, node_index);
     render_output(f, chunks[1], stream, scroll_pos, follow_mode);
-    render_footer(f, chunks[2], follow_mode);
+    render_footer(f, chunks[2], follow_mode, all_tasks_completed);
 }
 
 /// Render the header with node information
@@ -163,14 +164,14 @@ fn render_output(
 }
 
 /// Render the footer with help text
-fn render_footer(f: &mut Frame, area: Rect, follow_mode: bool) {
+fn render_footer(f: &mut Frame, area: Rect, follow_mode: bool, all_tasks_completed: bool) {
     let follow_indicator = if follow_mode {
         Span::styled("[FOLLOW] ", Style::default().fg(Color::Green))
     } else {
         Span::raw("")
     };
 
-    let help_text = Line::from(vec![
+    let mut spans = vec![
         follow_indicator,
         Span::styled(" [←/→] ", Style::default().fg(Color::Yellow)),
         Span::raw("Switch "),
@@ -182,7 +183,20 @@ fn render_footer(f: &mut Frame, area: Rect, follow_mode: bool) {
         Span::raw("Follow "),
         Span::styled(" [q] ", Style::default().fg(Color::Yellow)),
         Span::raw("Quit "),
-    ]);
+    ];
+
+    // Add completion message if all tasks are done
+    if all_tasks_completed {
+        spans.push(Span::raw(" │ "));
+        spans.push(Span::styled(
+            "✓ All tasks completed",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    let help_text = Line::from(spans);
 
     let footer = Paragraph::new(help_text).block(Block::default().borders(Borders::ALL));
 

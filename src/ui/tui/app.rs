@@ -51,6 +51,8 @@ pub struct TuiApp {
     pub needs_redraw: bool,
     /// Track last rendered data sizes for change detection
     pub last_data_sizes: HashMap<usize, (usize, usize)>, // node_id -> (stdout_size, stderr_size)
+    /// Whether all tasks have been completed
+    pub all_tasks_completed: bool,
 }
 
 impl TuiApp {
@@ -64,6 +66,7 @@ impl TuiApp {
             show_help: false,
             needs_redraw: true, // Initial draw needed
             last_data_sizes: HashMap::new(),
+            all_tasks_completed: false,
         }
     }
 
@@ -222,6 +225,14 @@ impl TuiApp {
     /// Quit the application
     pub fn quit(&mut self) {
         self.should_quit = true;
+    }
+
+    /// Mark all tasks as completed
+    pub fn mark_all_tasks_completed(&mut self) {
+        if !self.all_tasks_completed {
+            self.all_tasks_completed = true;
+            self.needs_redraw = true;
+        }
     }
 
     /// Get help text for current view mode

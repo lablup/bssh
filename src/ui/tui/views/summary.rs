@@ -25,7 +25,13 @@ use ratatui::{
 };
 
 /// Render the summary view
-pub fn render(f: &mut Frame, manager: &MultiNodeStreamManager, cluster_name: &str, command: &str) {
+pub fn render(
+    f: &mut Frame,
+    manager: &MultiNodeStreamManager,
+    cluster_name: &str,
+    command: &str,
+    all_tasks_completed: bool,
+) {
     let chunks = Layout::default()
         .direction(ratatui::layout::Direction::Vertical)
         .constraints([
@@ -37,7 +43,7 @@ pub fn render(f: &mut Frame, manager: &MultiNodeStreamManager, cluster_name: &st
 
     render_header(f, chunks[0], cluster_name, command, manager);
     render_node_list(f, chunks[1], manager);
-    render_footer(f, chunks[2]);
+    render_footer(f, chunks[2], all_tasks_completed);
 }
 
 /// Render the header with cluster name and command
@@ -183,8 +189,8 @@ fn render_node_list(f: &mut Frame, area: Rect, manager: &MultiNodeStreamManager)
 }
 
 /// Render the footer with help text
-fn render_footer(f: &mut Frame, area: Rect) {
-    let help_text = Line::from(vec![
+fn render_footer(f: &mut Frame, area: Rect, all_tasks_completed: bool) {
+    let mut spans = vec![
         Span::styled(" [1-9] ", Style::default().fg(Color::Yellow)),
         Span::raw("Detail "),
         Span::styled(" [s] ", Style::default().fg(Color::Yellow)),
@@ -195,7 +201,20 @@ fn render_footer(f: &mut Frame, area: Rect) {
         Span::raw("Quit "),
         Span::styled(" [?] ", Style::default().fg(Color::Yellow)),
         Span::raw("Help "),
-    ]);
+    ];
+
+    // Add completion message if all tasks are done
+    if all_tasks_completed {
+        spans.push(Span::raw(" │ "));
+        spans.push(Span::styled(
+            "✓ All tasks completed - Press 'q' or 'Esc' to exit",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    let help_text = Line::from(spans);
 
     let footer = Paragraph::new(help_text).block(Block::default().borders(Borders::ALL));
 

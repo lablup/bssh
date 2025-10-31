@@ -108,8 +108,13 @@ async fn run_event_loop(
             app.mark_needs_redraw();
         }
 
-        // Check exit conditions
-        if app.should_quit || manager.all_complete() {
+        // Check if all tasks are complete and mark it
+        if manager.all_complete() {
+            app.mark_all_tasks_completed();
+        }
+
+        // Check exit condition (only quit when user explicitly requests)
+        if app.should_quit {
             break;
         }
 
@@ -132,12 +137,19 @@ fn render_ui(
     // Render based on view mode
     match &app.view_mode {
         ViewMode::Summary => {
-            views::summary::render(f, manager, cluster_name, command);
+            views::summary::render(f, manager, cluster_name, command, app.all_tasks_completed);
         }
         ViewMode::Detail(idx) => {
             if let Some(stream) = manager.streams().get(*idx) {
                 let scroll = app.get_scroll(*idx);
-                views::detail::render(f, stream, *idx, scroll, app.follow_mode);
+                views::detail::render(
+                    f,
+                    stream,
+                    *idx,
+                    scroll,
+                    app.follow_mode,
+                    app.all_tasks_completed,
+                );
             }
         }
         ViewMode::Split(indices) => {
