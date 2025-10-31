@@ -46,7 +46,7 @@ pub fn render(f: &mut Frame, manager: &MultiNodeStreamManager, indices: &[usize]
     for _ in 0..rows {
         row_constraints.push(Constraint::Percentage((100 / rows) as u16));
     }
-    row_constraints.push(Constraint::Length(2)); // Footer
+    row_constraints.push(Constraint::Length(3)); // Footer
 
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -91,7 +91,7 @@ fn render_pane(f: &mut Frame, area: Rect, stream: &crate::executor::NodeStream, 
 
     // Determine status and color
     let (status_icon, status_color) = match stream.status() {
-        ExecutionStatus::Pending => ("⊙", Color::DarkGray),
+        ExecutionStatus::Pending => ("⊙", Color::Gray),
         ExecutionStatus::Running => ("⟳", Color::Blue),
         ExecutionStatus::Completed => ("✓", Color::Green),
         ExecutionStatus::Failed(_) => ("✗", Color::Red),
@@ -105,7 +105,7 @@ fn render_pane(f: &mut Frame, area: Rect, stream: &crate::executor::NodeStream, 
     let lines: Vec<Line> = if stdout.is_empty() {
         vec![Line::from(Span::styled(
             "(no output)",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(Color::Gray),
         ))]
     } else {
         // Show last N lines that fit in the pane

@@ -37,7 +37,7 @@ pub fn render(
         .constraints([
             Constraint::Length(3), // Header
             Constraint::Min(0),    // Split content
-            Constraint::Length(2), // Footer
+            Constraint::Length(3), // Footer
         ])
         .split(f.area());
 
@@ -86,7 +86,7 @@ fn render_node_output(
     let lines: Vec<Line> = if stdout.is_empty() {
         vec![Line::from(Span::styled(
             "(no output)",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(Color::Gray),
         ))]
     } else {
         stdout

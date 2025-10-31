@@ -37,7 +37,7 @@ pub fn render(
         .constraints([
             Constraint::Length(3), // Header
             Constraint::Min(0),    // Node list
-            Constraint::Length(2), // Footer
+            Constraint::Length(3), // Footer
         ])
         .split(f.area());
 
@@ -75,7 +75,7 @@ fn render_header(
                 .add_modifier(Modifier::BOLD),
         ),
         Span::raw(" "),
-        Span::styled(status, Style::default().fg(Color::DarkGray)),
+        Span::styled(status, Style::default().fg(Color::White)),
     ])];
 
     let header = Paragraph::new(header_text).block(Block::default().borders(Borders::ALL));
@@ -95,7 +95,7 @@ fn render_node_list(f: &mut Frame, area: Rect, manager: &MultiNodeStreamManager)
 
         // Determine status icon and color
         let (icon, color) = match stream.status() {
-            ExecutionStatus::Pending => ("⊙", Color::DarkGray),
+            ExecutionStatus::Pending => ("⊙", Color::Gray),
             ExecutionStatus::Running => ("⟳", Color::Blue),
             ExecutionStatus::Completed => ("✓", Color::Green),
             ExecutionStatus::Failed(msg) => {
@@ -146,10 +146,7 @@ fn render_node_list(f: &mut Frame, area: Rect, manager: &MultiNodeStreamManager)
                     status_msg
                 };
                 line_spans.push(Span::raw(" "));
-                line_spans.push(Span::styled(
-                    truncated,
-                    Style::default().fg(Color::DarkGray),
-                ));
+                line_spans.push(Span::styled(truncated, Style::default().fg(Color::Gray)));
             }
         } else {
             // No progress, show status or recent output
@@ -172,10 +169,7 @@ fn render_node_list(f: &mut Frame, area: Rect, manager: &MultiNodeStreamManager)
             } else {
                 status_text
             };
-            line_spans.push(Span::styled(
-                truncated,
-                Style::default().fg(Color::DarkGray),
-            ));
+            line_spans.push(Span::styled(truncated, Style::default().fg(Color::Gray)));
         }
 
         lines.push(Line::from(line_spans));

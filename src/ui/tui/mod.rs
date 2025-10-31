@@ -206,7 +206,7 @@ fn render_help_overlay(f: &mut ratatui::Frame, app: &TuiApp) {
     lines.push(Line::from(""));
     lines.push(Line::from(Span::styled(
         "Press ? or Esc to close",
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(Color::Gray),
     )));
 
     let help = Paragraph::new(lines)

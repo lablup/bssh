@@ -37,7 +37,7 @@ pub fn render(
         .constraints([
             Constraint::Length(3), // Header
             Constraint::Min(0),    // Output content
-            Constraint::Length(2), // Footer
+            Constraint::Length(3), // Footer
         ])
         .split(f.area());
 
@@ -50,7 +50,7 @@ pub fn render(
 fn render_header(f: &mut Frame, area: Rect, stream: &NodeStream, node_index: usize) {
     let node = &stream.node;
     let status_text = match stream.status() {
-        ExecutionStatus::Pending => ("Pending", Color::DarkGray),
+        ExecutionStatus::Pending => ("Pending", Color::Gray),
         ExecutionStatus::Running => ("Running", Color::Blue),
         ExecutionStatus::Completed => ("Completed", Color::Green),
         ExecutionStatus::Failed(msg) => {
@@ -130,7 +130,7 @@ fn render_output(
     if lines.is_empty() {
         lines.push(Line::from(Span::styled(
             "(no output yet)",
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(Color::Gray),
         )));
     }
 
