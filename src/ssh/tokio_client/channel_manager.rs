@@ -317,6 +317,12 @@ impl Client {
         // Execute with streaming
         let exit_status = self.execute_streaming(command, sender).await?;
 
+        // CRITICAL: Drop the original sender to signal completion to the receiver task
+        // execute_streaming() only drops the clone, but the receiver task waits for
+        // ALL senders to be dropped before finishing. Without this, receiver.recv()
+        // will hang forever waiting for more data.
+        drop(output_buffer.sender);
+
         // Wait for all output to be collected
         // Handle both JoinError (task panic) and potential collection errors
         let (stdout_bytes, stderr_bytes) = output_buffer.receiver_task.await.map_err(|e| {

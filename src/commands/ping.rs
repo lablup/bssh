@@ -21,6 +21,7 @@ use crate::node::Node;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
 use crate::ui::OutputFormatter;
 
+#[allow(clippy::too_many_arguments)]
 pub async fn ping_nodes(
     nodes: Vec<Node>,
     max_parallel: usize,
@@ -28,6 +29,8 @@ pub async fn ping_nodes(
     strict_mode: StrictHostKeyChecking,
     use_agent: bool,
     use_password: bool,
+    #[cfg(target_os = "macos")] use_keychain: bool,
+    timeout: Option<u64>,
 ) -> Result<()> {
     println!(
         "{}",
@@ -35,6 +38,11 @@ pub async fn ping_nodes(
     );
 
     let key_path = key_path.map(|p| p.to_string_lossy().to_string());
+
+    // For ping command, just use the provided timeout or default
+    // Don't override user's timeout setting
+    let ping_timeout = timeout;
+
     let executor = ParallelExecutor::new_with_all_options(
         nodes.clone(),
         max_parallel,
@@ -42,9 +50,15 @@ pub async fn ping_nodes(
         strict_mode,
         use_agent,
         use_password,
-    );
+    )
+    .with_timeout(ping_timeout)
+    .with_jump_hosts(None);
 
-    let results = executor.execute("echo 'pong'").await?;
+    #[cfg(target_os = "macos")]
+    let executor = executor.with_keychain(use_keychain);
+
+    // Use normal execution (no TUI, no streaming) for ping
+    let results = executor.execute("true").await?;
 
     let mut success_count = 0;
     let mut failed_count = 0;

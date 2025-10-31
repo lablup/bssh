@@ -73,6 +73,10 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
                 ctx.cluster_name.as_deref().or(cli.cluster.as_deref()),
             );
 
+            #[cfg(target_os = "macos")]
+            let use_keychain =
+                determine_use_keychain(&ctx.ssh_config, hostname_for_ssh_config.as_deref());
+
             ping_nodes(
                 ctx.nodes.clone(),
                 ctx.max_parallel,
@@ -80,6 +84,9 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
                 ctx.strict_mode,
                 cli.use_agent,
                 cli.password,
+                #[cfg(target_os = "macos")]
+                use_keychain,
+                Some(cli.timeout),
             )
             .await
         }

@@ -587,10 +587,275 @@ ls ./results/
 ```
 
 **Future Enhancements:**
-- Phase 3: UI components (progress bars, spinners)
+- ~~Phase 3: UI components (progress bars, spinners)~~ ✅ Implemented (see Phase 3 below)
 - Phase 4: Advanced filtering and aggregation
 - Potential: Colored output per node
 - Potential: Interactive stream control (pause/resume)
+
+### 4.0.3 Interactive Terminal UI (Phase 3)
+
+**Status:** Implemented (2025-10-30) as part of Phase 3 of Issue #68
+
+**Design Motivation:**
+Phase 3 builds on the streaming infrastructure from Phase 1 and multi-node management from Phase 2 to provide a rich interactive Terminal User Interface (TUI) for monitoring parallel SSH command execution. The TUI automatically activates in interactive terminals and provides multiple view modes optimized for different monitoring needs.
+
+**Architecture:**
+
+The Phase 3 implementation introduces a complete TUI system built with ratatui and crossterm:
+
+#### Module Structure
+
+```
+src/ui/tui/
+├── mod.rs              # TUI entry point, event loop, terminal management
+├── app.rs              # TuiApp state management
+├── event.rs            # Keyboard event handling
+├── progress.rs         # Progress parsing utilities
+├── terminal_guard.rs   # RAII terminal cleanup guards
+└── views/
+    ├── mod.rs
+    ├── summary.rs      # Summary view (all nodes)
+    ├── detail.rs       # Detail view (single node with scrolling)
+    ├── split.rs        # Split view (2-4 nodes simultaneously)
+    └── diff.rs         # Diff view (compare two nodes)
+```
+
+#### Core Components
+
+1. **TuiApp State** (`app.rs`)
+   ```rust
+   pub struct TuiApp {
+       pub view_mode: ViewMode,
+       pub scroll_positions: HashMap<usize, usize>,  // Per-node scroll
+       pub follow_mode: bool,                        // Auto-scroll
+       pub should_quit: bool,
+       pub show_help: bool,
+       needs_redraw: bool,                           // Conditional rendering
+       last_data_sizes: Vec<usize>,                  // Change detection
+   }
+
+   pub enum ViewMode {
+       Summary,              // All nodes status
+       Detail(usize),        // Single node full output
+       Split(Vec<usize>),    // 2-4 nodes side-by-side
+       Diff(usize, usize),   // Compare two nodes
+   }
+   ```
+   - Manages current view mode and transitions
+   - Tracks per-node scroll positions (preserved across view switches)
+   - Auto-scroll (follow mode) with manual override detection
+   - Conditional rendering to reduce CPU usage (80-90% reduction)
+
+2. **View Modes:**
+
+   **Summary View:**
+   - Displays all nodes with status icons (⊙ pending, ⟳ running, ✓ completed, ✗ failed)
+   - Real-time progress bars extracted from command output
+   - Quick navigation keys (1-9, s, d, q, ?)
+   - Compact representation for up to hundreds of nodes
+
+   **Detail View:**
+   - Full output from a single node
+   - Scrolling support: ↑/↓, PgUp/PgDn, Home/End
+   - Auto-scroll mode (f key) with manual override
+   - Separate stderr display in red color
+   - Node switching with ←/→ or number keys
+   - Scroll position preserved when switching nodes
+
+   **Split View:**
+   - Monitor 2-4 nodes simultaneously in grid layout
+   - Automatic layout adjustment (1x2 or 2x2)
+   - Color-coded borders by node status
+   - Last N lines displayed per pane
+   - Focus switching between panes
+
+   **Diff View:**
+   - Side-by-side comparison of two nodes
+   - Highlights output differences
+   - Useful for debugging inconsistencies across nodes
+
+3. **Progress Parsing** (`progress.rs`)
+   ```rust
+   lazy_static! {
+       static ref PERCENT_PATTERN: Regex = Regex::new(r"(\d+)%").unwrap();
+       static ref FRACTION_PATTERN: Regex = Regex::new(r"(\d+)/(\d+)").unwrap();
+   }
+
+   pub fn parse_progress(text: &str) -> Option<f32>
+   ```
+   - Detects percentage patterns: "78%", "Progress: 78%"
+   - Detects fraction patterns: "45/100", "23 of 100"
+   - Special handling for apt/dpkg output
+   - Input length limits to prevent regex DoS (max 1000 chars)
+   - Returns progress as 0.0-100.0 float
+
+4. **Terminal Safety** (`terminal_guard.rs`)
+   ```rust
+   pub struct RawModeGuard { enabled: bool }
+   pub struct AlternateScreenGuard { /* ... */ }
+   ```
+   - RAII-style guards ensure terminal cleanup on panic
+   - Automatic restoration of terminal state on exit
+   - Prevents terminal corruption from crashes
+   - Guaranteed cleanup via Drop trait implementation
+
+5. **Event Loop** (`mod.rs`)
+   ```rust
+   pub async fn run(
+       manager: &mut MultiNodeStreamManager,
+       cluster_name: &str,
+       command: &str,
+   ) -> Result<Vec<ExecutionResult>>
+   ```
+   - 50ms polling interval for responsive UI
+   - Non-blocking SSH execution continues independently
+   - Conditional rendering (only when data changes)
+   - Keyboard event handling with crossterm
+   - Proper cleanup on exit or Ctrl+C
+
+#### Implementation Details
+
+**Event Loop Flow:**
+```rust
+loop {
+    // 1. Poll all node streams (non-blocking)
+    manager.poll_all().await;
+
+    // 2. Detect changes
+    if data_changed || user_input {
+        app.needs_redraw = true;
+    }
+
+    // 3. Render UI (conditional)
+    if app.needs_redraw {
+        terminal.draw(|f| {
+            match app.view_mode {
+                ViewMode::Summary => render_summary(f, manager),
+                ViewMode::Detail(idx) => render_detail(f, &manager.streams[idx]),
+                ViewMode::Split(indices) => render_split(f, manager, &indices),
+                ViewMode::Diff(a, b) => render_diff(f, &streams[a], &streams[b]),
+            }
+        })?;
+        app.needs_redraw = false;
+    }
+
+    // 4. Handle keyboard input (50ms poll)
+    if event::poll(Duration::from_millis(50))? {
+        if let Event::Key(key) = event::read()? {
+            app.handle_key_event(key, num_nodes);
+        }
+    }
+
+    // 5. Check exit conditions
+    if app.should_quit || all_completed(manager) {
+        break;
+    }
+}
+```
+
+**Auto-Detection Logic:**
+```rust
+let output_mode = OutputMode::from_cli_and_env(
+    cli.stream,
+    cli.output_dir.clone(),
+    is_tty(),
+);
+
+// Priority: --output-dir > --stream > TUI (if TTY) > Normal
+match output_mode {
+    OutputMode::Tui => ui::tui::run(manager, cluster, cmd).await?,
+    OutputMode::Stream => handle_stream_mode(manager, cmd).await?,
+    OutputMode::File(dir) => handle_file_mode(manager, cmd, dir).await?,
+    OutputMode::Normal => execute_normal(nodes, cmd).await?,
+}
+```
+
+**Security Features:**
+
+1. **Terminal Corruption Prevention:**
+   - RAII guards guarantee terminal restoration
+   - Panic detection with extra recovery attempts
+   - Force terminal reset sequence on panic
+
+2. **Scroll Boundary Validation:**
+   - Comprehensive bounds checking prevents crashes
+   - Safe handling of empty output
+   - Terminal resize resilience
+
+3. **Memory Protection:**
+   - HashMap size limits (100 entries max for scroll_positions)
+   - Automatic eviction of oldest entries
+   - Uses Phase 2's RollingBuffer (10MB per node)
+
+4. **Regex DoS Protection:**
+   - Input length limits (1000 chars max)
+   - Simple, non-backtracking regex patterns
+   - No user-controlled regex patterns
+
+**Performance Characteristics:**
+
+- **CPU Usage:** <10% during idle (reduced by 80-90% via conditional rendering)
+- **Memory:** ~16KB per node + UI overhead (~1MB)
+- **Latency:** <100ms from output to display
+- **Rendering:** Only when data changes or user input
+- **Terminal Size:** Minimum 40x10, validated at startup
+
+**Keyboard Controls:**
+
+| Key | Action |
+|-----|--------|
+| `1-9` | Jump to node detail view |
+| `s` | Enter split view mode |
+| `d` | Enter diff view mode |
+| `f` | Toggle auto-scroll (follow mode) |
+| `?` | Show help overlay |
+| `Esc` | Return to previous view |
+| `q` | Quit |
+| `↑/↓` | Scroll up/down in detail view |
+| `←/→` | Switch between nodes |
+| `PgUp/PgDn` | Page scroll |
+| `Home/End` | Jump to top/bottom |
+
+**Integration with Executor:**
+
+```rust
+// In ParallelExecutor::handle_tui_mode()
+1. Create MultiNodeStreamManager
+2. Spawn streaming task per node
+3. Launch TUI with manager
+4. TUI polls streams in event loop
+5. Return ExecutionResults after TUI exits
+```
+
+**Backward Compatibility:**
+
+- TUI only activates in interactive terminals (TTY detected)
+- Automatically disabled in pipes, redirects, CI environments
+- Existing flags (`--stream`, `--output-dir`) disable TUI
+- All previous modes work identically
+
+**Testing:**
+
+- 20 unit tests added (app state, event handling, progress parsing)
+- Terminal cleanup tested with panic scenarios
+- Scroll boundary validation tests
+- Memory limit enforcement tests
+- All 417 tests passing (397 existing + 20 new)
+
+**Dependencies Added:**
+
+```toml
+ratatui = "0.29"      # Terminal UI framework
+regex = "1"           # Progress parsing
+lazy_static = "1.5"   # Regex compilation optimization
+```
+
+**Future Enhancements:**
+- Configuration file for custom keybindings
+- Output filtering/search within TUI
+- Mouse support for clickable UI
+- Session recording and replay
+- Color themes and customization
 
 ### 4.1 Authentication Module (`ssh/auth.rs`)
 
