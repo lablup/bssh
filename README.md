@@ -218,15 +218,29 @@ bssh -C production "apt-get update"
 ```
 
 **TUI Controls:**
-- `1-9`: Jump to node detail view
-- `s`: Enter split view mode
-- `d`: Enter diff view mode
-- `f`: Toggle auto-scroll
-- `↑/↓`: Scroll output
-- `←/→`: Switch between nodes
+
+*Global Keys (all views):*
+- `q`, `Ctrl+C`: Quit TUI
+- `?`: Toggle help overlay
+- `Esc`: Close help or return to summary view
+
+*Summary View:*
+- `1-9`: Jump to detail view of node N
+- `s`: Enter split view mode (2-4 nodes)
+- `d`: Enter diff view mode (compare nodes)
+
+*Detail View:*
+- `↑/↓`: Scroll output up/down (1 line)
+- `PgUp/PgDn`: Scroll output (10 lines)
+- `Home/End`: Jump to top/bottom of output
+- `←/→`: Switch to previous/next node
+- `f`: Toggle auto-scroll (follow mode)
+- `1-9`: Jump to specific node
 - `Esc`: Return to summary view
-- `?`: Show help
-- `q`: Quit
+
+*Split/Diff View:*
+- `1-9`: Jump to detail view of node N
+- `Esc`: Return to summary view
 
 #### Stream Mode (Real-time with Node Prefixes)
 ```bash

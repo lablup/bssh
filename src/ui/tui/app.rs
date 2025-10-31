@@ -238,7 +238,7 @@ impl TuiApp {
     /// Get help text for current view mode
     pub fn get_help_text(&self) -> Vec<(&'static str, &'static str)> {
         let mut help = vec![
-            ("q", "Quit"),
+            ("q/Ctrl+C", "Quit"),
             ("Esc", "Back to summary"),
             ("?", "Toggle help"),
         ];
@@ -255,16 +255,20 @@ impl TuiApp {
                 help.extend_from_slice(&[
                     ("↑/↓", "Scroll up/down"),
                     ("←/→", "Previous/next node"),
+                    ("1-9", "Jump to node"),
                     ("f", "Toggle auto-scroll"),
                     ("PgUp/PgDn", "Scroll page"),
                     ("Home/End", "Scroll to top/bottom"),
                 ]);
             }
             ViewMode::Split(_) => {
-                help.extend_from_slice(&[("1-4", "Focus on node")]);
+                help.extend_from_slice(&[("1-9", "View node detail")]);
             }
             ViewMode::Diff(_, _) => {
-                help.extend_from_slice(&[("↑/↓", "Sync scroll")]);
+                help.extend_from_slice(&[
+                    ("↑/↓", "Sync scroll (coming soon)"),
+                    ("1-9", "View node detail"),
+                ]);
             }
         }
 

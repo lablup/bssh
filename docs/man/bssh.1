@@ -1109,6 +1109,55 @@ TUI features:
 - Auto-scroll (press f): Toggle automatic scrolling
 .br
 - Help (press ?): Show all keyboard shortcuts
+.PP
+TUI Keyboard Controls:
+.IP "\fBGlobal Keys\fR (all views)"
+.RS
+.IP "q, Ctrl+C"
+Quit TUI and exit
+.IP "?"
+Toggle help overlay showing all keyboard shortcuts
+.IP "Esc"
+Close help overlay or return to summary view
+.RE
+.IP "\fBSummary View\fR"
+.RS
+.IP "1-9"
+Jump to detail view of node N (1=first node, 2=second, etc.)
+.IP "s"
+Enter split view mode (displays 2-4 nodes side-by-side)
+.IP "d"
+Enter diff view mode (compare first two nodes)
+.RE
+.IP "\fBDetail View\fR"
+.RS
+.IP "↑/↓ arrows"
+Scroll output up/down by one line
+.IP "PgUp/PgDn"
+Scroll output up/down by 10 lines
+.IP "Home/End"
+Jump to top/bottom of output
+.IP "←/→ arrows"
+Switch to previous/next node
+.IP "f"
+Toggle auto-scroll (follow mode) - keeps output at bottom
+.IP "1-9"
+Jump directly to node N
+.IP "Esc"
+Return to summary view
+.RE
+.IP "\fBSplit View\fR"
+.RS
+.IP "1-9"
+Jump to detail view of node N
+.IP "Esc"
+Return to summary view
+.RE
+.IP "\fBDiff View\fR"
+.RS
+.IP "Esc"
+Return to summary view
+.RE
 .RE
 
 .TP
