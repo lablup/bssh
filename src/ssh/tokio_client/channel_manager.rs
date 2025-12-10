@@ -422,7 +422,7 @@ impl Client {
 
                     // Check for sudo failure after password was sent
                     if password_send_count > 0 && contains_sudo_failure(&accumulated_output) {
-                        tracing::warn!(
+                        tracing::debug!(
                             "Sudo authentication failed after {} attempt(s)",
                             password_send_count
                         );
@@ -484,7 +484,7 @@ impl Client {
 
                         // Check for sudo failure
                         if password_send_count > 0 && contains_sudo_failure(&accumulated_output) {
-                            tracing::warn!(
+                            tracing::debug!(
                                 "Sudo authentication failed on stderr after {} attempt(s)",
                                 password_send_count
                             );
