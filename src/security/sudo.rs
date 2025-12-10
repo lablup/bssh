@@ -240,6 +240,7 @@ pub fn get_sudo_password(warn_env: bool) -> Result<SudoPassword> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
 
     #[test]
     fn test_sudo_password_creation() {
@@ -325,7 +326,10 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_get_sudo_password_from_env_empty() {
+        // Ensure variable is not set from other tests
+        std::env::remove_var("BSSH_SUDO_PASSWORD");
         // Set environment variable to empty string
         std::env::set_var("BSSH_SUDO_PASSWORD", "");
         let result = get_sudo_password_from_env();
@@ -336,7 +340,10 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_get_sudo_password_from_env_valid() {
+        // Ensure variable is not set from other tests
+        std::env::remove_var("BSSH_SUDO_PASSWORD");
         // Set environment variable to valid password
         std::env::set_var("BSSH_SUDO_PASSWORD", "test_password");
         let result = get_sudo_password_from_env();
@@ -349,6 +356,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_get_sudo_password_from_env_not_set() {
         std::env::remove_var("BSSH_SUDO_PASSWORD");
         let result = get_sudo_password_from_env();
