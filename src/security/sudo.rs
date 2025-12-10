@@ -176,9 +176,8 @@ pub fn contains_sudo_failure(output: &str) -> bool {
 /// - Empty passwords are rejected with a clear error message
 pub fn prompt_sudo_password() -> Result<SudoPassword> {
     eprintln!("Enter sudo password: ");
-    let password = rpassword::read_password().map_err(|e| {
-        anyhow::anyhow!("Failed to read sudo password: {}", e)
-    })?;
+    let password = rpassword::read_password()
+        .map_err(|e| anyhow::anyhow!("Failed to read sudo password: {}", e))?;
 
     if password.is_empty() {
         anyhow::bail!("Empty password not allowed. Please enter a valid sudo password.");
@@ -201,9 +200,7 @@ pub fn prompt_sudo_password() -> Result<SudoPassword> {
 /// * `Err` if the password fails validation
 pub fn get_sudo_password_from_env() -> Result<Option<SudoPassword>> {
     match std::env::var("BSSH_SUDO_PASSWORD") {
-        Ok(password) if !password.is_empty() => {
-            Ok(Some(SudoPassword::new(password)?))
-        }
+        Ok(password) if !password.is_empty() => Ok(Some(SudoPassword::new(password)?)),
         Ok(_) => {
             // Empty password from environment
             anyhow::bail!("BSSH_SUDO_PASSWORD is set but empty. Empty passwords are not allowed.");

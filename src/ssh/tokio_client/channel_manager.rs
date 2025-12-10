@@ -28,9 +28,9 @@ use std::net::SocketAddr;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio::task::JoinHandle;
 
-use crate::security::{contains_sudo_failure, contains_sudo_prompt, SudoPassword};
 use super::connection::Client;
 use super::ToSocketAddrsWithHostname;
+use crate::security::{contains_sudo_failure, contains_sudo_prompt, SudoPassword};
 
 // Buffer size constants for SSH operations
 /// SSH I/O buffer size constants - optimized for different operation types
@@ -340,13 +340,13 @@ impl Client {
         // Request PTY with reasonable defaults for sudo
         channel
             .request_pty(
-                true,               // want reply
-                "xterm",            // term type
-                80,                 // columns
-                24,                 // rows
-                0,                  // pixel width
-                0,                  // pixel height
-                &[],                // terminal modes (empty for defaults)
+                true,    // want reply
+                "xterm", // term type
+                80,      // columns
+                24,      // rows
+                0,       // pixel width
+                0,       // pixel height
+                &[],     // terminal modes (empty for defaults)
             )
             .await?;
 
@@ -421,7 +421,8 @@ impl Client {
                         // Enforce buffer size limit to prevent unbounded memory growth
                         if accumulated_output.len() > MAX_SUDO_PROMPT_BUFFER_SIZE {
                             // Keep only the last MAX_SUDO_PROMPT_BUFFER_SIZE bytes
-                            let truncate_at = accumulated_output.len() - MAX_SUDO_PROMPT_BUFFER_SIZE;
+                            let truncate_at =
+                                accumulated_output.len() - MAX_SUDO_PROMPT_BUFFER_SIZE;
                             accumulated_output = accumulated_output[truncate_at..].to_string();
                             tracing::debug!(
                                 "Sudo prompt buffer exceeded limit (stderr), truncated to {} bytes",

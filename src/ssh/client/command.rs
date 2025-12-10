@@ -288,7 +288,11 @@ impl SshClient {
         output_sender: Sender<CommandOutput>,
         sudo_password: &SudoPassword,
     ) -> Result<u32> {
-        tracing::debug!("Connecting to {}:{} for sudo execution", self.host, self.port);
+        tracing::debug!(
+            "Connecting to {}:{} for sudo execution",
+            self.host,
+            self.port
+        );
 
         // Determine authentication method based on parameters
         let auth_method = self
@@ -322,7 +326,13 @@ impl SshClient {
 
         // Execute command with sudo support and timeout
         let exit_status = self
-            .execute_sudo_with_timeout(&client, command, config.timeout_seconds, output_sender, sudo_password)
+            .execute_sudo_with_timeout(
+                &client,
+                command,
+                config.timeout_seconds,
+                output_sender,
+                sudo_password,
+            )
             .await?;
 
         tracing::debug!("Command execution completed with status: {}", exit_status);
@@ -343,9 +353,15 @@ impl SshClient {
             if timeout_secs == 0 {
                 // No timeout (unlimited)
                 tracing::debug!("Executing sudo command with no timeout (unlimited)");
-                client.execute_with_sudo(command, output_sender, sudo_password)
+                client
+                    .execute_with_sudo(command, output_sender, sudo_password)
                     .await
-                    .with_context(|| format!("Failed to execute sudo command '{}' on {}:{}", command, self.host, self.port))
+                    .with_context(|| {
+                        format!(
+                            "Failed to execute sudo command '{}' on {}:{}",
+                            command, self.host, self.port
+                        )
+                    })
             } else {
                 // With timeout
                 let command_timeout = Duration::from_secs(timeout_secs);
