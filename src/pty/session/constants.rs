@@ -76,11 +76,15 @@ pub const TAB_SEQUENCE: &[u8] = &[0x09]; // Tab
 pub const BACKSPACE_SEQUENCE: &[u8] = &[0x7f]; // DEL
 pub const ESC_SEQUENCE: &[u8] = &[0x1b]; // ESC
 
-/// Arrow keys - ANSI escape sequences
-pub const UP_ARROW_SEQUENCE: &[u8] = &[0x1b, 0x5b, 0x41]; // ESC[A
-pub const DOWN_ARROW_SEQUENCE: &[u8] = &[0x1b, 0x5b, 0x42]; // ESC[B
-pub const RIGHT_ARROW_SEQUENCE: &[u8] = &[0x1b, 0x5b, 0x43]; // ESC[C
-pub const LEFT_ARROW_SEQUENCE: &[u8] = &[0x1b, 0x5b, 0x44]; // ESC[D
+/// Arrow keys - Application Cursor Keys mode (SS3 sequences)
+/// ncurses applications (htop, etc.) typically expect this format when
+/// DECCKM (DEC Cursor Key Mode) is enabled via \x1b[?1h
+/// Most terminal emulators and applications (vim, neovim) accept both formats,
+/// but ncurses strictly follows terminfo which often specifies SS3 format.
+pub const UP_ARROW_SEQUENCE: &[u8] = &[0x1b, 0x4f, 0x41]; // ESC O A
+pub const DOWN_ARROW_SEQUENCE: &[u8] = &[0x1b, 0x4f, 0x42]; // ESC O B
+pub const RIGHT_ARROW_SEQUENCE: &[u8] = &[0x1b, 0x4f, 0x43]; // ESC O C
+pub const LEFT_ARROW_SEQUENCE: &[u8] = &[0x1b, 0x4f, 0x44]; // ESC O D
 
 /// Function keys - commonly used
 pub const F1_SEQUENCE: &[u8] = &[0x1b, 0x4f, 0x50]; // F1: ESC OP

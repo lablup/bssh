@@ -15,6 +15,7 @@
 //! Core PTY session management implementation
 
 use super::constants::*;
+use super::escape_filter::EscapeSequenceFilter;
 use super::input::handle_input_event;
 use super::terminal_modes::configure_terminal_modes;
 use crate::pty::{
@@ -46,6 +47,8 @@ pub struct PtySession {
     /// Message channels for internal communication (bounded to prevent memory exhaustion)
     msg_tx: Option<mpsc::Sender<PtyMessage>>,
     msg_rx: Option<mpsc::Receiver<PtyMessage>>,
+    /// Filter for terminal escape sequence responses
+    escape_filter: EscapeSequenceFilter,
 }
 
 impl PtySession {
@@ -67,6 +70,7 @@ impl PtySession {
             cancel_rx,
             msg_tx: Some(msg_tx),
             msg_rx: Some(msg_rx),
+            escape_filter: EscapeSequenceFilter::new(),
         })
     }
 
@@ -81,6 +85,33 @@ impl PtySession {
 
         // Get terminal size
         let (width, height) = crate::pty::utils::get_terminal_size()?;
+
+        // Set TERM environment variable before requesting PTY
+        // This ensures the remote shell knows the terminal capabilities
+        // Note: The server may not accept this (AcceptEnv in sshd_config),
+        // but the PTY request will also include the term type
+        if let Err(e) = self
+            .channel
+            .set_env(false, "TERM", &self.config.term_type)
+            .await
+        {
+            // Log but don't fail - server may reject env requests
+            tracing::debug!(
+                "Server did not accept TERM environment variable: {}. \
+                This is expected if AcceptEnv is not configured for TERM in sshd_config. \
+                The terminal type will still be set via the PTY request.",
+                e
+            );
+        }
+
+        // Also set COLORTERM for better color support detection
+        // Many modern terminals set this to indicate truecolor support
+        if let Err(e) = self.channel.set_env(false, "COLORTERM", "truecolor").await {
+            tracing::trace!(
+                "Server did not accept COLORTERM environment variable: {}",
+                e
+            );
+        }
 
         // Request PTY on the SSH channel with properly configured terminal modes
         // Configure terminal modes for proper sudo/passwd password input support
@@ -105,7 +136,11 @@ impl PtySession {
             .with_context(|| "Failed to request shell on SSH channel")?;
 
         self.state = PtyState::Active;
-        tracing::debug!("PTY session {} initialized", self.session_id);
+        tracing::debug!(
+            "PTY session {} initialized with TERM={}",
+            self.session_id,
+            self.config.term_type
+        );
         Ok(())
     }
 
@@ -233,22 +268,30 @@ impl PtySession {
                 msg = self.channel.wait() => {
                     match msg {
                         Some(ChannelMsg::Data { ref data }) => {
-                            // Write directly to stdout
-                            if let Err(e) = io::stdout().write_all(data) {
-                                tracing::error!("Failed to write to stdout: {e}");
-                                should_terminate = true;
-                            } else {
-                                let _ = io::stdout().flush();
+                            // Filter terminal escape sequence responses before display
+                            // This prevents raw XTGETTCAP, DA1/DA2/DA3 responses from appearing
+                            // on screen when running applications like Neovim
+                            let filtered_data = self.escape_filter.filter(data);
+                            if !filtered_data.is_empty() {
+                                if let Err(e) = io::stdout().write_all(&filtered_data) {
+                                    tracing::error!("Failed to write to stdout: {e}");
+                                    should_terminate = true;
+                                } else {
+                                    let _ = io::stdout().flush();
+                                }
                             }
                         }
                         Some(ChannelMsg::ExtendedData { ref data, ext }) => {
                             if ext == 1 {
-                                // stderr - write to stdout as well for PTY mode
-                                if let Err(e) = io::stdout().write_all(data) {
-                                    tracing::error!("Failed to write stderr to stdout: {e}");
-                                    should_terminate = true;
-                                } else {
-                                    let _ = io::stdout().flush();
+                                // stderr - also filter escape sequences
+                                let filtered_data = self.escape_filter.filter(data);
+                                if !filtered_data.is_empty() {
+                                    if let Err(e) = io::stdout().write_all(&filtered_data) {
+                                        tracing::error!("Failed to write stderr to stdout: {e}");
+                                        should_terminate = true;
+                                    } else {
+                                        let _ = io::stdout().flush();
+                                    }
                                 }
                             }
                         }
@@ -278,12 +321,17 @@ impl PtySession {
                             }
                         }
                         Some(PtyMessage::RemoteOutput(data)) => {
-                            // Write directly to stdout for better performance
-                            if let Err(e) = io::stdout().write_all(&data) {
-                                tracing::error!("Failed to write to stdout: {e}");
-                                should_terminate = true;
-                            } else {
-                                let _ = io::stdout().flush();
+                            // Apply escape filter for consistency with SSH channel data
+                            // This path may receive data from other sources that could
+                            // contain terminal responses that shouldn't be displayed
+                            let filtered_data = self.escape_filter.filter(&data);
+                            if !filtered_data.is_empty() {
+                                if let Err(e) = io::stdout().write_all(&filtered_data) {
+                                    tracing::error!("Failed to write to stdout: {e}");
+                                    should_terminate = true;
+                                } else {
+                                    let _ = io::stdout().flush();
+                                }
                             }
                         }
                         Some(PtyMessage::Resize { width, height }) => {

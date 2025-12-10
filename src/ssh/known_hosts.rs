@@ -89,25 +89,20 @@ pub fn get_check_method(strict_mode: StrictHostKeyChecking) -> ServerCheckMethod
 }
 
 /// Mode for host key checking
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum StrictHostKeyChecking {
     /// Always verify host keys (fail on unknown/changed)
     Yes,
     /// Never verify host keys (accept all)
     No,
     /// Verify known hosts, add new ones automatically (TOFU)
+    #[default]
     AcceptNew,
 }
 
 impl StrictHostKeyChecking {
     pub fn to_bool(&self) -> bool {
         matches!(self, Self::Yes)
-    }
-}
-
-impl Default for StrictHostKeyChecking {
-    fn default() -> Self {
-        Self::AcceptNew
     }
 }
 
