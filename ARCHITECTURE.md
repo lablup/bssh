@@ -952,9 +952,119 @@ Comprehensive test coverage including:
 - Single source of truth for authentication logic
 - Easier to add new authentication methods
 - Consistent behavior across all bssh commands
-- Reduced bug surface area
-- Improved code maintainability
-- Better test coverage
+
+### 4.2 Sudo Password Support (`security/sudo.rs`)
+
+**Status:** Implemented (2025-12-10) as Issue #74
+
+**Overview:**
+The sudo password module provides secure handling of sudo authentication for commands that require elevated privileges. When enabled with the `-S` flag, bssh automatically detects sudo password prompts in command output and injects the password without user intervention.
+
+**Architecture Components:**
+
+1. **SudoPassword Struct (`security/sudo.rs`)**
+   - Wraps password string with automatic memory clearing via `zeroize` crate
+   - Uses `Arc` for safe sharing across async tasks
+   - Debug output redacts password content
+
+   ```rust
+   #[derive(Clone, ZeroizeOnDrop)]
+   pub struct SudoPassword {
+       inner: Arc<SudoPasswordInner>,
+   }
+   ```
+
+2. **Prompt Detection Patterns**
+   - Case-insensitive matching against common sudo prompts
+   - Supports various Linux distributions:
+     - `[sudo] password for <user>:`
+     - `Password:`
+     - `<user>'s password:`
+   - Also detects failure patterns like "Sorry, try again"
+
+3. **Password Injection Flow**
+   ```
+   Command Execution
+         |
+   +--> PTY Channel Opened (required for sudo interaction)
+   |        |
+   |    Output Monitoring
+   |        |
+   |    [Sudo Prompt Detected?] -- No --> Continue
+   |        |Yes
+   |    Send Password + Newline
+   |        |
+   +--- Continue Monitoring
+   ```
+
+**Implementation Details:**
+
+```rust
+// Prompt detection patterns
+pub const SUDO_PROMPT_PATTERNS: &[&str] = &[
+    "[sudo] password for ",
+    "password for ",
+    "password:",
+    "'s password:",
+    "sudo password",
+    "enter password",
+    "[sudo]",
+];
+
+// Failure detection patterns
+pub const SUDO_FAILURE_PATTERNS: &[&str] = &[
+    "sorry, try again",
+    "incorrect password",
+    "authentication failure",
+    "permission denied",
+];
+```
+
+**SSH Channel Integration (`tokio_client/channel_manager.rs`):**
+- Executes command with PTY allocation (required for sudo to send prompts)
+- Monitors both stdout and stderr for sudo prompts
+- Uses `channel.data()` to write password to stdin when prompt detected
+- Password sent only once per execution to prevent retry loops
+
+```rust
+pub async fn execute_with_sudo(
+    &self,
+    command: &str,
+    sender: Sender<CommandOutput>,
+    sudo_password: &SudoPassword,
+) -> Result<u32, Error>
+```
+
+**Security Considerations:**
+- Password stored using `zeroize` crate for automatic memory clearing
+- Password never logged or printed in any output
+- PTY required for proper sudo interaction (prevents stdin echo issues)
+- Environment variable option (`BSSH_SUDO_PASSWORD`) with security warnings
+
+**Execution Path Integration:**
+1. CLI flag `-S/--sudo-password` triggers password prompt
+2. Password wrapped in `Arc<SudoPassword>` for sharing across nodes
+3. `ExecutionConfig` carries optional `sudo_password` field
+4. Both streaming and non-streaming execution paths support sudo
+5. Per-node execution uses `execute_with_sudo()` when password present
+
+**Usage Patterns:**
+```bash
+# Basic usage - prompts for password before execution
+bssh -S -C production "sudo apt update"
+
+# Combined with SSH agent authentication
+bssh -A -S -C production "sudo systemctl restart nginx"
+
+# Environment variable (not recommended)
+export BSSH_SUDO_PASSWORD="password"
+bssh -S -C production "sudo apt update"
+```
+
+**Limitations:**
+- Single password for all nodes (cannot handle different passwords per node)
+- Assumes all nodes use the same sudo configuration
+- Password cached for session duration (cleared on command completion)
 
 **Future Enhancements:**
 - Support for additional authentication methods (hardware tokens, certificates)

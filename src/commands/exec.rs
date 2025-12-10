@@ -14,10 +14,12 @@
 
 use anyhow::Result;
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::executor::{ExitCodeStrategy, OutputMode, ParallelExecutor, RankDetector};
 use crate::forwarding::ForwardingType;
 use crate::node::Node;
+use crate::security::SudoPassword;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
 use crate::ui::OutputFormatter;
 use crate::utils::output::save_outputs_to_files;
@@ -40,6 +42,7 @@ pub struct ExecuteCommandParams<'a> {
     pub port_forwards: Option<Vec<ForwardingType>>,
     pub require_all_success: bool,
     pub check_all_nodes: bool,
+    pub sudo_password: Option<Arc<SudoPassword>>,
 }
 
 pub async fn execute_command(params: ExecuteCommandParams<'_>) -> Result<()> {
@@ -202,7 +205,8 @@ async fn execute_command_without_forwarding(params: ExecuteCommandParams<'_>) ->
         params.use_password,
     )
     .with_timeout(params.timeout)
-    .with_jump_hosts(params.jump_hosts.map(|s| s.to_string()));
+    .with_jump_hosts(params.jump_hosts.map(|s| s.to_string()))
+    .with_sudo_password(params.sudo_password);
 
     // Set keychain usage if on macOS
     #[cfg(target_os = "macos")]

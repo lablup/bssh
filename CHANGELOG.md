@@ -5,6 +5,18 @@ All notable changes to bssh will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Sudo Password Support** (Issue #74, PR #78)
+  - `-S/--sudo-password` flag for automated sudo authentication
+  - Securely prompts for sudo password before command execution
+  - Automatically detects and responds to sudo password prompts
+  - Works with both streaming and non-streaming execution modes
+  - `BSSH_SUDO_PASSWORD` environment variable support (with security warnings)
+  - Uses `secrecy` crate for secure memory handling
+  - Password cleared from memory immediately after use
+
 ## [1.3.0] - 2025-12-10
 
 ### Added

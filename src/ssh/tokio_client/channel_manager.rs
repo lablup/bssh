@@ -30,6 +30,7 @@ use tokio::task::JoinHandle;
 
 use super::connection::Client;
 use super::ToSocketAddrsWithHostname;
+use crate::security::{contains_sudo_failure, contains_sudo_prompt, SudoPassword};
 
 // Buffer size constants for SSH operations
 /// SSH I/O buffer size constants - optimized for different operation types
@@ -48,6 +49,19 @@ use super::ToSocketAddrsWithHostname;
 /// - Commands producing more than 3.2MB/sec may experience throttling
 const OUTPUT_EVENTS_CHANNEL_SIZE: usize = 100;
 
+/// Maximum buffer size for sudo prompt detection (64KB)
+///
+/// This prevents unbounded memory growth when detecting sudo prompts in command output.
+/// Sudo prompts are typically very short (<1KB), so 64KB is more than sufficient.
+/// If output exceeds this size without a sudo prompt, we truncate to prevent memory issues.
+const MAX_SUDO_PROMPT_BUFFER_SIZE: usize = 64 * 1024;
+
+/// Maximum number of times to send sudo password in a single session.
+/// This allows handling multiple sudo commands (e.g., `sudo cmd1 && sudo cmd2`)
+/// while preventing infinite loops if authentication fails.
+/// Set to 10 to support reasonable multi-sudo command chains.
+const MAX_SUDO_PASSWORD_SENDS: u32 = 10;
+
 /// Command output variants for streaming
 #[derive(Debug, Clone)]
 pub enum CommandOutput {
@@ -55,6 +69,8 @@ pub enum CommandOutput {
     StdOut(CryptoVec),
     /// Standard error data
     StdErr(CryptoVec),
+    /// Exit code (sent when command completes)
+    ExitCode(u32),
 }
 
 /// Buffer for collecting streaming command output
@@ -101,6 +117,9 @@ impl CommandOutputBuffer {
                             stderr.reserve(new_capacity - stderr.capacity());
                         }
                         stderr.extend_from_slice(&buffer);
+                    }
+                    CommandOutput::ExitCode(_) => {
+                        // Exit code is handled by the stream manager, not collected here
                     }
                 }
             }
@@ -292,6 +311,228 @@ impl Client {
         if let Some(result) = result {
             Ok(result)
         // Otherwise, report an error
+        } else {
+            Err(super::Error::CommandDidntExit)
+        }
+    }
+
+    /// Execute a remote command with sudo password support.
+    ///
+    /// This method handles automatic sudo password injection when sudo prompts are detected
+    /// in the command output. It monitors both stdout and stderr for sudo password prompts
+    /// and automatically sends the password when detected.
+    ///
+    /// # Arguments
+    /// * `command` - The command to execute (typically starts with `sudo`)
+    /// * `sender` - Channel sender for streaming output
+    /// * `sudo_password` - The sudo password to inject when prompted
+    ///
+    /// # Returns
+    /// The exit status of the command
+    ///
+    /// # Security
+    /// - Password is only sent when a sudo prompt is detected
+    /// - Password is never logged or included in error messages
+    /// - Detects sudo authentication failures and reports them appropriately
+    pub async fn execute_with_sudo(
+        &self,
+        command: &str,
+        sender: Sender<CommandOutput>,
+        sudo_password: &SudoPassword,
+    ) -> Result<u32, super::Error> {
+        // Sanitize command to prevent injection attacks
+        let sanitized_command = crate::utils::sanitize_command(command)
+            .map_err(|e| super::Error::CommandValidationFailed(e.to_string()))?;
+
+        // Request a PTY for sudo to properly interact with
+        // Sudo requires a PTY to prompt for password
+        let mut channel = self.connection_handle.channel_open_session().await?;
+
+        // Request PTY with reasonable defaults for sudo
+        channel
+            .request_pty(
+                true,    // want reply
+                "xterm", // term type
+                80,      // columns
+                24,      // rows
+                0,       // pixel width
+                0,       // pixel height
+                &[],     // terminal modes (empty for defaults)
+            )
+            .await?;
+
+        channel.exec(true, sanitized_command.as_str()).await?;
+
+        let mut result: Option<u32> = None;
+        let mut password_send_count: u32 = 0;
+        let mut accumulated_output = String::new();
+
+        // While the channel has messages...
+        while let Some(msg) = channel.wait().await {
+            match msg {
+                russh::ChannelMsg::Data { ref data } => {
+                    // Check for sudo prompt before sending to output
+                    let text = String::from_utf8_lossy(data);
+                    accumulated_output.push_str(&text);
+
+                    // Enforce buffer size limit to prevent unbounded memory growth
+                    if accumulated_output.len() > MAX_SUDO_PROMPT_BUFFER_SIZE {
+                        // Keep only the last MAX_SUDO_PROMPT_BUFFER_SIZE bytes
+                        // This ensures we can still detect sudo prompts at the end
+                        let truncate_at = accumulated_output.len() - MAX_SUDO_PROMPT_BUFFER_SIZE;
+                        accumulated_output = accumulated_output[truncate_at..].to_string();
+                        tracing::debug!(
+                            "Sudo prompt buffer exceeded limit, truncated to {} bytes",
+                            MAX_SUDO_PROMPT_BUFFER_SIZE
+                        );
+                    }
+
+                    // Send output to streaming channel
+                    match sender.try_send(CommandOutput::StdOut(data.clone())) {
+                        Ok(_) => {}
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(output)) => {
+                            tracing::trace!("Channel full, applying backpressure for stdout");
+                            if sender.send(output).await.is_err() {
+                                tracing::debug!("Receiver dropped, stopping stdout processing");
+                                break;
+                            }
+                        }
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                            tracing::debug!("Channel closed, stopping stdout processing");
+                            break;
+                        }
+                    }
+
+                    // Check if we need to send the password (supports multiple sudo prompts)
+                    if password_send_count < MAX_SUDO_PASSWORD_SENDS
+                        && contains_sudo_prompt(&accumulated_output)
+                    {
+                        password_send_count += 1;
+                        tracing::debug!(
+                            "Sudo prompt detected, sending password (attempt {}/{})",
+                            password_send_count,
+                            MAX_SUDO_PASSWORD_SENDS
+                        );
+                        // Send the password with newline
+                        let password_data = sudo_password.with_newline();
+                        if let Err(e) = channel.data(&password_data[..]).await {
+                            tracing::error!("Failed to send sudo password: {}", e);
+                            return Err(super::Error::SshError(e));
+                        }
+                        // Clear accumulated output after sending password to detect next prompt
+                        accumulated_output.clear();
+                    }
+
+                    // Check for sudo failure after password was sent
+                    if password_send_count > 0 && contains_sudo_failure(&accumulated_output) {
+                        tracing::debug!(
+                            "Sudo authentication failed after {} attempt(s), closing channel",
+                            password_send_count
+                        );
+                        // Send error message to stderr so user can see why it failed
+                        let error_msg = format!(
+                            "\n[bssh] Sudo authentication failed after {} attempt(s). \
+                             Please verify your sudo password is correct.\n",
+                            password_send_count
+                        );
+                        let _ = sender
+                            .send(CommandOutput::StdErr(CryptoVec::from(error_msg.as_bytes())))
+                            .await;
+                        // Send exit code 1 to indicate failure to the stream
+                        let _ = sender.send(CommandOutput::ExitCode(1)).await;
+                        // Close the channel and return failure exit code
+                        let _ = channel.eof().await;
+                        let _ = channel.close().await;
+                        drop(sender);
+                        // Return exit code 1 to indicate sudo authentication failure
+                        return Ok(1);
+                    }
+                }
+                russh::ChannelMsg::ExtendedData { ref data, ext } => {
+                    if ext == 1 {
+                        // Stderr - also check for sudo prompts
+                        let text = String::from_utf8_lossy(data);
+                        accumulated_output.push_str(&text);
+
+                        // Enforce buffer size limit to prevent unbounded memory growth
+                        if accumulated_output.len() > MAX_SUDO_PROMPT_BUFFER_SIZE {
+                            // Keep only the last MAX_SUDO_PROMPT_BUFFER_SIZE bytes
+                            let truncate_at =
+                                accumulated_output.len() - MAX_SUDO_PROMPT_BUFFER_SIZE;
+                            accumulated_output = accumulated_output[truncate_at..].to_string();
+                            tracing::debug!(
+                                "Sudo prompt buffer exceeded limit (stderr), truncated to {} bytes",
+                                MAX_SUDO_PROMPT_BUFFER_SIZE
+                            );
+                        }
+
+                        match sender.try_send(CommandOutput::StdErr(data.clone())) {
+                            Ok(_) => {}
+                            Err(tokio::sync::mpsc::error::TrySendError::Full(output)) => {
+                                tracing::trace!("Channel full, applying backpressure for stderr");
+                                if sender.send(output).await.is_err() {
+                                    tracing::debug!("Receiver dropped, stopping stderr processing");
+                                    break;
+                                }
+                            }
+                            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                                tracing::debug!("Channel closed, stopping stderr processing");
+                                break;
+                            }
+                        }
+
+                        // Check if we need to send the password (sudo can prompt on stderr)
+                        if password_send_count < MAX_SUDO_PASSWORD_SENDS
+                            && contains_sudo_prompt(&accumulated_output)
+                        {
+                            password_send_count += 1;
+                            tracing::debug!(
+                                "Sudo prompt detected on stderr, sending password (attempt {}/{})",
+                                password_send_count,
+                                MAX_SUDO_PASSWORD_SENDS
+                            );
+                            let password_data = sudo_password.with_newline();
+                            if let Err(e) = channel.data(&password_data[..]).await {
+                                tracing::error!("Failed to send sudo password: {}", e);
+                                return Err(super::Error::SshError(e));
+                            }
+                            accumulated_output.clear();
+                        }
+
+                        // Check for sudo failure
+                        if password_send_count > 0 && contains_sudo_failure(&accumulated_output) {
+                            tracing::debug!(
+                                "Sudo authentication failed on stderr after {} attempt(s), closing channel",
+                                password_send_count
+                            );
+                            // Send error message to stderr so user can see why it failed
+                            let error_msg = format!(
+                                "\n[bssh] Sudo authentication failed after {} attempt(s). \
+                                 Please verify your sudo password is correct.\n",
+                                password_send_count
+                            );
+                            let _ = sender
+                                .send(CommandOutput::StdErr(CryptoVec::from(error_msg.as_bytes())))
+                                .await;
+                            // Send exit code 1 to indicate failure to the stream
+                            let _ = sender.send(CommandOutput::ExitCode(1)).await;
+                            // Close the channel and return failure exit code
+                            let _ = channel.eof().await;
+                            let _ = channel.close().await;
+                            drop(sender);
+                            return Ok(1);
+                        }
+                    }
+                }
+                russh::ChannelMsg::ExitStatus { exit_status } => result = Some(exit_status),
+                _ => {}
+            }
+        }
+
+        drop(sender);
+
+        if let Some(result) = result {
+            Ok(result)
         } else {
             Err(super::Error::CommandDidntExit)
         }

@@ -32,16 +32,27 @@ use std::io;
 use std::time::Duration;
 use terminal_guard::TerminalGuard;
 
+/// Result of TUI execution
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TuiExitReason {
+    /// User explicitly quit (pressed 'q' or Ctrl+C)
+    UserQuit,
+    /// All tasks completed naturally
+    AllTasksCompleted,
+}
+
 /// Run the TUI event loop
 ///
 /// This function sets up the terminal, runs the event loop, and cleans up
 /// on exit. It handles keyboard input and updates the display based on the
 /// current view mode. Terminal cleanup is guaranteed via RAII guards.
+///
+/// Returns `TuiExitReason` to indicate whether the user quit or all tasks completed.
 pub async fn run_tui(
     manager: &mut MultiNodeStreamManager,
     cluster_name: &str,
     command: &str,
-) -> Result<()> {
+) -> Result<TuiExitReason> {
     // Setup terminal with automatic cleanup guard
     let _terminal_guard = TerminalGuard::new()?;
     let backend = CrosstermBackend::new(io::stdout());
@@ -53,14 +64,15 @@ pub async fn run_tui(
     let mut app = TuiApp::new();
 
     // Main event loop
-    let result = run_event_loop(&mut terminal, &mut app, manager, cluster_name, command).await;
+    let exit_reason =
+        run_event_loop(&mut terminal, &mut app, manager, cluster_name, command).await?;
 
     // Show cursor before exit (guard will handle the rest)
     terminal.show_cursor()?;
 
     // The terminal guard will automatically clean up when dropped
 
-    result
+    Ok(exit_reason)
 }
 
 /// Minimum terminal dimensions for TUI
@@ -74,7 +86,7 @@ async fn run_event_loop(
     manager: &mut MultiNodeStreamManager,
     cluster_name: &str,
     command: &str,
-) -> Result<()> {
+) -> Result<TuiExitReason> {
     // Force initial render
     app.mark_needs_redraw();
 
@@ -115,15 +127,19 @@ async fn run_event_loop(
 
         // Check exit condition (only quit when user explicitly requests)
         if app.should_quit {
-            break;
+            // Determine exit reason: user quit vs all tasks completed
+            let exit_reason = if app.all_tasks_completed {
+                TuiExitReason::AllTasksCompleted
+            } else {
+                TuiExitReason::UserQuit
+            };
+            return Ok(exit_reason);
         }
 
         // Small delay to prevent CPU spinning
         // This is our main loop interval
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-
-    Ok(())
 }
 
 /// Render the UI based on current view mode

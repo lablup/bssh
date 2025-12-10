@@ -33,6 +33,9 @@ fn build_test_output_buffer() -> OutputBuffer {
             match output {
                 CommandOutput::StdOut(buffer) => stdout.extend_from_slice(&buffer),
                 CommandOutput::StdErr(buffer) => stderr.extend_from_slice(&buffer),
+                CommandOutput::ExitCode(_) => {
+                    // Exit code is handled separately, not collected here
+                }
             }
         }
 

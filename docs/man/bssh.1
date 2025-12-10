@@ -138,6 +138,33 @@ prompt for the password securely without echoing it to the terminal.
 This is useful for systems that don't have SSH keys configured.
 
 .TP
+.BR \-S ", " \-\-sudo\-password
+Prompt for sudo password to automatically respond to sudo prompts.
+When this option is specified, bssh will:
+.RS
+.IP \[bu] 2
+Securely prompt for sudo password before execution (no terminal echo)
+.IP \[bu] 2
+Detect sudo password prompts in command output
+.IP \[bu] 2
+Automatically inject the password when prompted
+.RE
+.IP
+Alternatively, set the
+.B BSSH_SUDO_PASSWORD
+environment variable (not recommended for security reasons).
+.IP
+Security notes:
+.RS
+.IP \[bu] 2
+Password is stored using secure memory handling (secrecy crate)
+.IP \[bu] 2
+Password is cleared from memory immediately after use
+.IP \[bu] 2
+Password is never logged or printed in any output
+.RE
+
+.TP
 .BR \-f ", " \-\-filter " " \fIPATTERN\fR
 Filter hosts by pattern (supports wildcards like 'web*').
 Use with -H or -C to execute on a subset of hosts.
@@ -1067,6 +1094,20 @@ Prompts for password interactively
 .RE
 
 .TP
+Execute sudo commands with automatic password injection:
+.B bssh -S -C production "sudo apt update && sudo apt upgrade -y"
+.RS
+Prompts for sudo password once, then automatically responds to sudo prompts on all nodes
+.RE
+
+.TP
+Combine sudo with SSH agent authentication:
+.B bssh -A -S -C production "sudo systemctl restart nginx"
+.RS
+Uses SSH agent for connection and sudo password for privilege escalation
+.RE
+
+.TP
 Use encrypted SSH key:
 .B bssh -i ~/.ssh/encrypted_key -C production "df -h"
 .RS
@@ -1386,6 +1427,19 @@ fall back to the default. This setting helps prevent resource exhaustion
 attacks while allowing flexible jump host configurations.
 .br
 Example: BSSH_MAX_JUMP_HOSTS=20 bssh -J host1,host2,...,host20 target
+
+.TP
+.B BSSH_SUDO_PASSWORD
+Sudo password for automated sudo authentication. When set along with the
+.B -S
+flag, bssh will use this password instead of prompting interactively.
+.br
+.B WARNING:
+Using environment variables for passwords is not recommended for production
+use as they may be visible in process listings, shell history, or logs.
+Prefer the interactive prompt for security-sensitive operations.
+.br
+Example: BSSH_SUDO_PASSWORD=mypassword bssh -S -C cluster "sudo apt update"
 
 .TP
 .B USER

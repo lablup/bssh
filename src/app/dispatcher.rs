@@ -27,8 +27,10 @@ use bssh::{
     },
     config::InteractiveMode,
     pty::PtyConfig,
+    security::get_sudo_password,
 };
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 #[cfg(target_os = "macos")]
 use super::initialization::determine_use_keychain;
@@ -368,6 +370,13 @@ async fn handle_exec_command(cli: &Cli, ctx: &AppContext, command: &str) -> Resu
         #[cfg(target_os = "macos")]
         let use_keychain = determine_use_keychain(&ctx.ssh_config, hostname.as_deref());
 
+        // Get sudo password if flag is set
+        let sudo_password = if cli.sudo_password {
+            Some(Arc::new(get_sudo_password(true)?))
+        } else {
+            None
+        };
+
         let params = ExecuteCommandParams {
             nodes: ctx.nodes.clone(),
             command,
@@ -390,6 +399,7 @@ async fn handle_exec_command(cli: &Cli, ctx: &AppContext, command: &str) -> Resu
             },
             require_all_success: cli.require_all_success,
             check_all_nodes: cli.check_all_nodes,
+            sudo_password,
         };
         execute_command(params).await
     }

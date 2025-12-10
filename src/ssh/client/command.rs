@@ -15,6 +15,7 @@
 use super::config::ConnectionConfig;
 use super::core::SshClient;
 use super::result::CommandResult;
+use crate::security::SudoPassword;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
 use crate::ssh::tokio_client::CommandOutput;
 use anyhow::{Context, Result};
@@ -264,6 +265,129 @@ impl SshClient {
             .await
             .with_context(|| format!("Command execution timeout: The command '{}' did not complete within 5 minutes on {}:{}", command, self.host, self.port))?
             .with_context(|| format!("Failed to execute command '{}' on {}:{}. The SSH connection was successful but the command could not be executed.", command, self.host, self.port))
+        }
+    }
+
+    /// Execute a command with sudo password support and streaming output.
+    ///
+    /// This method handles automatic sudo password injection when sudo prompts are detected
+    /// in the command output.
+    ///
+    /// # Arguments
+    /// * `command` - The command to execute (typically uses sudo)
+    /// * `config` - Connection configuration
+    /// * `output_sender` - Channel sender for streaming output
+    /// * `sudo_password` - The sudo password to inject when prompted
+    ///
+    /// # Returns
+    /// The exit status of the command
+    pub async fn connect_and_execute_with_sudo(
+        &mut self,
+        command: &str,
+        config: &ConnectionConfig<'_>,
+        output_sender: Sender<CommandOutput>,
+        sudo_password: &SudoPassword,
+    ) -> Result<u32> {
+        tracing::debug!(
+            "Connecting to {}:{} for sudo execution",
+            self.host,
+            self.port
+        );
+
+        // Determine authentication method based on parameters
+        let auth_method = self
+            .determine_auth_method(
+                config.key_path,
+                config.use_agent,
+                config.use_password,
+                #[cfg(target_os = "macos")]
+                config.use_keychain,
+            )
+            .await?;
+
+        let strict_mode = config
+            .strict_mode
+            .unwrap_or(StrictHostKeyChecking::AcceptNew);
+
+        // Create client connection - either direct or through jump hosts
+        let client = self
+            .establish_connection(
+                &auth_method,
+                strict_mode,
+                config.jump_hosts_spec,
+                config.key_path,
+                config.use_agent,
+                config.use_password,
+            )
+            .await?;
+
+        tracing::debug!("Connected and authenticated successfully");
+        tracing::debug!("Executing command with sudo support: {}", command);
+
+        // Execute command with sudo support and timeout
+        let exit_status = self
+            .execute_sudo_with_timeout(
+                &client,
+                command,
+                config.timeout_seconds,
+                output_sender,
+                sudo_password,
+            )
+            .await?;
+
+        tracing::debug!("Command execution completed with status: {}", exit_status);
+
+        Ok(exit_status)
+    }
+
+    /// Execute a command with sudo support and the specified timeout
+    async fn execute_sudo_with_timeout(
+        &self,
+        client: &crate::ssh::tokio_client::Client,
+        command: &str,
+        timeout_seconds: Option<u64>,
+        output_sender: Sender<CommandOutput>,
+        sudo_password: &SudoPassword,
+    ) -> Result<u32> {
+        if let Some(timeout_secs) = timeout_seconds {
+            if timeout_secs == 0 {
+                // No timeout (unlimited)
+                tracing::debug!("Executing sudo command with no timeout (unlimited)");
+                client
+                    .execute_with_sudo(command, output_sender, sudo_password)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "Failed to execute sudo command '{}' on {}:{}",
+                            command, self.host, self.port
+                        )
+                    })
+            } else {
+                // With timeout
+                let command_timeout = Duration::from_secs(timeout_secs);
+                tracing::debug!(
+                    "Executing sudo command with timeout of {} seconds",
+                    timeout_secs
+                );
+                tokio::time::timeout(
+                    command_timeout,
+                    client.execute_with_sudo(command, output_sender, sudo_password)
+                )
+                .await
+                .with_context(|| format!("Command execution timeout: The sudo command '{}' did not complete within {} seconds on {}:{}", command, timeout_secs, self.host, self.port))?
+                .with_context(|| format!("Failed to execute sudo command '{}' on {}:{}", command, self.host, self.port))
+            }
+        } else {
+            // Default timeout if not specified
+            let command_timeout = Duration::from_secs(DEFAULT_COMMAND_TIMEOUT_SECS);
+            tracing::debug!("Executing sudo command with default timeout of 300 seconds");
+            tokio::time::timeout(
+                command_timeout,
+                client.execute_with_sudo(command, output_sender, sudo_password)
+            )
+            .await
+            .with_context(|| format!("Command execution timeout: The sudo command '{}' did not complete within 5 minutes on {}:{}", command, self.host, self.port))?
+            .with_context(|| format!("Failed to execute sudo command '{}' on {}:{}", command, self.host, self.port))
         }
     }
 }

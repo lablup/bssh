@@ -183,6 +183,12 @@ bssh -A -C production "systemctl status nginx"
 # Use password authentication (will prompt for password)
 bssh --password -H "user@host.com" "uptime"
 
+# Use sudo password for privileged commands (prompts securely)
+bssh -S -C production "sudo apt update && sudo apt upgrade -y"
+
+# Combine sudo password with SSH agent authentication
+bssh -A -S -C production "sudo systemctl restart nginx"
+
 # Use encrypted SSH key (will prompt for passphrase)
 bssh -i ~/.ssh/encrypted_key -C production "df -h"
 
@@ -350,6 +356,44 @@ bssh -A -J bastion.example.com user@internal-server "uptime"
 bssh -i ~/.ssh/prod_key -J "jump1,jump2" -C production "df -h"
 ```
 
+### Sudo Password Support
+
+bssh supports automatic sudo password injection for commands that require elevated privileges. When enabled, bssh will:
+1. Securely prompt for the sudo password before command execution
+2. Detect sudo password prompts in command output
+3. Automatically inject the password when prompted
+4. Clear the password from memory after use
+
+```bash
+# Basic sudo command (will prompt for sudo password)
+bssh -S -C production "sudo apt update"
+
+# Combine with SSH agent authentication
+bssh -A -S -C production "sudo systemctl restart nginx"
+
+# Multiple sudo commands in a single session
+bssh -S -C production "sudo apt update && sudo apt upgrade -y"
+
+# Sudo with specific SSH key
+bssh -i ~/.ssh/admin_key -S -C production "sudo reboot"
+```
+
+**Environment Variable Alternative:**
+
+For automation scenarios, you can use the `BSSH_SUDO_PASSWORD` environment variable:
+
+```bash
+# NOT RECOMMENDED for security reasons
+export BSSH_SUDO_PASSWORD="your-password"
+bssh -S -C production "sudo apt update"
+```
+
+**Security Warnings:**
+- Environment variables may be visible in process listings
+- Avoid storing passwords in shell history
+- The `-S` flag with secure prompt is the recommended approach
+- Password is automatically cleared from memory after use using `zeroize`
+
 ## Environment Variables
 
 bssh supports configuration via environment variables:
@@ -371,6 +415,14 @@ bssh supports configuration via environment variables:
 ### SSH Authentication Variables
 
 - **`SSH_AUTH_SOCK`**: SSH agent socket path (Unix-like systems)
+
+### Sudo Password Variable
+
+- **`BSSH_SUDO_PASSWORD`**: Sudo password for automated sudo authentication
+  - **WARNING**: Not recommended for security reasons
+  - Environment variables may be visible in process listings
+  - Use the `-S` flag with secure prompt instead
+  - Example: `BSSH_SUDO_PASSWORD=password bssh -S -C prod "sudo apt update"`
 
 ## Configuration
 
@@ -822,6 +874,7 @@ Options:
   -i, --identity <IDENTITY>               SSH private key file path (prompts for passphrase if encrypted)
   -A, --use-agent                         Use SSH agent for authentication (Unix/Linux/macOS only)
   -P, --password                          Use password authentication (will prompt for password)
+  -S, --sudo-password                     Prompt for sudo password to auto-respond to sudo prompts
   -J, --jump-host <JUMP_HOSTS>            Comma-separated list of jump hosts (ProxyJump)
   -L, --local-forward <SPEC>              Local port forwarding [bind_address:]port:host:hostport
   -R, --remote-forward <SPEC>             Remote port forwarding [bind_address:]port:host:hostport

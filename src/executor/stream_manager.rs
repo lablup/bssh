@@ -170,6 +170,10 @@ impl NodeStream {
                                 );
                             }
                         }
+                        CommandOutput::ExitCode(code) => {
+                            self.exit_code = Some(code);
+                            tracing::debug!("Node {} received exit code: {}", self.node.host, code);
+                        }
                     }
                 }
                 Err(mpsc::error::TryRecvError::Empty) => {
@@ -177,10 +181,20 @@ impl NodeStream {
                     break;
                 }
                 Err(mpsc::error::TryRecvError::Disconnected) => {
-                    // Channel closed - mark as completed if not already failed
+                    // Channel closed - determine completion status based on exit code
                     self.closed = true;
-                    if self.status != ExecutionStatus::Failed(String::new()) {
-                        self.status = ExecutionStatus::Completed;
+                    // Only mark as completed/failed if not already set
+                    if !matches!(self.status, ExecutionStatus::Failed(_)) {
+                        if let Some(code) = self.exit_code {
+                            if code != 0 {
+                                self.status =
+                                    ExecutionStatus::Failed(format!("Exit code: {}", code));
+                            } else {
+                                self.status = ExecutionStatus::Completed;
+                            }
+                        } else {
+                            self.status = ExecutionStatus::Completed;
+                        }
                     }
                     tracing::debug!("Channel disconnected for node {}", self.node.host);
                     break;
@@ -298,9 +312,12 @@ impl MultiNodeStreamManager {
         !self.streams.is_empty() && self.streams.iter().all(|s| s.is_complete())
     }
 
-    /// Get count of completed streams
+    /// Get count of successfully completed streams (not failed)
     pub fn completed_count(&self) -> usize {
-        self.streams.iter().filter(|s| s.is_complete()).count()
+        self.streams
+            .iter()
+            .filter(|s| matches!(s.status(), ExecutionStatus::Completed) && s.is_closed())
+            .count()
     }
 
     /// Get count of failed streams
