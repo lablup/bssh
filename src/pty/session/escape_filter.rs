@@ -443,24 +443,40 @@ impl EscapeSequenceFilter {
             return false;
         }
 
-        // Check for OSC parameter number
+        // Parse OSC parameter number directly from bytes to avoid String allocation
         // Format: ESC ] NUMBER ; ...
-        let start = 2; // Skip ESC ]
-        let mut end = start;
-        while end < self.pending_buffer.len() && self.pending_buffer[end].is_ascii_digit() {
-            end += 1;
-        }
-
-        if end == start {
-            return false;
-        }
-
-        let param_str = String::from_utf8_lossy(&self.pending_buffer[start..end]);
-        if let Ok(param) = param_str.parse::<u32>() {
+        if let Some(param) = self.parse_osc_param() {
             // Filter known response types
             matches!(param, 4 | 10..=19 | 52)
         } else {
             false
+        }
+    }
+
+    /// Parse OSC parameter number directly from bytes without allocation.
+    /// Returns None if parsing fails.
+    fn parse_osc_param(&self) -> Option<u32> {
+        let start = 2; // Skip ESC ]
+        let mut idx = start;
+        let mut value: u32 = 0;
+
+        // Limit to 10 digits to prevent overflow (max u32 is 10 digits)
+        while idx < self.pending_buffer.len() && idx - start < 10 {
+            let byte = self.pending_buffer[idx];
+            if byte.is_ascii_digit() {
+                // Safe: checked_mul and checked_add prevent overflow
+                value = value.checked_mul(10)?.checked_add((byte - b'0') as u32)?;
+                idx += 1;
+            } else {
+                break;
+            }
+        }
+
+        // Return Some only if we parsed at least one digit
+        if idx > start {
+            Some(value)
+        } else {
+            None
         }
     }
 
@@ -763,5 +779,48 @@ mod tests {
         assert_eq!(filter.state, FilterState::Normal);
         assert!(filter.sequence_start.is_none());
         assert!(filter.pending_buffer.is_empty());
+    }
+
+    #[test]
+    fn test_parse_osc_param_valid() {
+        let mut filter = EscapeSequenceFilter::new();
+
+        // OSC 10 - should parse to 10
+        filter.pending_buffer = b"\x1b]10;test\x07".to_vec();
+        assert_eq!(filter.parse_osc_param(), Some(10));
+
+        // OSC 52 - should parse to 52
+        filter.pending_buffer = b"\x1b]52;data\x07".to_vec();
+        assert_eq!(filter.parse_osc_param(), Some(52));
+
+        // OSC 0 - should parse to 0
+        filter.pending_buffer = b"\x1b]0;title\x07".to_vec();
+        assert_eq!(filter.parse_osc_param(), Some(0));
+
+        // OSC 4 - should parse to 4
+        filter.pending_buffer = b"\x1b]4;color\x07".to_vec();
+        assert_eq!(filter.parse_osc_param(), Some(4));
+    }
+
+    #[test]
+    fn test_parse_osc_param_invalid() {
+        let mut filter = EscapeSequenceFilter::new();
+
+        // No digits after ESC ]
+        filter.pending_buffer = b"\x1b];text\x07".to_vec();
+        assert_eq!(filter.parse_osc_param(), None);
+
+        // Buffer too short
+        filter.pending_buffer = b"\x1b]".to_vec();
+        assert_eq!(filter.parse_osc_param(), None);
+    }
+
+    #[test]
+    fn test_parse_osc_param_overflow_protection() {
+        let mut filter = EscapeSequenceFilter::new();
+
+        // Very large number that would overflow u32 - should return None
+        filter.pending_buffer = b"\x1b]99999999999;test\x07".to_vec();
+        assert_eq!(filter.parse_osc_param(), None);
     }
 }
