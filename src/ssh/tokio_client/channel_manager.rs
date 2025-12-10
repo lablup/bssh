@@ -56,6 +56,12 @@ const OUTPUT_EVENTS_CHANNEL_SIZE: usize = 100;
 /// If output exceeds this size without a sudo prompt, we truncate to prevent memory issues.
 const MAX_SUDO_PROMPT_BUFFER_SIZE: usize = 64 * 1024;
 
+/// Maximum number of times to send sudo password in a single session.
+/// This allows handling multiple sudo commands (e.g., `sudo cmd1 && sudo cmd2`)
+/// while preventing infinite loops if authentication fails.
+/// Set to 10 to support reasonable multi-sudo command chains.
+const MAX_SUDO_PASSWORD_SENDS: u32 = 10;
+
 /// Command output variants for streaming
 #[derive(Debug, Clone)]
 pub enum CommandOutput {
@@ -353,7 +359,8 @@ impl Client {
         channel.exec(true, sanitized_command.as_str()).await?;
 
         let mut result: Option<u32> = None;
-        let mut password_sent = false;
+        let mut password_send_count: u32 = 0;
+        let mut sudo_auth_failed = false;
         let mut accumulated_output = String::new();
 
         // While the channel has messages...
@@ -392,24 +399,35 @@ impl Client {
                         }
                     }
 
-                    // Check if we need to send the password
-                    if !password_sent && contains_sudo_prompt(&accumulated_output) {
-                        tracing::debug!("Sudo prompt detected, sending password");
+                    // Check if we need to send the password (supports multiple sudo prompts)
+                    if !sudo_auth_failed
+                        && password_send_count < MAX_SUDO_PASSWORD_SENDS
+                        && contains_sudo_prompt(&accumulated_output)
+                    {
+                        password_send_count += 1;
+                        tracing::debug!(
+                            "Sudo prompt detected, sending password (attempt {}/{})",
+                            password_send_count,
+                            MAX_SUDO_PASSWORD_SENDS
+                        );
                         // Send the password with newline
                         let password_data = sudo_password.with_newline();
                         if let Err(e) = channel.data(&password_data[..]).await {
                             tracing::error!("Failed to send sudo password: {}", e);
                             return Err(super::Error::SshError(e));
                         }
-                        password_sent = true;
-                        // Clear accumulated output after sending password
+                        // Clear accumulated output after sending password to detect next prompt
                         accumulated_output.clear();
                     }
 
                     // Check for sudo failure after password was sent
-                    if password_sent && contains_sudo_failure(&accumulated_output) {
-                        tracing::warn!("Sudo authentication failed");
-                        // Continue to collect output - the exit code will indicate failure
+                    if password_send_count > 0 && contains_sudo_failure(&accumulated_output) {
+                        tracing::warn!(
+                            "Sudo authentication failed after {} attempt(s)",
+                            password_send_count
+                        );
+                        // Stop trying to send more passwords
+                        sudo_auth_failed = true;
                     }
                 }
                 russh::ChannelMsg::ExtendedData { ref data, ext } => {
@@ -446,20 +464,31 @@ impl Client {
                         }
 
                         // Check if we need to send the password (sudo can prompt on stderr)
-                        if !password_sent && contains_sudo_prompt(&accumulated_output) {
-                            tracing::debug!("Sudo prompt detected on stderr, sending password");
+                        if !sudo_auth_failed
+                            && password_send_count < MAX_SUDO_PASSWORD_SENDS
+                            && contains_sudo_prompt(&accumulated_output)
+                        {
+                            password_send_count += 1;
+                            tracing::debug!(
+                                "Sudo prompt detected on stderr, sending password (attempt {}/{})",
+                                password_send_count,
+                                MAX_SUDO_PASSWORD_SENDS
+                            );
                             let password_data = sudo_password.with_newline();
                             if let Err(e) = channel.data(&password_data[..]).await {
                                 tracing::error!("Failed to send sudo password: {}", e);
                                 return Err(super::Error::SshError(e));
                             }
-                            password_sent = true;
                             accumulated_output.clear();
                         }
 
                         // Check for sudo failure
-                        if password_sent && contains_sudo_failure(&accumulated_output) {
-                            tracing::warn!("Sudo authentication failed (stderr)");
+                        if password_send_count > 0 && contains_sudo_failure(&accumulated_output) {
+                            tracing::warn!(
+                                "Sudo authentication failed on stderr after {} attempt(s)",
+                                password_send_count
+                            );
+                            sudo_auth_failed = true;
                         }
                     }
                 }
