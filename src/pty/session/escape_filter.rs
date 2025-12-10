@@ -117,6 +117,19 @@ impl EscapeSequenceFilter {
     /// Filter terminal data, removing terminal query responses.
     ///
     /// Returns the filtered data that should be displayed.
+    ///
+    /// ## Filtering Strategy (Conservative)
+    ///
+    /// The filter only removes sequences that are **known terminal responses**
+    /// that should never appear on screen:
+    /// - XTGETTCAP responses (DCS +r)
+    /// - DECRQSS responses (DCS $)
+    /// - OSC color query responses (OSC 4, 10-19, 52)
+    ///
+    /// All other sequences pass through, including:
+    /// - DA responses (needed for terminal capability detection)
+    /// - All CSI sequences (colors, cursor movement, DEC private modes)
+    /// - All SS3 sequences (application mode cursor keys, function keys)
     pub fn filter(&mut self, data: &[u8]) -> Vec<u8> {
         let mut output = Vec::with_capacity(data.len());
 
