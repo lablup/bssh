@@ -201,16 +201,15 @@ impl EscapeSequenceFilter {
 
                 FilterState::CsiQuestion => {
                     self.pending_buffer.push(byte);
-                    if byte == b'c' {
-                        // This is a DA (Device Attributes) response: ESC [ ? ... c
-                        // Filter it out - don't add to output
-                        tracing::trace!(
-                            "Filtered DA response: {:?}",
-                            String::from_utf8_lossy(&self.pending_buffer)
-                        );
-                        self.reset_to_normal();
-                    } else if byte.is_ascii_alphabetic() || byte == b'~' {
-                        // End of CSI ? sequence - pass through (DEC private modes)
+                    if byte.is_ascii_alphabetic() || byte == b'~' {
+                        // End of CSI ? sequence
+                        // DA responses (\x1b[?...c) should pass through to applications
+                        // as they need this for terminal capability detection.
+                        // Filtering DA responses breaks applications like htop that
+                        // rely on ncurses terminal detection.
+                        // The original issue (DA responses showing on screen) was likely
+                        // caused by specific terminal/PTY configurations and should be
+                        // handled at that level, not by filtering.
                         output.extend_from_slice(&self.pending_buffer);
                         self.reset_to_normal();
                     } else if self.pending_buffer.len() > MAX_CSI_SEQUENCE_SIZE {
@@ -536,12 +535,18 @@ mod tests {
     }
 
     #[test]
-    fn test_da_response_filtered() {
+    fn test_da_response_passthrough() {
         let mut filter = EscapeSequenceFilter::new();
         // DA1 response: ESC [ ? 6 4 ; 4 c
+        // DA responses should pass through as applications like htop need them
+        // for terminal capability detection
         let input = b"\x1b[?64;4c";
         let output = filter.filter(input);
-        assert!(output.is_empty(), "DA response should be filtered");
+        assert_eq!(
+            output,
+            input.to_vec(),
+            "DA response should pass through for terminal detection"
+        );
     }
 
     #[test]
@@ -568,12 +573,12 @@ mod tests {
     #[test]
     fn test_mixed_content() {
         let mut filter = EscapeSequenceFilter::new();
-        // Mix of normal text, color codes, and filtered responses
+        // Mix of normal text, color codes, and DA responses
+        // DA responses now pass through for terminal detection
         let input = b"Hello\x1b[31m\x1b[?64;4cWorld\x1b[0m";
         let output = filter.filter(input);
-        // Should keep: Hello, color start, World, color reset
-        // Should filter: DA response
-        assert_eq!(output, b"Hello\x1b[31mWorld\x1b[0m");
+        // Should keep: Hello, color start, DA response, World, color reset
+        assert_eq!(output, b"Hello\x1b[31m\x1b[?64;4cWorld\x1b[0m");
     }
 
     #[test]
@@ -607,9 +612,11 @@ mod tests {
         assert!(output1.is_empty(), "Partial sequence should be buffered");
 
         let output2 = filter.filter(part2);
-        assert!(
-            output2.is_empty(),
-            "Complete DA response should be filtered"
+        // DA responses now pass through for terminal detection
+        assert_eq!(
+            output2,
+            b"\x1b[?64;4c".to_vec(),
+            "Complete DA response should pass through"
         );
     }
 
