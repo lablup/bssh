@@ -1,0 +1,13 @@
+#!/bin/sh
+echo "Running cargo fmt..."
+cargo fmt --all
+
+echo "Running cargo clippy fixes..."
+cargo clippy --fix --allow-dirty
+cargo clippy --all-targets --all-features -- -D warnings
+
+# diff가 발생했으면 다시 커밋 요구
+if ! git diff --quiet; then
+  echo "⚠️ Code was formatted or Clippy-fix applied. Please review and commit again."
+  exit 1
+fi
