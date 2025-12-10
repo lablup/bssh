@@ -1538,16 +1538,19 @@ The PTY implementation provides true terminal emulation for interactive SSH sess
 
 ### Core Components
 
-1. **PTY Session (`pty/session/*`, Refactored 2025-10-17)**
+1. **PTY Session (`pty/session/*`, Refactored 2025-10-17, Enhanced 2025-12-10)**
    - **Module Structure:**
-     - `session/session_manager.rs` - Core session management (381 lines)
+     - `session/session_manager.rs` - Core session management (~400 lines)
      - `session/input.rs` - Input event handling (193 lines)
      - `session/constants.rs` - Terminal key sequences and buffers (105 lines)
      - `session/terminal_modes.rs` - Terminal mode configuration (91 lines)
-     - `session/mod.rs` - Module exports (22 lines)
+     - `session/escape_filter.rs` - Terminal escape sequence filtering (~350 lines)
+     - `session/mod.rs` - Module exports (23 lines)
    - Manages bidirectional terminal communication
    - Handles terminal resize events
    - Processes key sequences and ANSI escape codes
+   - **Filters terminal query responses** (XTGETTCAP, DA1/DA2/DA3, OSC responses)
+   - **Sets TERM environment variable** for proper terminal capability detection
    - Provides graceful shutdown with proper cleanup
 
 2. **PTY Manager (`pty/mod.rs`)**  
@@ -1605,6 +1608,29 @@ All timeouts and buffer sizes have been carefully chosen based on empirical test
 - **Task Cleanup**: 100ms - Allows graceful task termination
 - **PTY Shutdown**: 5 seconds - Time for multiple sessions to cleanup
 - **SSH Exit Delay**: 100ms - Ensures remote shell processes exit command
+
+### Terminal Escape Sequence Filtering (Added 2025-12-10)
+
+**Problem:** When running terminal applications like Neovim via SSH, raw terminal capability query responses (XTGETTCAP, DA1/DA2/DA3, OSC responses) were appearing as visible text instead of being properly processed.
+
+**Solution:** The `escape_filter` module implements a state machine to identify and filter terminal query responses:
+
+**Filtered Sequences:**
+- **XTGETTCAP responses** (`\x1bP+r...`): Terminal capability query responses from the remote shell
+- **DA1/DA2/DA3 responses** (`\x1b[?...c`): Device Attributes responses
+- **OSC responses** (`\x1b]...`): Operating System Command responses (colors, clipboard)
+- **DCS responses** (`\x1bP...`): Device Control String responses
+
+**Filter Design:**
+- State machine tracks incomplete sequences across buffer boundaries
+- Conservative filtering: only removes known terminal response sequences
+- Preserves all valid escape sequences for colors, cursor movement, etc.
+- Buffer overflow protection (4KB limit) prevents memory exhaustion from malformed sequences
+
+**TERM Environment Variable:**
+- Set before PTY allocation using russh's `set_env` API
+- Also sets `COLORTERM=truecolor` for better color support
+- Gracefully handles server rejection (AcceptEnv not configured)
 
 ### Memory Management Strategy
 

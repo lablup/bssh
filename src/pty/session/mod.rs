@@ -15,6 +15,7 @@
 //! PTY session management for interactive SSH connections.
 
 mod constants;
+mod escape_filter;
 mod input;
 mod session_manager;
 mod terminal_modes;
