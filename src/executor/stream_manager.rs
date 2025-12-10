@@ -172,11 +172,7 @@ impl NodeStream {
                         }
                         CommandOutput::ExitCode(code) => {
                             self.exit_code = Some(code);
-                            tracing::debug!(
-                                "Node {} received exit code: {}",
-                                self.node.host,
-                                code
-                            );
+                            tracing::debug!("Node {} received exit code: {}", self.node.host, code);
                         }
                     }
                 }
