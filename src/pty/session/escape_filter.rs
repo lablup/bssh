@@ -66,12 +66,16 @@ enum FilterState {
     Csi,
     /// In CSI with question mark (ESC [ ?)
     CsiQuestion,
-    /// In DCS sequence (ESC P)
+    /// In DCS sequence (ESC P) - not yet determined if it's a response
     Dcs,
     /// In DCS with + (ESC P +)
     DcsPlus,
-    /// In XTGETTCAP response (ESC P + r)
+    /// In XTGETTCAP response (ESC P + r) - should be filtered
     Xtgettcap,
+    /// In DCS $ sequence (ESC P $) - DECRQSS response, should be filtered
+    DcsDecrqss,
+    /// In DCS passthrough (non-response DCS sequence) - should pass through
+    DcsPassthrough,
     /// In OSC sequence (ESC ])
     Osc,
     /// In ST (String Terminator) - saw ESC, waiting for backslash
@@ -196,20 +200,24 @@ impl EscapeSequenceFilter {
                     self.pending_buffer.push(byte);
                     if byte == b'+' {
                         self.state = FilterState::DcsPlus;
+                    } else if byte == b'$' {
+                        // DECRQSS response (ESC P $ ...)
+                        self.state = FilterState::DcsDecrqss;
                     } else if byte == 0x1b {
-                        // Start of string terminator
+                        // Start of string terminator - treat as passthrough
+                        // since we didn't identify it as a known response
                         self.state = FilterState::St;
                     } else if byte == 0x07 {
                         // BEL as string terminator - end of DCS
-                        // Filter out DCS sequences (most are responses)
-                        tracing::trace!(
-                            "Filtered DCS sequence: {:?}",
-                            String::from_utf8_lossy(&self.pending_buffer)
-                        );
+                        // Unknown DCS type - pass through to preserve functionality
+                        // (e.g., sixel graphics, DECUDK, application-specific sequences)
+                        output.extend_from_slice(&self.pending_buffer);
                         self.pending_buffer.clear();
                         self.state = FilterState::Normal;
+                    } else {
+                        // Other DCS content - transition to passthrough mode
+                        self.state = FilterState::DcsPassthrough;
                     }
-                    // Continue collecting DCS content
                 }
 
                 FilterState::DcsPlus => {
@@ -247,6 +255,38 @@ impl EscapeSequenceFilter {
                     // Continue collecting XTGETTCAP content
                 }
 
+                FilterState::DcsDecrqss => {
+                    self.pending_buffer.push(byte);
+                    if byte == 0x1b {
+                        // Start of string terminator
+                        self.state = FilterState::St;
+                    } else if byte == 0x07 {
+                        // BEL as string terminator - end of DECRQSS response
+                        tracing::trace!(
+                            "Filtered DECRQSS response: {:?}",
+                            String::from_utf8_lossy(&self.pending_buffer)
+                        );
+                        self.pending_buffer.clear();
+                        self.state = FilterState::Normal;
+                    }
+                    // Continue collecting DECRQSS content
+                }
+
+                FilterState::DcsPassthrough => {
+                    self.pending_buffer.push(byte);
+                    if byte == 0x1b {
+                        // Start of string terminator
+                        self.state = FilterState::St;
+                    } else if byte == 0x07 {
+                        // BEL as string terminator - end of DCS passthrough
+                        // Pass through non-response DCS sequences
+                        output.extend_from_slice(&self.pending_buffer);
+                        self.pending_buffer.clear();
+                        self.state = FilterState::Normal;
+                    }
+                    // Continue collecting DCS passthrough content
+                }
+
                 FilterState::Osc => {
                     self.pending_buffer.push(byte);
                     if byte == 0x1b {
@@ -278,11 +318,16 @@ impl EscapeSequenceFilter {
                         // Check what type of sequence we were in
                         match self.pending_buffer.get(1) {
                             Some(b'P') => {
-                                // DCS sequence complete - filter it
-                                tracing::trace!(
-                                    "Filtered DCS sequence with ST: {:?}",
-                                    String::from_utf8_lossy(&self.pending_buffer)
-                                );
+                                // DCS sequence complete - check if it's a response
+                                if self.is_dcs_response() {
+                                    tracing::trace!(
+                                        "Filtered DCS response with ST: {:?}",
+                                        String::from_utf8_lossy(&self.pending_buffer)
+                                    );
+                                } else {
+                                    // Non-response DCS - pass through
+                                    output.extend_from_slice(&self.pending_buffer);
+                                }
                             }
                             Some(b']') => {
                                 // OSC sequence complete
@@ -306,7 +351,21 @@ impl EscapeSequenceFilter {
                         // False ST start - return to appropriate state
                         // This handles cases where ESC appears in the middle of a sequence
                         match self.pending_buffer.get(1) {
-                            Some(b'P') => self.state = FilterState::Dcs,
+                            Some(b'P') => {
+                                // Return to appropriate DCS state based on content
+                                if self.is_dcs_response() {
+                                    // Stay in a response state (Xtgettcap or DcsDecrqss)
+                                    if self.pending_buffer.len() > 3 && self.pending_buffer[2] == b'+' {
+                                        self.state = FilterState::Xtgettcap;
+                                    } else if self.pending_buffer.len() > 2 && self.pending_buffer[2] == b'$' {
+                                        self.state = FilterState::DcsDecrqss;
+                                    } else {
+                                        self.state = FilterState::DcsPassthrough;
+                                    }
+                                } else {
+                                    self.state = FilterState::DcsPassthrough;
+                                }
+                            }
                             Some(b']') => self.state = FilterState::Osc,
                             _ => {
                                 // Malformed - pass through
@@ -335,6 +394,23 @@ impl EscapeSequenceFilter {
         }
 
         output
+    }
+
+    /// Check if the current DCS sequence is a response that should be filtered.
+    fn is_dcs_response(&self) -> bool {
+        // DCS sequences that are responses (not commands):
+        // - ESC P + r ... (XTGETTCAP response)
+        // - ESC P $ ... (DECRQSS response)
+        if self.pending_buffer.len() < 3 {
+            return false;
+        }
+
+        // Check the third byte to determine DCS type
+        match self.pending_buffer.get(2) {
+            Some(b'+') => true, // XTGETTCAP response
+            Some(b'$') => true, // DECRQSS response
+            _ => false,         // Other DCS sequences (sixel, DECUDK, etc.) - pass through
+        }
     }
 
     /// Check if the current OSC sequence is a response that should be filtered.
@@ -549,5 +625,43 @@ mod tests {
 
         // The malformed sequence should be flushed (not filtered)
         assert!(!output.is_empty(), "Malformed CSI? sequence should be flushed to output");
+    }
+
+    #[test]
+    fn test_dcs_sixel_passthrough() {
+        let mut filter = EscapeSequenceFilter::new();
+        // Sixel graphics DCS sequence: ESC P q ... ST
+        // This should pass through, not be filtered
+        let input = b"\x1bPq#0;2;0;0;0#1;2;100;100;100\x1b\\";
+        let output = filter.filter(input);
+        assert_eq!(output, input.to_vec(), "Sixel DCS should pass through");
+    }
+
+    #[test]
+    fn test_dcs_xtgettcap_filtered() {
+        let mut filter = EscapeSequenceFilter::new();
+        // XTGETTCAP response: ESC P + r ... ST (should be filtered)
+        let input = b"\x1bP+r736574726762\x1b\\";
+        let output = filter.filter(input);
+        assert!(output.is_empty(), "XTGETTCAP response should be filtered");
+    }
+
+    #[test]
+    fn test_dcs_decrqss_filtered() {
+        let mut filter = EscapeSequenceFilter::new();
+        // DECRQSS response: ESC P $ r ... ST (should be filtered)
+        let input = b"\x1bP$r0m\x1b\\";
+        let output = filter.filter(input);
+        assert!(output.is_empty(), "DECRQSS response should be filtered");
+    }
+
+    #[test]
+    fn test_dcs_generic_passthrough() {
+        let mut filter = EscapeSequenceFilter::new();
+        // Generic DCS sequence (not + or $): ESC P 1 2 3 ST
+        // This should pass through
+        let input = b"\x1bP123\x1b\\";
+        let output = filter.filter(input);
+        assert_eq!(output, input.to_vec(), "Generic DCS should pass through");
     }
 }
