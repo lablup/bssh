@@ -322,12 +322,17 @@ impl PtySession {
                             }
                         }
                         Some(PtyMessage::RemoteOutput(data)) => {
-                            // Write directly to stdout for better performance
-                            if let Err(e) = io::stdout().write_all(&data) {
-                                tracing::error!("Failed to write to stdout: {e}");
-                                should_terminate = true;
-                            } else {
-                                let _ = io::stdout().flush();
+                            // Apply escape filter for consistency with SSH channel data
+                            // This path may receive data from other sources that could
+                            // contain terminal responses that shouldn't be displayed
+                            let filtered_data = self.escape_filter.filter(&data);
+                            if !filtered_data.is_empty() {
+                                if let Err(e) = io::stdout().write_all(&filtered_data) {
+                                    tracing::error!("Failed to write to stdout: {e}");
+                                    should_terminate = true;
+                                } else {
+                                    let _ = io::stdout().flush();
+                                }
                             }
                         }
                         Some(PtyMessage::Resize { width, height }) => {

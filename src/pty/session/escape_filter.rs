@@ -35,6 +35,14 @@
 //! - Preserves all other output including valid escape sequences for colors, etc.
 //! - Uses a state machine to track incomplete sequences across buffer boundaries
 
+/// Maximum size for CSI sequences before forcing buffer flush.
+/// Standard CSI sequences are typically under 32 bytes (e.g., "\x1b[38;2;255;255;255m" is 22 bytes).
+/// Using 256 bytes provides generous headroom while preventing DoS through malformed input.
+const MAX_CSI_SEQUENCE_SIZE: usize = 256;
+
+/// Maximum size for pending buffer before overflow protection triggers.
+const MAX_PENDING_SIZE: usize = 4096;
+
 /// Filter for terminal escape sequence responses.
 ///
 /// This filter removes terminal query responses that applications send back
@@ -140,6 +148,16 @@ impl EscapeSequenceFilter {
                         output.extend_from_slice(&self.pending_buffer);
                         self.pending_buffer.clear();
                         self.state = FilterState::Normal;
+                    } else if self.pending_buffer.len() > MAX_CSI_SEQUENCE_SIZE {
+                        // Malformed CSI sequence - too long without terminator
+                        // Flush buffer to prevent memory issues and output delay
+                        tracing::trace!(
+                            "Flushing malformed CSI sequence (size {})",
+                            self.pending_buffer.len()
+                        );
+                        output.extend_from_slice(&self.pending_buffer);
+                        self.pending_buffer.clear();
+                        self.state = FilterState::Normal;
                     }
                     // Continue collecting CSI sequence parameters
                 }
@@ -157,6 +175,16 @@ impl EscapeSequenceFilter {
                         self.state = FilterState::Normal;
                     } else if byte.is_ascii_alphabetic() || byte == b'~' {
                         // End of CSI ? sequence - pass through (DEC private modes)
+                        output.extend_from_slice(&self.pending_buffer);
+                        self.pending_buffer.clear();
+                        self.state = FilterState::Normal;
+                    } else if self.pending_buffer.len() > MAX_CSI_SEQUENCE_SIZE {
+                        // Malformed CSI ? sequence - too long without terminator
+                        // Flush buffer to prevent memory issues and output delay
+                        tracing::trace!(
+                            "Flushing malformed CSI? sequence (size {})",
+                            self.pending_buffer.len()
+                        );
                         output.extend_from_slice(&self.pending_buffer);
                         self.pending_buffer.clear();
                         self.state = FilterState::Normal;
@@ -296,7 +324,6 @@ impl EscapeSequenceFilter {
 
         // Handle buffer timeout for incomplete sequences
         // If pending buffer gets too large, it's likely garbage - flush it
-        const MAX_PENDING_SIZE: usize = 4096;
         if self.pending_buffer.len() > MAX_PENDING_SIZE {
             tracing::warn!(
                 "Escape sequence buffer overflow, flushing {} bytes",
@@ -466,5 +493,61 @@ mod tests {
         let input = b"\x1b[?1049h";
         let output = filter.filter(input);
         assert_eq!(output, input.to_vec());
+    }
+
+    #[test]
+    fn test_malformed_csi_sequence_flushed() {
+        let mut filter = EscapeSequenceFilter::new();
+        // Create a malformed CSI sequence that exceeds MAX_CSI_SEQUENCE_SIZE (256 bytes)
+        // without a proper terminator (no alphabetic character or ~)
+        let mut malformed = vec![0x1b, b'[']; // ESC [
+        // Add enough non-terminating bytes to exceed the limit
+        for _ in 0..300 {
+            malformed.push(b';'); // Keep adding parameter separators
+        }
+        malformed.push(b'X'); // Finally add a terminator
+
+        let output = filter.filter(&malformed);
+
+        // The malformed sequence should be flushed (not filtered)
+        // because it exceeded the size limit before getting a terminator
+        assert!(!output.is_empty(), "Malformed CSI sequence should be flushed to output");
+    }
+
+    #[test]
+    fn test_buffer_overflow_protection() {
+        let mut filter = EscapeSequenceFilter::new();
+        // Create a DCS sequence that exceeds MAX_PENDING_SIZE (4096 bytes)
+        // DCS sequences don't have the early termination, only the global limit applies
+        let mut large_dcs = vec![0x1b, b'P']; // ESC P (DCS start)
+        // Add enough bytes to exceed the 4096 byte limit
+        for i in 0..5000 {
+            large_dcs.push(b'A' + (i % 26) as u8);
+        }
+
+        let output = filter.filter(&large_dcs);
+
+        // The buffer should be flushed when it exceeds MAX_PENDING_SIZE
+        assert!(!output.is_empty(), "Buffer overflow should flush content to output");
+        // State should be reset to Normal
+        assert_eq!(filter.state, FilterState::Normal);
+        assert!(filter.pending_buffer.is_empty(), "Pending buffer should be cleared");
+    }
+
+    #[test]
+    fn test_malformed_csi_question_sequence_flushed() {
+        let mut filter = EscapeSequenceFilter::new();
+        // Create a malformed CSI ? sequence that exceeds MAX_CSI_SEQUENCE_SIZE
+        let mut malformed = vec![0x1b, b'[', b'?']; // ESC [ ?
+        // Add enough non-terminating bytes
+        for _ in 0..300 {
+            malformed.push(b'0'); // Keep adding digits
+        }
+        malformed.push(b'h'); // Finally add a terminator
+
+        let output = filter.filter(&malformed);
+
+        // The malformed sequence should be flushed (not filtered)
+        assert!(!output.is_empty(), "Malformed CSI? sequence should be flushed to output");
     }
 }
