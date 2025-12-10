@@ -316,9 +316,12 @@ impl MultiNodeStreamManager {
         !self.streams.is_empty() && self.streams.iter().all(|s| s.is_complete())
     }
 
-    /// Get count of completed streams
+    /// Get count of successfully completed streams (not failed)
     pub fn completed_count(&self) -> usize {
-        self.streams.iter().filter(|s| s.is_complete()).count()
+        self.streams
+            .iter()
+            .filter(|s| matches!(s.status(), ExecutionStatus::Completed) && s.is_closed())
+            .count()
     }
 
     /// Get count of failed streams

@@ -60,11 +60,10 @@ fn render_header(
 
     let title = format!(" Cluster: {cluster_name} ({total} nodes) - {command} ");
 
+    let in_progress = total - completed - failed;
     let status = format!(
         " ✓ {} • ✗ {} • {} in progress ",
-        completed,
-        failed,
-        total - completed
+        completed, failed, in_progress
     );
 
     let header_text = vec![Line::from(vec![
