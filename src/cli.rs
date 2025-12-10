@@ -91,6 +91,13 @@ pub struct Cli {
     pub password: bool,
 
     #[arg(
+        short = 'S',
+        long = "sudo-password",
+        help = "Prompt for sudo password to automatically respond to sudo prompts\nWhen enabled, bssh will:\n  1. Securely prompt for sudo password before execution\n  2. Detect sudo password prompts in command output\n  3. Automatically inject the password when prompted\n\nAlternatively, set BSSH_SUDO_PASSWORD environment variable (not recommended)\nSecurity: Password is cleared from memory after use"
+    )]
+    pub sudo_password: bool,
+
+    #[arg(
         short = 'J',
         long = "jump-host",
         help = "Comma-separated list of jump hosts (ProxyJump)\nSpecify in [user@]hostname[:port] format, e.g.: 'jump1.example.com' or 'user@jump1:2222,jump2'\nSupports multiple hops for complex network topologies"

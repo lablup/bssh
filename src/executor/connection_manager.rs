@@ -16,8 +16,10 @@
 
 use anyhow::Result;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::node::Node;
+use crate::security::SudoPassword;
 use crate::ssh::{
     client::{CommandResult, ConnectionConfig},
     known_hosts::StrictHostKeyChecking,
@@ -35,6 +37,7 @@ pub(crate) struct ExecutionConfig<'a> {
     pub use_keychain: bool,
     pub timeout: Option<u64>,
     pub jump_hosts: Option<&'a str>,
+    pub sudo_password: Option<Arc<SudoPassword>>,
 }
 
 /// Execute a command on a node with jump host support.
@@ -58,9 +61,38 @@ pub(crate) async fn execute_on_node_with_jump_hosts(
         jump_hosts_spec: config.jump_hosts,
     };
 
-    client
-        .connect_and_execute_with_jump_hosts(command, &connection_config)
-        .await
+    // If sudo password is provided, use streaming execution to handle prompts
+    if let Some(ref sudo_password) = config.sudo_password {
+        use crate::ssh::tokio_client::CommandOutput;
+        use tokio::sync::mpsc;
+
+        let (tx, mut rx) = mpsc::channel(1000);
+        let exit_status = client
+            .connect_and_execute_with_sudo(command, &connection_config, tx, sudo_password)
+            .await?;
+
+        // Collect output from channel
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        while let Some(output) = rx.recv().await {
+            match output {
+                CommandOutput::StdOut(data) => stdout.extend_from_slice(&data),
+                CommandOutput::StdErr(data) => stderr.extend_from_slice(&data),
+            }
+        }
+
+        Ok(CommandResult {
+            host: node.host.clone(),
+            output: stdout,
+            stderr,
+            exit_status,
+        })
+    } else {
+        client
+            .connect_and_execute_with_jump_hosts(command, &connection_config)
+            .await
+    }
 }
 
 /// Upload a file or directory to a node with jump host support.

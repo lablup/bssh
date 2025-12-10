@@ -22,6 +22,7 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 
 use crate::node::Node;
+use crate::security::SudoPassword;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
 
 use super::connection_manager::{download_from_node, ExecutionConfig};
@@ -44,6 +45,7 @@ pub struct ParallelExecutor {
     pub(crate) use_keychain: bool,
     pub(crate) timeout: Option<u64>,
     pub(crate) jump_hosts: Option<String>,
+    pub(crate) sudo_password: Option<Arc<SudoPassword>>,
 }
 
 impl ParallelExecutor {
@@ -75,6 +77,7 @@ impl ParallelExecutor {
             use_keychain: false,
             timeout: None,
             jump_hosts: None,
+            sudo_password: None,
         }
     }
 
@@ -97,6 +100,7 @@ impl ParallelExecutor {
             use_keychain: false,
             timeout: None,
             jump_hosts: None,
+            sudo_password: None,
         }
     }
 
@@ -120,6 +124,7 @@ impl ParallelExecutor {
             use_keychain: false,
             timeout: None,
             jump_hosts: None,
+            sudo_password: None,
         }
     }
 
@@ -139,6 +144,15 @@ impl ParallelExecutor {
     #[cfg(target_os = "macos")]
     pub fn with_keychain(mut self, use_keychain: bool) -> Self {
         self.use_keychain = use_keychain;
+        self
+    }
+
+    /// Set sudo password for automatic sudo authentication.
+    ///
+    /// When set, the executor will automatically detect sudo password prompts
+    /// and inject the password when commands require sudo privileges.
+    pub fn with_sudo_password(mut self, sudo_password: Option<Arc<SudoPassword>>) -> Self {
+        self.sudo_password = sudo_password;
         self
     }
 
@@ -162,6 +176,7 @@ impl ParallelExecutor {
                 let use_keychain = self.use_keychain;
                 let timeout = self.timeout;
                 let jump_hosts = self.jump_hosts.clone();
+                let sudo_password = self.sudo_password.clone();
                 let semaphore = Arc::clone(&semaphore);
                 let pb = setup_progress_bar(&multi_progress, &node, style.clone(), "Connecting...");
 
@@ -175,6 +190,7 @@ impl ParallelExecutor {
                         use_keychain,
                         timeout,
                         jump_hosts: jump_hosts.as_deref(),
+                        sudo_password: sudo_password.clone(),
                     };
 
                     execute_command_task(node, command, config, semaphore, pb).await
@@ -504,6 +520,7 @@ impl ParallelExecutor {
             let use_keychain = self.use_keychain;
             let timeout = self.timeout;
             let jump_hosts = self.jump_hosts.clone();
+            let sudo_password = self.sudo_password.clone();
             let semaphore = Arc::clone(&semaphore);
 
             let handle = tokio::spawn(async move {
@@ -551,22 +568,42 @@ impl ParallelExecutor {
                     jump_hosts_spec: jump_hosts.as_deref(),
                 };
 
-                // Ensure channel is closed on all paths
-                let result = match client
-                    .connect_and_execute_with_output_streaming(&command, &config, tx.clone())
-                    .await
-                {
-                    Ok(exit_status) => {
-                        tracing::debug!(
-                            "Command completed for {}: exit code {}",
-                            node_clone.host,
-                            exit_status
-                        );
-                        (node_clone, Ok(exit_status))
+                // Execute with or without sudo password support
+                let result = if let Some(ref sudo_pwd) = sudo_password {
+                    match client
+                        .connect_and_execute_with_sudo(&command, &config, tx.clone(), sudo_pwd)
+                        .await
+                    {
+                        Ok(exit_status) => {
+                            tracing::debug!(
+                                "Sudo command completed for {}: exit code {}",
+                                node_clone.host,
+                                exit_status
+                            );
+                            (node_clone, Ok(exit_status))
+                        }
+                        Err(e) => {
+                            tracing::error!("Sudo command failed for {}: {}", node_clone.host, e);
+                            (node_clone, Err(e))
+                        }
                     }
-                    Err(e) => {
-                        tracing::error!("Command failed for {}: {}", node_clone.host, e);
-                        (node_clone, Err(e))
+                } else {
+                    match client
+                        .connect_and_execute_with_output_streaming(&command, &config, tx.clone())
+                        .await
+                    {
+                        Ok(exit_status) => {
+                            tracing::debug!(
+                                "Command completed for {}: exit code {}",
+                                node_clone.host,
+                                exit_status
+                            );
+                            (node_clone, Ok(exit_status))
+                        }
+                        Err(e) => {
+                            tracing::error!("Command failed for {}: {}", node_clone.host, e);
+                            (node_clone, Err(e))
+                        }
                     }
                 };
 
