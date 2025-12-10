@@ -377,9 +377,13 @@ impl EscapeSequenceFilter {
                                 // Return to appropriate DCS state based on content
                                 if self.is_dcs_response() {
                                     // Stay in a response state (Xtgettcap or DcsDecrqss)
-                                    if self.pending_buffer.len() > 3 && self.pending_buffer[2] == b'+' {
+                                    if self.pending_buffer.len() > 3
+                                        && self.pending_buffer[2] == b'+'
+                                    {
                                         self.state = FilterState::Xtgettcap;
-                                    } else if self.pending_buffer.len() > 2 && self.pending_buffer[2] == b'$' {
+                                    } else if self.pending_buffer.len() > 2
+                                        && self.pending_buffer[2] == b'$'
+                                    {
                                         self.state = FilterState::DcsDecrqss;
                                     } else {
                                         self.state = FilterState::DcsPassthrough;
@@ -633,7 +637,7 @@ mod tests {
         // Create a malformed CSI sequence that exceeds MAX_CSI_SEQUENCE_SIZE (256 bytes)
         // without a proper terminator (no alphabetic character or ~)
         let mut malformed = vec![0x1b, b'[']; // ESC [
-        // Add enough non-terminating bytes to exceed the limit
+                                              // Add enough non-terminating bytes to exceed the limit
         for _ in 0..300 {
             malformed.push(b';'); // Keep adding parameter separators
         }
@@ -643,7 +647,10 @@ mod tests {
 
         // The malformed sequence should be flushed (not filtered)
         // because it exceeded the size limit before getting a terminator
-        assert!(!output.is_empty(), "Malformed CSI sequence should be flushed to output");
+        assert!(
+            !output.is_empty(),
+            "Malformed CSI sequence should be flushed to output"
+        );
     }
 
     #[test]
@@ -652,7 +659,7 @@ mod tests {
         // Create a DCS sequence that exceeds MAX_PENDING_SIZE (4096 bytes)
         // DCS sequences don't have the early termination, only the global limit applies
         let mut large_dcs = vec![0x1b, b'P']; // ESC P (DCS start)
-        // Add enough bytes to exceed the 4096 byte limit
+                                              // Add enough bytes to exceed the 4096 byte limit
         for i in 0..5000 {
             large_dcs.push(b'A' + (i % 26) as u8);
         }
@@ -660,10 +667,16 @@ mod tests {
         let output = filter.filter(&large_dcs);
 
         // The buffer should be flushed when it exceeds MAX_PENDING_SIZE
-        assert!(!output.is_empty(), "Buffer overflow should flush content to output");
+        assert!(
+            !output.is_empty(),
+            "Buffer overflow should flush content to output"
+        );
         // State should be reset to Normal
         assert_eq!(filter.state, FilterState::Normal);
-        assert!(filter.pending_buffer.is_empty(), "Pending buffer should be cleared");
+        assert!(
+            filter.pending_buffer.is_empty(),
+            "Pending buffer should be cleared"
+        );
     }
 
     #[test]
@@ -671,7 +684,7 @@ mod tests {
         let mut filter = EscapeSequenceFilter::new();
         // Create a malformed CSI ? sequence that exceeds MAX_CSI_SEQUENCE_SIZE
         let mut malformed = vec![0x1b, b'[', b'?']; // ESC [ ?
-        // Add enough non-terminating bytes
+                                                    // Add enough non-terminating bytes
         for _ in 0..300 {
             malformed.push(b'0'); // Keep adding digits
         }
@@ -680,7 +693,10 @@ mod tests {
         let output = filter.filter(&malformed);
 
         // The malformed sequence should be flushed (not filtered)
-        assert!(!output.is_empty(), "Malformed CSI? sequence should be flushed to output");
+        assert!(
+            !output.is_empty(),
+            "Malformed CSI? sequence should be flushed to output"
+        );
     }
 
     #[test]

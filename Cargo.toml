@@ -12,13 +12,13 @@ edition = "2021"
 
 [dependencies]
 tokio = { version = "1.47.1", features = ["full"] }
-russh = "0.54.6"
+russh = "0.55.0"
 russh-sftp = "2.1.1"
 clap = { version = "4", features = ["derive", "env"] }
 anyhow = "1.0.99"
 thiserror = "2.0.16"
 tracing = "0.1.41"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_yaml = "0.9"
 futures = "0.3.31"
@@ -38,7 +38,7 @@ zeroize = "1.8"
 rustyline = "17.0.1"
 crossterm = "0.29"
 ratatui = "0.29"
-regex = "1"
+regex = "1.12.2"
 lazy_static = "1.5"
 ctrlc = "3.4"
 signal-hook = "0.3.18"

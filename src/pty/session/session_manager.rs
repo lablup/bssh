@@ -106,12 +106,11 @@ impl PtySession {
 
         // Also set COLORTERM for better color support detection
         // Many modern terminals set this to indicate truecolor support
-        if let Err(e) = self
-            .channel
-            .set_env(false, "COLORTERM", "truecolor")
-            .await
-        {
-            tracing::trace!("Server did not accept COLORTERM environment variable: {}", e);
+        if let Err(e) = self.channel.set_env(false, "COLORTERM", "truecolor").await {
+            tracing::trace!(
+                "Server did not accept COLORTERM environment variable: {}",
+                e
+            );
         }
 
         // Request PTY on the SSH channel with properly configured terminal modes
