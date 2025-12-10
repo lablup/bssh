@@ -236,7 +236,7 @@ fn test_main_rank_marking_in_results() {
         Node::new("host3".to_string(), 22, "user".to_string()),
     ];
 
-    let mut results = vec![
+    let mut results = [
         success_result("host1"),
         success_result("host2"),
         success_result("host3"),
@@ -283,7 +283,7 @@ fn test_main_rank_marking_with_backendai_env() {
         Node::new("host3".to_string(), 22, "user".to_string()),
     ];
 
-    let mut results = vec![
+    let mut results = [
         success_result("host1"),
         success_result("host2"),
         success_result("host3"),

@@ -658,9 +658,7 @@ mod tests {
         // without a proper terminator (no alphabetic character or ~)
         let mut malformed = vec![0x1b, b'[']; // ESC [
                                               // Add enough non-terminating bytes to exceed the limit
-        for _ in 0..300 {
-            malformed.push(b';'); // Keep adding parameter separators
-        }
+        malformed.extend(std::iter::repeat_n(b';', 300)); // Keep adding parameter separators
         malformed.push(b'X'); // Finally add a terminator
 
         let output = filter.filter(&malformed);
@@ -705,9 +703,7 @@ mod tests {
         // Create a malformed CSI ? sequence that exceeds MAX_CSI_SEQUENCE_SIZE
         let mut malformed = vec![0x1b, b'[', b'?']; // ESC [ ?
                                                     // Add enough non-terminating bytes
-        for _ in 0..300 {
-            malformed.push(b'0'); // Keep adding digits
-        }
+        malformed.extend(std::iter::repeat_n(b'0', 300)); // Keep adding digits
         malformed.push(b'h'); // Finally add a terminator
 
         let output = filter.filter(&malformed);

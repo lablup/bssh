@@ -94,7 +94,7 @@ fn test_node_activation_states() {
 
 #[test]
 fn test_node_status_display() {
-    let sessions = vec![
+    let sessions = [
         MockNodeSession {
             node: Node::new("host1".to_string(), 22, "user".to_string()),
             is_connected: true,
