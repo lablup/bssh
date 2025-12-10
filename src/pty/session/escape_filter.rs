@@ -35,6 +35,8 @@
 //! - Preserves all other output including valid escape sequences for colors, etc.
 //! - Uses a state machine to track incomplete sequences across buffer boundaries
 
+use std::time::{Duration, Instant};
+
 /// Maximum size for CSI sequences before forcing buffer flush.
 /// Standard CSI sequences are typically under 32 bytes (e.g., "\x1b[38;2;255;255;255m" is 22 bytes).
 /// Using 256 bytes provides generous headroom while preventing DoS through malformed input.
@@ -42,6 +44,10 @@ const MAX_CSI_SEQUENCE_SIZE: usize = 256;
 
 /// Maximum size for pending buffer before overflow protection triggers.
 const MAX_PENDING_SIZE: usize = 4096;
+
+/// Maximum time to wait for incomplete escape sequences before flushing.
+/// Terminal responses typically arrive within milliseconds, so 500ms is generous.
+const SEQUENCE_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Filter for terminal escape sequence responses.
 ///
@@ -53,6 +59,8 @@ pub struct EscapeSequenceFilter {
     pending_buffer: Vec<u8>,
     /// Current filter state
     state: FilterState,
+    /// Timestamp when the current pending sequence started
+    sequence_start: Option<Instant>,
 }
 
 /// State machine for tracking escape sequence parsing
@@ -94,7 +102,16 @@ impl EscapeSequenceFilter {
         Self {
             pending_buffer: Vec::with_capacity(64),
             state: FilterState::Normal,
+            sequence_start: None,
         }
+    }
+
+    /// Reset to normal state and clear timing.
+    #[inline]
+    fn reset_to_normal(&mut self) {
+        self.pending_buffer.clear();
+        self.state = FilterState::Normal;
+        self.sequence_start = None;
     }
 
     /// Filter terminal data, removing terminal query responses.
@@ -102,6 +119,24 @@ impl EscapeSequenceFilter {
     /// Returns the filtered data that should be displayed.
     pub fn filter(&mut self, data: &[u8]) -> Vec<u8> {
         let mut output = Vec::with_capacity(data.len());
+
+        // Check for timed-out incomplete sequences at the start of each filter call
+        if self.state != FilterState::Normal {
+            if let Some(start) = self.sequence_start {
+                if start.elapsed() > SEQUENCE_TIMEOUT {
+                    tracing::trace!(
+                        "Flushing timed-out escape sequence ({:?}): {:?}",
+                        start.elapsed(),
+                        String::from_utf8_lossy(&self.pending_buffer)
+                    );
+                    output.extend_from_slice(&self.pending_buffer);
+                    self.pending_buffer.clear();
+                    self.state = FilterState::Normal;
+                    self.sequence_start = None;
+                }
+            }
+        }
+
         let mut i = 0;
 
         while i < data.len() {
@@ -114,6 +149,7 @@ impl EscapeSequenceFilter {
                         self.state = FilterState::Escape;
                         self.pending_buffer.clear();
                         self.pending_buffer.push(byte);
+                        self.sequence_start = Some(Instant::now());
                     } else {
                         output.push(byte);
                     }
@@ -137,8 +173,7 @@ impl EscapeSequenceFilter {
                         _ => {
                             // Other escape sequence - pass through
                             output.extend_from_slice(&self.pending_buffer);
-                            self.pending_buffer.clear();
-                            self.state = FilterState::Normal;
+                            self.reset_to_normal();
                         }
                     }
                 }
@@ -150,8 +185,7 @@ impl EscapeSequenceFilter {
                     } else if byte.is_ascii_alphabetic() || byte == b'~' {
                         // End of CSI sequence - pass through (colors, cursor, etc.)
                         output.extend_from_slice(&self.pending_buffer);
-                        self.pending_buffer.clear();
-                        self.state = FilterState::Normal;
+                        self.reset_to_normal();
                     } else if self.pending_buffer.len() > MAX_CSI_SEQUENCE_SIZE {
                         // Malformed CSI sequence - too long without terminator
                         // Flush buffer to prevent memory issues and output delay
@@ -160,8 +194,7 @@ impl EscapeSequenceFilter {
                             self.pending_buffer.len()
                         );
                         output.extend_from_slice(&self.pending_buffer);
-                        self.pending_buffer.clear();
-                        self.state = FilterState::Normal;
+                        self.reset_to_normal();
                     }
                     // Continue collecting CSI sequence parameters
                 }
@@ -175,13 +208,11 @@ impl EscapeSequenceFilter {
                             "Filtered DA response: {:?}",
                             String::from_utf8_lossy(&self.pending_buffer)
                         );
-                        self.pending_buffer.clear();
-                        self.state = FilterState::Normal;
+                        self.reset_to_normal();
                     } else if byte.is_ascii_alphabetic() || byte == b'~' {
                         // End of CSI ? sequence - pass through (DEC private modes)
                         output.extend_from_slice(&self.pending_buffer);
-                        self.pending_buffer.clear();
-                        self.state = FilterState::Normal;
+                        self.reset_to_normal();
                     } else if self.pending_buffer.len() > MAX_CSI_SEQUENCE_SIZE {
                         // Malformed CSI ? sequence - too long without terminator
                         // Flush buffer to prevent memory issues and output delay
@@ -190,8 +221,7 @@ impl EscapeSequenceFilter {
                             self.pending_buffer.len()
                         );
                         output.extend_from_slice(&self.pending_buffer);
-                        self.pending_buffer.clear();
-                        self.state = FilterState::Normal;
+                        self.reset_to_normal();
                     }
                     // Continue collecting CSI ? sequence parameters
                 }
@@ -212,8 +242,7 @@ impl EscapeSequenceFilter {
                         // Unknown DCS type - pass through to preserve functionality
                         // (e.g., sixel graphics, DECUDK, application-specific sequences)
                         output.extend_from_slice(&self.pending_buffer);
-                        self.pending_buffer.clear();
-                        self.state = FilterState::Normal;
+                        self.reset_to_normal();
                     } else {
                         // Other DCS content - transition to passthrough mode
                         self.state = FilterState::DcsPassthrough;
@@ -233,8 +262,7 @@ impl EscapeSequenceFilter {
                             "Filtered DCS+ sequence: {:?}",
                             String::from_utf8_lossy(&self.pending_buffer)
                         );
-                        self.pending_buffer.clear();
-                        self.state = FilterState::Normal;
+                        self.reset_to_normal();
                     }
                 }
 
@@ -249,8 +277,7 @@ impl EscapeSequenceFilter {
                             "Filtered XTGETTCAP response: {:?}",
                             String::from_utf8_lossy(&self.pending_buffer)
                         );
-                        self.pending_buffer.clear();
-                        self.state = FilterState::Normal;
+                        self.reset_to_normal();
                     }
                     // Continue collecting XTGETTCAP content
                 }
@@ -266,8 +293,7 @@ impl EscapeSequenceFilter {
                             "Filtered DECRQSS response: {:?}",
                             String::from_utf8_lossy(&self.pending_buffer)
                         );
-                        self.pending_buffer.clear();
-                        self.state = FilterState::Normal;
+                        self.reset_to_normal();
                     }
                     // Continue collecting DECRQSS content
                 }
@@ -281,8 +307,7 @@ impl EscapeSequenceFilter {
                         // BEL as string terminator - end of DCS passthrough
                         // Pass through non-response DCS sequences
                         output.extend_from_slice(&self.pending_buffer);
-                        self.pending_buffer.clear();
-                        self.state = FilterState::Normal;
+                        self.reset_to_normal();
                     }
                     // Continue collecting DCS passthrough content
                 }
@@ -301,12 +326,10 @@ impl EscapeSequenceFilter {
                                 "Filtered OSC response: {:?}",
                                 String::from_utf8_lossy(&self.pending_buffer)
                             );
-                            self.pending_buffer.clear();
                         } else {
                             output.extend_from_slice(&self.pending_buffer);
-                            self.pending_buffer.clear();
                         }
-                        self.state = FilterState::Normal;
+                        self.reset_to_normal();
                     }
                     // Continue collecting OSC content
                 }
@@ -345,8 +368,7 @@ impl EscapeSequenceFilter {
                                 output.extend_from_slice(&self.pending_buffer);
                             }
                         }
-                        self.pending_buffer.clear();
-                        self.state = FilterState::Normal;
+                        self.reset_to_normal();
                     } else {
                         // False ST start - return to appropriate state
                         // This handles cases where ESC appears in the middle of a sequence
@@ -370,8 +392,7 @@ impl EscapeSequenceFilter {
                             _ => {
                                 // Malformed - pass through
                                 output.extend_from_slice(&self.pending_buffer);
-                                self.pending_buffer.clear();
-                                self.state = FilterState::Normal;
+                                self.reset_to_normal();
                             }
                         }
                     }
@@ -389,8 +410,7 @@ impl EscapeSequenceFilter {
                 self.pending_buffer.len()
             );
             output.extend_from_slice(&self.pending_buffer);
-            self.pending_buffer.clear();
-            self.state = FilterState::Normal;
+            self.reset_to_normal();
         }
 
         output
@@ -449,8 +469,28 @@ impl EscapeSequenceFilter {
     /// Call this when starting a new session or after an error.
     #[allow(dead_code)]
     pub fn reset(&mut self) {
-        self.pending_buffer.clear();
-        self.state = FilterState::Normal;
+        self.reset_to_normal();
+    }
+
+    /// Check if there's a pending incomplete sequence that might need flushing.
+    /// Returns true if there's an incomplete sequence that has timed out.
+    #[allow(dead_code)]
+    pub fn has_timed_out_sequence(&self) -> bool {
+        if self.state != FilterState::Normal {
+            if let Some(start) = self.sequence_start {
+                return start.elapsed() > SEQUENCE_TIMEOUT;
+            }
+        }
+        false
+    }
+
+    /// Flush any pending incomplete sequence regardless of state.
+    /// Returns the pending data if any.
+    #[allow(dead_code)]
+    pub fn flush_pending(&mut self) -> Vec<u8> {
+        let data = std::mem::take(&mut self.pending_buffer);
+        self.reset_to_normal();
+        data
     }
 }
 
@@ -663,5 +703,65 @@ mod tests {
         let input = b"\x1bP123\x1b\\";
         let output = filter.filter(input);
         assert_eq!(output, input.to_vec(), "Generic DCS should pass through");
+    }
+
+    #[test]
+    fn test_sequence_start_timestamp_set() {
+        let mut filter = EscapeSequenceFilter::new();
+        // Initially no timestamp
+        assert!(filter.sequence_start.is_none());
+
+        // Start an incomplete sequence
+        let _ = filter.filter(b"\x1b[?64");
+
+        // Timestamp should be set
+        assert!(filter.sequence_start.is_some());
+        assert_eq!(filter.state, FilterState::CsiQuestion);
+    }
+
+    #[test]
+    fn test_sequence_timestamp_cleared_on_completion() {
+        let mut filter = EscapeSequenceFilter::new();
+
+        // Complete a sequence
+        let _ = filter.filter(b"\x1b[31m");
+
+        // Timestamp should be cleared
+        assert!(filter.sequence_start.is_none());
+        assert_eq!(filter.state, FilterState::Normal);
+    }
+
+    #[test]
+    fn test_has_timed_out_sequence() {
+        let mut filter = EscapeSequenceFilter::new();
+
+        // No pending sequence - should not be timed out
+        assert!(!filter.has_timed_out_sequence());
+
+        // Start an incomplete sequence
+        let _ = filter.filter(b"\x1b[?64");
+
+        // Should not be timed out immediately
+        assert!(!filter.has_timed_out_sequence());
+
+        // State should be CsiQuestion
+        assert_eq!(filter.state, FilterState::CsiQuestion);
+    }
+
+    #[test]
+    fn test_flush_pending() {
+        let mut filter = EscapeSequenceFilter::new();
+
+        // Start an incomplete sequence
+        let _ = filter.filter(b"\x1b[?64");
+
+        // Flush should return the pending data
+        let flushed = filter.flush_pending();
+        assert_eq!(flushed, b"\x1b[?64");
+
+        // State should be reset
+        assert_eq!(filter.state, FilterState::Normal);
+        assert!(filter.sequence_start.is_none());
+        assert!(filter.pending_buffer.is_empty());
     }
 }
