@@ -230,6 +230,7 @@ impl SshClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
     use tempfile::TempDir;
 
     #[tokio::test]
@@ -261,8 +262,12 @@ mod tests {
 
     #[cfg(target_os = "macos")]
     #[tokio::test]
+    #[serial]
     async fn test_determine_auth_method_with_agent() {
         use std::os::unix::net::UnixListener;
+
+        // Save original SSH_AUTH_SOCK
+        let original_ssh_auth_sock = std::env::var("SSH_AUTH_SOCK").ok();
 
         // Create a temporary directory for the socket
         let temp_dir = TempDir::new().unwrap();
@@ -285,18 +290,27 @@ mod tests {
             .await
             .unwrap();
 
+        // Restore original SSH_AUTH_SOCK
+        if let Some(sock) = original_ssh_auth_sock {
+            std::env::set_var("SSH_AUTH_SOCK", sock);
+        } else {
+            std::env::remove_var("SSH_AUTH_SOCK");
+        }
+
         match auth {
             AuthMethod::Agent => {}
             _ => panic!("Expected Agent auth method"),
         }
-
-        std::env::remove_var("SSH_AUTH_SOCK");
     }
 
     #[cfg(target_os = "linux")]
     #[tokio::test]
+    #[serial]
     async fn test_determine_auth_method_with_agent() {
         use std::os::unix::net::UnixListener;
+
+        // Save original SSH_AUTH_SOCK
+        let original_ssh_auth_sock = std::env::var("SSH_AUTH_SOCK").ok();
 
         // Create a temporary directory for the socket
         let temp_dir = TempDir::new().unwrap();
@@ -313,12 +327,17 @@ mod tests {
             .await
             .unwrap();
 
+        // Restore original SSH_AUTH_SOCK
+        if let Some(sock) = original_ssh_auth_sock {
+            std::env::set_var("SSH_AUTH_SOCK", sock);
+        } else {
+            std::env::remove_var("SSH_AUTH_SOCK");
+        }
+
         match auth {
             AuthMethod::Agent => {}
             _ => panic!("Expected Agent auth method"),
         }
-
-        std::env::remove_var("SSH_AUTH_SOCK");
     }
 
     #[test]
@@ -331,6 +350,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_determine_auth_method_fallback_to_default() {
         // Save original environment variables
         let original_home = std::env::var("HOME").ok();
