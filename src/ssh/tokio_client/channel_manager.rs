@@ -49,6 +49,13 @@ use super::ToSocketAddrsWithHostname;
 /// - Commands producing more than 3.2MB/sec may experience throttling
 const OUTPUT_EVENTS_CHANNEL_SIZE: usize = 100;
 
+/// Maximum buffer size for sudo prompt detection (64KB)
+///
+/// This prevents unbounded memory growth when detecting sudo prompts in command output.
+/// Sudo prompts are typically very short (<1KB), so 64KB is more than sufficient.
+/// If output exceeds this size without a sudo prompt, we truncate to prevent memory issues.
+const MAX_SUDO_PROMPT_BUFFER_SIZE: usize = 64 * 1024;
+
 /// Command output variants for streaming
 #[derive(Debug, Clone)]
 pub enum CommandOutput {
@@ -357,6 +364,18 @@ impl Client {
                     let text = String::from_utf8_lossy(data);
                     accumulated_output.push_str(&text);
 
+                    // Enforce buffer size limit to prevent unbounded memory growth
+                    if accumulated_output.len() > MAX_SUDO_PROMPT_BUFFER_SIZE {
+                        // Keep only the last MAX_SUDO_PROMPT_BUFFER_SIZE bytes
+                        // This ensures we can still detect sudo prompts at the end
+                        let truncate_at = accumulated_output.len() - MAX_SUDO_PROMPT_BUFFER_SIZE;
+                        accumulated_output = accumulated_output[truncate_at..].to_string();
+                        tracing::debug!(
+                            "Sudo prompt buffer exceeded limit, truncated to {} bytes",
+                            MAX_SUDO_PROMPT_BUFFER_SIZE
+                        );
+                    }
+
                     // Send output to streaming channel
                     match sender.try_send(CommandOutput::StdOut(data.clone())) {
                         Ok(_) => {}
@@ -398,6 +417,17 @@ impl Client {
                         // Stderr - also check for sudo prompts
                         let text = String::from_utf8_lossy(data);
                         accumulated_output.push_str(&text);
+
+                        // Enforce buffer size limit to prevent unbounded memory growth
+                        if accumulated_output.len() > MAX_SUDO_PROMPT_BUFFER_SIZE {
+                            // Keep only the last MAX_SUDO_PROMPT_BUFFER_SIZE bytes
+                            let truncate_at = accumulated_output.len() - MAX_SUDO_PROMPT_BUFFER_SIZE;
+                            accumulated_output = accumulated_output[truncate_at..].to_string();
+                            tracing::debug!(
+                                "Sudo prompt buffer exceeded limit (stderr), truncated to {} bytes",
+                                MAX_SUDO_PROMPT_BUFFER_SIZE
+                            );
+                        }
 
                         match sender.try_send(CommandOutput::StdErr(data.clone())) {
                             Ok(_) => {}

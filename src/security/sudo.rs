@@ -25,9 +25,9 @@
 //! - Environment variable usage is discouraged due to security risks
 
 use anyhow::Result;
+use secrecy::{ExposeSecret, SecretString};
 use std::fmt;
-use std::sync::Arc;
-use zeroize::ZeroizeOnDrop;
+use zeroize::Zeroizing;
 
 /// Common sudo password prompt patterns across different distributions
 ///
@@ -58,36 +58,39 @@ pub const SUDO_FAILURE_PATTERNS: &[&str] = &[
 
 /// A secure wrapper for sudo passwords that automatically clears memory on drop.
 ///
-/// This struct uses the `zeroize` crate to ensure the password is securely
-/// cleared from memory when the struct is dropped, preventing sensitive data
-/// from remaining in memory.
+/// This struct uses the `secrecy` crate which is specifically designed for handling
+/// secret values in memory. It ensures the password is securely cleared when dropped,
+/// and works correctly with cloning (each clone is independent and properly zeroized).
 ///
 /// # Security
 /// - Password is automatically zeroized when dropped
 /// - Debug output does not reveal the password
 /// - Clone creates a new copy that is also zeroized independently
-#[derive(Clone, ZeroizeOnDrop)]
+/// - Works correctly in multi-threaded contexts (safe to share across tasks)
+#[derive(Clone)]
 pub struct SudoPassword {
-    /// The actual password bytes
-    #[zeroize(skip)] // We handle the inner zeroization manually via Arc
-    inner: Arc<SudoPasswordInner>,
-}
-
-/// Inner container for the password with zeroize support
-#[derive(ZeroizeOnDrop)]
-struct SudoPasswordInner {
-    password: String,
+    /// The actual password stored securely
+    inner: SecretString,
 }
 
 impl SudoPassword {
     /// Create a new SudoPassword from a string.
     ///
-    /// The password will be automatically cleared from memory when all
-    /// references to this SudoPassword are dropped.
-    pub fn new(password: String) -> Self {
-        Self {
-            inner: Arc::new(SudoPasswordInner { password }),
+    /// The password will be automatically cleared from memory when dropped.
+    ///
+    /// # Arguments
+    /// * `password` - The password string (will be zeroized after conversion)
+    ///
+    /// # Returns
+    /// * `Ok(SudoPassword)` if the password is non-empty
+    /// * `Err` if the password is empty
+    pub fn new(password: String) -> Result<Self> {
+        if password.is_empty() {
+            anyhow::bail!("Password cannot be empty");
         }
+        Ok(Self {
+            inner: SecretString::new(password.into_boxed_str()),
+        })
     }
 
     /// Get the password as bytes for sending over SSH.
@@ -95,21 +98,27 @@ impl SudoPassword {
     /// # Security Note
     /// The returned bytes should be used immediately and not stored.
     pub fn as_bytes(&self) -> &[u8] {
-        self.inner.password.as_bytes()
+        self.inner.expose_secret().as_bytes()
     }
 
     /// Get the password with a newline appended for sudo input.
     ///
     /// Sudo requires a newline after the password to submit it.
-    pub fn with_newline(&self) -> Vec<u8> {
-        let mut bytes = self.inner.password.as_bytes().to_vec();
+    ///
+    /// # Security Note
+    /// Returns a `Zeroizing<Vec<u8>>` to ensure the copy is also cleared from memory.
+    pub fn with_newline(&self) -> Zeroizing<Vec<u8>> {
+        let mut bytes = self.inner.expose_secret().as_bytes().to_vec();
         bytes.push(b'\n');
-        bytes
+        Zeroizing::new(bytes)
     }
 
     /// Check if the password is empty.
+    ///
+    /// Note: This should always return false since empty passwords are rejected
+    /// during construction, but kept for API compatibility.
     pub fn is_empty(&self) -> bool {
-        self.inner.password.is_empty()
+        self.inner.expose_secret().is_empty()
     }
 }
 
@@ -159,17 +168,23 @@ pub fn contains_sudo_failure(output: &str) -> bool {
 ///
 /// # Returns
 /// A `SudoPassword` containing the entered password, or an error if
-/// reading fails.
+/// reading fails or the password is empty.
 ///
 /// # Security Note
 /// - The password is never printed to stdout/stderr
 /// - The password is stored in a zeroizing container
+/// - Empty passwords are rejected with a clear error message
 pub fn prompt_sudo_password() -> Result<SudoPassword> {
     eprintln!("Enter sudo password: ");
     let password = rpassword::read_password().map_err(|e| {
         anyhow::anyhow!("Failed to read sudo password: {}", e)
     })?;
-    Ok(SudoPassword::new(password))
+
+    if password.is_empty() {
+        anyhow::bail!("Empty password not allowed. Please enter a valid sudo password.");
+    }
+
+    SudoPassword::new(password)
 }
 
 /// Get sudo password from environment variable (if set).
@@ -181,12 +196,20 @@ pub fn prompt_sudo_password() -> Result<SudoPassword> {
 /// is acceptable.
 ///
 /// # Returns
-/// `Some(SudoPassword)` if `BSSH_SUDO_PASSWORD` is set, `None` otherwise.
-pub fn get_sudo_password_from_env() -> Option<SudoPassword> {
-    std::env::var("BSSH_SUDO_PASSWORD")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .map(SudoPassword::new)
+/// * `Some(SudoPassword)` if `BSSH_SUDO_PASSWORD` is set and non-empty
+/// * `None` if the environment variable is not set or empty
+/// * `Err` if the password fails validation
+pub fn get_sudo_password_from_env() -> Result<Option<SudoPassword>> {
+    match std::env::var("BSSH_SUDO_PASSWORD") {
+        Ok(password) if !password.is_empty() => {
+            Ok(Some(SudoPassword::new(password)?))
+        }
+        Ok(_) => {
+            // Empty password from environment
+            anyhow::bail!("BSSH_SUDO_PASSWORD is set but empty. Empty passwords are not allowed.");
+        }
+        Err(_) => Ok(None),
+    }
 }
 
 /// Get sudo password from either environment or interactive prompt.
@@ -200,16 +223,17 @@ pub fn get_sudo_password_from_env() -> Option<SudoPassword> {
 /// # Returns
 /// A `SudoPassword` containing the password.
 pub fn get_sudo_password(warn_env: bool) -> Result<SudoPassword> {
-    if let Some(password) = get_sudo_password_from_env() {
-        if warn_env {
-            eprintln!(
-                "Warning: Using sudo password from BSSH_SUDO_PASSWORD environment variable. \
-                 This is not recommended for security reasons."
-            );
+    match get_sudo_password_from_env()? {
+        Some(password) => {
+            if warn_env {
+                eprintln!(
+                    "Warning: Using sudo password from BSSH_SUDO_PASSWORD environment variable. \
+                     This is not recommended for security reasons."
+                );
+            }
+            Ok(password)
         }
-        Ok(password)
-    } else {
-        prompt_sudo_password()
+        None => prompt_sudo_password(),
     }
 }
 
@@ -219,30 +243,43 @@ mod tests {
 
     #[test]
     fn test_sudo_password_creation() {
-        let password = SudoPassword::new("test123".to_string());
+        let password = SudoPassword::new("test123".to_string()).unwrap();
         assert_eq!(password.as_bytes(), b"test123");
         assert!(!password.is_empty());
     }
 
     #[test]
+    fn test_sudo_password_empty_rejection() {
+        let result = SudoPassword::new(String::new());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("cannot be empty"));
+    }
+
+    #[test]
     fn test_sudo_password_with_newline() {
-        let password = SudoPassword::new("test123".to_string());
+        let password = SudoPassword::new("test123".to_string()).unwrap();
         let with_newline = password.with_newline();
-        assert_eq!(with_newline, b"test123\n");
+        assert_eq!(&*with_newline, b"test123\n");
+    }
+
+    #[test]
+    fn test_sudo_password_with_newline_is_zeroizing() {
+        let password = SudoPassword::new("test123".to_string()).unwrap();
+        let with_newline = password.with_newline();
+        // The type should be Zeroizing<Vec<u8>>
+        // When dropped, it will automatically clear memory
+        assert_eq!(&*with_newline, b"test123\n");
+        drop(with_newline);
+        // After drop, memory should be cleared (we can't verify this in safe Rust,
+        // but the type system ensures it)
     }
 
     #[test]
     fn test_sudo_password_debug_redaction() {
-        let password = SudoPassword::new("secret".to_string());
+        let password = SudoPassword::new("secret".to_string()).unwrap();
         let debug_output = format!("{:?}", password);
         assert!(!debug_output.contains("secret"));
         assert!(debug_output.contains("[REDACTED]"));
-    }
-
-    #[test]
-    fn test_empty_password() {
-        let password = SudoPassword::new(String::new());
-        assert!(password.is_empty());
     }
 
     #[test]
@@ -276,11 +313,47 @@ mod tests {
 
     #[test]
     fn test_clone_independence() {
-        let password1 = SudoPassword::new("original".to_string());
+        let password1 = SudoPassword::new("original".to_string()).unwrap();
         let password2 = password1.clone();
 
         // Both should work independently
         assert_eq!(password1.as_bytes(), b"original");
         assert_eq!(password2.as_bytes(), b"original");
+
+        // When dropped, each will be zeroized independently
+        // (secrecy::SecretString handles this correctly)
+    }
+
+    #[test]
+    fn test_get_sudo_password_from_env_empty() {
+        // Set environment variable to empty string
+        std::env::set_var("BSSH_SUDO_PASSWORD", "");
+        let result = get_sudo_password_from_env();
+        std::env::remove_var("BSSH_SUDO_PASSWORD");
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("empty"));
+    }
+
+    #[test]
+    fn test_get_sudo_password_from_env_valid() {
+        // Set environment variable to valid password
+        std::env::set_var("BSSH_SUDO_PASSWORD", "test_password");
+        let result = get_sudo_password_from_env();
+        std::env::remove_var("BSSH_SUDO_PASSWORD");
+
+        assert!(result.is_ok());
+        let password = result.unwrap();
+        assert!(password.is_some());
+        assert_eq!(password.unwrap().as_bytes(), b"test_password");
+    }
+
+    #[test]
+    fn test_get_sudo_password_from_env_not_set() {
+        std::env::remove_var("BSSH_SUDO_PASSWORD");
+        let result = get_sudo_password_from_env();
+
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
     }
 }
