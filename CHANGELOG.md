@@ -5,6 +5,49 @@ All notable changes to bssh will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2025-12-10
+
+### Added
+- **Interactive TUI (Terminal User Interface)** (Phase 3 of #68)
+  - Summary view: All nodes at a glance with progress bars
+  - Detail view (1-9): Full output from specific node with scrolling
+  - Split view (s): Monitor 2-4 nodes simultaneously
+  - Diff view (d): Compare output from two nodes side-by-side
+  - Auto-scroll (f): Toggle automatic scrolling
+  - Navigation: Arrow keys, PgUp/PgDn, Home/End
+  - Help (?): Show keyboard shortcuts
+  - Press `q` to quit
+- **Multi-node Stream Management** (Phase 2 of #68)
+  - Real-time output modes for multi-node operations
+  - Stream mode with [node] prefixes for real-time monitoring
+  - Enhanced streaming infrastructure for real-time updates
+
+### Fixed
+- **PTY Escape Sequence Filtering** (PR #77)
+  - Filter terminal escape sequence responses in PTY sessions
+  - Fixed issue with terminal response codes appearing in output
+
+### Technical Details
+- Implemented ratatui-based TUI rendering
+- Added multi-node output aggregation and display
+- Performance optimizations for real-time output streaming
+
+## [1.2.2] - 2025-10-29
+
+### Fixed
+- **Backend.AI Auto-detection** (PR #66)
+  - Improved host heuristics for Backend.AI environments
+  - Added localhost and localhost.localdomain detection
+  - Added IPv4 address validation (127.0.0.1, 192.168.x.x, etc.)
+  - Enhanced detection for user@host, host:port, FQDN, IPv6 patterns
+  - Users can now use `bssh localhost "command"` naturally in Backend.AI
+
+### Technical Details
+- Extracted testable `looks_like_host_specification()` function
+- Added `is_ipv4_address()` helper with strict validation
+- Performance optimized with early returns
+- 16 comprehensive tests added for host detection logic
+
 ## [1.2.1] - 2025-10-28
 
 ### Fixed
@@ -400,6 +443,8 @@ None
 - russh library for native SSH implementation
 - Cross-platform support (Linux and macOS)
 
+[1.3.0]: https://github.com/lablup/bssh/compare/v1.2.2...v1.3.0
+[1.2.2]: https://github.com/lablup/bssh/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/lablup/bssh/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/lablup/bssh/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/lablup/bssh/compare/v1.0.0...v1.1.0
