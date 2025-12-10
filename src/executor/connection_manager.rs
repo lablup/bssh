@@ -79,6 +79,9 @@ pub(crate) async fn execute_on_node_with_jump_hosts(
             match output {
                 CommandOutput::StdOut(data) => stdout.extend_from_slice(&data),
                 CommandOutput::StdErr(data) => stderr.extend_from_slice(&data),
+                CommandOutput::ExitCode(_) => {
+                    // Exit code is already captured from the function return value
+                }
             }
         }
 

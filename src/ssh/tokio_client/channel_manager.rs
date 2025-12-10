@@ -69,6 +69,8 @@ pub enum CommandOutput {
     StdOut(CryptoVec),
     /// Standard error data
     StdErr(CryptoVec),
+    /// Exit code (sent when command completes)
+    ExitCode(u32),
 }
 
 /// Buffer for collecting streaming command output
@@ -115,6 +117,9 @@ impl CommandOutputBuffer {
                             stderr.reserve(new_capacity - stderr.capacity());
                         }
                         stderr.extend_from_slice(&buffer);
+                    }
+                    CommandOutput::ExitCode(_) => {
+                        // Exit code is handled by the stream manager, not collected here
                     }
                 }
             }
@@ -433,6 +438,8 @@ impl Client {
                         let _ = sender
                             .send(CommandOutput::StdErr(CryptoVec::from(error_msg.as_bytes())))
                             .await;
+                        // Send exit code 1 to indicate failure to the stream
+                        let _ = sender.send(CommandOutput::ExitCode(1)).await;
                         // Close the channel and return failure exit code
                         let _ = channel.eof().await;
                         let _ = channel.close().await;
@@ -507,6 +514,8 @@ impl Client {
                             let _ = sender
                                 .send(CommandOutput::StdErr(CryptoVec::from(error_msg.as_bytes())))
                                 .await;
+                            // Send exit code 1 to indicate failure to the stream
+                            let _ = sender.send(CommandOutput::ExitCode(1)).await;
                             // Close the channel and return failure exit code
                             let _ = channel.eof().await;
                             let _ = channel.close().await;
