@@ -360,7 +360,6 @@ impl Client {
 
         let mut result: Option<u32> = None;
         let mut password_send_count: u32 = 0;
-        let mut sudo_auth_failed = false;
         let mut accumulated_output = String::new();
 
         // While the channel has messages...
@@ -400,8 +399,7 @@ impl Client {
                     }
 
                     // Check if we need to send the password (supports multiple sudo prompts)
-                    if !sudo_auth_failed
-                        && password_send_count < MAX_SUDO_PASSWORD_SENDS
+                    if password_send_count < MAX_SUDO_PASSWORD_SENDS
                         && contains_sudo_prompt(&accumulated_output)
                     {
                         password_send_count += 1;
@@ -423,11 +421,24 @@ impl Client {
                     // Check for sudo failure after password was sent
                     if password_send_count > 0 && contains_sudo_failure(&accumulated_output) {
                         tracing::debug!(
-                            "Sudo authentication failed after {} attempt(s)",
+                            "Sudo authentication failed after {} attempt(s), closing channel",
                             password_send_count
                         );
-                        // Stop trying to send more passwords
-                        sudo_auth_failed = true;
+                        // Send error message to stderr so user can see why it failed
+                        let error_msg = format!(
+                            "\n[bssh] Sudo authentication failed after {} attempt(s). \
+                             Please verify your sudo password is correct.\n",
+                            password_send_count
+                        );
+                        let _ = sender
+                            .send(CommandOutput::StdErr(CryptoVec::from(error_msg.as_bytes())))
+                            .await;
+                        // Close the channel and return failure exit code
+                        let _ = channel.eof().await;
+                        let _ = channel.close().await;
+                        drop(sender);
+                        // Return exit code 1 to indicate sudo authentication failure
+                        return Ok(1);
                     }
                 }
                 russh::ChannelMsg::ExtendedData { ref data, ext } => {
@@ -464,8 +475,7 @@ impl Client {
                         }
 
                         // Check if we need to send the password (sudo can prompt on stderr)
-                        if !sudo_auth_failed
-                            && password_send_count < MAX_SUDO_PASSWORD_SENDS
+                        if password_send_count < MAX_SUDO_PASSWORD_SENDS
                             && contains_sudo_prompt(&accumulated_output)
                         {
                             password_send_count += 1;
@@ -485,10 +495,23 @@ impl Client {
                         // Check for sudo failure
                         if password_send_count > 0 && contains_sudo_failure(&accumulated_output) {
                             tracing::debug!(
-                                "Sudo authentication failed on stderr after {} attempt(s)",
+                                "Sudo authentication failed on stderr after {} attempt(s), closing channel",
                                 password_send_count
                             );
-                            sudo_auth_failed = true;
+                            // Send error message to stderr so user can see why it failed
+                            let error_msg = format!(
+                                "\n[bssh] Sudo authentication failed after {} attempt(s). \
+                                 Please verify your sudo password is correct.\n",
+                                password_send_count
+                            );
+                            let _ = sender
+                                .send(CommandOutput::StdErr(CryptoVec::from(error_msg.as_bytes())))
+                                .await;
+                            // Close the channel and return failure exit code
+                            let _ = channel.eof().await;
+                            let _ = channel.close().await;
+                            drop(sender);
+                            return Ok(1);
                         }
                     }
                 }

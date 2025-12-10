@@ -751,13 +751,21 @@ impl ParallelExecutor {
 
         // Run TUI event loop - this will block until user quits or all complete
         // The TUI itself will handle polling the manager
-        if let Err(e) = tui::run_tui(manager, cluster_name, command).await {
-            tracing::error!("TUI error: {}", e);
-        }
+        let user_quit = match tui::run_tui(manager, cluster_name, command).await {
+            Ok(tui::TuiExitReason::UserQuit) => true,
+            Ok(tui::TuiExitReason::AllTasksCompleted) => false,
+            Err(e) => {
+                tracing::error!("TUI error: {}", e);
+                false
+            }
+        };
 
         // Clean up any remaining handles
+        // If user explicitly quit, abort the handles instead of waiting
         for handle in pending_handles.drain(..) {
-            if let Err(e) = handle.await {
+            if user_quit {
+                handle.abort();
+            } else if let Err(e) = handle.await {
                 tracing::error!("Task error: {}", e);
             }
         }
