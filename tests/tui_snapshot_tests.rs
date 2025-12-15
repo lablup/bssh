@@ -17,7 +17,7 @@
 //! This module tests TUI rendering using ratatui's TestBackend for deterministic output.
 //! Tests cover all view modes: Summary, Detail, Split, and Diff views.
 
-use bssh::executor::{ExecutionStatus, MultiNodeStreamManager, NodeStream};
+use bssh::executor::{MultiNodeStreamManager, NodeStream};
 use bssh::node::Node;
 use bssh::ssh::tokio_client::CommandOutput;
 use bssh::ui::tui::app::{TuiApp, ViewMode};
@@ -46,38 +46,6 @@ fn buffer_to_string(buffer: &Buffer) -> String {
     }
 
     lines.join("\n")
-}
-
-/// Create a test stream manager with mock node data
-#[allow(dead_code)]
-fn create_test_manager_with_data(
-    nodes: Vec<(Node, ExecutionStatus, &str, &str, Option<u32>)>,
-) -> MultiNodeStreamManager {
-    let mut manager = MultiNodeStreamManager::new();
-
-    for (node, status, _stdout_data, _stderr_data, exit_code) in nodes {
-        let (tx, rx) = mpsc::channel(100);
-        manager.add_stream(node, rx);
-
-        // Get the stream and set its data
-        let idx = manager.total_count() - 1;
-        let streams = manager.streams_mut();
-        let stream = &mut streams[idx];
-
-        // Set status
-        stream.set_status(status);
-
-        // Set exit code if provided
-        if let Some(code) = exit_code {
-            stream.set_exit_code(code);
-        }
-
-        // We need to send data through the channel to populate buffers
-        // But since we're directly manipulating state, we'll drop tx to close the channel
-        drop(tx);
-    }
-
-    manager
 }
 
 /// Create a simple test manager for basic tests

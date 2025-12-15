@@ -151,15 +151,11 @@ fn test_summary_s_for_split_view() {
     let mut app = TuiApp::new();
 
     handle_key_event(&mut app, key(KeyCode::Char('s')), 5);
-    match app.view_mode {
-        ViewMode::Split(indices) => {
-            assert!(
-                indices.len() >= 2 && indices.len() <= 4,
-                "Split view should have 2-4 nodes"
-            );
-        }
-        _ => panic!("Should switch to split view"),
-    }
+    assert!(
+        matches!(&app.view_mode, ViewMode::Split(indices) if indices.len() >= 2 && indices.len() <= 4),
+        "Should switch to split view with 2-4 nodes, got {:?}",
+        app.view_mode
+    );
 }
 
 #[test]

@@ -146,12 +146,11 @@ async fn test_node_stream_exit_code_failure() {
     stream.poll();
     assert_eq!(stream.exit_code(), Some(1));
     assert!(stream.is_complete());
-    match stream.status() {
-        ExecutionStatus::Failed(msg) => {
-            assert!(msg.contains("Exit code: 1"));
-        }
-        _ => panic!("Expected Failed status for non-zero exit code"),
-    }
+    assert!(
+        matches!(stream.status(), ExecutionStatus::Failed(msg) if msg.contains("Exit code: 1")),
+        "Expected Failed status with exit code 1, got {:?}",
+        stream.status()
+    );
 }
 
 #[tokio::test]
@@ -432,12 +431,11 @@ async fn test_stream_set_status_manually() {
     // Manually set failed status (as would happen on connection error)
     stream.set_status(ExecutionStatus::Failed("Connection refused".to_string()));
 
-    match stream.status() {
-        ExecutionStatus::Failed(msg) => {
-            assert!(msg.contains("Connection refused"));
-        }
-        _ => panic!("Expected Failed status"),
-    }
+    assert!(
+        matches!(stream.status(), ExecutionStatus::Failed(msg) if msg.contains("Connection refused")),
+        "Expected Failed status with connection refused, got {:?}",
+        stream.status()
+    );
 }
 
 #[tokio::test]
@@ -576,9 +574,9 @@ async fn test_stream_with_unicode_output() {
     let (tx, rx) = mpsc::channel::<CommandOutput>(100);
     let mut stream = NodeStream::new(node, rx);
 
-    // Send unicode data
+    // Send unicode data with actual Korean, Chinese, and Emoji characters
     let data = CryptoVec::from(
-        "Hello, World! Korean:  Chinese:  Emoji: "
+        "Hello, World! Korean: 안녕 Chinese: 你好 Emoji: 🚀🎉"
             .as_bytes()
             .to_vec(),
     );
@@ -586,7 +584,13 @@ async fn test_stream_with_unicode_output() {
 
     stream.poll();
     let output = String::from_utf8_lossy(stream.stdout());
-    assert!(output.contains("Hello, World!"));
+    assert!(
+        output.contains("Hello, World!"),
+        "Should contain ASCII text"
+    );
+    assert!(output.contains("안녕"), "Should contain Korean text");
+    assert!(output.contains("你好"), "Should contain Chinese text");
+    assert!(output.contains("🚀"), "Should contain emoji");
 }
 
 #[tokio::test]
