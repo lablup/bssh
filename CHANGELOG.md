@@ -5,6 +5,41 @@ All notable changes to bssh will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] - 2025-12-16
+
+### Added
+- **Comprehensive Test Suite** (Issue #82, PR #86)
+  - tests/tui_snapshot_tests.rs: 20 tests for TUI rendering using ratatui's TestBackend
+  - tests/tui_event_tests.rs: 36 tests for keyboard navigation, scroll behavior, and view transitions
+  - tests/streaming_integration_tests.rs: 28 tests for NodeStream, MultiNodeStreamManager, and streaming execution
+  - benches/large_output_benchmark.rs: Performance benchmarks for large output handling
+  - Total: 84 new tests added
+
+### Fixed
+- **SSH Agent Password Fallback** (Issue #84, PR #85)
+  - Extended password fallback to handle all SSH agent authentication failures
+  - Now correctly triggers for: AgentAuthenticationFailed, AgentNoIdentities, AgentConnectionFailed, AgentRequestIdentitiesFailed
+  - Added `is_auth_error_for_password_fallback()` helper function for testability
+  - Added unit tests and integration tests for all error types
+
+### Documentation
+- **TUI Module Documentation** (Issue #81, PR #83)
+  - Added comprehensive TUI architecture section to ARCHITECTURE.md
+  - Enhanced README.md with keyboard shortcuts reference table
+  - Added view modes description table
+  - Added TUI activation conditions and requirements
+  - Added missing "1-9: Jump to node N" shortcut in detail view help text
+
+### Dependencies
+- Added insta 1.34 (snapshot testing)
+- Added criterion 0.5 (benchmarking)
+- Added mockall 0.12 (mocking for integration tests)
+
+### Technical Details
+- Refactored test code quality: removed unused functions, replaced panic! with matches! macro
+- Added Unicode test cases (Korean, Chinese, Emoji)
+- Improved assertion messages for better debugging
+
 ## [1.4.0] - 2025-12-15
 
 ### Added
@@ -464,6 +499,7 @@ None
 - russh library for native SSH implementation
 - Cross-platform support (Linux and macOS)
 
+[1.4.1]: https://github.com/lablup/bssh/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/lablup/bssh/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/lablup/bssh/compare/v1.2.2...v1.3.0
 [1.2.2]: https://github.com/lablup/bssh/compare/v1.2.1...v1.2.2
