@@ -229,7 +229,7 @@ impl AuthContext {
         if !self.use_agent {
             // Auto-detect SSH agent even without --use-agent flag
             if let Some(auth) = self.agent_auth()? {
-                tracing::info!(
+                tracing::debug!(
                     "Using SSH agent (auto-detected) - agent will try all registered keys"
                 );
                 return Ok(auth);

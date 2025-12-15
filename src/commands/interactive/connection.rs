@@ -75,7 +75,7 @@ impl InteractiveCommand {
             Err(SshError::KeyAuthFailed)
                 if allow_password_fallback && atty::is(atty::Stream::Stdin) =>
             {
-                tracing::info!(
+                tracing::debug!(
                     "SSH key authentication failed for {username}@{host}:{port}, attempting password fallback"
                 );
 
@@ -98,7 +98,7 @@ impl InteractiveCommand {
                         "Connection timeout: Failed to connect to {host}:{port} after {SSH_CONNECT_TIMEOUT_SECS} seconds"
                     )
                 })?
-                .with_context(|| format!("Password authentication failed for {host}:{port}"))
+                .with_context(|| format!("SSH connection failed to {host}:{port}"))
             }
             other => other.with_context(|| format!("SSH connection failed to {host}:{port}")),
         };
