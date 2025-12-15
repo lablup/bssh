@@ -218,15 +218,20 @@ impl AuthContext {
             }
         }
 
-        // Priority 3: Key file authentication
+        // Priority 3: Key file authentication (explicit -i flag)
         if let Some(ref key_path) = self.key_path {
             return self.key_file_auth(key_path).await;
         }
 
-        // Priority 4: SSH agent auto-detection (if use_agent is true)
+        // Priority 4: SSH agent auto-detection (like OpenSSH behavior)
+        // OpenSSH tries SSH agent first when available, as it can try all registered keys
         #[cfg(not(target_os = "windows"))]
-        if self.use_agent {
+        if !self.use_agent {
+            // Auto-detect SSH agent even without --use-agent flag
             if let Some(auth) = self.agent_auth()? {
+                tracing::info!(
+                    "Using SSH agent (auto-detected) - agent will try all registered keys"
+                );
                 return Ok(auth);
             }
         }
