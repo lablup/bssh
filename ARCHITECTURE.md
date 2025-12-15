@@ -1847,16 +1847,16 @@ The TUI module provides a real-time interactive terminal interface for monitorin
 ```
 src/ui/tui/
 ├── mod.rs              # Public API: run_tui(), TuiExitReason
-├── app.rs              # TuiApp state machine, ViewMode enum (~280 lines)
-├── event.rs            # Keyboard input handling (~260 lines)
-├── progress.rs         # Output parsing for progress indicators (~280 lines)
-├── terminal_guard.rs   # RAII cleanup on exit/panic (~180 lines)
+├── app.rs              # TuiApp state machine, ViewMode enum
+├── event.rs            # Keyboard input handling
+├── progress.rs         # Output parsing for progress indicators
+├── terminal_guard.rs   # RAII cleanup on exit/panic
 └── views/              # View implementations
     ├── mod.rs          # View module exports
-    ├── summary.rs      # Multi-node overview (~440 lines)
-    ├── detail.rs       # Single node full output (~360 lines)
-    ├── split.rs        # Multi-pane view (2-4 nodes) (~310 lines)
-    └── diff.rs         # Side-by-side comparison (~280 lines)
+    ├── summary.rs      # Multi-node overview
+    ├── detail.rs       # Single node full output
+    ├── split.rs        # Multi-pane view (2-4 nodes)
+    └── diff.rs         # Side-by-side comparison
 ```
 
 ### Core Components

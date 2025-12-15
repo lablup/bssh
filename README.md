@@ -260,7 +260,9 @@ bssh -C production "apt-get update"
 | **Split View** |||
 | `1-4` | Split | Focus on specific node (switch to detail view) |
 | **Diff View** |||
-| `↑/↓` | Diff | Scroll (synchronized scrolling - TODO) |
+| `↑/↓` | Diff | Scroll* |
+
+*\*Note: Diff view scroll is planned but not yet implemented.*
 
 **TUI Activation:**
 - **Automatic**: Multi-node execution in interactive terminal
