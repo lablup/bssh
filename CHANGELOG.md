@@ -5,7 +5,7 @@ All notable changes to bssh will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.4.0] - 2025-12-15
 
 ### Added
 - **Sudo Password Support** (Issue #74, PR #78)
@@ -16,6 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `BSSH_SUDO_PASSWORD` environment variable support (with security warnings)
   - Uses `secrecy` crate for secure memory handling
   - Password cleared from memory immediately after use
+- **Developer Tooling**
+  - Added githooks for development workflow
+  - Setup script for githooks configuration
+
+### Fixed
+- **Password Fallback** (PR #80)
+  - Improved SSH debugging for better compatibility
+  - Enhanced password authentication fallback logic
+- Fixed clippy warnings for useless_vec and same_item_push
 
 ## [1.3.0] - 2025-12-10
 
@@ -455,6 +464,7 @@ None
 - russh library for native SSH implementation
 - Cross-platform support (Linux and macOS)
 
+[1.4.0]: https://github.com/lablup/bssh/compare/v1.3.0...v1.4.0
 [1.3.0]: https://github.com/lablup/bssh/compare/v1.2.2...v1.3.0
 [1.2.2]: https://github.com/lablup/bssh/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/lablup/bssh/compare/v1.2.0...v1.2.1

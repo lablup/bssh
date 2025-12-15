@@ -1,6 +1,6 @@
 [package]
 name = "bssh"
-version = "1.3.0"
+version = "1.4.0"
 authors = ["Jeongkyu Shin <inureyes@gmail.com>"]
 description = "Parallel SSH command execution tool for cluster management"
 license = "Apache-2.0"

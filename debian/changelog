@@ -1,3 +1,43 @@
+bssh (1.4.0-1~jammy1) jammy; urgency=medium
+
+  * v1.4.0
+  ### New Features
+  - **Sudo Password Support**: Added `-S/--sudo-password` flag for automated sudo authentication
+    - Securely prompts for sudo password before command execution
+    - Automatically detects and responds to sudo password prompts
+    - Works with both streaming and non-streaming execution modes
+    - `BSSH_SUDO_PASSWORD` environment variable support (with security warnings)
+    - Uses `secrecy` crate for secure memory handling
+    - Password cleared from memory immediately after use
+
+  ### Improvements
+  - **Password Fallback**: Improved SSH debugging for compatibility
+    - Enhanced password authentication fallback logic
+    - Better error messages for SSH connection issues
+  - **Developer Tooling**: Added githooks setup script for development workflow
+
+  ### Bug Fixes
+  - Fixed clippy warnings for useless_vec and same_item_push
+  - Improved SSH compatibility with password fallback mechanism
+
+  ### CI/CD Improvements
+  - Added setup script for githooks
+
+  ### Technical Details
+  - Secure memory handling with secrecy and zeroize crates
+  - Automatic sudo prompt detection and response
+
+  ### Dependencies
+  None
+
+  ### Breaking Changes
+  None
+
+  ### Known Issues
+  None
+
+ -- Jeongkyu Shin <inureyes@gmail.com>  Sun, 15 Dec 2025 00:00:00 +0900
+
 bssh (1.3.0-1~jammy1) jammy; urgency=medium
 
   * v1.3.0

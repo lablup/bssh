@@ -1147,6 +1147,7 @@ See the [LICENSE](./LICENSE) file for details.
 ## Changelog
 
 ### Recent Updates
+- **v1.4.0 (2025/12/15):** Add --sudo-password flag for automated sudo authentication, password fallback with improved SSH debugging, developer tooling (githooks)
 - **v1.3.0 (2025/12/10):** Add interactive TUI with 4 view modes (Summary/Detail/Split/Diff), multi-node stream management, and fix terminal escape sequence filtering in PTY sessions
 - **v1.2.2 (2025/10/29):** Improve Backend.AI auto-detection with comprehensive host heuristics (localhost, IPv4, user@host, FQDN, IPv6)
 - **v1.2.1 (2025/10/28):** Fix password authentication fallback in interactive mode and test race condition with RankDetector
