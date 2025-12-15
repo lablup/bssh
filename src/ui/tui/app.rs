@@ -258,6 +258,7 @@ impl TuiApp {
                     ("f", "Toggle auto-scroll"),
                     ("PgUp/PgDn", "Scroll page"),
                     ("Home/End", "Scroll to top/bottom"),
+                    ("1-9", "Jump to node N"),
                 ]);
             }
             ViewMode::Split(_) => {
