@@ -24,10 +24,11 @@ use bssh::executor::{MultiNodeStreamManager, NodeStream};
 use bssh::node::Node;
 use bssh::ssh::tokio_client::CommandOutput;
 use bssh::ui::tui::app::TuiApp;
-use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
 use russh::CryptoVec;
+use std::hint::black_box;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
 
