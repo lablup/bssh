@@ -464,3 +464,114 @@ impl InteractiveCommand {
         Ok(channel)
     }
 }
+
+/// Check if an SSH error indicates an authentication failure that should trigger password fallback.
+///
+/// This function returns true for errors that occur when:
+/// - SSH key authentication fails (server rejects the key)
+/// - SSH agent authentication fails (agent has keys but server rejects them)
+/// - SSH agent has no identities loaded
+/// - SSH agent connection fails
+/// - SSH agent identity request fails
+///
+/// These are all cases where falling back to password authentication makes sense,
+/// matching OpenSSH's behavior.
+pub fn is_auth_error_for_password_fallback(error: &SshError) -> bool {
+    matches!(
+        error,
+        SshError::KeyAuthFailed
+            | SshError::AgentAuthenticationFailed
+            | SshError::AgentNoIdentities
+            | SshError::AgentConnectionFailed
+            | SshError::AgentRequestIdentitiesFailed
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_key_auth_failed_triggers_password_fallback() {
+        let error = SshError::KeyAuthFailed;
+        assert!(
+            is_auth_error_for_password_fallback(&error),
+            "KeyAuthFailed should trigger password fallback"
+        );
+    }
+
+    #[test]
+    fn test_agent_auth_failed_triggers_password_fallback() {
+        let error = SshError::AgentAuthenticationFailed;
+        assert!(
+            is_auth_error_for_password_fallback(&error),
+            "AgentAuthenticationFailed should trigger password fallback"
+        );
+    }
+
+    #[test]
+    fn test_agent_no_identities_triggers_password_fallback() {
+        let error = SshError::AgentNoIdentities;
+        assert!(
+            is_auth_error_for_password_fallback(&error),
+            "AgentNoIdentities should trigger password fallback"
+        );
+    }
+
+    #[test]
+    fn test_agent_connection_failed_triggers_password_fallback() {
+        let error = SshError::AgentConnectionFailed;
+        assert!(
+            is_auth_error_for_password_fallback(&error),
+            "AgentConnectionFailed should trigger password fallback"
+        );
+    }
+
+    #[test]
+    fn test_agent_request_identities_failed_triggers_password_fallback() {
+        let error = SshError::AgentRequestIdentitiesFailed;
+        assert!(
+            is_auth_error_for_password_fallback(&error),
+            "AgentRequestIdentitiesFailed should trigger password fallback"
+        );
+    }
+
+    #[test]
+    fn test_password_wrong_does_not_trigger_fallback() {
+        let error = SshError::PasswordWrong;
+        assert!(
+            !is_auth_error_for_password_fallback(&error),
+            "PasswordWrong should NOT trigger password fallback (already tried password)"
+        );
+    }
+
+    #[test]
+    fn test_server_check_failed_does_not_trigger_fallback() {
+        let error = SshError::ServerCheckFailed;
+        assert!(
+            !is_auth_error_for_password_fallback(&error),
+            "ServerCheckFailed should NOT trigger password fallback (host key issue)"
+        );
+    }
+
+    #[test]
+    fn test_io_error_does_not_trigger_fallback() {
+        let error = SshError::IoError(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "connection refused",
+        ));
+        assert!(
+            !is_auth_error_for_password_fallback(&error),
+            "IoError should NOT trigger password fallback (network issue)"
+        );
+    }
+
+    #[test]
+    fn test_keyboard_interactive_auth_failed_does_not_trigger_fallback() {
+        let error = SshError::KeyboardInteractiveAuthFailed;
+        assert!(
+            !is_auth_error_for_password_fallback(&error),
+            "KeyboardInteractiveAuthFailed should NOT trigger password fallback"
+        );
+    }
+}
