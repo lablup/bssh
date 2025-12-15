@@ -210,29 +210,66 @@ bssh automatically selects the best output mode based on your environment:
 Interactive Terminal UI with real-time monitoring - automatically enabled when running in an interactive terminal.
 
 ```bash
-# TUI mode automatically activates
+# TUI mode automatically activates for multi-node commands
 bssh -C production "apt-get update"
 
 # Features:
 # - Summary view: All nodes at a glance with progress bars
-# - Detail view (1-9): Full output from specific node with scrolling
-# - Split view (s): Monitor 2-4 nodes simultaneously
-# - Diff view (d): Compare output from two nodes side-by-side
-# - Auto-scroll (f): Toggle automatic scrolling
-# - Navigation: Arrow keys, PgUp/PgDn, Home/End
-# - Help: Press ? for keyboard shortcuts
+# - Detail view: Full output from specific node with scrolling
+# - Split view: Monitor 2-4 nodes simultaneously in panes
+# - Diff view: Compare output from two nodes side-by-side
+# - Auto-scroll: Automatic following of new output
+# - Progress detection: Percentage, fraction, apt/dpkg indicators
+# - Real-time updates: Output streams in real-time (50ms polling)
+# - Memory protection: 10MB buffer per node with graceful overflow
 ```
 
-**TUI Controls:**
-- `1-9`: Jump to node detail view
-- `s`: Enter split view mode
-- `d`: Enter diff view mode
-- `f`: Toggle auto-scroll
-- `↑/↓`: Scroll output
-- `←/→`: Switch between nodes
-- `Esc`: Return to summary view
-- `?`: Show help
-- `q`: Quit
+**TUI View Modes:**
+
+| View Mode | Description | Access Key |
+|-----------|-------------|------------|
+| **Summary** | All nodes overview with status, progress bars, and recent output | Default view |
+| **Detail** | Full output from a single node with scrollback | `1-9` (node number) |
+| **Split** | Side-by-side display of 2-4 nodes (last 20 lines each) | `s` |
+| **Diff** | Compare two nodes line-by-line | `d` |
+
+**Keyboard Shortcuts:**
+
+| Key | Context | Action |
+|-----|---------|--------|
+| **Global Keys** (work in any view) |||
+| `q` | Any view | Quit TUI |
+| `Ctrl+C` | Any view | Quit TUI |
+| `?` | Any view | Toggle help overlay |
+| `Esc` | Any view | Return to summary view (or close help) |
+| **Summary View** |||
+| `1-9` | Summary | Jump to detail view for node N |
+| `s` | Summary | Enter split view (first 2-4 nodes) |
+| `d` | Summary | Enter diff view (first 2 nodes) |
+| **Detail View** |||
+| `↑` | Detail | Scroll up 1 line |
+| `↓` | Detail | Scroll down 1 line |
+| `←` | Detail | Switch to previous node |
+| `→` | Detail | Switch to next node |
+| `PgUp` | Detail | Scroll up 10 lines |
+| `PgDn` | Detail | Scroll down 10 lines |
+| `Home` | Detail | Jump to top of output |
+| `End` | Detail | Jump to bottom (re-enables follow mode) |
+| `f` | Detail | Toggle auto-scroll (follow mode) |
+| `1-9` | Detail | Jump to specific node N |
+| **Split View** |||
+| `1-4` | Split | Focus on specific node (switch to detail view) |
+| **Diff View** |||
+| `↑/↓` | Diff | Scroll (synchronized scrolling - TODO) |
+
+**TUI Activation:**
+- **Automatic**: Multi-node execution in interactive terminal
+- **Disabled when**:
+  - Single node execution
+  - Output piped or redirected (`| tee`, `>`)
+  - CI environment (`CI=true`)
+  - Explicit flags (`--stream`, `--output-dir`)
+- **Minimum terminal size**: 40x10 characters
 
 #### Stream Mode (Real-time with Node Prefixes)
 ```bash
