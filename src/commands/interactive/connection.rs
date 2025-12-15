@@ -70,13 +70,18 @@ impl InteractiveCommand {
             )
         })?;
 
-        // Check if key authentication failed and password fallback is allowed
+        // Check if authentication failed and password fallback is allowed
+        // This matches SSH key failures as well as SSH agent authentication failures
         let result = match result {
-            Err(SshError::KeyAuthFailed)
-                if allow_password_fallback && atty::is(atty::Stream::Stdin) =>
-            {
+            Err(
+                SshError::KeyAuthFailed
+                | SshError::AgentAuthenticationFailed
+                | SshError::AgentNoIdentities
+                | SshError::AgentConnectionFailed
+                | SshError::AgentRequestIdentitiesFailed,
+            ) if allow_password_fallback && atty::is(atty::Stream::Stdin) => {
                 tracing::debug!(
-                    "SSH key authentication failed for {username}@{host}:{port}, attempting password fallback"
+                    "SSH authentication failed for {username}@{host}:{port}, attempting password fallback"
                 );
 
                 // Prompt for password (matching OpenSSH behavior)
