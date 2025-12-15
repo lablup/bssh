@@ -53,7 +53,7 @@
 //! - `InteractiveResult`: Summary of interactive session execution
 
 mod commands;
-mod connection;
+pub mod connection;
 mod execution;
 mod multiplex;
 mod single_node;
