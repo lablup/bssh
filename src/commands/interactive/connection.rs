@@ -20,12 +20,13 @@ use russh::client::Msg;
 use russh::Channel;
 use std::io::{self, Write};
 use tokio::time::{timeout, Duration};
+use zeroize::Zeroizing;
 
 use crate::jump::{parse_jump_hosts, JumpHostChain};
 use crate::node::Node;
 use crate::ssh::{
     known_hosts::get_check_method,
-    tokio_client::{AuthMethod, Client, ServerCheckMethod},
+    tokio_client::{AuthMethod, Client, Error as SshError, ServerCheckMethod},
 };
 
 use super::types::{InteractiveCommand, NodeSession};
@@ -33,6 +34,9 @@ use super::types::{InteractiveCommand, NodeSession};
 impl InteractiveCommand {
     /// Helper function to establish SSH connection with proper error handling and rate limiting
     /// This eliminates code duplication across different connection paths and prevents brute-force attacks
+    ///
+    /// If `allow_password_fallback` is true and key authentication fails, it will prompt for password
+    /// and retry with password authentication (matching OpenSSH behavior).
     async fn establish_connection(
         addr: (&str, u16),
         username: &str,
@@ -40,6 +44,7 @@ impl InteractiveCommand {
         check_method: ServerCheckMethod,
         host: &str,
         port: u16,
+        allow_password_fallback: bool,
     ) -> Result<Client> {
         const SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
         let connect_timeout = Duration::from_secs(SSH_CONNECT_TIMEOUT_SECS);
@@ -56,15 +61,47 @@ impl InteractiveCommand {
 
         let result = timeout(
             connect_timeout,
-            Client::connect(addr, username, auth_method, check_method),
+            Client::connect(addr, username, auth_method, check_method.clone()),
         )
         .await
         .with_context(|| {
             format!(
                 "Connection timeout: Failed to connect to {host}:{port} after {SSH_CONNECT_TIMEOUT_SECS} seconds"
             )
-        })?
-        .with_context(|| format!("SSH connection failed to {host}:{port}"));
+        })?;
+
+        // Check if key authentication failed and password fallback is allowed
+        let result = match result {
+            Err(SshError::KeyAuthFailed)
+                if allow_password_fallback && atty::is(atty::Stream::Stdin) =>
+            {
+                tracing::debug!(
+                    "SSH key authentication failed for {username}@{host}:{port}, attempting password fallback"
+                );
+
+                // Prompt for password (matching OpenSSH behavior)
+                let password = Self::prompt_password(username, host).await?;
+
+                // Retry with password authentication
+                let password_auth = AuthMethod::with_password(&password);
+
+                // Small delay before retry to prevent rapid attempts
+                tokio::time::sleep(Duration::from_millis(500)).await;
+
+                timeout(
+                    connect_timeout,
+                    Client::connect(addr, username, password_auth, check_method),
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "Connection timeout: Failed to connect to {host}:{port} after {SSH_CONNECT_TIMEOUT_SECS} seconds"
+                    )
+                })?
+                .with_context(|| format!("SSH connection failed to {host}:{port}"))
+            }
+            other => other.with_context(|| format!("SSH connection failed to {host}:{port}")),
+        };
 
         // SECURITY: Normalize timing to prevent timing attacks
         // Ensure all authentication attempts take at least 500ms to complete
@@ -77,6 +114,22 @@ impl InteractiveCommand {
         }
 
         result
+    }
+
+    /// Prompt for password with secure handling
+    async fn prompt_password(username: &str, host: &str) -> Result<Zeroizing<String>> {
+        let username = username.to_string();
+        let host = host.to_string();
+
+        tokio::task::spawn_blocking(move || {
+            let password = Zeroizing::new(
+                rpassword::prompt_password(format!("{username}@{host}'s password: "))
+                    .with_context(|| "Failed to read password")?,
+            );
+            Ok(password)
+        })
+        .await
+        .with_context(|| "Password prompt task failed")?
     }
 
     /// Determine authentication method based on node and config (same logic as exec mode)
@@ -164,6 +217,7 @@ impl InteractiveCommand {
                 tracing::debug!("No valid jump hosts found, using direct connection");
 
                 // Use the helper function to establish connection
+                // Enable password fallback for interactive mode (matches OpenSSH behavior)
                 Self::establish_connection(
                     addr,
                     &node.username,
@@ -171,6 +225,7 @@ impl InteractiveCommand {
                     check_method.clone(),
                     &node.host,
                     node.port,
+                    !self.use_password, // Allow fallback unless explicit password mode
                 )
                 .await?
             } else {
@@ -239,6 +294,7 @@ impl InteractiveCommand {
             tracing::debug!("Using direct connection (no jump hosts)");
 
             // Use the helper function to establish connection
+            // Enable password fallback for interactive mode (matches OpenSSH behavior)
             Self::establish_connection(
                 addr,
                 &node.username,
@@ -246,6 +302,7 @@ impl InteractiveCommand {
                 check_method,
                 &node.host,
                 node.port,
+                !self.use_password, // Allow fallback unless explicit password mode
             )
             .await?
         };
@@ -300,6 +357,7 @@ impl InteractiveCommand {
                 tracing::debug!("No valid jump hosts found, using direct connection for PTY");
 
                 // Use the helper function to establish connection
+                // Enable password fallback for interactive mode (matches OpenSSH behavior)
                 Self::establish_connection(
                     addr,
                     &node.username,
@@ -307,6 +365,7 @@ impl InteractiveCommand {
                     check_method.clone(),
                     &node.host,
                     node.port,
+                    !self.use_password, // Allow fallback unless explicit password mode
                 )
                 .await?
             } else {
@@ -375,6 +434,7 @@ impl InteractiveCommand {
             tracing::debug!("Using direct connection for PTY (no jump hosts)");
 
             // Use the helper function to establish connection
+            // Enable password fallback for interactive mode (matches OpenSSH behavior)
             Self::establish_connection(
                 addr,
                 &node.username,
@@ -382,6 +442,7 @@ impl InteractiveCommand {
                 check_method,
                 &node.host,
                 node.port,
+                !self.use_password, // Allow fallback unless explicit password mode
             )
             .await?
         };

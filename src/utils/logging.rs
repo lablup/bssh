@@ -15,15 +15,24 @@
 use tracing_subscriber::EnvFilter;
 
 pub fn init_logging(verbosity: u8) {
-    let filter = match verbosity {
-        0 => EnvFilter::new("bssh=warn"),
-        1 => EnvFilter::new("bssh=info"),
-        2 => EnvFilter::new("bssh=debug"),
-        _ => EnvFilter::new("bssh=trace"),
+    // Priority: RUST_LOG environment variable > verbosity flag
+    let filter = if std::env::var("RUST_LOG").is_ok() {
+        // Use RUST_LOG if set (allows debugging russh and other dependencies)
+        EnvFilter::from_default_env()
+    } else {
+        // Fall back to verbosity-based filter
+        match verbosity {
+            0 => EnvFilter::new("bssh=warn"),
+            1 => EnvFilter::new("bssh=info"),
+            // -vv: Include russh debug logs for SSH troubleshooting
+            2 => EnvFilter::new("bssh=debug,russh=debug"),
+            // -vvv: Full trace including all dependencies
+            _ => EnvFilter::new("bssh=trace,russh=trace,russh_sftp=debug"),
+        }
     };
 
     tracing_subscriber::fmt()
         .with_env_filter(filter)
-        .with_target(false)
+        .with_target(true) // Show module targets for better debugging
         .init();
 }
