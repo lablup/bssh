@@ -330,6 +330,32 @@ bssh -C production "df -h" > disk-usage.log
 CI=true bssh -C production "command"
 ```
 
+### Batch Mode (Ctrl+C Handling)
+
+bssh provides two modes for handling Ctrl+C during parallel execution:
+
+**Default (Two-Stage)**:
+- First Ctrl+C: Shows status (running/completed counts)
+- Second Ctrl+C (within 1 second): Terminates all jobs
+
+**Batch Mode (`-b` / `--batch`)**:
+- Single Ctrl+C: Immediately terminates all jobs
+- Useful for non-interactive scripts and CI/CD pipelines
+
+```bash
+# Default behavior (two-stage Ctrl+C)
+bssh -C production "long-running-command"
+# Ctrl+C once: shows status
+# Ctrl+C again (within 1s): terminates
+
+# Batch mode (immediate termination)
+bssh -C production -b "long-running-command"
+# Ctrl+C once: immediately terminates all jobs
+
+# Useful for automation
+bssh -H nodes --batch --stream "deployment-script.sh"
+```
+
 ### Built-in Commands
 ```bash
 # Test connectivity to hosts

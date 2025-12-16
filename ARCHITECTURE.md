@@ -300,6 +300,58 @@ let tasks: Vec<JoinHandle<Result<ExecutionResult>>> = nodes
 - Buffered I/O for output collection
 - Early termination on critical failures
 
+**Signal Handling (Added 2025-12-16, Issue #95):**
+
+The executor supports two modes for handling Ctrl+C (SIGINT) signals during parallel execution:
+
+1. **Default Mode (Two-Stage)**:
+   - First Ctrl+C: Displays status (running/completed job counts)
+   - Second Ctrl+C (within 1 second): Terminates all jobs immediately
+   - Provides users visibility into execution progress before termination
+
+2. **Batch Mode (`--batch` / `-b`)**:
+   - Single Ctrl+C: Immediately terminates all jobs
+   - Optimized for non-interactive environments (CI/CD, scripts)
+   - Compatible with pdsh `-b` option for tool compatibility
+
+Implementation is in `executor/parallel.rs` using `tokio::select!` to handle signals alongside normal execution:
+
+```rust
+loop {
+    tokio::select! {
+        _ = signal::ctrl_c() => {
+            if self.batch {
+                // Batch mode: terminate immediately
+                for handle in pending_handles.drain(..) {
+                    handle.abort();
+                }
+                break;
+            } else {
+                // Two-stage mode: first shows status, second terminates
+                if !first_ctrl_c {
+                    first_ctrl_c = true;
+                    // Show status
+                    eprintln!("Status: {} running, {} completed", ...);
+                } else if within_time_window() {
+                    // Second Ctrl+C within 1 second
+                    for handle in pending_handles.drain(..) {
+                        handle.abort();
+                    }
+                    break;
+                }
+            }
+        }
+        // Regular execution polling
+        _ = execution_loop() => { ... }
+    }
+}
+```
+
+The batch flag is passed through the executor chain:
+- CLI `--batch` flag → `ExecuteCommandParams.batch` → `ParallelExecutor.batch`
+- Applied in stream mode and normal mode execution paths
+- TUI mode maintains its own quit handling (reserved for future use)
+
 ### 4. SSH Client (`ssh/client/*`, `ssh/tokio_client/*`)
 
 **SSH Client Module Structure (Refactored 2025-10-17):**

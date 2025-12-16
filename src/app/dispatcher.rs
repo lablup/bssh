@@ -403,6 +403,7 @@ async fn handle_exec_command(cli: &Cli, ctx: &AppContext, command: &str) -> Resu
             require_all_success: cli.require_all_success,
             check_all_nodes: cli.check_all_nodes,
             sudo_password,
+            batch: cli.batch,
         };
         execute_command(params).await
     }

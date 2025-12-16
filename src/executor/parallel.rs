@@ -47,6 +47,7 @@ pub struct ParallelExecutor {
     pub(crate) connect_timeout: Option<u64>,
     pub(crate) jump_hosts: Option<String>,
     pub(crate) sudo_password: Option<Arc<SudoPassword>>,
+    pub(crate) batch: bool,
 }
 
 impl ParallelExecutor {
@@ -80,6 +81,7 @@ impl ParallelExecutor {
             connect_timeout: None,
             jump_hosts: None,
             sudo_password: None,
+            batch: false,
         }
     }
 
@@ -104,6 +106,7 @@ impl ParallelExecutor {
             connect_timeout: None,
             jump_hosts: None,
             sudo_password: None,
+            batch: false,
         }
     }
 
@@ -129,6 +132,7 @@ impl ParallelExecutor {
             connect_timeout: None,
             jump_hosts: None,
             sudo_password: None,
+            batch: false,
         }
     }
 
@@ -163,6 +167,15 @@ impl ParallelExecutor {
     /// and inject the password when commands require sudo privileges.
     pub fn with_sudo_password(mut self, sudo_password: Option<Arc<SudoPassword>>) -> Self {
         self.sudo_password = sudo_password;
+        self
+    }
+
+    /// Set batch mode for signal handling.
+    ///
+    /// When set to true, a single Ctrl+C will immediately terminate all jobs.
+    /// When false (default), first Ctrl+C shows status, second terminates.
+    pub fn with_batch_mode(mut self, batch: bool) -> Self {
+        self.batch = batch;
         self
     }
 
@@ -665,12 +678,74 @@ impl ParallelExecutor {
     ) -> Result<Vec<ExecutionResult>> {
         use super::output_sync::NodeOutputWriter;
         use std::time::Duration;
+        use tokio::signal;
 
         let mut pending_handles = handles;
         let mut results = Vec::new();
+        let mut first_ctrl_c = false;
+        let mut ctrl_c_time: Option<std::time::Instant> = None;
 
         // Poll until all tasks complete
-        while !pending_handles.is_empty() || !manager.all_complete() {
+        loop {
+            tokio::select! {
+                // Handle Ctrl+C signal
+                _ = signal::ctrl_c() => {
+                    if self.batch {
+                        // Batch mode: immediately terminate on first Ctrl+C
+                        eprintln!("\nReceived Ctrl+C (batch mode). Terminating all jobs...");
+                        for handle in pending_handles.drain(..) {
+                            handle.abort();
+                        }
+                        // Set a termination flag
+                        break;
+                    } else {
+                        // Non-batch mode: two-stage Ctrl+C
+                        if !first_ctrl_c {
+                            // First Ctrl+C: show status
+                            first_ctrl_c = true;
+                            ctrl_c_time = Some(std::time::Instant::now());
+                            eprintln!("\nReceived Ctrl+C. Press Ctrl+C again within 1 second to terminate.");
+
+                            // Show current status
+                            let running_count = pending_handles.len();
+                            let completed_count = manager.streams().iter()
+                                .filter(|s| matches!(s.status(), super::stream_manager::ExecutionStatus::Completed))
+                                .count();
+                            eprintln!("Status: {} running, {} completed", running_count, completed_count);
+                        } else {
+                            // Second Ctrl+C: terminate
+                            if let Some(first_time) = ctrl_c_time {
+                                if first_time.elapsed() <= Duration::from_secs(1) {
+                                    eprintln!("Received second Ctrl+C. Terminating all jobs...");
+                                    for handle in pending_handles.drain(..) {
+                                        handle.abort();
+                                    }
+                                    break;
+                                } else {
+                                    // Too much time passed, reset
+                                    first_ctrl_c = true;
+                                    ctrl_c_time = Some(std::time::Instant::now());
+                                    eprintln!("\nReceived Ctrl+C. Press Ctrl+C again within 1 second to terminate.");
+                                }
+                            }
+                        }
+                    }
+                }
+                _ = async {
+                    if pending_handles.is_empty() && manager.all_complete() {
+                        return;
+                    }
+
+                    tokio::time::sleep(Duration::from_millis(1)).await;
+                } => {
+                    // Check if all tasks are done
+                    if pending_handles.is_empty() && manager.all_complete() {
+                        break;
+                    }
+                }
+            }
+
+            // Continue with regular processing
             // Poll all streams for new output
             manager.poll_all();
 
@@ -774,7 +849,7 @@ impl ParallelExecutor {
 
         // Run TUI event loop - this will block until user quits or all complete
         // The TUI itself will handle polling the manager
-        let user_quit = match tui::run_tui(manager, cluster_name, command).await {
+        let user_quit = match tui::run_tui(manager, cluster_name, command, self.batch).await {
             Ok(tui::TuiExitReason::UserQuit) => true,
             Ok(tui::TuiExitReason::AllTasksCompleted) => false,
             Err(e) => {

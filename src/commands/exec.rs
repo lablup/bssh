@@ -45,6 +45,7 @@ pub struct ExecuteCommandParams<'a> {
     pub require_all_success: bool,
     pub check_all_nodes: bool,
     pub sudo_password: Option<Arc<SudoPassword>>,
+    pub batch: bool,
 }
 
 pub async fn execute_command(params: ExecuteCommandParams<'_>) -> Result<()> {
@@ -174,6 +175,7 @@ async fn execute_command_with_forwarding(params: ExecuteCommandParams<'_>) -> Re
     // Execute the actual command
     let result = execute_command_without_forwarding(ExecuteCommandParams {
         port_forwards: None, // Remove forwarding from params to avoid recursion
+        batch: params.batch,
         ..params
     })
     .await;
@@ -209,7 +211,8 @@ async fn execute_command_without_forwarding(params: ExecuteCommandParams<'_>) ->
     .with_timeout(params.timeout)
     .with_connect_timeout(params.connect_timeout)
     .with_jump_hosts(params.jump_hosts.map(|s| s.to_string()))
-    .with_sudo_password(params.sudo_password);
+    .with_sudo_password(params.sudo_password)
+    .with_batch_mode(params.batch);
 
     // Set keychain usage if on macOS
     #[cfg(target_os = "macos")]
