@@ -181,6 +181,9 @@ impl ParallelExecutor {
 
     /// Execute a command on all nodes in parallel.
     pub async fn execute(&self, command: &str) -> Result<Vec<ExecutionResult>> {
+        use std::time::Duration;
+        use tokio::signal;
+
         let semaphore = Arc::new(Semaphore::new(self.max_parallel));
         let multi_progress = MultiProgress::new();
         let style = create_progress_style()?;
@@ -223,8 +226,69 @@ impl ParallelExecutor {
             })
             .collect();
 
-        let results = join_all(tasks).await;
-        self.collect_results(results)
+        // Handle signal interruption with batch mode support
+        let mut first_ctrl_c = false;
+        let mut ctrl_c_time: Option<std::time::Instant> = None;
+        let mut pending_handles = tasks;
+
+        loop {
+            tokio::select! {
+                // Handle Ctrl+C signal
+                _ = signal::ctrl_c() => {
+                    if self.batch {
+                        // Batch mode: immediately terminate on first Ctrl+C
+                        eprintln!("\nReceived Ctrl+C (batch mode). Terminating all jobs...");
+                        for handle in pending_handles.drain(..) {
+                            handle.abort();
+                        }
+                        // Exit with SIGINT exit code (130)
+                        std::process::exit(130);
+                    } else {
+                        // Non-batch mode: two-stage Ctrl+C
+                        if !first_ctrl_c {
+                            // First Ctrl+C: show status
+                            first_ctrl_c = true;
+                            ctrl_c_time = Some(std::time::Instant::now());
+                            eprintln!("\nReceived Ctrl+C. Press Ctrl+C again within 1 second to terminate.");
+
+                            // Count pending handles as running
+                            let running_count = pending_handles.len();
+                            let completed_count = self.nodes.len() - running_count;
+                            eprintln!("Status: {} running, {} completed", running_count, completed_count);
+                        } else {
+                            // Second Ctrl+C: terminate
+                            if let Some(first_time) = ctrl_c_time {
+                                if first_time.elapsed() <= Duration::from_secs(1) {
+                                    eprintln!("Received second Ctrl+C. Terminating all jobs...");
+                                    for handle in pending_handles.drain(..) {
+                                        handle.abort();
+                                    }
+                                    // Exit with SIGINT exit code (130)
+                                    std::process::exit(130);
+                                } else {
+                                    // Too much time passed, reset
+                                    first_ctrl_c = true;
+                                    ctrl_c_time = Some(std::time::Instant::now());
+                                    eprintln!("\nReceived Ctrl+C. Press Ctrl+C again within 1 second to terminate.");
+
+                                    // Show current status (matching behavior of first Ctrl+C)
+                                    let running_count = pending_handles.len();
+                                    let completed_count = self.nodes.len() - running_count;
+                                    eprintln!("Status: {} running, {} completed", running_count, completed_count);
+                                }
+                            }
+                        }
+                    }
+                }
+                // Wait for all tasks to complete
+                results = join_all(pending_handles.iter_mut()) => {
+                    return self.collect_results(results);
+                }
+            }
+
+            // Small sleep to avoid busy waiting
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     }
 
     /// Upload a file to all nodes in parallel.
@@ -696,8 +760,8 @@ impl ParallelExecutor {
                         for handle in pending_handles.drain(..) {
                             handle.abort();
                         }
-                        // Set a termination flag
-                        break;
+                        // Exit with SIGINT exit code (130)
+                        std::process::exit(130);
                     } else {
                         // Non-batch mode: two-stage Ctrl+C
                         if !first_ctrl_c {
@@ -720,12 +784,20 @@ impl ParallelExecutor {
                                     for handle in pending_handles.drain(..) {
                                         handle.abort();
                                     }
-                                    break;
+                                    // Exit with SIGINT exit code (130)
+                                    std::process::exit(130);
                                 } else {
                                     // Too much time passed, reset
                                     first_ctrl_c = true;
                                     ctrl_c_time = Some(std::time::Instant::now());
                                     eprintln!("\nReceived Ctrl+C. Press Ctrl+C again within 1 second to terminate.");
+
+                                    // Show current status (matching behavior of first Ctrl+C)
+                                    let running_count = pending_handles.len();
+                                    let completed_count = manager.streams().iter()
+                                        .filter(|s| matches!(s.status(), super::stream_manager::ExecutionStatus::Completed))
+                                        .count();
+                                    eprintln!("Status: {} running, {} completed", running_count, completed_count);
                                 }
                             }
                         }

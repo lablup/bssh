@@ -300,19 +300,31 @@ let tasks: Vec<JoinHandle<Result<ExecutionResult>>> = nodes
 - Buffered I/O for output collection
 - Early termination on critical failures
 
-**Signal Handling (Added 2025-12-16, Issue #95):**
+**Signal Handling (Added 2025-12-16, Issue #95; Updated 2025-12-16, PR #102):**
 
 The executor supports two modes for handling Ctrl+C (SIGINT) signals during parallel execution:
 
 1. **Default Mode (Two-Stage)**:
    - First Ctrl+C: Displays status (running/completed job counts)
-   - Second Ctrl+C (within 1 second): Terminates all jobs immediately
+   - Second Ctrl+C (within 1 second): Terminates all jobs immediately with exit code 130
+   - Time window reset: If >1 second passes, next Ctrl+C restarts the sequence and shows status again
    - Provides users visibility into execution progress before termination
 
 2. **Batch Mode (`--batch` / `-b`)**:
-   - Single Ctrl+C: Immediately terminates all jobs
+   - Single Ctrl+C: Immediately terminates all jobs with exit code 130
    - Optimized for non-interactive environments (CI/CD, scripts)
    - Compatible with pdsh `-b` option for tool compatibility
+
+**Exit Code Handling:**
+- Normal completion: Exit code determined by ExitCodeStrategy (MainRank/RequireAllSuccess/etc.)
+- Signal termination (Ctrl+C): Always exits with code 130 (standard SIGINT exit code)
+- This ensures scripts can detect user interruption vs. command failure
+
+**Implementation Coverage:**
+Signal handling is implemented in both execution modes:
+- `execute()` method (normal/progress bar mode) - lines 172-280
+- `handle_stream_mode()` method (stream mode) - lines 714-838
+- TUI mode has its own quit handling (q or Ctrl+C) and ignores the batch flag
 
 Implementation is in `executor/parallel.rs` using `tokio::select!` to handle signals alongside normal execution:
 
@@ -322,35 +334,64 @@ loop {
         _ = signal::ctrl_c() => {
             if self.batch {
                 // Batch mode: terminate immediately
+                eprintln!("\nReceived Ctrl+C (batch mode). Terminating all jobs...");
                 for handle in pending_handles.drain(..) {
                     handle.abort();
                 }
-                break;
+                // Exit with SIGINT exit code (130)
+                std::process::exit(130);
             } else {
                 // Two-stage mode: first shows status, second terminates
                 if !first_ctrl_c {
                     first_ctrl_c = true;
+                    ctrl_c_time = Some(std::time::Instant::now());
+                    eprintln!("\nReceived Ctrl+C. Press Ctrl+C again within 1 second to terminate.");
+
                     // Show status
-                    eprintln!("Status: {} running, {} completed", ...);
-                } else if within_time_window() {
-                    // Second Ctrl+C within 1 second
-                    for handle in pending_handles.drain(..) {
-                        handle.abort();
+                    let running_count = pending_handles.len();
+                    let completed_count = self.nodes.len() - running_count;
+                    eprintln!("Status: {} running, {} completed", running_count, completed_count);
+                } else {
+                    // Second Ctrl+C: check time window
+                    if let Some(first_time) = ctrl_c_time {
+                        if first_time.elapsed() <= Duration::from_secs(1) {
+                            // Within time window: terminate
+                            eprintln!("Received second Ctrl+C. Terminating all jobs...");
+                            for handle in pending_handles.drain(..) {
+                                handle.abort();
+                            }
+                            // Exit with SIGINT exit code (130)
+                            std::process::exit(130);
+                        } else {
+                            // Time window expired: reset and show status again
+                            first_ctrl_c = true;
+                            ctrl_c_time = Some(std::time::Instant::now());
+                            eprintln!("\nReceived Ctrl+C. Press Ctrl+C again within 1 second to terminate.");
+
+                            // Show current status
+                            let running_count = pending_handles.len();
+                            let completed_count = self.nodes.len() - running_count;
+                            eprintln!("Status: {} running, {} completed", running_count, completed_count);
+                        }
                     }
-                    break;
                 }
             }
         }
-        // Regular execution polling
-        _ = execution_loop() => { ... }
+        // Wait for all tasks to complete
+        results = join_all(pending_handles.iter_mut()) => {
+            return self.collect_results(results);
+        }
     }
+
+    // Small sleep to avoid busy waiting
+    tokio::time::sleep(Duration::from_millis(50)).await;
 }
 ```
 
 The batch flag is passed through the executor chain:
 - CLI `--batch` flag → `ExecuteCommandParams.batch` → `ParallelExecutor.batch`
-- Applied in stream mode and normal mode execution paths
-- TUI mode maintains its own quit handling (reserved for future use)
+- Applied in both normal mode (`execute()`) and stream mode (`handle_stream_mode()`)
+- TUI mode maintains its own quit handling and ignores this flag
 
 ### 4. SSH Client (`ssh/client/*`, `ssh/tokio_client/*`)
 

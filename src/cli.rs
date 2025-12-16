@@ -107,7 +107,7 @@ pub struct Cli {
     #[arg(
         short = 'b',
         long = "batch",
-        help = "Batch mode: single Ctrl+C immediately terminates all jobs\nDisables two-stage Ctrl+C handling (status display on first press)\nUseful for non-interactive scripts and CI/CD pipelines"
+        help = "Batch mode: single Ctrl+C immediately terminates all jobs\nDisables two-stage Ctrl+C handling (status display on first press)\nUseful for non-interactive scripts and CI/CD pipelines\nNote: TUI mode has its own quit handling (q or Ctrl+C) and ignores this flag"
     )]
     pub batch: bool,
 
