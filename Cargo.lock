@@ -361,6 +361,7 @@ dependencies = [
  "lru 0.16.2",
  "mockall",
  "mockito",
+ "nix 0.29.0",
  "once_cell",
  "owo-colors",
  "ratatui",

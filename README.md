@@ -101,6 +101,14 @@ bssh -o StrictHostKeyChecking=no user@host
 bssh -Q cipher
 ```
 
+**PTY Session Escape Sequences:**
+
+Like OpenSSH, bssh supports escape sequences in PTY sessions. These must be typed at the beginning of a line (after pressing Enter):
+
+| Escape | Description |
+|--------|-------------|
+| `~.`   | Disconnect from the remote host |
+
 ### Port Forwarding
 ```bash
 # Local port forwarding (-L)
