@@ -231,4 +231,178 @@ mod tests {
         assert_eq!(detector.process(b"~"), None);
         assert_eq!(detector.process(b"."), Some(LocalAction::Disconnect));
     }
+
+    #[test]
+    fn test_data_ending_with_tilde() {
+        let mut detector = LocalEscapeDetector::new();
+
+        // Data ends with tilde after newline - state should persist
+        assert_eq!(detector.process(b"\n~"), None);
+        // Subsequent dot should trigger disconnect
+        assert_eq!(detector.process(b"."), Some(LocalAction::Disconnect));
+    }
+
+    #[test]
+    fn test_data_ending_with_newline() {
+        let mut detector = LocalEscapeDetector::new();
+
+        // Data ends with newline - ready for escape
+        assert_eq!(detector.process(b"hello\n"), None);
+        // Subsequent ~. should trigger disconnect
+        assert_eq!(detector.process(b"~."), Some(LocalAction::Disconnect));
+    }
+
+    #[test]
+    fn test_consecutive_newlines() {
+        let mut detector = LocalEscapeDetector::new();
+
+        // Multiple consecutive newlines
+        assert_eq!(detector.process(b"\n\n\n"), None);
+        // Still in after_newline state
+        assert_eq!(detector.process(b"~."), Some(LocalAction::Disconnect));
+    }
+
+    #[test]
+    fn test_mixed_cr_and_lf() {
+        let mut detector = LocalEscapeDetector::new();
+
+        // CRLF sequence
+        assert_eq!(detector.process(b"\r\n"), None);
+        assert_eq!(detector.process(b"~."), Some(LocalAction::Disconnect));
+    }
+
+    #[test]
+    fn test_lfcr_sequence() {
+        let mut detector = LocalEscapeDetector::new();
+
+        // LFCR (unusual but possible)
+        assert_eq!(detector.process(b"\n\r"), None);
+        assert_eq!(detector.process(b"~."), Some(LocalAction::Disconnect));
+    }
+
+    #[test]
+    fn test_large_buffer_with_escape() {
+        let mut detector = LocalEscapeDetector::new();
+
+        // Large buffer with escape sequence in the middle
+        let mut data = vec![b'x'; 1000];
+        data.push(b'\n');
+        data.push(b'~');
+        data.push(b'.');
+        data.extend_from_slice(&[b'y'; 500]);
+
+        // Should detect disconnect at ~.
+        assert_eq!(detector.process(&data), Some(LocalAction::Disconnect));
+    }
+
+    #[test]
+    fn test_tilde_after_text() {
+        let mut detector = LocalEscapeDetector::new();
+
+        // Tilde in the middle of text (not after newline)
+        assert_eq!(detector.process(b"hello~.world"), None);
+    }
+
+    #[test]
+    fn test_multiple_tildes() {
+        let mut detector = LocalEscapeDetector::new();
+
+        // Multiple tildes after newline
+        assert_eq!(detector.process(b"\n~~."), None);
+        // Second tilde resets the state
+    }
+
+    #[test]
+    fn test_tilde_then_newline() {
+        let mut detector = LocalEscapeDetector::new();
+
+        // Tilde then newline resets
+        assert_eq!(detector.process(b"\n~\n"), None);
+        // Should be in after_newline state again
+        assert_eq!(detector.process(b"~."), Some(LocalAction::Disconnect));
+    }
+
+    #[test]
+    fn test_empty_input() {
+        let mut detector = LocalEscapeDetector::new();
+
+        // Empty input should not change state
+        assert_eq!(detector.process(b""), None);
+        // Still in initial after_newline state
+        assert_eq!(detector.process(b"~."), Some(LocalAction::Disconnect));
+    }
+
+    #[test]
+    fn test_escape_in_binary_data() {
+        let mut detector = LocalEscapeDetector::new();
+
+        // Binary data with escape sequence
+        let data = [0x00, 0xFF, b'\n', b'~', b'.', 0x7F];
+        assert_eq!(detector.process(&data), Some(LocalAction::Disconnect));
+    }
+
+    #[test]
+    fn test_only_newline_then_only_tilde() {
+        let mut detector = LocalEscapeDetector::new();
+
+        // Single byte inputs
+        assert_eq!(detector.process(b"\n"), None);
+        assert_eq!(detector.process(b"~"), None);
+        // State: saw_tilde = true, after_newline = false
+        assert_eq!(detector.process(b"."), Some(LocalAction::Disconnect));
+    }
+
+    #[test]
+    fn test_state_after_non_dot() {
+        let mut detector = LocalEscapeDetector::new();
+
+        // After ~x, state should reset
+        assert_eq!(detector.process(b"\n~x"), None);
+        // Need another newline before ~.
+        assert_eq!(detector.process(b"~."), None);
+        // Now with newline
+        assert_eq!(detector.process(b"\n~."), Some(LocalAction::Disconnect));
+    }
+
+    #[test]
+    fn test_rapid_escape_attempts() {
+        let mut detector = LocalEscapeDetector::new();
+
+        // Rapid repeated attempts
+        assert_eq!(
+            detector.process(b"\n~x\n~y\n~z\n~."),
+            Some(LocalAction::Disconnect)
+        );
+    }
+
+    #[test]
+    fn test_unicode_does_not_interfere() {
+        let mut detector = LocalEscapeDetector::new();
+
+        // UTF-8 encoded characters should not interfere
+        assert_eq!(detector.process("한글\n".as_bytes()), None);
+        assert_eq!(detector.process(b"~."), Some(LocalAction::Disconnect));
+    }
+
+    #[test]
+    fn test_local_action_eq() {
+        // Test LocalAction equality
+        assert_eq!(LocalAction::Disconnect, LocalAction::Disconnect);
+    }
+
+    #[test]
+    fn test_local_action_debug() {
+        // Test LocalAction debug implementation
+        let action = LocalAction::Disconnect;
+        let debug_str = format!("{:?}", action);
+        assert!(debug_str.contains("Disconnect"));
+    }
+
+    #[test]
+    fn test_local_action_clone() {
+        // Test LocalAction clone
+        let action = LocalAction::Disconnect;
+        let cloned = action.clone();
+        assert_eq!(action, cloned);
+    }
 }

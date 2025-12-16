@@ -174,4 +174,80 @@ mod tests {
         assert!(result.is_ok());
         // We can't guarantee false since input might be available
     }
+
+    #[test]
+    fn test_poll_timeout_clamping_at_u16_max() {
+        let reader = RawInputReader::new();
+        // Verify poll accepts values above u16::MAX (65535ms)
+        // The implementation clamps to u16::MAX internally
+        let result = reader.poll(Duration::from_millis(70000));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_poll_timeout_very_large_duration() {
+        let reader = RawInputReader::new();
+        // Test with very large duration (1 hour)
+        // Should be clamped to 65535ms
+        let result = reader.poll(Duration::from_secs(3600));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_poll_zero_timeout() {
+        let reader = RawInputReader::new();
+        // Zero timeout should return immediately
+        let result = reader.poll(Duration::ZERO);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_poll_one_millisecond_timeout() {
+        let reader = RawInputReader::new();
+        // Very short timeout
+        let result = reader.poll(Duration::from_millis(1));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_poll_exactly_u16_max() {
+        let reader = RawInputReader::new();
+        // Test exactly at the boundary (65535ms)
+        let result = reader.poll(Duration::from_millis(u16::MAX as u64));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_poll_just_over_u16_max() {
+        let reader = RawInputReader::new();
+        // Test just over the boundary (65536ms)
+        let result = reader.poll(Duration::from_millis(u16::MAX as u64 + 1));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_multiple_sequential_polls() {
+        let reader = RawInputReader::new();
+        // Multiple polls should work consistently
+        for _ in 0..5 {
+            let result = reader.poll(Duration::from_millis(1));
+            assert!(result.is_ok());
+        }
+    }
+
+    #[test]
+    fn test_poll_with_nanoseconds() {
+        let reader = RawInputReader::new();
+        // Duration with nanoseconds (will be truncated to milliseconds)
+        let result = reader.poll(Duration::from_nanos(1_500_000)); // 1.5ms -> 1ms
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_poll_sub_millisecond() {
+        let reader = RawInputReader::new();
+        // Sub-millisecond duration (should become 0ms)
+        let result = reader.poll(Duration::from_micros(500)); // 0.5ms -> 0ms
+        assert!(result.is_ok());
+    }
 }

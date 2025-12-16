@@ -855,4 +855,326 @@ mod tests {
         filter.pending_buffer = b"\x1b]99999999999;test\x07".to_vec();
         assert_eq!(filter.parse_osc_param(), None);
     }
+
+    // ========================================
+    // Additional edge case tests
+    // ========================================
+
+    #[test]
+    fn test_escape_at_buffer_boundary() {
+        let mut filter = EscapeSequenceFilter::new();
+
+        // ESC at the very end of buffer
+        let output1 = filter.filter(b"Hello\x1b");
+        assert_eq!(output1, b"Hello");
+
+        // Continue with CSI sequence
+        let output2 = filter.filter(b"[31mRed");
+        assert_eq!(output2, b"\x1b[31mRed");
+    }
+
+    #[test]
+    fn test_consecutive_escape_sequences() {
+        let mut filter = EscapeSequenceFilter::new();
+
+        // Multiple consecutive color codes
+        let input = b"\x1b[31m\x1b[1m\x1b[4mBold Red Underline\x1b[0m";
+        let output = filter.filter(input);
+        assert_eq!(output, input.to_vec());
+    }
+
+    #[test]
+    fn test_interleaved_text_and_sequences() {
+        let mut filter = EscapeSequenceFilter::new();
+
+        // Text, escape, text, escape pattern
+        let input = b"A\x1b[1mB\x1b[0mC";
+        let output = filter.filter(input);
+        assert_eq!(output, input.to_vec());
+    }
+
+    #[test]
+    fn test_empty_input() {
+        let mut filter = EscapeSequenceFilter::new();
+        let output = filter.filter(b"");
+        assert!(output.is_empty());
+    }
+
+    #[test]
+    fn test_single_escape_byte() {
+        let mut filter = EscapeSequenceFilter::new();
+        let output = filter.filter(b"\x1b");
+        assert!(output.is_empty(), "Single ESC should be buffered");
+    }
+
+    #[test]
+    fn test_incomplete_csi_then_text() {
+        let mut filter = EscapeSequenceFilter::new();
+
+        // Incomplete CSI
+        let output1 = filter.filter(b"\x1b[");
+        assert!(output1.is_empty());
+
+        // Non-sequence character should flush buffer
+        // Actually, the filter waits for terminator, so let's test complete sequence
+        let output2 = filter.filter(b"m");
+        assert_eq!(output2, b"\x1b[m");
+    }
+
+    #[test]
+    fn test_osc_with_st_terminator() {
+        let mut filter = EscapeSequenceFilter::new();
+
+        // OSC with ST terminator instead of BEL
+        let input = b"\x1b]0;My Title\x1b\\";
+        let output = filter.filter(input);
+        assert_eq!(output, input.to_vec());
+    }
+
+    #[test]
+    fn test_osc_clipboard_response_filtered() {
+        let mut filter = EscapeSequenceFilter::new();
+
+        // OSC 52 clipboard response (base64 encoded)
+        let input = b"\x1b]52;c;SGVsbG8gV29ybGQ=\x07";
+        let output = filter.filter(input);
+        assert!(output.is_empty(), "OSC 52 response should be filtered");
+    }
+
+    #[test]
+    fn test_csi_with_intermediate_bytes() {
+        let mut filter = EscapeSequenceFilter::new();
+
+        // CSI with space as intermediate byte (ESC [ 0 SP q)
+        let input = b"\x1b[0 q"; // Cursor style
+        let output = filter.filter(input);
+        assert_eq!(output, input.to_vec());
+    }
+
+    #[test]
+    fn test_csi_with_multiple_params() {
+        let mut filter = EscapeSequenceFilter::new();
+
+        // SGR with many parameters
+        let input = b"\x1b[38;2;255;128;64;48;2;0;0;0m";
+        let output = filter.filter(input);
+        assert_eq!(output, input.to_vec());
+    }
+
+    #[test]
+    fn test_binary_data_passthrough() {
+        let mut filter = EscapeSequenceFilter::new();
+
+        // Raw binary data (not escape sequences)
+        let input = [0x00, 0x01, 0x02, 0xFF, 0xFE, 0xFD];
+        let output = filter.filter(&input);
+        assert_eq!(output, input.to_vec());
+    }
+
+    #[test]
+    fn test_unicode_passthrough() {
+        let mut filter = EscapeSequenceFilter::new();
+
+        // UTF-8 encoded text
+        let input = "Hello 世界 🌍".as_bytes();
+        let output = filter.filter(input);
+        assert_eq!(output, input.to_vec());
+    }
+
+    #[test]
+    fn test_filter_state_normal_initial() {
+        let filter = EscapeSequenceFilter::new();
+        assert_eq!(filter.state, FilterState::Normal);
+    }
+
+    #[test]
+    fn test_default_trait() {
+        let _filter = EscapeSequenceFilter::default();
+    }
+
+    #[test]
+    fn test_reset_clears_state() {
+        let mut filter = EscapeSequenceFilter::new();
+
+        // Put filter in non-normal state
+        let _ = filter.filter(b"\x1b[?");
+
+        filter.reset();
+
+        assert_eq!(filter.state, FilterState::Normal);
+        assert!(filter.pending_buffer.is_empty());
+        assert!(filter.sequence_start.is_none());
+    }
+
+    #[test]
+    fn test_osc_4_color_palette_filtered() {
+        let mut filter = EscapeSequenceFilter::new();
+
+        // OSC 4 color palette response
+        let input = b"\x1b]4;0;rgb:0000/0000/0000\x07";
+        let output = filter.filter(input);
+        assert!(output.is_empty(), "OSC 4 response should be filtered");
+    }
+
+    #[test]
+    fn test_osc_11_background_color_filtered() {
+        let mut filter = EscapeSequenceFilter::new();
+
+        // OSC 11 background color response
+        let input = b"\x1b]11;rgb:ffff/ffff/ffff\x07";
+        let output = filter.filter(input);
+        assert!(output.is_empty(), "OSC 11 response should be filtered");
+    }
+
+    #[test]
+    fn test_dcs_tmux_passthrough() {
+        let mut filter = EscapeSequenceFilter::new();
+
+        // tmux passthrough DCS (not a response)
+        let input = b"\x1bPtmux;\x1b\x1b[31mred\x1b\x1b[0m\x1b\\";
+        let output = filter.filter(input);
+        assert_eq!(output, input.to_vec(), "tmux DCS should pass through");
+    }
+
+    #[test]
+    fn test_multiple_filtered_sequences() {
+        let mut filter = EscapeSequenceFilter::new();
+
+        // Multiple XTGETTCAP responses in sequence
+        let input = b"\x1bP+r736574726762\x1b\\\x1bP+r636c656172\x1b\\";
+        let output = filter.filter(input);
+        assert!(
+            output.is_empty(),
+            "Multiple XTGETTCAP responses should all be filtered"
+        );
+    }
+
+    #[test]
+    fn test_filtered_then_passthrough() {
+        let mut filter = EscapeSequenceFilter::new();
+
+        // XTGETTCAP (filtered) followed by normal text
+        let input = b"\x1bP+r736574726762\x1b\\Hello";
+        let output = filter.filter(input);
+        assert_eq!(output, b"Hello", "Text after filtered sequence should pass");
+    }
+
+    #[test]
+    fn test_passthrough_then_filtered() {
+        let mut filter = EscapeSequenceFilter::new();
+
+        // Normal text followed by filtered response
+        let input = b"Hello\x1bP+r736574726762\x1b\\";
+        let output = filter.filter(input);
+        assert_eq!(
+            output, b"Hello",
+            "Text before filtered sequence should pass"
+        );
+    }
+
+    #[test]
+    fn test_csi_erase_display() {
+        let mut filter = EscapeSequenceFilter::new();
+
+        // CSI 2 J - Erase Display
+        let input = b"\x1b[2J";
+        let output = filter.filter(input);
+        assert_eq!(output, input.to_vec());
+    }
+
+    #[test]
+    fn test_csi_erase_line() {
+        let mut filter = EscapeSequenceFilter::new();
+
+        // CSI K - Erase Line
+        let input = b"\x1b[K";
+        let output = filter.filter(input);
+        assert_eq!(output, input.to_vec());
+    }
+
+    #[test]
+    fn test_csi_scroll_region() {
+        let mut filter = EscapeSequenceFilter::new();
+
+        // CSI r - Set Scroll Region
+        let input = b"\x1b[1;24r";
+        let output = filter.filter(input);
+        assert_eq!(output, input.to_vec());
+    }
+
+    #[test]
+    fn test_csi_save_restore_cursor() {
+        let mut filter = EscapeSequenceFilter::new();
+
+        // CSI s / CSI u - Save/Restore Cursor
+        let input = b"\x1b[s\x1b[u";
+        let output = filter.filter(input);
+        assert_eq!(output, input.to_vec());
+    }
+
+    #[test]
+    fn test_stress_many_sequences() {
+        let mut filter = EscapeSequenceFilter::new();
+
+        // Generate many color codes
+        let mut input = Vec::new();
+        for i in 0..100 {
+            input.extend_from_slice(format!("\x1b[{}mX", 30 + (i % 8)).as_bytes());
+        }
+        input.extend_from_slice(b"\x1b[0m");
+
+        let output = filter.filter(&input);
+        assert_eq!(output, input, "All color codes should pass through");
+    }
+
+    #[test]
+    fn test_flush_pending_returns_buffered_data() {
+        let mut filter = EscapeSequenceFilter::new();
+
+        // Start an incomplete DCS sequence
+        let _ = filter.filter(b"\x1bPsomedata");
+
+        let flushed = filter.flush_pending();
+        assert_eq!(flushed, b"\x1bPsomedata");
+    }
+
+    #[test]
+    fn test_newlines_passthrough() {
+        let mut filter = EscapeSequenceFilter::new();
+
+        // Various newline combinations
+        let input = b"Line1\nLine2\rLine3\r\nLine4";
+        let output = filter.filter(input);
+        assert_eq!(output, input.to_vec());
+    }
+
+    #[test]
+    fn test_tabs_passthrough() {
+        let mut filter = EscapeSequenceFilter::new();
+
+        // Tab characters
+        let input = b"Col1\tCol2\tCol3";
+        let output = filter.filter(input);
+        assert_eq!(output, input.to_vec());
+    }
+
+    #[test]
+    fn test_backspace_passthrough() {
+        let mut filter = EscapeSequenceFilter::new();
+
+        // Backspace character
+        let input = b"Hello\x08\x08World";
+        let output = filter.filter(input);
+        assert_eq!(output, input.to_vec());
+    }
+
+    #[test]
+    fn test_bel_passthrough() {
+        let mut filter = EscapeSequenceFilter::new();
+
+        // BEL character alone (not as OSC terminator)
+        let input = b"Alert!\x07";
+        let output = filter.filter(input);
+        assert_eq!(output, input.to_vec());
+    }
 }
