@@ -91,8 +91,8 @@ pub enum PtyState {
 #[derive(Debug)]
 pub enum PtyMessage {
     /// Data from local terminal to send to remote
-    /// SmallVec<[u8; 8]> keeps key sequences stack-allocated
-    LocalInput(SmallVec<[u8; 8]>),
+    /// SmallVec<[u8; 64]> handles both key sequences and paste content without allocation
+    LocalInput(SmallVec<[u8; 64]>),
     /// Data from remote to display on local terminal
     /// SmallVec<[u8; 64]> handles most terminal output without allocation
     RemoteOutput(SmallVec<[u8; 64]>),

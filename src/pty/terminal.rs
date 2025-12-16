@@ -15,7 +15,11 @@
 //! Terminal state management for PTY sessions.
 
 use anyhow::{Context, Result};
-use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+use crossterm::{
+    event::{DisableBracketedPaste, EnableBracketedPaste},
+    execute,
+    terminal::{disable_raw_mode, enable_raw_mode},
+};
 use once_cell::sync::Lazy;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -75,6 +79,10 @@ impl TerminalStateGuard {
             RAW_MODE_ACTIVE.store(true, Ordering::SeqCst);
             is_raw_mode_active.store(true, Ordering::Relaxed);
         }
+
+        // Enable bracketed paste mode
+        execute!(std::io::stdout(), EnableBracketedPaste)
+            .with_context(|| "Failed to enable bracketed paste mode")?;
 
         Ok(Self {
             saved_state,
@@ -151,6 +159,11 @@ impl TerminalStateGuard {
     fn restore_terminal_state(&self) -> Result<()> {
         // Use global synchronization to prevent race conditions
         let _guard = TERMINAL_MUTEX.lock().unwrap();
+
+        // Disable bracketed paste mode
+        if let Err(e) = execute!(std::io::stdout(), DisableBracketedPaste) {
+            eprintln!("Warning: Failed to disable bracketed paste mode during cleanup: {e}");
+        }
 
         // Exit raw mode if it's globally active
         if RAW_MODE_ACTIVE.load(Ordering::SeqCst) {

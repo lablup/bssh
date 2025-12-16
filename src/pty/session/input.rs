@@ -20,7 +20,7 @@ use smallvec::SmallVec;
 
 /// Handle input events and convert them to raw bytes
 /// Returns SmallVec to avoid heap allocations for small key sequences
-pub fn handle_input_event(event: Event) -> Option<SmallVec<[u8; 8]>> {
+pub fn handle_input_event(event: Event) -> Option<SmallVec<[u8; 64]>> {
     match event {
         Event::Key(key_event) => {
             // Only process key press events (not release)
@@ -34,6 +34,11 @@ pub fn handle_input_event(event: Event) -> Option<SmallVec<[u8; 8]>> {
             // TODO: Implement mouse event handling
             mouse_event_to_bytes(mouse_event)
         }
+        Event::Paste(text) => {
+            // Handle paste events from bracketed paste mode
+            let bytes = text.into_bytes();
+            Some(SmallVec::from_slice(&bytes))
+        }
         Event::Resize(_width, _height) => {
             // Resize events are handled separately
             // This shouldn't happen as we handle resize via signals
@@ -45,7 +50,7 @@ pub fn handle_input_event(event: Event) -> Option<SmallVec<[u8; 8]>> {
 
 /// Convert key events to raw byte sequences
 /// Uses SmallVec to avoid heap allocations for key sequences (typically 1-5 bytes)
-pub fn key_event_to_bytes(key_event: KeyEvent) -> Option<SmallVec<[u8; 8]>> {
+pub fn key_event_to_bytes(key_event: KeyEvent) -> Option<SmallVec<[u8; 64]>> {
     match key_event {
         // Handle special key combinations
         KeyEvent {
@@ -186,8 +191,119 @@ pub fn key_event_to_bytes(key_event: KeyEvent) -> Option<SmallVec<[u8; 8]>> {
 }
 
 /// Convert mouse events to raw byte sequences
-pub fn mouse_event_to_bytes(_mouse_event: MouseEvent) -> Option<SmallVec<[u8; 8]>> {
+pub fn mouse_event_to_bytes(_mouse_event: MouseEvent) -> Option<SmallVec<[u8; 64]>> {
     // TODO: Implement mouse event to bytes conversion
     // This requires implementing the terminal mouse reporting protocol
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_paste_event_small() {
+        // Test paste event with small text (< 64 bytes)
+        let text = "Hello, World!".to_string();
+        let event = Event::Paste(text.clone());
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        let bytes = result.unwrap();
+        assert_eq!(bytes.as_slice(), text.as_bytes());
+    }
+
+    #[test]
+    fn test_paste_event_large() {
+        // Test paste event with large text (> 64 bytes)
+        let text = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. \
+                    Sed do eiusmod tempor incididunt ut labore et dolore magna aliqua. \
+                    Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris."
+            .to_string();
+        let event = Event::Paste(text.clone());
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        let bytes = result.unwrap();
+        assert_eq!(bytes.as_slice(), text.as_bytes());
+        assert!(bytes.len() > 64, "Test data should be larger than SmallVec inline capacity");
+    }
+
+    #[test]
+    fn test_paste_event_empty() {
+        // Test paste event with empty text
+        let text = String::new();
+        let event = Event::Paste(text.clone());
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        let bytes = result.unwrap();
+        assert_eq!(bytes.as_slice(), &[]);
+    }
+
+    #[test]
+    fn test_paste_event_special_chars() {
+        // Test paste event with special characters and newlines
+        let text = "Line 1\nLine 2\nLine 3\n\tTabbed\r\nCRLF".to_string();
+        let event = Event::Paste(text.clone());
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        let bytes = result.unwrap();
+        assert_eq!(bytes.as_slice(), text.as_bytes());
+    }
+
+    #[test]
+    fn test_paste_event_unicode() {
+        // Test paste event with Unicode characters
+        let text = "Hello 世界 🌍 مرحبا".to_string();
+        let event = Event::Paste(text.clone());
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        let bytes = result.unwrap();
+        assert_eq!(bytes.as_slice(), text.as_bytes());
+    }
+
+    #[test]
+    fn test_paste_event_multiline() {
+        // Test paste event with multi-line content
+        let text = "#!/bin/bash\n\
+                    echo 'Hello, World!'\n\
+                    for i in {1..5}; do\n\
+                    \techo \"Number: $i\"\n\
+                    done"
+            .to_string();
+        let event = Event::Paste(text.clone());
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        let bytes = result.unwrap();
+        assert_eq!(bytes.as_slice(), text.as_bytes());
+    }
+
+    #[test]
+    fn test_key_event_still_works() {
+        // Ensure regular key events still work after adding paste support
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::Char('a'),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        let bytes = result.unwrap();
+        assert_eq!(bytes.as_slice(), b"a");
+    }
+
+    #[test]
+    fn test_resize_event_ignored() {
+        // Ensure resize events are still ignored
+        let event = Event::Resize(80, 24);
+        let result = handle_input_event(event);
+
+        assert!(result.is_none());
+    }
 }
