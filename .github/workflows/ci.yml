@@ -10,8 +10,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  test:
-    name: Test Suite
+  ci:
+    name: CI
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -27,11 +27,6 @@ jobs:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-
-
-      - name: Run unit tests
-        run: |
-          cargo test --lib --verbose
-          cargo test --tests --verbose -- --skip integration_test
 
       - name: Check formatting
         run: cargo fmt --check
@@ -39,24 +34,7 @@ jobs:
       - name: Run clippy
         run: cargo clippy -- -D warnings
 
-  build-check:
-    name: Build Check
-    runs-on: ubuntu-latest
-    needs: test
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Cache cargo
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-
-
-      - name: Build binary
-        run: cargo build --release
+      - name: Run tests
+        run: |
+          cargo test --lib --verbose
+          cargo test --tests --verbose -- --skip integration_test
