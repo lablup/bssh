@@ -80,7 +80,7 @@ impl RawInputReader {
     ///
     /// # Arguments
     /// * `timeout` - Maximum time to wait for input. Values greater than 65535ms
-    ///               will be clamped to 65535ms due to poll() limitations.
+    ///   will be clamped to 65535ms due to poll() limitations.
     ///
     /// # Example
     /// ```ignore
