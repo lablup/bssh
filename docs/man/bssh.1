@@ -176,6 +176,31 @@ Maximum parallel connections for multi-server mode (default: 10)
 Note: -p is now used for port (SSH compatibility)
 
 .TP
+.BR \-\-timeout " " \fISECONDS\fR
+Command execution timeout in seconds. Set to 0 for unlimited execution time.
+Default is 300 seconds (5 minutes).
+.br
+Example: --timeout 60 (1 minute timeout)
+
+.TP
+.BR \-\-connect\-timeout " " \fISECONDS\fR
+SSH connection timeout in seconds. This is the time to wait for the initial
+SSH connection to be established, separate from the command execution timeout.
+Minimum value is 1 second. Default is 30 seconds.
+.br
+This option is useful for:
+.RS
+.IP \[bu] 2
+Fast failure detection on unreachable hosts
+.IP \[bu] 2
+Adjusting timeout for high-latency networks
+.IP \[bu] 2
+Setting different timeouts for connection vs command execution
+.RE
+.IP
+Example: --connect-timeout 10 (10 second connection timeout)
+
+.TP
 .BR \-\-output\-dir " " \fIOUTPUT_DIR\fR
 Output directory for command results. When specified, saves command outputs
 to separate files for each node with stdout, stderr, and execution summary.

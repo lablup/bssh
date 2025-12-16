@@ -24,7 +24,7 @@ A high-performance SSH client with **SSH-compatible syntax** for both single-hos
 - **Output Management**: Multiple output modes (TUI, stream, file, normal) with auto-detection
 - **Interactive Mode**: Interactive shell sessions with single-node or multiplexed multi-node support
 - **SSH Config Caching**: High-performance caching of SSH configurations with TTL and file modification detection
-- **Configurable Timeouts**: Set command execution timeouts with support for unlimited execution (timeout=0)
+- **Configurable Timeouts**: Set both connection timeout (`--connect-timeout`) and command execution timeout (`--timeout`) with support for unlimited execution
 
 ## Installation
 
@@ -208,6 +208,12 @@ bssh -C production --timeout 10 "quick-check"
 
 # No timeout (unlimited execution time)
 bssh -C staging --timeout 0 "long-running-backup"
+
+# Set connection timeout (default: 30 seconds)
+bssh -C production --connect-timeout 10 "uptime"
+
+# Different timeouts for connection and command
+bssh -C production --connect-timeout 5 --timeout 600 "long-running-job"
 ```
 
 ### Output Modes
@@ -929,6 +935,7 @@ Options:
   --strict-host-key-checking <MODE>       Host key checking mode (yes/no/accept-new) [default: accept-new]
   -p, --parallel <PARALLEL>               Maximum parallel connections [default: 10]
   --timeout <TIMEOUT>                     Command timeout in seconds (0 for unlimited) [default: 300]
+  --connect-timeout <SECONDS>             SSH connection timeout in seconds (minimum: 1) [default: 30]
   --output-dir <OUTPUT_DIR>               Output directory for command results
   -v, --verbose                           Increase verbosity (-v, -vv, -vvv)
   -h, --help                              Print help
