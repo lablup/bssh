@@ -252,13 +252,14 @@ impl PtySession {
                                     match action {
                                         LocalAction::Disconnect => {
                                             tracing::debug!("Disconnect escape sequence detected");
-                                            let _ = input_tx
-                                                .try_send(PtyMessage::Terminate);
+                                            let _ = input_tx.try_send(PtyMessage::Terminate);
                                             break;
                                         }
                                         LocalAction::Passthrough(data) => {
                                             // Send filtered data
-                                            if input_tx.try_send(PtyMessage::LocalInput(data)).is_err()
+                                            if input_tx
+                                                .try_send(PtyMessage::LocalInput(data))
+                                                .is_err()
                                             {
                                                 break;
                                             }
@@ -274,8 +275,8 @@ impl PtySession {
                                 }
                             }
                             Err(e) => {
-                                let _ =
-                                    input_tx.try_send(PtyMessage::Error(format!("Input error: {e}")));
+                                let _ = input_tx
+                                    .try_send(PtyMessage::Error(format!("Input error: {e}")));
                                 break;
                             }
                         }

@@ -70,9 +70,7 @@ impl RawInputReader {
     /// The terminal must be in raw mode (via `enable_raw_mode()`) before
     /// calling `read()` to ensure immediate byte availability.
     pub fn new() -> Self {
-        Self {
-            stdin: io::stdin(),
-        }
+        Self { stdin: io::stdin() }
     }
 
     /// Poll for available input with timeout.
