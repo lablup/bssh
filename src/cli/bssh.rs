@@ -424,11 +424,14 @@ pub enum Commands {
 impl Cli {
     pub fn get_command(&self) -> String {
         // In multi-server mode with destination, treat destination as first command arg
-        if self.is_multi_server_mode() && self.destination.is_some() {
-            let mut all_args = vec![self.destination.as_ref().unwrap().clone()];
-            all_args.extend(self.command_args.clone());
-            all_args.join(" ")
-        } else if !self.command_args.is_empty() {
+        if self.is_multi_server_mode() {
+            if let Some(dest) = &self.destination {
+                let mut all_args = vec![dest.clone()];
+                all_args.extend(self.command_args.clone());
+                return all_args.join(" ");
+            }
+        }
+        if !self.command_args.is_empty() {
             self.command_args.join(" ")
         } else {
             String::new()
