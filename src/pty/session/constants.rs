@@ -13,6 +13,13 @@
 // limitations under the License.
 
 //! Terminal constants and key sequence definitions
+//!
+//! NOTE: Many key sequence constants are currently unused since we switched to
+//! raw byte passthrough (see issue #87), but are kept for reference and potential
+//! future debugging use.
+
+// Allow dead code for unused key sequence constants
+#![allow(dead_code)]
 
 // Buffer size constants for allocation optimization
 // These values are chosen based on empirical testing and SSH protocol characteristics
@@ -20,21 +27,18 @@
 /// Maximum size for terminal key sequences (ANSI escape sequences are typically 3-7 bytes)
 /// Value: 8 bytes - Accommodates the longest standard ANSI sequences (F-keys: ESC[2x~)
 /// Rationale: Most key sequences are 1-5 bytes, 8 provides safe headroom without waste
-#[allow(dead_code)]
 pub const MAX_KEY_SEQUENCE_SIZE: usize = 8;
 
 /// Buffer size for SSH I/O operations (4KB aligns with typical SSH packet sizes)
 /// Value: 4096 bytes - Matches common SSH packet fragmentation boundaries
 /// Rationale: SSH protocol commonly uses 4KB packets; larger buffers reduce syscalls
 /// but increase memory usage. 4KB provides optimal balance for interactive sessions.
-#[allow(dead_code)]
 pub const SSH_IO_BUFFER_SIZE: usize = 4096;
 
 /// Maximum size for terminal output chunks processed at once
 /// Value: 1024 bytes - Balance between responsiveness and efficiency
 /// Rationale: Smaller chunks improve perceived responsiveness for interactive use,
 /// while still being large enough to batch terminal escape sequences efficiently.
-#[allow(dead_code)]
 pub const TERMINAL_OUTPUT_CHUNK_SIZE: usize = 1024;
 
 /// PTY message channel sizing:
@@ -57,7 +61,7 @@ pub const INPUT_POLL_TIMEOUT_MS: u64 = 500;
 /// - Tasks should check cancellation signal frequently (10-50ms intervals)
 pub const TASK_CLEANUP_TIMEOUT_MS: u64 = 100;
 
-// Const arrays for frequently used key sequences to avoid repeated allocations
+// Const arrays for frequently used key sequences to avoid repeated allocations.
 /// Control key sequences - frequently used in terminal input
 pub const CTRL_C_SEQUENCE: &[u8] = &[0x03]; // Ctrl+C (SIGINT)
 pub const CTRL_D_SEQUENCE: &[u8] = &[0x04]; // Ctrl+D (EOF)

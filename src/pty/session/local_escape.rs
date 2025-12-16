@@ -33,7 +33,9 @@ use smallvec::SmallVec;
 pub enum LocalAction {
     /// Disconnect the session
     Disconnect,
-    /// Pass data through to remote (optionally filtered)
+    /// Pass data through to remote (optionally filtered).
+    /// Reserved for future escape sequences like `~?` (help) or `~~` (send literal tilde).
+    #[allow(dead_code)]
     Passthrough(SmallVec<[u8; 64]>),
 }
 
@@ -125,6 +127,8 @@ impl LocalEscapeDetector {
     /// Reset the detector state.
     ///
     /// Useful when starting a new session or after handling an escape.
+    /// Currently unused but kept for API completeness and testing.
+    #[allow(dead_code)]
     pub fn reset(&mut self) {
         self.after_newline = true;
         self.saw_tilde = false;

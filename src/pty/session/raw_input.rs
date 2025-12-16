@@ -81,7 +81,8 @@ impl RawInputReader {
     /// occurred, or an error if the poll failed.
     ///
     /// # Arguments
-    /// * `timeout` - Maximum time to wait for input
+    /// * `timeout` - Maximum time to wait for input. Values greater than 65535ms
+    ///               will be clamped to 65535ms due to poll() limitations.
     ///
     /// # Example
     /// ```ignore
@@ -97,8 +98,10 @@ impl RawInputReader {
         use std::os::unix::io::BorrowedFd;
 
         let fd = self.stdin.as_raw_fd();
-        // SAFETY: We're borrowing the fd within this function scope only,
-        // and stdin remains valid for the lifetime of this borrow
+        // SAFETY:
+        // 1. We hold a reference to `self.stdin` for the entire function scope
+        // 2. `stdin` is owned by this struct and cannot be closed externally
+        // 3. The BorrowedFd is used only within this function and not stored
         let borrowed_fd = unsafe { BorrowedFd::borrow_raw(fd) };
         let mut poll_fds = [PollFd::new(borrowed_fd, PollFlags::POLLIN)];
 
