@@ -87,22 +87,36 @@ where
 /// Synchronized output writer for node prefixed output
 pub struct NodeOutputWriter {
     node_prefix: String,
+    no_prefix: bool,
 }
 
 impl NodeOutputWriter {
-    /// Create a new writer with a node prefix
+    /// Create a new writer with a node prefix (prefix enabled by default)
+    #[allow(dead_code)]
     pub fn new(node_host: &str) -> Self {
+        Self::new_with_no_prefix(node_host, false)
+    }
+
+    /// Create a new writer with optional prefix disabled
+    pub fn new_with_no_prefix(node_host: &str, no_prefix: bool) -> Self {
         Self {
             node_prefix: format!("[{node_host}]"),
+            no_prefix,
         }
     }
 
-    /// Write stdout lines with node prefix atomically
+    /// Format a line with or without prefix based on configuration
+    fn format_line(&self, line: &str) -> String {
+        if self.no_prefix {
+            line.to_string()
+        } else {
+            format!("{} {}", self.node_prefix, line)
+        }
+    }
+
+    /// Write stdout lines with optional node prefix atomically
     pub fn write_stdout_lines(&self, text: &str) -> io::Result<()> {
-        let lines: Vec<String> = text
-            .lines()
-            .map(|line| format!("{} {}", self.node_prefix, line))
-            .collect();
+        let lines: Vec<String> = text.lines().map(|line| self.format_line(line)).collect();
 
         if !lines.is_empty() {
             let mut stdout = STDOUT_MUTEX.lock().unwrap();
@@ -114,12 +128,9 @@ impl NodeOutputWriter {
         Ok(())
     }
 
-    /// Write stderr lines with node prefix atomically
+    /// Write stderr lines with optional node prefix atomically
     pub fn write_stderr_lines(&self, text: &str) -> io::Result<()> {
-        let lines: Vec<String> = text
-            .lines()
-            .map(|line| format!("{} {}", self.node_prefix, line))
-            .collect();
+        let lines: Vec<String> = text.lines().map(|line| self.format_line(line)).collect();
 
         if !lines.is_empty() {
             let mut stderr = STDERR_MUTEX.lock().unwrap();
@@ -131,15 +142,15 @@ impl NodeOutputWriter {
         Ok(())
     }
 
-    /// Write a single stdout line with node prefix
+    /// Write a single stdout line with optional node prefix
     pub fn write_stdout(&self, line: &str) -> io::Result<()> {
-        synchronized_println(&format!("{} {}", self.node_prefix, line))
+        synchronized_println(&self.format_line(line))
     }
 
-    /// Write a single stderr line with node prefix
+    /// Write a single stderr line with optional node prefix
     #[allow(dead_code)]
     pub fn write_stderr(&self, line: &str) -> io::Result<()> {
-        synchronized_eprintln(&format!("{} {}", self.node_prefix, line))
+        synchronized_eprintln(&self.format_line(line))
     }
 }
 
@@ -151,6 +162,24 @@ mod tests {
     fn test_node_output_writer() {
         let writer = NodeOutputWriter::new("test-host");
         assert_eq!(writer.node_prefix, "[test-host]");
+        assert!(!writer.no_prefix);
+    }
+
+    #[test]
+    fn test_node_output_writer_with_no_prefix() {
+        let writer = NodeOutputWriter::new_with_no_prefix("test-host", true);
+        assert_eq!(writer.node_prefix, "[test-host]");
+        assert!(writer.no_prefix);
+
+        // Test format_line with no_prefix enabled
+        assert_eq!(writer.format_line("test output"), "test output");
+
+        // Test with no_prefix disabled
+        let writer_with_prefix = NodeOutputWriter::new_with_no_prefix("test-host", false);
+        assert_eq!(
+            writer_with_prefix.format_line("test output"),
+            "[test-host] test output"
+        );
     }
 
     #[test]

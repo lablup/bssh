@@ -616,15 +616,17 @@ impl ParallelExecutor {
         }
 
         // Execute based on mode and ensure cleanup
+        let no_prefix = output_mode.is_no_prefix();
         let result = if output_mode.is_tui() {
             // TUI mode: interactive terminal UI
             self.handle_tui_mode(&mut manager, handles, command).await
         } else if output_mode.is_stream() {
-            // Stream mode: output in real-time with [node] prefixes
-            self.handle_stream_mode(&mut manager, handles).await
+            // Stream mode: output in real-time with optional [node] prefixes
+            self.handle_stream_mode(&mut manager, handles, no_prefix)
+                .await
         } else if let Some(output_dir) = output_mode.output_dir() {
             // File mode: save to per-node files
-            self.handle_file_mode(&mut manager, handles, output_dir)
+            self.handle_file_mode(&mut manager, handles, output_dir, no_prefix)
                 .await
         } else {
             // Fallback to normal mode
@@ -634,11 +636,12 @@ impl ParallelExecutor {
         result
     }
 
-    /// Handle stream mode output with [node] prefixes
+    /// Handle stream mode output with optional [node] prefixes
     async fn handle_stream_mode(
         &self,
         manager: &mut super::stream_manager::MultiNodeStreamManager,
         handles: Vec<tokio::task::JoinHandle<(Node, Result<u32>)>>,
+        no_prefix: bool,
     ) -> Result<Vec<ExecutionResult>> {
         use super::output_sync::NodeOutputWriter;
         use std::time::Duration;
@@ -651,7 +654,7 @@ impl ParallelExecutor {
             // Poll all streams for new output
             manager.poll_all();
 
-            // Output any new data with [node] prefixes using synchronized writes
+            // Output any new data with optional [node] prefixes using synchronized writes
             for stream in manager.streams_mut() {
                 let stdout = stream.take_stdout();
                 let stderr = stream.take_stderr();
@@ -659,7 +662,7 @@ impl ParallelExecutor {
                 if !stdout.is_empty() {
                     // Use lossy conversion to handle non-UTF8 data gracefully
                     let text = String::from_utf8_lossy(&stdout);
-                    let writer = NodeOutputWriter::new(&stream.node.host);
+                    let writer = NodeOutputWriter::new_with_no_prefix(&stream.node.host, no_prefix);
                     if let Err(e) = writer.write_stdout_lines(&text) {
                         tracing::error!("Failed to write stdout for {}: {}", stream.node.host, e);
                     }
@@ -668,7 +671,7 @@ impl ParallelExecutor {
                 if !stderr.is_empty() {
                     // Use lossy conversion to handle non-UTF8 data gracefully
                     let text = String::from_utf8_lossy(&stderr);
-                    let writer = NodeOutputWriter::new(&stream.node.host);
+                    let writer = NodeOutputWriter::new_with_no_prefix(&stream.node.host, no_prefix);
                     if let Err(e) = writer.write_stderr_lines(&text) {
                         tracing::error!("Failed to write stderr for {}: {}", stream.node.host, e);
                     }
@@ -817,6 +820,7 @@ impl ParallelExecutor {
         manager: &mut super::stream_manager::MultiNodeStreamManager,
         handles: Vec<tokio::task::JoinHandle<(Node, Result<u32>)>>,
         output_dir: &Path,
+        no_prefix: bool,
     ) -> Result<Vec<ExecutionResult>> {
         use std::time::Duration;
         use tokio::fs;
@@ -898,7 +902,10 @@ impl ParallelExecutor {
                 match fs::write(&stdout_path, stream.stdout()).await {
                     Ok(_) => {
                         // Use synchronized output to prevent interleaving
-                        let writer = super::output_sync::NodeOutputWriter::new(&stream.node.host);
+                        let writer = super::output_sync::NodeOutputWriter::new_with_no_prefix(
+                            &stream.node.host,
+                            no_prefix,
+                        );
                         if let Err(e) = writer
                             .write_stdout(&format!("Output saved to {}", stdout_path.display()))
                         {
@@ -926,7 +933,10 @@ impl ParallelExecutor {
                 match fs::write(&stderr_path, stream.stderr()).await {
                     Ok(_) => {
                         // Use synchronized output to prevent interleaving
-                        let writer = super::output_sync::NodeOutputWriter::new(&stream.node.host);
+                        let writer = super::output_sync::NodeOutputWriter::new_with_no_prefix(
+                            &stream.node.host,
+                            no_prefix,
+                        );
                         if let Err(e) = writer
                             .write_stdout(&format!("Errors saved to {}", stderr_path.display()))
                         {

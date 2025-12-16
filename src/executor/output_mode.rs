@@ -36,13 +36,15 @@ pub enum OutputMode {
     /// Each line of output is prefixed with [hostname] and displayed
     /// in real-time as it arrives. This allows monitoring long-running
     /// commands across multiple nodes.
-    Stream,
+    /// The bool indicates whether to disable the prefix (no_prefix option).
+    Stream { no_prefix: bool },
 
     /// File mode - save per-node output to separate files
     ///
     /// Each node's output is saved to a separate file in the specified
     /// directory. Files are named with hostname and timestamp.
-    File(PathBuf),
+    /// The bool indicates whether to disable the prefix in status messages.
+    File { path: PathBuf, no_prefix: bool },
 
     /// TUI mode - interactive terminal UI with multiple view modes
     ///
@@ -61,10 +63,28 @@ impl OutputMode {
     /// 3. Auto-detect TUI if TTY and no explicit mode
     /// 4. Default (Normal mode)
     pub fn from_args(stream: bool, output_dir: Option<PathBuf>) -> Self {
+        Self::from_args_with_no_prefix(stream, output_dir, false)
+    }
+
+    /// Create output mode from CLI arguments with no_prefix option
+    ///
+    /// Priority:
+    /// 1. --output-dir (File mode)
+    /// 2. --stream (Stream mode)
+    /// 3. Auto-detect TUI if TTY and no explicit mode
+    /// 4. Default (Normal mode)
+    pub fn from_args_with_no_prefix(
+        stream: bool,
+        output_dir: Option<PathBuf>,
+        no_prefix: bool,
+    ) -> Self {
         if let Some(dir) = output_dir {
-            OutputMode::File(dir)
+            OutputMode::File {
+                path: dir,
+                no_prefix,
+            }
         } else if stream {
-            OutputMode::Stream
+            OutputMode::Stream { no_prefix }
         } else if is_tty() {
             // Auto-enable TUI mode for interactive terminals
             OutputMode::Tui
@@ -77,10 +97,25 @@ impl OutputMode {
     ///
     /// Used when --no-tui or similar flags are present
     pub fn from_args_explicit(stream: bool, output_dir: Option<PathBuf>, enable_tui: bool) -> Self {
+        Self::from_args_explicit_with_no_prefix(stream, output_dir, enable_tui, false)
+    }
+
+    /// Create output mode with explicit TUI disable option and no_prefix
+    ///
+    /// Used when --no-tui or similar flags are present
+    pub fn from_args_explicit_with_no_prefix(
+        stream: bool,
+        output_dir: Option<PathBuf>,
+        enable_tui: bool,
+        no_prefix: bool,
+    ) -> Self {
         if let Some(dir) = output_dir {
-            OutputMode::File(dir)
+            OutputMode::File {
+                path: dir,
+                no_prefix,
+            }
         } else if stream {
-            OutputMode::Stream
+            OutputMode::Stream { no_prefix }
         } else if enable_tui && is_tty() {
             OutputMode::Tui
         } else {
@@ -95,12 +130,12 @@ impl OutputMode {
 
     /// Check if this is stream mode
     pub fn is_stream(&self) -> bool {
-        matches!(self, OutputMode::Stream)
+        matches!(self, OutputMode::Stream { .. })
     }
 
     /// Check if this is file mode
     pub fn is_file(&self) -> bool {
-        matches!(self, OutputMode::File(_))
+        matches!(self, OutputMode::File { .. })
     }
 
     /// Check if this is TUI mode
@@ -111,8 +146,17 @@ impl OutputMode {
     /// Get output directory if in file mode
     pub fn output_dir(&self) -> Option<&PathBuf> {
         match self {
-            OutputMode::File(dir) => Some(dir),
+            OutputMode::File { path, .. } => Some(path),
             _ => None,
+        }
+    }
+
+    /// Check if prefix is disabled for this output mode
+    pub fn is_no_prefix(&self) -> bool {
+        match self {
+            OutputMode::Stream { no_prefix } => *no_prefix,
+            OutputMode::File { no_prefix, .. } => *no_prefix,
+            _ => false,
         }
     }
 }
@@ -191,12 +235,15 @@ mod tests {
         assert!(!normal.is_stream());
         assert!(!normal.is_file());
 
-        let stream = OutputMode::Stream;
+        let stream = OutputMode::Stream { no_prefix: false };
         assert!(!stream.is_normal());
         assert!(stream.is_stream());
         assert!(!stream.is_file());
 
-        let file = OutputMode::File(PathBuf::from("/tmp"));
+        let file = OutputMode::File {
+            path: PathBuf::from("/tmp"),
+            no_prefix: false,
+        };
         assert!(!file.is_normal());
         assert!(!file.is_stream());
         assert!(file.is_file());
@@ -206,5 +253,29 @@ mod tests {
     fn test_default_output_mode() {
         let mode = OutputMode::default();
         assert!(mode.is_normal());
+    }
+
+    #[test]
+    fn test_no_prefix_option() {
+        // Stream mode with no_prefix
+        let mode = OutputMode::from_args_with_no_prefix(true, None, true);
+        assert!(mode.is_stream());
+        assert!(mode.is_no_prefix());
+
+        // Stream mode without no_prefix
+        let mode = OutputMode::from_args_with_no_prefix(true, None, false);
+        assert!(mode.is_stream());
+        assert!(!mode.is_no_prefix());
+
+        // File mode with no_prefix
+        let dir = PathBuf::from("/tmp/output");
+        let mode = OutputMode::from_args_with_no_prefix(false, Some(dir.clone()), true);
+        assert!(mode.is_file());
+        assert!(mode.is_no_prefix());
+        assert_eq!(mode.output_dir(), Some(&dir));
+
+        // Normal mode (no_prefix doesn't apply)
+        let mode = OutputMode::Normal;
+        assert!(!mode.is_no_prefix());
     }
 }
