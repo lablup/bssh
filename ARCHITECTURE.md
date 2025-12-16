@@ -393,6 +393,36 @@ The batch flag is passed through the executor chain:
 - Applied in both normal mode (`execute()`) and stream mode (`handle_stream_mode()`)
 - TUI mode maintains its own quit handling and ignores this flag
 
+**Fail-Fast Mode (Added 2025-12):**
+
+The `--fail-fast` / `-k` option enables immediate termination when any node fails. This is compatible with pdsh's `-k` flag and useful for:
+- Critical operations where partial execution is unacceptable
+- Deployment scripts where all nodes must succeed
+- Validation checks across clusters
+
+Implementation uses:
+```rust
+// Cancellation signaling via tokio::sync::watch
+let (cancel_tx, cancel_rx) = watch::channel(false);
+
+// Task selection with cancellation check
+tokio::select! {
+    biased;  // Prioritize cancellation check
+    _ = cancel_rx.changed() => {
+        // Task cancelled due to fail-fast
+        return Err(anyhow!("Execution cancelled due to fail-fast"));
+    }
+    permit = semaphore.acquire() => {
+        // Execute task normally
+    }
+}
+```
+
+The fail-fast mode integrates with:
+- `--require-all-success`: Both require all nodes to succeed, but fail-fast stops early
+- `--check-all-nodes`: Fail-fast stops early, check-all-nodes affects final exit code
+- `--parallel N`: Cancels pending tasks waiting in the semaphore queue
+
 ### 4. SSH Client (`ssh/client/*`, `ssh/tokio_client/*`)
 
 **SSH Client Module Structure (Refactored 2025-10-17):**

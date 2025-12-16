@@ -21,14 +21,15 @@ use std::process::Command;
 
 /// Helper to get bssh binary path
 fn bssh_binary() -> String {
-    // Try release first, then debug
-    let release = std::env::current_dir().unwrap().join("target/release/bssh");
+    // Prefer debug binary since `cargo test` builds debug binaries
+    // This avoids using stale release binaries in CI
     let debug = std::env::current_dir().unwrap().join("target/debug/bssh");
+    let release = std::env::current_dir().unwrap().join("target/release/bssh");
 
-    if release.exists() {
-        release.to_string_lossy().to_string()
-    } else if debug.exists() {
+    if debug.exists() {
         debug.to_string_lossy().to_string()
+    } else if release.exists() {
+        release.to_string_lossy().to_string()
     } else {
         panic!("bssh binary not found. Run 'cargo build' first.");
     }

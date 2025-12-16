@@ -404,6 +404,7 @@ async fn handle_exec_command(cli: &Cli, ctx: &AppContext, command: &str) -> Resu
             check_all_nodes: cli.check_all_nodes,
             sudo_password,
             batch: cli.batch,
+            fail_fast: cli.fail_fast,
         };
         execute_command(params).await
     }

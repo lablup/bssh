@@ -248,6 +248,25 @@ with both stream mode (--stream) and file mode (--output-dir).
 Example: bssh -H host1,host2 --stream -N "uname -a"
 
 .TP
+.BR \-k ", " \-\-fail\-fast
+Stop execution immediately on first failure (pdsh -k compatible).
+When enabled, bssh cancels pending commands when any node fails due to
+connection error or non-zero exit code. This is useful for:
+.RS
+.IP \[bu] 2
+Critical operations where partial execution is unacceptable
+.IP \[bu] 2
+Deployment scripts where all nodes must succeed
+.IP \[bu] 2
+Validation checks across clusters
+.RE
+.IP
+Running tasks are terminated gracefully, and the error message clearly
+indicates which node caused the failure. Can be combined with
+.B --require-all-success
+for strict error handling.
+
+.TP
 .BR \-v ", " \-\-verbose
 Increase verbosity (can be used multiple times: -v, -vv, -vvv)
 
@@ -1240,6 +1259,29 @@ Example output:
 Useful for monitoring long-running commands or when piping output.
 .RE
 
+.SS Fail-Fast Mode Examples
+.TP
+Stop on first failure during critical deployment:
+.B bssh -k -C production "deploy.sh"
+.RS
+Execution stops immediately if any node fails the deployment script
+.RE
+
+.TP
+Combine fail-fast with require-all-success:
+.B bssh --fail-fast --require-all-success -C production "service-restart.sh"
+.RS
+Stops early on failure AND ensures final exit code reflects any failures
+.RE
+
+.TP
+Sequential fail-fast with limited parallelism:
+.B bssh -k --parallel 1 -H "node1,node2,node3" "critical-operation"
+.RS
+Runs commands one at a time, stopping on first failure
+.RE
+
+.SS File Transfer Examples
 .TP
 Upload configuration file to all nodes:
 .B bssh -H "node1,node2,node3" upload /etc/myapp.conf /etc/myapp.conf
