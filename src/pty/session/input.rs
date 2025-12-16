@@ -338,4 +338,746 @@ mod tests {
             "Paste should be truncated to MAX_PASTE_SIZE"
         );
     }
+
+    // ============================================
+    // Ctrl+key combination tests
+    // ============================================
+
+    #[test]
+    fn test_ctrl_c_sequence() {
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::Char('c'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), CTRL_C_SEQUENCE);
+    }
+
+    #[test]
+    fn test_ctrl_c_uppercase() {
+        // Ctrl+C should work with uppercase C as well
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::Char('C'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), CTRL_C_SEQUENCE);
+    }
+
+    #[test]
+    fn test_ctrl_d_sequence() {
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::Char('d'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), CTRL_D_SEQUENCE);
+    }
+
+    #[test]
+    fn test_ctrl_z_sequence() {
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::Char('z'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), CTRL_Z_SEQUENCE);
+    }
+
+    #[test]
+    fn test_ctrl_a_sequence() {
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::Char('a'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), CTRL_A_SEQUENCE);
+    }
+
+    #[test]
+    fn test_ctrl_e_sequence() {
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::Char('e'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), CTRL_E_SEQUENCE);
+    }
+
+    #[test]
+    fn test_ctrl_u_sequence() {
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::Char('u'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), CTRL_U_SEQUENCE);
+    }
+
+    #[test]
+    fn test_ctrl_k_sequence() {
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::Char('k'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), CTRL_K_SEQUENCE);
+    }
+
+    #[test]
+    fn test_ctrl_w_sequence() {
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::Char('w'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), CTRL_W_SEQUENCE);
+    }
+
+    #[test]
+    fn test_ctrl_l_sequence() {
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::Char('l'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), CTRL_L_SEQUENCE);
+    }
+
+    #[test]
+    fn test_ctrl_r_sequence() {
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::Char('r'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), CTRL_R_SEQUENCE);
+    }
+
+    #[test]
+    fn test_ctrl_b_general_handler() {
+        // Ctrl+B should be handled by general Ctrl+ handler
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::Char('b'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        // Ctrl+B = 0x02
+        assert_eq!(result.unwrap().as_slice(), &[0x02]);
+    }
+
+    #[test]
+    fn test_ctrl_f_general_handler() {
+        // Ctrl+F should be handled by general Ctrl+ handler
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::Char('f'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        // Ctrl+F = 0x06
+        assert_eq!(result.unwrap().as_slice(), &[0x06]);
+    }
+
+    // ============================================
+    // Arrow key tests
+    // ============================================
+
+    #[test]
+    fn test_up_arrow() {
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::Up,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), UP_ARROW_SEQUENCE);
+    }
+
+    #[test]
+    fn test_down_arrow() {
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::Down,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), DOWN_ARROW_SEQUENCE);
+    }
+
+    #[test]
+    fn test_left_arrow() {
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::Left,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), LEFT_ARROW_SEQUENCE);
+    }
+
+    #[test]
+    fn test_right_arrow() {
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::Right,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), RIGHT_ARROW_SEQUENCE);
+    }
+
+    // ============================================
+    // Function key tests (F1-F12)
+    // ============================================
+
+    #[test]
+    fn test_f1_key() {
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::F(1),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), F1_SEQUENCE);
+    }
+
+    #[test]
+    fn test_f2_key() {
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::F(2),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), F2_SEQUENCE);
+    }
+
+    #[test]
+    fn test_f3_key() {
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::F(3),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), F3_SEQUENCE);
+    }
+
+    #[test]
+    fn test_f4_key() {
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::F(4),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), F4_SEQUENCE);
+    }
+
+    #[test]
+    fn test_f5_key() {
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::F(5),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), F5_SEQUENCE);
+    }
+
+    #[test]
+    fn test_f6_key() {
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::F(6),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), F6_SEQUENCE);
+    }
+
+    #[test]
+    fn test_f7_key() {
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::F(7),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), F7_SEQUENCE);
+    }
+
+    #[test]
+    fn test_f8_key() {
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::F(8),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), F8_SEQUENCE);
+    }
+
+    #[test]
+    fn test_f9_key() {
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::F(9),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), F9_SEQUENCE);
+    }
+
+    #[test]
+    fn test_f10_key() {
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::F(10),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), F10_SEQUENCE);
+    }
+
+    #[test]
+    fn test_f11_key() {
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::F(11),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), F11_SEQUENCE);
+    }
+
+    #[test]
+    fn test_f12_key() {
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::F(12),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), F12_SEQUENCE);
+    }
+
+    #[test]
+    fn test_f13_key_not_supported() {
+        // F13+ should not be supported
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::F(13),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_none());
+    }
+
+    // ============================================
+    // Special key tests
+    // ============================================
+
+    #[test]
+    fn test_enter_key() {
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::Enter,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), ENTER_SEQUENCE);
+    }
+
+    #[test]
+    fn test_tab_key() {
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::Tab,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), TAB_SEQUENCE);
+    }
+
+    #[test]
+    fn test_backspace_key() {
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::Backspace,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), BACKSPACE_SEQUENCE);
+    }
+
+    #[test]
+    fn test_escape_key() {
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::Esc,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), ESC_SEQUENCE);
+    }
+
+    #[test]
+    fn test_home_key() {
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::Home,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), HOME_SEQUENCE);
+    }
+
+    #[test]
+    fn test_end_key() {
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::End,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), END_SEQUENCE);
+    }
+
+    #[test]
+    fn test_page_up_key() {
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::PageUp,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), PAGE_UP_SEQUENCE);
+    }
+
+    #[test]
+    fn test_page_down_key() {
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::PageDown,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), PAGE_DOWN_SEQUENCE);
+    }
+
+    #[test]
+    fn test_insert_key() {
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::Insert,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), INSERT_SEQUENCE);
+    }
+
+    #[test]
+    fn test_delete_key() {
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::Delete,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), DELETE_SEQUENCE);
+    }
+
+    // ============================================
+    // KeyEventKind tests
+    // ============================================
+
+    #[test]
+    fn test_key_release_ignored() {
+        // Key release events should return None
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::Char('a'),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Release,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_none(), "Key release events should be ignored");
+    }
+
+    #[test]
+    fn test_key_repeat_ignored() {
+        // Key repeat events should also return None (only Press is processed)
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::Char('a'),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Repeat,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_none(), "Key repeat events should be ignored");
+    }
+
+    // ============================================
+    // Modifier key tests
+    // ============================================
+
+    #[test]
+    fn test_shift_character() {
+        // Shift+a should produce 'A' (handled by crossterm, we get uppercase char)
+        // But we test that SHIFT modifier alone is accepted
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::Char('A'),
+            modifiers: KeyModifiers::SHIFT,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), b"A");
+    }
+
+    #[test]
+    fn test_alt_character_ignored() {
+        // Alt+character should be ignored by our char handler
+        // (special handling would be needed for Alt sequences)
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::Char('a'),
+            modifiers: KeyModifiers::ALT,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(
+            result.is_none(),
+            "Alt+char should be ignored (no special handler)"
+        );
+    }
+
+    #[test]
+    fn test_meta_character_ignored() {
+        // Meta+character should be ignored
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::Char('a'),
+            modifiers: KeyModifiers::META,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(
+            result.is_none(),
+            "Meta+char should be ignored (no special handler)"
+        );
+    }
+
+    #[test]
+    fn test_unicode_character() {
+        // Test Unicode character input
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::Char('한'),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), "한".as_bytes());
+    }
+
+    #[test]
+    fn test_emoji_character() {
+        // Test emoji input
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::Char('🚀'),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().as_slice(), "🚀".as_bytes());
+    }
+
+    // ============================================
+    // Mouse event tests
+    // ============================================
+
+    #[test]
+    fn test_mouse_event_returns_none() {
+        // Mouse events are not currently supported
+        let event = Event::Mouse(MouseEvent {
+            kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+        let result = handle_input_event(event);
+
+        assert!(result.is_none(), "Mouse events should return None");
+    }
+
+    // ============================================
+    // key_event_to_bytes direct tests
+    // ============================================
+
+    #[test]
+    fn test_key_event_to_bytes_ctrl_out_of_range() {
+        // Test that Ctrl+non-letter returns None (e.g., Ctrl+1)
+        // Since KeyCode::Char only accepts chars, test with a char outside a-z
+        // Actually, the general handler computes (c.to_ascii_lowercase() as u8).saturating_sub(b'a' - 1)
+        // For '1' = 49, to_ascii_lowercase() = 49, subtract 96 = max(0, -47) = 0 via saturating_sub
+        // But 0 <= 26 is false (0 < 1), so... let's trace through:
+        // '1' as u8 = 49, b'a' - 1 = 96, 49.saturating_sub(96) = 0
+        // 0 <= 26 is true, so it would return Some([0])
+        // Actually we need to test with a character that results in > 26
+        // Let's test with '{' = 123, 123 - 96 = 27, which is > 26
+        let key_event = KeyEvent {
+            code: KeyCode::Char('{'),
+            modifiers: KeyModifiers::CONTROL,
+            kind: KeyEventKind::Press,
+            state: crossterm::event::KeyEventState::NONE,
+        };
+        let result = key_event_to_bytes(key_event);
+
+        assert!(result.is_none());
+    }
 }
