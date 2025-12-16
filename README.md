@@ -1194,6 +1194,7 @@ See the [LICENSE](./LICENSE) file for details.
 ## Changelog
 
 ### Recent Updates
+- **v1.4.2 (2025/12/16):** Fix terminal escape sequence responses displayed on first prompt when starting tmux, fix paste not working in PTY sessions, bump dependencies
 - **v1.4.1 (2025/12/16):** Add comprehensive TUI/streaming tests (84 new tests), extend password fallback for SSH agent auth failures, add TUI module documentation
 - **v1.4.0 (2025/12/15):** Add --sudo-password flag for automated sudo authentication, password fallback with improved SSH debugging, developer tooling (githooks)
 - **v1.3.0 (2025/12/10):** Add interactive TUI with 4 view modes (Summary/Detail/Split/Diff), multi-node stream management, and fix terminal escape sequence filtering in PTY sessions

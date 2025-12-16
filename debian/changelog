@@ -1,3 +1,35 @@
+bssh (1.4.2-1~jammy1) jammy; urgency=medium
+
+  * v1.4.2
+  ### New Features
+  None
+
+  ### Improvements
+  None
+
+  ### Bug Fixes
+  - **PTY Session Fixes**: Fixed terminal escape sequence responses and paste functionality
+    - Fixed terminal escape sequence responses displayed on first prompt when starting tmux (#90)
+    - Fixed paste not working in PTY sessions (#89)
+
+  ### CI/CD Improvements
+  None
+
+  ### Technical Details
+  - Terminal handling improvements for PTY sessions
+  - Better compatibility with tmux and terminal multiplexers
+
+  ### Dependencies
+  - Bumped dependencies to latest versions
+
+  ### Breaking Changes
+  None
+
+  ### Known Issues
+  None
+
+ -- Jeongkyu Shin <inureyes@gmail.com>  Mon, 16 Dec 2025 00:00:00 +0900
+
 bssh (1.4.1-1~jammy1) jammy; urgency=medium
 
   * v1.4.1

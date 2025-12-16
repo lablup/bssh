@@ -338,7 +338,7 @@ dependencies = [
 
 [[package]]
 name = "bssh"
-version = "1.4.1"
+version = "1.4.2"
 dependencies = [
  "anyhow",
  "arrayvec",
