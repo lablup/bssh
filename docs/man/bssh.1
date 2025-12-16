@@ -194,6 +194,14 @@ disabled when output is piped or in CI environments. This disables the
 interactive TUI mode.
 
 .TP
+.BR \-N ", " \-\-no\-prefix
+Disable hostname prefix in output lines (pdsh -N compatibility). When
+specified, output lines are displayed without the [hostname] prefix,
+which is useful for programmatic parsing or cleaner display. Works
+with both stream mode (--stream) and file mode (--output-dir).
+Example: bssh -H host1,host2 --stream -N "uname -a"
+
+.TP
 .BR \-v ", " \-\-verbose
 Increase verbosity (can be used multiple times: -v, -vv, -vvv)
 

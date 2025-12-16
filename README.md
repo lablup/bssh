@@ -290,6 +290,12 @@ bssh -C production --stream "tail -f /var/log/syslog"
 # [node1] Oct 30 10:15:23 systemd[1]: Started nginx.service
 # [node2] Oct 30 10:15:24 kernel: [UFW BLOCK] IN=eth0 OUT=
 # [node1] Oct 30 10:15:25 nginx: Configuration test successful
+
+# Stream mode without hostname prefix (pdsh -N compatibility)
+bssh -C production --stream --no-prefix "uname -a"
+# Output (no [node] prefixes):
+# Linux node1 5.15.0-generic
+# Linux node2 5.15.0-generic
 ```
 
 #### File Mode (Save to Per-Node Files)
@@ -930,6 +936,7 @@ Options:
   -p, --parallel <PARALLEL>               Maximum parallel connections [default: 10]
   --timeout <TIMEOUT>                     Command timeout in seconds (0 for unlimited) [default: 300]
   --output-dir <OUTPUT_DIR>               Output directory for command results
+  -N, --no-prefix                         Disable hostname prefix in output (pdsh -N compatibility)
   -v, --verbose                           Increase verbosity (-v, -vv, -vvv)
   -h, --help                              Print help
   -V, --version                           Print version
