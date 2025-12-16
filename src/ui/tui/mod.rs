@@ -27,18 +27,15 @@ pub mod terminal_guard;
 pub mod views;
 
 use crate::executor::MultiNodeStreamManager;
+use crate::utils::get_log_buffer;
 use anyhow::Result;
 use app::{TuiApp, ViewMode};
 use log_buffer::LogBuffer;
-use log_layer::TuiLogLayer;
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use terminal_guard::TerminalGuard;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::EnvFilter;
 
 /// Result of TUI execution
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,8 +59,9 @@ pub async fn run_tui(
     command: &str,
     _batch_mode: bool, // Reserved for future use; TUI has its own quit handling
 ) -> Result<TuiExitReason> {
-    // Create shared log buffer
-    let log_buffer = Arc::new(Mutex::new(LogBuffer::default()));
+    // Use the global log buffer from logging initialization
+    // If not available (non-TUI logging was used), create a new one (fallback)
+    let log_buffer = get_log_buffer().unwrap_or_else(|| Arc::new(Mutex::new(LogBuffer::default())));
 
     run_tui_with_log_buffer(manager, cluster_name, command, _batch_mode, log_buffer).await
 }
@@ -99,35 +97,6 @@ pub async fn run_tui_with_log_buffer(
     // The terminal guard will automatically clean up when dropped
 
     Ok(exit_reason)
-}
-
-/// Initialize TUI-mode logging with a custom layer
-///
-/// Returns the shared log buffer that can be passed to `run_tui_with_log_buffer`.
-/// This should be called before entering TUI mode to capture all logs.
-pub fn init_tui_logging(verbosity: u8) -> Arc<Mutex<LogBuffer>> {
-    let log_buffer = Arc::new(Mutex::new(LogBuffer::default()));
-    let tui_layer = TuiLogLayer::new(Arc::clone(&log_buffer));
-
-    // Create filter based on verbosity
-    let filter = if std::env::var("RUST_LOG").is_ok() {
-        EnvFilter::from_default_env()
-    } else {
-        match verbosity {
-            0 => EnvFilter::new("bssh=warn"),
-            1 => EnvFilter::new("bssh=info"),
-            2 => EnvFilter::new("bssh=debug,russh=debug"),
-            _ => EnvFilter::new("bssh=trace,russh=trace,russh_sftp=debug"),
-        }
-    };
-
-    // Initialize the subscriber with TUI layer
-    tracing_subscriber::registry()
-        .with(filter)
-        .with(tui_layer)
-        .init();
-
-    log_buffer
 }
 
 /// Minimum terminal dimensions for TUI
