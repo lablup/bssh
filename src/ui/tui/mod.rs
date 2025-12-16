@@ -20,6 +20,8 @@
 
 pub mod app;
 pub mod event;
+pub mod log_buffer;
+pub mod log_layer;
 pub mod progress;
 pub mod terminal_guard;
 pub mod views;
@@ -27,10 +29,16 @@ pub mod views;
 use crate::executor::MultiNodeStreamManager;
 use anyhow::Result;
 use app::{TuiApp, ViewMode};
+use log_buffer::LogBuffer;
+use log_layer::TuiLogLayer;
 use ratatui::{backend::CrosstermBackend, Terminal};
 use std::io;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use terminal_guard::TerminalGuard;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::EnvFilter;
 
 /// Result of TUI execution
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -54,6 +62,23 @@ pub async fn run_tui(
     command: &str,
     _batch_mode: bool, // Reserved for future use; TUI has its own quit handling
 ) -> Result<TuiExitReason> {
+    // Create shared log buffer
+    let log_buffer = Arc::new(Mutex::new(LogBuffer::default()));
+
+    run_tui_with_log_buffer(manager, cluster_name, command, _batch_mode, log_buffer).await
+}
+
+/// Run the TUI event loop with a pre-configured log buffer
+///
+/// This variant allows passing a shared log buffer that can be connected
+/// to a TuiLogLayer for capturing tracing events.
+pub async fn run_tui_with_log_buffer(
+    manager: &mut MultiNodeStreamManager,
+    cluster_name: &str,
+    command: &str,
+    _batch_mode: bool,
+    log_buffer: Arc<Mutex<LogBuffer>>,
+) -> Result<TuiExitReason> {
     // Setup terminal with automatic cleanup guard
     let _terminal_guard = TerminalGuard::new()?;
     let backend = CrosstermBackend::new(io::stdout());
@@ -62,7 +87,7 @@ pub async fn run_tui(
     // Hide cursor during TUI operation
     terminal.hide_cursor()?;
 
-    let mut app = TuiApp::new();
+    let mut app = TuiApp::with_log_buffer(log_buffer);
 
     // Main event loop
     let exit_reason =
@@ -74,6 +99,35 @@ pub async fn run_tui(
     // The terminal guard will automatically clean up when dropped
 
     Ok(exit_reason)
+}
+
+/// Initialize TUI-mode logging with a custom layer
+///
+/// Returns the shared log buffer that can be passed to `run_tui_with_log_buffer`.
+/// This should be called before entering TUI mode to capture all logs.
+pub fn init_tui_logging(verbosity: u8) -> Arc<Mutex<LogBuffer>> {
+    let log_buffer = Arc::new(Mutex::new(LogBuffer::default()));
+    let tui_layer = TuiLogLayer::new(Arc::clone(&log_buffer));
+
+    // Create filter based on verbosity
+    let filter = if std::env::var("RUST_LOG").is_ok() {
+        EnvFilter::from_default_env()
+    } else {
+        match verbosity {
+            0 => EnvFilter::new("bssh=warn"),
+            1 => EnvFilter::new("bssh=info"),
+            2 => EnvFilter::new("bssh=debug,russh=debug"),
+            _ => EnvFilter::new("bssh=trace,russh=trace,russh_sftp=debug"),
+        }
+    };
+
+    // Initialize the subscriber with TUI layer
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(tui_layer)
+        .init();
+
+    log_buffer
 }
 
 /// Minimum terminal dimensions for TUI
@@ -99,12 +153,15 @@ async fn run_event_loop(
         let streams = manager.streams();
         let data_changed = app.check_data_changes(streams);
 
+        // Check if there are new log entries
+        let log_changed = app.check_log_updates();
+
         // Check terminal size before rendering
         let size = terminal.size()?;
         let size_ok = size.width >= MIN_TERMINAL_WIDTH && size.height >= MIN_TERMINAL_HEIGHT;
 
-        // Only render if needed (data changed, user input, or terminal resized)
-        if app.should_redraw() || data_changed {
+        // Only render if needed (data changed, log changed, user input, or terminal resized)
+        if app.should_redraw() || data_changed || log_changed {
             if !size_ok {
                 // Render minimal error message for small terminal
                 terminal.draw(render_size_error)?;
@@ -151,16 +208,32 @@ fn render_ui(
     cluster_name: &str,
     command: &str,
 ) {
-    // Render based on view mode
+    // Calculate layout with optional log panel
+    let (main_area, log_area) =
+        views::log_panel::calculate_layout(f.area(), app.log_panel_height, app.log_panel_visible);
+
+    // Calculate layout with log panel
+    // main_area is used for rendering the main content
+    // log_area (if present) is used for rendering the log panel
+
+    // Render based on view mode in the main area
     match &app.view_mode {
         ViewMode::Summary => {
-            views::summary::render(f, manager, cluster_name, command, app.all_tasks_completed);
+            views::summary::render_in_area(
+                f,
+                main_area,
+                manager,
+                cluster_name,
+                command,
+                app.all_tasks_completed,
+            );
         }
         ViewMode::Detail(idx) => {
             if let Some(stream) = manager.streams().get(*idx) {
                 let scroll = app.get_scroll(*idx);
-                views::detail::render(
+                views::detail::render_in_area(
                     f,
+                    main_area,
                     stream,
                     *idx,
                     scroll,
@@ -170,18 +243,28 @@ fn render_ui(
             }
         }
         ViewMode::Split(indices) => {
-            views::split::render(f, manager, indices);
+            views::split::render_in_area(f, main_area, manager, indices);
         }
         ViewMode::Diff(a, b) => {
             let streams = manager.streams();
             if let (Some(stream_a), Some(stream_b)) = (streams.get(*a), streams.get(*b)) {
-                // For now, use 0 as scroll position (TODO: implement diff scroll)
-                views::diff::render(f, stream_a, stream_b, *a, *b, 0);
+                views::diff::render_in_area(f, main_area, stream_a, stream_b, *a, *b, 0);
             }
         }
     }
 
-    // Render help overlay if enabled
+    // Render log panel if visible
+    if let Some(log_area) = log_area {
+        views::log_panel::render(
+            f,
+            log_area,
+            &app.log_buffer,
+            app.log_scroll_offset,
+            app.log_show_timestamps,
+        );
+    }
+
+    // Render help overlay if enabled (on top of everything)
     if app.show_help {
         render_help_overlay(f, app);
     }

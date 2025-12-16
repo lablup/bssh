@@ -32,6 +32,25 @@ pub fn render(
     command: &str,
     all_tasks_completed: bool,
 ) {
+    render_in_area(
+        f,
+        f.area(),
+        manager,
+        cluster_name,
+        command,
+        all_tasks_completed,
+    );
+}
+
+/// Render the summary view in a specific area
+pub fn render_in_area(
+    f: &mut Frame,
+    area: Rect,
+    manager: &MultiNodeStreamManager,
+    cluster_name: &str,
+    command: &str,
+    all_tasks_completed: bool,
+) {
     let chunks = Layout::default()
         .direction(ratatui::layout::Direction::Vertical)
         .constraints([
@@ -39,7 +58,7 @@ pub fn render(
             Constraint::Min(0),    // Node list
             Constraint::Length(3), // Footer
         ])
-        .split(f.area());
+        .split(area);
 
     render_header(f, chunks[0], cluster_name, command, manager);
     render_node_list(f, chunks[1], manager);
@@ -190,6 +209,8 @@ fn render_footer(f: &mut Frame, area: Rect, all_tasks_completed: bool) {
         Span::raw("Split "),
         Span::styled(" [d] ", Style::default().fg(Color::Yellow)),
         Span::raw("Diff "),
+        Span::styled(" [l] ", Style::default().fg(Color::Yellow)),
+        Span::raw("Log "),
         Span::styled(" [q] ", Style::default().fg(Color::Yellow)),
         Span::raw("Quit "),
         Span::styled(" [?] ", Style::default().fg(Color::Yellow)),

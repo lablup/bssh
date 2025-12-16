@@ -16,5 +16,6 @@
 
 pub mod detail;
 pub mod diff;
+pub mod log_panel;
 pub mod split;
 pub mod summary;

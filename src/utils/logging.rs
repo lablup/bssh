@@ -14,9 +14,9 @@
 
 use tracing_subscriber::EnvFilter;
 
-pub fn init_logging(verbosity: u8) {
-    // Priority: RUST_LOG environment variable > verbosity flag
-    let filter = if std::env::var("RUST_LOG").is_ok() {
+/// Create an environment filter based on verbosity level
+pub fn create_env_filter(verbosity: u8) -> EnvFilter {
+    if std::env::var("RUST_LOG").is_ok() {
         // Use RUST_LOG if set (allows debugging russh and other dependencies)
         EnvFilter::from_default_env()
     } else {
@@ -29,7 +29,16 @@ pub fn init_logging(verbosity: u8) {
             // -vvv: Full trace including all dependencies
             _ => EnvFilter::new("bssh=trace,russh=trace,russh_sftp=debug"),
         }
-    };
+    }
+}
+
+/// Initialize standard logging with console output
+///
+/// This is the default logging mode for non-TUI operation.
+/// For TUI mode, use `crate::ui::tui::init_tui_logging()` instead
+/// to capture logs in an in-memory buffer without breaking the TUI layout.
+pub fn init_logging(verbosity: u8) {
+    let filter = create_env_filter(verbosity);
 
     tracing_subscriber::fmt()
         .with_env_filter(filter)
