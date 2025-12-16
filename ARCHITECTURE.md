@@ -2046,12 +2046,15 @@ src/ui/tui/
 ├── event.rs            # Keyboard input handling
 ├── progress.rs         # Output parsing for progress indicators
 ├── terminal_guard.rs   # RAII cleanup on exit/panic
+├── log_buffer.rs       # In-memory log buffer for TUI mode
+├── log_layer.rs        # Custom tracing Layer for TUI log capture
 └── views/              # View implementations
     ├── mod.rs          # View module exports
     ├── summary.rs      # Multi-node overview
     ├── detail.rs       # Single node full output
     ├── split.rs        # Multi-pane view (2-4 nodes)
-    └── diff.rs         # Side-by-side comparison
+    ├── diff.rs         # Side-by-side comparison
+    └── log_panel.rs    # Log panel view component
 ```
 
 ### Core Components
@@ -2108,6 +2111,12 @@ pub enum ViewMode {
 - **Diff view keys**:
   - `↑/↓`: Synchronized scrolling (TODO: implementation pending)
 
+- **Log panel keys** (when visible):
+  - `l`: Toggle log panel visibility
+  - `j/k`: Scroll log entries up/down
+  - `+/-`: Increase/decrease panel height (3-10 lines)
+  - `t`: Toggle timestamp display
+
 **Design Pattern:**
 - Centralized event routing via `handle_key_event()`
 - Mode-specific handlers for clean separation of concerns
@@ -2156,7 +2165,66 @@ TerminalGuard
 - Direct stderr writes as last resort
 - Force terminal reset on panic: `\x1b[0m\x1b[?25h`
 
-#### 5. View Implementations (`views/`)
+#### 5. In-TUI Log Panel (Issue #104)
+
+**Problem Solved:**
+When ERROR or WARN level logs occur during TUI mode execution, the log messages were previously printed directly to the screen, breaking the ratatui alternate screen layout. The log panel captures these messages in a buffer and displays them in a dedicated panel within the TUI.
+
+**Architecture:**
+
+```
+┌─────────────────────────────────────────────────┐
+│  tracing subscriber                             │
+│       │                                          │
+│       ▼                                          │
+│  TuiLogLayer (implements Layer trait)           │
+│       │                                          │
+│       ▼                                          │
+│  Arc<Mutex<LogBuffer>>                          │
+│       │                                          │
+│       └────────────► LogPanel (view)            │
+│                          │                       │
+│                          ▼                       │
+│                      TUI Rendering              │
+└─────────────────────────────────────────────────┘
+```
+
+**Components:**
+
+1. **LogBuffer** (`log_buffer.rs`):
+   - Thread-safe ring buffer with VecDeque storage
+   - FIFO eviction when max capacity reached (default: 1000, max: 10000)
+   - Configurable via `BSSH_TUI_LOG_MAX_ENTRIES` environment variable
+   - `LogEntry` struct: level, target, message, timestamp
+
+2. **TuiLogLayer** (`log_layer.rs`):
+   - Implements `tracing_subscriber::Layer` trait
+   - Captures tracing events and stores in shared LogBuffer
+   - Minimal lock time: message extraction and entry creation outside lock
+   - O(1) push operation inside lock to minimize contention
+
+3. **LogPanel** (`views/log_panel.rs`):
+   - Color-coded log display: ERROR (red), WARN (yellow), INFO (white), DEBUG (gray)
+   - Scrollable with configurable height (3-10 lines)
+   - Toggle visibility with `l` key
+   - Timestamp display toggle with `t` key
+
+**Thread Safety:**
+- `Arc<Mutex<LogBuffer>>` shared between tracing layer and TUI thread
+- Lock acquisition optimized for minimal contention:
+  - LogLayer: only holds lock during O(1) push
+  - LogPanel: clones entries quickly, renders outside lock
+
+**State in TuiApp:**
+```rust
+pub log_buffer: Arc<Mutex<LogBuffer>>,
+pub log_panel_visible: bool,
+pub log_panel_height: u16,      // 3-10 lines
+pub log_scroll_offset: usize,
+pub log_show_timestamps: bool,
+```
+
+#### 6. View Implementations (`views/`)
 
 ##### Summary View (`summary.rs`)
 

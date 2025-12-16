@@ -32,6 +32,27 @@ pub fn render(
     node_b_idx: usize,
     scroll_pos: usize,
 ) {
+    render_in_area(
+        f,
+        f.area(),
+        stream_a,
+        stream_b,
+        node_a_idx,
+        node_b_idx,
+        scroll_pos,
+    );
+}
+
+/// Render the diff view comparing two nodes in a specific area
+pub fn render_in_area(
+    f: &mut Frame,
+    area: Rect,
+    stream_a: &NodeStream,
+    stream_b: &NodeStream,
+    node_a_idx: usize,
+    node_b_idx: usize,
+    scroll_pos: usize,
+) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -39,7 +60,7 @@ pub fn render(
             Constraint::Min(0),    // Split content
             Constraint::Length(3), // Footer
         ])
-        .split(f.area());
+        .split(area);
 
     render_header(f, chunks[0]);
 

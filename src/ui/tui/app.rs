@@ -17,7 +17,12 @@
 //! This module manages the state of the interactive terminal UI, including
 //! view modes, scroll positions, and user interaction state.
 
+use super::log_buffer::LogBuffer;
+use super::views::log_panel::{
+    DEFAULT_LOG_PANEL_HEIGHT, MAX_LOG_PANEL_HEIGHT, MIN_LOG_PANEL_HEIGHT,
+};
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 /// View mode for the TUI
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,11 +58,26 @@ pub struct TuiApp {
     pub last_data_sizes: HashMap<usize, (usize, usize)>, // node_id -> (stdout_size, stderr_size)
     /// Whether all tasks have been completed
     pub all_tasks_completed: bool,
+    /// Shared log buffer for capturing tracing events
+    pub log_buffer: Arc<Mutex<LogBuffer>>,
+    /// Whether the log panel is visible
+    pub log_panel_visible: bool,
+    /// Height of the log panel in lines
+    pub log_panel_height: u16,
+    /// Scroll offset for the log panel (0 = show most recent)
+    pub log_scroll_offset: usize,
+    /// Whether to show timestamps in log entries
+    pub log_show_timestamps: bool,
 }
 
 impl TuiApp {
     /// Create a new TUI application in summary view
     pub fn new() -> Self {
+        Self::with_log_buffer(Arc::new(Mutex::new(LogBuffer::default())))
+    }
+
+    /// Create a new TUI application with a shared log buffer
+    pub fn with_log_buffer(log_buffer: Arc<Mutex<LogBuffer>>) -> Self {
         Self {
             view_mode: ViewMode::Summary,
             scroll_positions: HashMap::new(),
@@ -67,6 +87,11 @@ impl TuiApp {
             needs_redraw: true, // Initial draw needed
             last_data_sizes: HashMap::new(),
             all_tasks_completed: false,
+            log_buffer,
+            log_panel_visible: false, // Hidden by default
+            log_panel_height: DEFAULT_LOG_PANEL_HEIGHT,
+            log_scroll_offset: 0,
+            log_show_timestamps: false, // Compact view by default
         }
     }
 
@@ -235,12 +260,68 @@ impl TuiApp {
         }
     }
 
+    /// Toggle log panel visibility
+    pub fn toggle_log_panel(&mut self) {
+        self.log_panel_visible = !self.log_panel_visible;
+        self.log_scroll_offset = 0; // Reset scroll when toggling
+        self.needs_redraw = true;
+    }
+
+    /// Increase log panel height
+    pub fn increase_log_panel_height(&mut self) {
+        if self.log_panel_height < MAX_LOG_PANEL_HEIGHT {
+            self.log_panel_height += 1;
+            self.needs_redraw = true;
+        }
+    }
+
+    /// Decrease log panel height
+    pub fn decrease_log_panel_height(&mut self) {
+        if self.log_panel_height > MIN_LOG_PANEL_HEIGHT {
+            self.log_panel_height -= 1;
+            self.needs_redraw = true;
+        }
+    }
+
+    /// Scroll log panel up (show older entries)
+    pub fn scroll_log_up(&mut self, lines: usize) {
+        if let Ok(buffer) = self.log_buffer.lock() {
+            let max_offset = buffer.len().saturating_sub(1);
+            self.log_scroll_offset = (self.log_scroll_offset + lines).min(max_offset);
+        }
+        self.needs_redraw = true;
+    }
+
+    /// Scroll log panel down (show newer entries)
+    pub fn scroll_log_down(&mut self, lines: usize) {
+        self.log_scroll_offset = self.log_scroll_offset.saturating_sub(lines);
+        self.needs_redraw = true;
+    }
+
+    /// Toggle timestamp display in log panel
+    pub fn toggle_log_timestamps(&mut self) {
+        self.log_show_timestamps = !self.log_show_timestamps;
+        self.needs_redraw = true;
+    }
+
+    /// Check if there are new log entries and trigger redraw if needed
+    pub fn check_log_updates(&mut self) -> bool {
+        if let Ok(mut buffer) = self.log_buffer.lock() {
+            if buffer.take_has_new_entries() {
+                self.needs_redraw = true;
+                return true;
+            }
+        }
+        false
+    }
+
     /// Get help text for current view mode
     pub fn get_help_text(&self) -> Vec<(&'static str, &'static str)> {
         let mut help = vec![
             ("q", "Quit"),
             ("Esc", "Back to summary"),
             ("?", "Toggle help"),
+            ("l", "Toggle log panel"),
         ];
 
         match &self.view_mode {
@@ -267,6 +348,19 @@ impl TuiApp {
             ViewMode::Diff(_, _) => {
                 help.extend_from_slice(&[("↑/↓", "Sync scroll")]);
             }
+        }
+
+        // Always show log panel section in help
+        help.push(("", "")); // Empty line as separator
+        help.push(("── Log Panel ──", ""));
+        if self.log_panel_visible {
+            help.extend_from_slice(&[
+                ("j/k", "Scroll log up/down"),
+                ("+/-", "Resize panel (3-10 lines)"),
+                ("t", "Toggle timestamps"),
+            ]);
+        } else {
+            help.push(("l", "Press to show log panel"));
         }
 
         help
@@ -386,5 +480,86 @@ mod tests {
 
         app.toggle_follow();
         assert!(app.follow_mode);
+    }
+
+    #[test]
+    fn test_log_panel_toggle() {
+        let mut app = TuiApp::new();
+        assert!(!app.log_panel_visible);
+
+        app.toggle_log_panel();
+        assert!(app.log_panel_visible);
+
+        app.toggle_log_panel();
+        assert!(!app.log_panel_visible);
+    }
+
+    #[test]
+    fn test_log_panel_height() {
+        let mut app = TuiApp::new();
+        let initial_height = app.log_panel_height;
+
+        app.increase_log_panel_height();
+        assert_eq!(app.log_panel_height, initial_height + 1);
+
+        app.decrease_log_panel_height();
+        assert_eq!(app.log_panel_height, initial_height);
+
+        // Test min bound
+        for _ in 0..20 {
+            app.decrease_log_panel_height();
+        }
+        assert_eq!(app.log_panel_height, MIN_LOG_PANEL_HEIGHT);
+
+        // Test max bound
+        for _ in 0..20 {
+            app.increase_log_panel_height();
+        }
+        assert_eq!(app.log_panel_height, MAX_LOG_PANEL_HEIGHT);
+    }
+
+    #[test]
+    fn test_log_scroll() {
+        use super::super::log_buffer::LogEntry;
+        use tracing::Level;
+
+        let buffer = Arc::new(Mutex::new(LogBuffer::new(100)));
+
+        // Add some entries
+        {
+            let mut b = buffer.lock().unwrap();
+            for i in 0..10 {
+                b.push(LogEntry::new(
+                    Level::INFO,
+                    "test".to_string(),
+                    format!("msg {i}"),
+                ));
+            }
+        }
+
+        let mut app = TuiApp::with_log_buffer(buffer);
+
+        assert_eq!(app.log_scroll_offset, 0);
+
+        app.scroll_log_up(3);
+        assert_eq!(app.log_scroll_offset, 3);
+
+        app.scroll_log_down(1);
+        assert_eq!(app.log_scroll_offset, 2);
+
+        app.scroll_log_down(10);
+        assert_eq!(app.log_scroll_offset, 0);
+    }
+
+    #[test]
+    fn test_log_timestamps_toggle() {
+        let mut app = TuiApp::new();
+        assert!(!app.log_show_timestamps);
+
+        app.toggle_log_timestamps();
+        assert!(app.log_show_timestamps);
+
+        app.toggle_log_timestamps();
+        assert!(!app.log_show_timestamps);
     }
 }

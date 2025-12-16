@@ -55,7 +55,42 @@ pub fn handle_key_event(app: &mut TuiApp, key: KeyEvent, num_nodes: usize) {
             }
             return;
         }
+        // Log panel toggle (global)
+        KeyCode::Char('l') => {
+            app.toggle_log_panel();
+            return;
+        }
         _ => {}
+    }
+
+    // Log panel keys (when visible)
+    if app.log_panel_visible {
+        match key.code {
+            // Scroll log panel with j/k (vim-style)
+            KeyCode::Char('j') => {
+                app.scroll_log_down(1);
+                return;
+            }
+            KeyCode::Char('k') => {
+                app.scroll_log_up(1);
+                return;
+            }
+            // Resize log panel with +/-
+            KeyCode::Char('+') | KeyCode::Char('=') => {
+                app.increase_log_panel_height();
+                return;
+            }
+            KeyCode::Char('-') | KeyCode::Char('_') => {
+                app.decrease_log_panel_height();
+                return;
+            }
+            // Toggle timestamps
+            KeyCode::Char('t') => {
+                app.toggle_log_timestamps();
+                return;
+            }
+            _ => {}
+        }
     }
 
     // Mode-specific keys

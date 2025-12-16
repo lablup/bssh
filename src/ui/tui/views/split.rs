@@ -25,11 +25,21 @@ use ratatui::{
 
 /// Render the split view
 pub fn render(f: &mut Frame, manager: &MultiNodeStreamManager, indices: &[usize]) {
+    render_in_area(f, f.area(), manager, indices);
+}
+
+/// Render the split view in a specific area
+pub fn render_in_area(
+    f: &mut Frame,
+    area: Rect,
+    manager: &MultiNodeStreamManager,
+    indices: &[usize],
+) {
     let num_panes = indices.len().min(4);
 
     if num_panes < 2 {
         // Fallback to error message
-        render_error(f, "Split view requires at least 2 nodes");
+        render_error(f, area, "Split view requires at least 2 nodes");
         return;
     }
 
@@ -51,7 +61,7 @@ pub fn render(f: &mut Frame, manager: &MultiNodeStreamManager, indices: &[usize]
     let main_chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(row_constraints)
-        .split(f.area());
+        .split(area);
 
     // Render each row
     let mut pane_index = 0;
@@ -136,11 +146,11 @@ fn render_pane(f: &mut Frame, area: Rect, stream: &crate::executor::NodeStream, 
 }
 
 /// Render error message
-fn render_error(f: &mut Frame, message: &str) {
+fn render_error(f: &mut Frame, area: Rect, message: &str) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-        .split(f.area());
+        .split(area);
 
     let error = Paragraph::new(Line::from(Span::styled(
         message,

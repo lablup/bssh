@@ -32,6 +32,27 @@ pub fn render(
     follow_mode: bool,
     all_tasks_completed: bool,
 ) {
+    render_in_area(
+        f,
+        f.area(),
+        stream,
+        node_index,
+        scroll_pos,
+        follow_mode,
+        all_tasks_completed,
+    );
+}
+
+/// Render the detail view for a single node in a specific area
+pub fn render_in_area(
+    f: &mut Frame,
+    area: Rect,
+    stream: &NodeStream,
+    node_index: usize,
+    scroll_pos: usize,
+    follow_mode: bool,
+    all_tasks_completed: bool,
+) {
     let chunks = Layout::default()
         .direction(ratatui::layout::Direction::Vertical)
         .constraints([
@@ -39,7 +60,7 @@ pub fn render(
             Constraint::Min(0),    // Output content
             Constraint::Length(3), // Footer
         ])
-        .split(f.area());
+        .split(area);
 
     render_header(f, chunks[0], stream, node_index);
     render_output(f, chunks[1], stream, scroll_pos, follow_mode);

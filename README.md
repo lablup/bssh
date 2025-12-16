@@ -269,6 +269,7 @@ bssh -C production "apt-get update"
 | `Ctrl+C` | Any view | Quit TUI |
 | `?` | Any view | Toggle help overlay |
 | `Esc` | Any view | Return to summary view (or close help) |
+| `l` | Any view | Toggle log panel visibility |
 | **Summary View** |||
 | `1-9` | Summary | Jump to detail view for node N |
 | `s` | Summary | Enter split view (first 2-4 nodes) |
@@ -288,8 +289,23 @@ bssh -C production "apt-get update"
 | `1-4` | Split | Focus on specific node (switch to detail view) |
 | **Diff View** |||
 | `↑/↓` | Diff | Scroll* |
+| **Log Panel** (when visible) |||
+| `j` | Log panel | Scroll log up |
+| `k` | Log panel | Scroll log down |
+| `+` | Log panel | Increase log panel height |
+| `-` | Log panel | Decrease log panel height |
+| `t` | Log panel | Toggle timestamps |
 
 *\*Note: Diff view scroll is planned but not yet implemented.*
+
+**Log Panel:**
+
+The TUI includes an in-app log panel that captures error and warning messages without breaking the alternate screen. This prevents log messages from corrupting the TUI display during execution.
+
+- Toggle visibility with `l` key
+- Color-coded by level: ERROR (red), WARN (yellow), INFO (white), DEBUG (gray)
+- Configurable buffer size via `BSSH_TUI_LOG_MAX_ENTRIES` environment variable (default: 1000, max: 10000)
+- Panel height adjustable from 3-10 lines
 
 **TUI Activation:**
 - **Automatic**: Multi-node execution in interactive terminal

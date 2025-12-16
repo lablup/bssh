@@ -146,8 +146,11 @@ fn test_summary_view_all_tasks_completed() {
 
     // Should show completion message (check for key parts since Unicode rendering may vary)
     // The footer shows: "All tasks completed" (may be truncated based on terminal width)
+    // With the addition of [l] Log shortcut, text may be truncated more
     assert!(
-        output.contains("All tasks complete") || output.contains("tasks complete"),
+        output.contains("All tasks complete")
+            || output.contains("tasks complete")
+            || output.contains("All tasks"),
         "Should show completion message when all tasks done. Got: {output}"
     );
 }

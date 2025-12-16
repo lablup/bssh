@@ -1313,11 +1313,21 @@ TUI features:
 .br
 - Diff view (press d): Compare outputs side-by-side
 .br
+- Log panel (press l): Toggle in-TUI log display
+.br
 - Keyboard navigation: arrows, PgUp/PgDn, Home/End
 .br
 - Auto-scroll (press f): Toggle automatic scrolling
 .br
 - Help (press ?): Show all keyboard shortcuts
+.br
+Log panel keys (when visible):
+.br
+- j/k: Scroll log entries up/down
+.br
+- +/-: Adjust panel height (3-10 lines)
+.br
+- t: Toggle timestamps
 .RE
 
 .TP
@@ -1631,6 +1641,16 @@ use as they may be visible in process listings, shell history, or logs.
 Prefer the interactive prompt for security-sensitive operations.
 .br
 Example: BSSH_SUDO_PASSWORD=mypassword bssh -S -C cluster "sudo apt update"
+
+.TP
+.B BSSH_TUI_LOG_MAX_ENTRIES
+Maximum number of log entries to keep in the TUI log panel buffer.
+.br
+Default: 1000
+.br
+Maximum: 10000 (prevents memory exhaustion)
+.br
+Example: BSSH_TUI_LOG_MAX_ENTRIES=5000 bssh -C cluster "command"
 
 .TP
 .B USER
