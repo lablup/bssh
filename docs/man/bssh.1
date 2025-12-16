@@ -1000,6 +1000,82 @@ Host legacy.example.com
     RequiredRSASize 1024
 .fi
 
+.SH PDSH COMPATIBILITY MODE
+.B bssh
+supports pdsh compatibility mode, enabling it to act as a drop-in replacement for pdsh.
+This allows seamless migration from pdsh without modifying existing scripts.
+
+.SS Activation Methods
+
+.TP
+.B Binary symlink (recommended)
+Create a symlink to use bssh as pdsh:
+.nf
+  sudo ln -s /usr/bin/bssh /usr/local/bin/pdsh
+  pdsh -w host1,host2 "uptime"
+.fi
+
+.TP
+.B Environment variable
+Set BSSH_PDSH_COMPAT to enable pdsh mode:
+.nf
+  BSSH_PDSH_COMPAT=1 bssh -w host1,host2 "uptime"
+.fi
+
+.TP
+.B CLI flag
+Use --pdsh-compat flag:
+.nf
+  bssh --pdsh-compat -w host1,host2 "uptime"
+.fi
+
+.SS pdsh Option Mapping
+
+.TS
+l l l.
+pdsh option	bssh equivalent	Description
+_
+-w hosts	-H hosts	Target hosts
+-x hosts	--exclude hosts	Exclude hosts
+-f N	--parallel N	Fanout (default: 32)
+-l user	-l user	Remote username
+-t N	--connect-timeout N	Connection timeout
+-u N	--timeout N	Command timeout
+-N	--no-prefix	No hostname prefix
+-b	--batch	Batch mode
+-k	--fail-fast	Stop on first failure
+-q	(query mode)	Show hosts and exit
+-S	--any-failure	Return largest exit code
+.TE
+
+.SS pdsh Mode Examples
+
+.TP
+Basic command execution:
+.B pdsh -w node1,node2,node3 "uptime"
+
+.TP
+With fanout limit:
+.B pdsh -w nodes -f 10 "df -h"
+
+.TP
+Exclude specific hosts:
+.B pdsh -w node1,node2,node3 -x node2 "hostname"
+
+.TP
+Query mode (show hosts without executing):
+.B pdsh -w host1,host2,host3 -x host2 -q
+.RS
+Shows only host1 and host3
+.RE
+
+.TP
+Query mode with glob patterns:
+.B pdsh -w web1,web2,db1,db2 -x "db*" -q
+.RS
+Shows web1 and web2 (db* pattern excludes db1 and db2)
+.RE
+
 .SH BACKEND.AI INTEGRATION
 When running inside a Backend.AI multi-node session, bssh automatically detects cluster configuration
 from environment variables:

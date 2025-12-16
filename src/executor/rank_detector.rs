@@ -110,7 +110,12 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_fallback_to_first_node() {
+        // Clear Backend.AI env vars to test fallback behavior
+        env::remove_var("BACKENDAI_CLUSTER_ROLE");
+        env::remove_var("BACKENDAI_CLUSTER_HOST");
+
         let nodes = vec![
             Node::new("host1".to_string(), 22, "user".to_string()),
             Node::new("host2".to_string(), 22, "user".to_string()),

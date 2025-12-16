@@ -364,6 +364,90 @@ bssh -C production -b "long-running-command"
 bssh -H nodes --batch --stream "deployment-script.sh"
 ```
 
+### pdsh Compatibility Mode
+
+bssh supports pdsh compatibility mode, enabling it to act as a drop-in replacement for pdsh. This allows seamless migration from pdsh without modifying existing scripts.
+
+#### Activation Methods
+
+**1. Binary symlink** (recommended for full compatibility):
+```bash
+# Create symlink
+sudo ln -s /usr/bin/bssh /usr/local/bin/pdsh
+
+# Now pdsh commands use bssh
+pdsh -w host1,host2 "uptime"
+```
+
+**2. Environment variable**:
+```bash
+BSSH_PDSH_COMPAT=1 bssh -w host1,host2 "uptime"
+```
+
+**3. CLI flag**:
+```bash
+bssh --pdsh-compat -w host1,host2 "uptime"
+```
+
+#### pdsh Option Mapping
+
+| pdsh option | bssh equivalent | Description |
+|-------------|-----------------|-------------|
+| `-w hosts` | `-H hosts` | Target hosts (comma-separated) |
+| `-x hosts` | `--exclude hosts` | Exclude hosts from target list |
+| `-f N` | `--parallel N` | Fanout (parallel connections, default: 32) |
+| `-l user` | `-l user` | Remote username |
+| `-t N` | `--connect-timeout N` | Connection timeout in seconds |
+| `-u N` | `--timeout N` | Command timeout in seconds |
+| `-N` | `--no-prefix` | Disable hostname prefix in output |
+| `-b` | `--batch` | Batch mode (single Ctrl+C terminates) |
+| `-k` | `--fail-fast` | Stop on first failure |
+| `-q` | (query mode) | Show target hosts and exit |
+| `-S` | `--any-failure` | Return largest exit code from any node |
+
+#### pdsh Mode Examples
+
+```bash
+# Basic command execution
+pdsh -w node1,node2,node3 "uptime"
+
+# With fanout limit
+pdsh -w nodes -f 10 "df -h"
+
+# Exclude specific hosts
+pdsh -w node[1-5] -x node3 "hostname"
+
+# Query mode: show target hosts without executing
+pdsh -w host1,host2,host3 -x host2 -q
+# Output:
+# host1
+# host3
+
+# Combine multiple options
+pdsh -w servers -f 20 -l admin -t 30 -N "systemctl status nginx"
+
+# Fail fast mode
+pdsh -w nodes -k "critical-operation.sh"
+```
+
+#### Query Mode with Glob Patterns
+
+Query mode (`-q`) supports glob pattern matching for exclusions:
+
+```bash
+# Exclude hosts matching a pattern
+pdsh -w web1,web2,db1,db2 -x "db*" -q
+# Output:
+# web1
+# web2
+
+# Use wildcards in exclusion
+pdsh -w node1,node2,backup1,backup2 -x "*backup*" -q
+# Output:
+# node1
+# node2
+```
+
 ### Built-in Commands
 ```bash
 # Test connectivity to hosts

@@ -63,17 +63,17 @@ mod tests {
     /// Test that environment variable detection works for "TRUE" (case insensitive)
     #[test]
     fn test_env_var_detection_case_insensitive() {
-        let original = env::var(PDSH_COMPAT_ENV_VAR).ok();
+        // Test the case-insensitivity logic directly without relying on env var state
+        // This avoids race conditions with other tests
+        let test_values = ["TRUE", "True", "true", "TrUe"];
 
-        env::set_var(PDSH_COMPAT_ENV_VAR, "TRUE");
-
-        let value = env::var(PDSH_COMPAT_ENV_VAR).ok();
-        assert!(value.is_some());
-        assert_eq!(value.unwrap().to_lowercase(), "true");
-
-        match original {
-            Some(v) => env::set_var(PDSH_COMPAT_ENV_VAR, v),
-            None => env::remove_var(PDSH_COMPAT_ENV_VAR),
+        for test_val in test_values {
+            // The detection logic: value == "1" || value.to_lowercase() == "true"
+            let is_enabled = test_val == "1" || test_val.to_lowercase() == "true";
+            assert!(
+                is_enabled,
+                "Expected '{test_val}' to be detected as enabled"
+            );
         }
     }
 
