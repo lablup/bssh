@@ -25,5 +25,6 @@ pub struct ConnectionConfig<'a> {
     #[cfg(target_os = "macos")]
     pub use_keychain: bool,
     pub timeout_seconds: Option<u64>,
+    pub connect_timeout_seconds: Option<u64>,
     pub jump_hosts_spec: Option<&'a str>,
 }

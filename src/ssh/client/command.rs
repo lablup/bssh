@@ -60,7 +60,8 @@ impl SshClient {
             #[cfg(target_os = "macos")]
             use_keychain: false, // Not supported in this legacy API
             timeout_seconds,
-            jump_hosts_spec: None, // No jump hosts
+            connect_timeout_seconds: None, // Use default
+            jump_hosts_spec: None,         // No jump hosts
         };
 
         self.connect_and_execute_with_jump_hosts(command, &config)
@@ -99,6 +100,7 @@ impl SshClient {
                 config.key_path,
                 config.use_agent,
                 config.use_password,
+                config.connect_timeout_seconds,
             )
             .await?;
 
@@ -208,6 +210,7 @@ impl SshClient {
                 config.key_path,
                 config.use_agent,
                 config.use_password,
+                config.connect_timeout_seconds,
             )
             .await?;
 
@@ -318,6 +321,7 @@ impl SshClient {
                 config.key_path,
                 config.use_agent,
                 config.use_password,
+                config.connect_timeout_seconds,
             )
             .await?;
 

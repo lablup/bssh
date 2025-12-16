@@ -38,6 +38,7 @@ pub struct ExecuteCommandParams<'a> {
     pub output_dir: Option<&'a Path>,
     pub stream: bool,
     pub timeout: Option<u64>,
+    pub connect_timeout: Option<u64>,
     pub jump_hosts: Option<&'a str>,
     pub port_forwards: Option<Vec<ForwardingType>>,
     pub require_all_success: bool,
@@ -205,6 +206,7 @@ async fn execute_command_without_forwarding(params: ExecuteCommandParams<'_>) ->
         params.use_password,
     )
     .with_timeout(params.timeout)
+    .with_connect_timeout(params.connect_timeout)
     .with_jump_hosts(params.jump_hosts.map(|s| s.to_string()))
     .with_sudo_password(params.sudo_password);
 

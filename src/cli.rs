@@ -154,6 +154,14 @@ pub struct Cli {
     pub timeout: u64,
 
     #[arg(
+        long = "connect-timeout",
+        default_value = "30",
+        value_name = "SECONDS",
+        help = "SSH connection timeout in seconds [default: 30]"
+    )]
+    pub connect_timeout: u64,
+
+    #[arg(
         long,
         help = "Require all nodes to succeed (v1.0-v1.1 behavior)\nDefault: return main rank's exit code (v1.2+)\nUseful for health checks and monitoring where all nodes must be operational"
     )]

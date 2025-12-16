@@ -64,6 +64,7 @@ impl SshClient {
         &self,
         auth_method: &AuthMethod,
         strict_mode: StrictHostKeyChecking,
+        connect_timeout_seconds: Option<u64>,
     ) -> Result<Client> {
         // SECURITY: Add rate limiting before connection attempts
         const RATE_LIMIT_DELAY: Duration = Duration::from_millis(100);
@@ -75,7 +76,8 @@ impl SshClient {
         let addr = (self.host.as_str(), self.port);
         let check_method = crate::ssh::known_hosts::get_check_method(strict_mode);
 
-        let connect_timeout = Duration::from_secs(SSH_CONNECT_TIMEOUT_SECS);
+        let connect_timeout =
+            Duration::from_secs(connect_timeout_seconds.unwrap_or(SSH_CONNECT_TIMEOUT_SECS));
 
         let result = match tokio::time::timeout(
             connect_timeout,
@@ -118,8 +120,9 @@ impl SshClient {
                 Err(anyhow::anyhow!(error_msg).context(e))
             }
             Err(_) => Err(anyhow::anyhow!(
-                "Connection timeout after {SSH_CONNECT_TIMEOUT_SECS} seconds. \
-                     Please check if the host is reachable and SSH service is running."
+                "Connection timeout after {} seconds. \
+                     Please check if the host is reachable and SSH service is running.",
+                connect_timeout.as_secs()
             )),
         };
 
@@ -178,6 +181,7 @@ impl SshClient {
     }
 
     /// Establish a connection based on configuration (direct or via jump hosts)
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn establish_connection(
         &self,
         auth_method: &AuthMethod,
@@ -186,6 +190,7 @@ impl SshClient {
         key_path: Option<&Path>,
         use_agent: bool,
         use_password: bool,
+        connect_timeout_seconds: Option<u64>,
     ) -> Result<Client> {
         if let Some(jump_spec) = jump_hosts_spec {
             // Parse jump hosts
@@ -195,7 +200,8 @@ impl SshClient {
 
             if jump_hosts.is_empty() {
                 tracing::debug!("No valid jump hosts found, using direct connection");
-                self.connect_direct(auth_method, strict_mode).await
+                self.connect_direct(auth_method, strict_mode, connect_timeout_seconds)
+                    .await
             } else {
                 tracing::info!(
                     "Connecting to {}:{} via {} jump host(s): {}",
@@ -222,7 +228,8 @@ impl SshClient {
         } else {
             // Direct connection
             tracing::debug!("Using direct connection (no jump hosts)");
-            self.connect_direct(auth_method, strict_mode).await
+            self.connect_direct(auth_method, strict_mode, connect_timeout_seconds)
+                .await
         }
     }
 }

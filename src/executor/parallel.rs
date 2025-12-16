@@ -44,6 +44,7 @@ pub struct ParallelExecutor {
     #[cfg(target_os = "macos")]
     pub(crate) use_keychain: bool,
     pub(crate) timeout: Option<u64>,
+    pub(crate) connect_timeout: Option<u64>,
     pub(crate) jump_hosts: Option<String>,
     pub(crate) sudo_password: Option<Arc<SudoPassword>>,
 }
@@ -76,6 +77,7 @@ impl ParallelExecutor {
             #[cfg(target_os = "macos")]
             use_keychain: false,
             timeout: None,
+            connect_timeout: None,
             jump_hosts: None,
             sudo_password: None,
         }
@@ -99,6 +101,7 @@ impl ParallelExecutor {
             #[cfg(target_os = "macos")]
             use_keychain: false,
             timeout: None,
+            connect_timeout: None,
             jump_hosts: None,
             sudo_password: None,
         }
@@ -123,6 +126,7 @@ impl ParallelExecutor {
             #[cfg(target_os = "macos")]
             use_keychain: false,
             timeout: None,
+            connect_timeout: None,
             jump_hosts: None,
             sudo_password: None,
         }
@@ -131,6 +135,12 @@ impl ParallelExecutor {
     /// Set command execution timeout.
     pub fn with_timeout(mut self, timeout: Option<u64>) -> Self {
         self.timeout = timeout;
+        self
+    }
+
+    /// Set SSH connection timeout.
+    pub fn with_connect_timeout(mut self, connect_timeout: Option<u64>) -> Self {
+        self.connect_timeout = connect_timeout;
         self
     }
 
@@ -175,6 +185,7 @@ impl ParallelExecutor {
                 #[cfg(target_os = "macos")]
                 let use_keychain = self.use_keychain;
                 let timeout = self.timeout;
+                let connect_timeout = self.connect_timeout;
                 let jump_hosts = self.jump_hosts.clone();
                 let sudo_password = self.sudo_password.clone();
                 let semaphore = Arc::clone(&semaphore);
@@ -189,6 +200,7 @@ impl ParallelExecutor {
                         #[cfg(target_os = "macos")]
                         use_keychain,
                         timeout,
+                        connect_timeout,
                         jump_hosts: jump_hosts.as_deref(),
                         sudo_password: sudo_password.clone(),
                     };
@@ -519,6 +531,7 @@ impl ParallelExecutor {
             #[cfg(target_os = "macos")]
             let use_keychain = self.use_keychain;
             let timeout = self.timeout;
+            let connect_timeout = self.connect_timeout;
             let jump_hosts = self.jump_hosts.clone();
             let sudo_password = self.sudo_password.clone();
             let semaphore = Arc::clone(&semaphore);
@@ -565,6 +578,7 @@ impl ParallelExecutor {
                     #[cfg(target_os = "macos")]
                     use_keychain,
                     timeout_seconds: timeout,
+                    connect_timeout_seconds: connect_timeout,
                     jump_hosts_spec: jump_hosts.as_deref(),
                 };
 

@@ -669,6 +669,7 @@ impl SshClient {
             key_path,
             use_agent,
             use_password,
+            None, // Use default connect timeout for file transfers
         )
         .await
     }

@@ -31,6 +31,7 @@ pub async fn ping_nodes(
     use_password: bool,
     #[cfg(target_os = "macos")] use_keychain: bool,
     timeout: Option<u64>,
+    connect_timeout: Option<u64>,
 ) -> Result<()> {
     println!(
         "{}",
@@ -52,6 +53,7 @@ pub async fn ping_nodes(
         use_password,
     )
     .with_timeout(ping_timeout)
+    .with_connect_timeout(connect_timeout)
     .with_jump_hosts(None);
 
     #[cfg(target_os = "macos")]

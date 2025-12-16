@@ -89,6 +89,7 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
                 #[cfg(target_os = "macos")]
                 use_keychain,
                 Some(cli.timeout),
+                Some(cli.connect_timeout),
             )
             .await
         }
@@ -391,6 +392,7 @@ async fn handle_exec_command(cli: &Cli, ctx: &AppContext, command: &str) -> Resu
             output_dir: cli.output_dir.as_deref(),
             stream: cli.stream,
             timeout,
+            connect_timeout: Some(cli.connect_timeout),
             jump_hosts: cli.jump_hosts.as_deref(),
             port_forwards: if cli.has_port_forwards() {
                 Some(cli.parse_port_forwards()?)

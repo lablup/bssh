@@ -36,6 +36,7 @@ pub(crate) struct ExecutionConfig<'a> {
     #[cfg(target_os = "macos")]
     pub use_keychain: bool,
     pub timeout: Option<u64>,
+    pub connect_timeout: Option<u64>,
     pub jump_hosts: Option<&'a str>,
     pub sudo_password: Option<Arc<SudoPassword>>,
 }
@@ -58,6 +59,7 @@ pub(crate) async fn execute_on_node_with_jump_hosts(
         #[cfg(target_os = "macos")]
         use_keychain: config.use_keychain,
         timeout_seconds: config.timeout,
+        connect_timeout_seconds: config.connect_timeout,
         jump_hosts_spec: config.jump_hosts,
     };
 
