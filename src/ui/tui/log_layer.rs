@@ -112,10 +112,13 @@ where
             return;
         }
 
-        // Create log entry
+        // Create log entry outside the lock
         let entry = LogEntry::new(level, metadata.target().to_string(), visitor.message);
 
-        // Add to buffer (with minimal lock time)
+        // Add to buffer with minimal lock time.
+        // The lock is only held for the O(1) push operation to minimize contention
+        // with the TUI rendering thread. Message extraction and entry creation
+        // are performed before acquiring the lock.
         if let Ok(mut buffer) = self.buffer.lock() {
             buffer.push(entry);
         }

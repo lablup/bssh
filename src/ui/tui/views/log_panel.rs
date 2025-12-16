@@ -81,59 +81,63 @@ pub fn render(
     // Calculate available lines for log entries (excluding borders)
     let available_lines = area.height.saturating_sub(2) as usize;
 
-    // Get log entries and build lines within the lock scope
-    let (lines, scroll_indicator) = if let Ok(buffer) = buffer.lock() {
+    // Clone entries with minimal lock time to avoid UI jitter under heavy logging
+    let (entries, total) = if let Ok(buffer) = buffer.lock() {
         let total = buffer.len();
-
-        // Get entries and build lines while holding the lock
-        let entries = buffer.get_window(scroll_offset, available_lines);
-        let lines: Vec<Line> = entries
-            .iter()
-            .map(|entry| {
-                let mut spans = Vec::new();
-
-                // Add timestamp if enabled
-                if show_timestamps {
-                    spans.push(Span::styled(
-                        format!("{} ", entry.timestamp.format("%H:%M:%S")),
-                        Style::default().fg(Color::DarkGray),
-                    ));
-                }
-
-                // Add level indicator
-                spans.push(Span::raw("["));
-                spans.push(level_span(entry.level));
-                spans.push(Span::raw("] "));
-
-                // Add target (module name)
-                let short_target = entry.target.rsplit("::").next().unwrap_or(&entry.target);
-                spans.push(Span::styled(
-                    format!("{short_target}: "),
-                    Style::default().fg(Color::Cyan),
-                ));
-
-                // Add message with level-based coloring
-                spans.push(Span::styled(
-                    entry.message.clone(),
-                    Style::default().fg(level_color(entry.level)),
-                ));
-
-                Line::from(spans)
-            })
+        // Clone entries to release lock quickly
+        let entries: Vec<_> = buffer
+            .get_window(scroll_offset, available_lines)
+            .into_iter()
+            .cloned()
             .collect();
-
-        // Create scroll indicator
-        let scroll_indicator = if scroll_offset > 0 {
-            format!(" Logs ({} more below) ", scroll_offset)
-        } else if total > available_lines {
-            format!(" Logs ({} entries) ", total)
-        } else {
-            " Logs ".to_string()
-        };
-
-        (lines, scroll_indicator)
+        (entries, total)
     } else {
-        (Vec::new(), " Logs ".to_string())
+        (Vec::new(), 0)
+    };
+
+    // Build display lines outside the lock
+    let lines: Vec<Line> = entries
+        .iter()
+        .map(|entry| {
+            let mut spans = Vec::new();
+
+            // Add timestamp if enabled
+            if show_timestamps {
+                spans.push(Span::styled(
+                    format!("{} ", entry.timestamp.format("%H:%M:%S")),
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
+
+            // Add level indicator
+            spans.push(Span::raw("["));
+            spans.push(level_span(entry.level));
+            spans.push(Span::raw("] "));
+
+            // Add target (module name)
+            let short_target = entry.target.rsplit("::").next().unwrap_or(&entry.target);
+            spans.push(Span::styled(
+                format!("{short_target}: "),
+                Style::default().fg(Color::Cyan),
+            ));
+
+            // Add message with level-based coloring
+            spans.push(Span::styled(
+                entry.message.clone(),
+                Style::default().fg(level_color(entry.level)),
+            ));
+
+            Line::from(spans)
+        })
+        .collect();
+
+    // Create scroll indicator
+    let scroll_indicator = if scroll_offset > 0 {
+        format!(" Logs ({} more below) ", scroll_offset)
+    } else if total > available_lines {
+        format!(" Logs ({} entries) ", total)
+    } else {
+        " Logs ".to_string()
     };
 
     // Fill remaining lines if needed

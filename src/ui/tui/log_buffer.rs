@@ -24,6 +24,9 @@ use tracing::Level;
 /// Default maximum number of log entries to keep in buffer
 const DEFAULT_MAX_ENTRIES: usize = 1000;
 
+/// Maximum allowed value for max entries (prevents memory exhaustion)
+const MAX_ENTRIES_UPPER_BOUND: usize = 10000;
+
 /// Environment variable to configure max log entries
 const MAX_ENTRIES_ENV_VAR: &str = "BSSH_TUI_LOG_MAX_ENTRIES";
 
@@ -113,10 +116,15 @@ impl LogBuffer {
     }
 
     /// Create a new log buffer with configuration from environment variables
+    ///
+    /// The max entries value is clamped to prevent memory exhaustion:
+    /// - Minimum: 1
+    /// - Maximum: 10000 (MAX_ENTRIES_UPPER_BOUND)
     pub fn from_env() -> Self {
         let max_entries = std::env::var(MAX_ENTRIES_ENV_VAR)
             .ok()
             .and_then(|v| v.parse().ok())
+            .map(|v: usize| v.clamp(1, MAX_ENTRIES_UPPER_BOUND))
             .unwrap_or(DEFAULT_MAX_ENTRIES);
         Self::new(max_entries)
     }
