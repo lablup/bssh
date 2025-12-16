@@ -17,6 +17,7 @@ pub mod commands;
 pub mod config;
 pub mod executor;
 pub mod forwarding;
+pub mod hostlist;
 pub mod jump;
 pub mod node;
 pub mod pty;

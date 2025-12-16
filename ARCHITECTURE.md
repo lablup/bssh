@@ -284,6 +284,82 @@ let mut cli = pdsh_cli.to_bssh_cli();
 - Unknown pdsh options produce helpful error messages
 - Normal bssh operation is completely unaffected by pdsh compat code
 
+### 1.5 Hostlist Expression Support (`hostlist/*`)
+
+**Module Structure (Added 2025-12-17, Issue #98):**
+- `hostlist/mod.rs` - Module exports and comma-separated pattern handling (130 lines)
+- `hostlist/parser.rs` - Range expression parser (570 lines)
+- `hostlist/expander.rs` - Range expansion and cartesian product (270 lines)
+- `hostlist/error.rs` - Error types with thiserror (80 lines)
+
+**Design Decisions:**
+- pdsh-compatible hostlist expression syntax
+- Zero-cost abstraction for non-range patterns (pass-through)
+- Efficient cartesian product expansion for multiple ranges
+- Distinguishes hostlist expressions from glob patterns
+
+**Hostlist Expression Syntax:**
+```
+hostlist     = host_term (',' host_term)*
+host_term    = prefix range_expr suffix
+range_expr   = '[' range_list ']'
+range_list   = range_item (',' range_item)*
+range_item   = NUMBER | NUMBER '-' NUMBER
+prefix       = STRING (any characters before '[')
+suffix       = STRING (any characters after ']', may include nested ranges)
+```
+
+**Supported Features:**
+- Simple range: `node[1-5]` -> `node1, node2, node3, node4, node5`
+- Zero-padded: `node[01-05]` -> `node01, node02, node03, node04, node05`
+- Comma-separated: `node[1,3,5]` -> `node1, node3, node5`
+- Mixed: `node[1-3,7,9-10]` -> 7 hosts
+- Cartesian product: `rack[1-2]-node[1-3]` -> 6 hosts
+- With domain: `web[1-3].example.com` -> 3 hosts
+- With user/port: `admin@db[01-03]:5432` -> 3 hosts with user and port
+- File input: `^/path/to/file` -> read hosts from file
+
+**Integration Points:**
+- `-H` option in native bssh mode (all patterns automatically expanded)
+- `-w` option in pdsh compatibility mode
+- `--filter` option (supports both glob and hostlist patterns)
+- `--exclude` option (supports both glob and hostlist patterns)
+- pdsh query mode (`-q`) with full expansion support
+
+**Pattern Detection Heuristics:**
+```rust
+// Distinguishes hostlist expressions from glob patterns
+// Hostlist: [1-5], [01-05], [1,2,3], [1-3,5-7] (numeric content)
+// Glob: [abc], [a-z], [!xyz] (alphabetic content)
+
+fn is_hostlist_expression(pattern: &str) -> bool {
+    // Check if brackets contain numeric ranges
+    // Numeric: 1-5, 01-05, 1,2,3
+    // Non-numeric (glob): abc, a-z, !xyz
+}
+```
+
+**Safety Limits:**
+- Maximum expansion size: 100,000 hosts (prevents DoS)
+- Validates range direction (start <= end)
+- Error on empty brackets, unclosed brackets, nested brackets
+- IPv6 literal bracket disambiguation
+
+**Data Flow:**
+```
+Input: "admin@web[1-3].example.com:22"
+           ↓
+    Parse user prefix: "admin@"
+           ↓
+    Parse hostname with range: "web[1-3].example.com"
+           ↓
+    Expand range: ["web1.example.com", "web2.example.com", "web3.example.com"]
+           ↓
+    Parse port suffix: ":22"
+           ↓
+Output: ["admin@web1.example.com:22", "admin@web2.example.com:22", "admin@web3.example.com:22"]
+```
+
 ### 2. Configuration Management (`config/*`)
 
 **Module Structure (Refactored 2025-10-17):**
