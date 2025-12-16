@@ -204,6 +204,18 @@ pub struct Cli {
     pub fail_fast: bool,
 
     #[arg(
+        long = "any-failure",
+        help = "Return largest exit code from any node (pdsh -S compatible)\nWhen enabled, returns the maximum exit code from all nodes\nUseful for build/test pipelines where any failure should be reported"
+    )]
+    pub any_failure: bool,
+
+    #[arg(
+        long = "pdsh-compat",
+        help = "Enable pdsh compatibility mode\nAccepts pdsh-style command line arguments (-w, -x, -f, etc.)\nUseful when migrating from pdsh or in mixed environments"
+    )]
+    pub pdsh_compat: bool,
+
+    #[arg(
         trailing_var_arg = true,
         help = "Command to execute on remote hosts",
         allow_hyphen_values = true
@@ -412,11 +424,14 @@ pub enum Commands {
 impl Cli {
     pub fn get_command(&self) -> String {
         // In multi-server mode with destination, treat destination as first command arg
-        if self.is_multi_server_mode() && self.destination.is_some() {
-            let mut all_args = vec![self.destination.as_ref().unwrap().clone()];
-            all_args.extend(self.command_args.clone());
-            all_args.join(" ")
-        } else if !self.command_args.is_empty() {
+        if self.is_multi_server_mode() {
+            if let Some(dest) = &self.destination {
+                let mut all_args = vec![dest.clone()];
+                all_args.extend(self.command_args.clone());
+                return all_args.join(" ");
+            }
+        }
+        if !self.command_args.is_empty() {
             self.command_args.join(" ")
         } else {
             String::new()
