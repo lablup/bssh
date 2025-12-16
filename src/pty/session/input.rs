@@ -238,7 +238,10 @@ mod tests {
         assert!(result.is_some());
         let bytes = result.unwrap();
         assert_eq!(bytes.as_slice(), text.as_bytes());
-        assert!(bytes.len() > 64, "Test data should be larger than SmallVec inline capacity");
+        assert!(
+            bytes.len() > 64,
+            "Test data should be larger than SmallVec inline capacity"
+        );
     }
 
     #[test]
@@ -329,6 +332,10 @@ mod tests {
 
         assert!(result.is_some());
         let bytes = result.unwrap();
-        assert_eq!(bytes.len(), MAX_PASTE_SIZE, "Paste should be truncated to MAX_PASTE_SIZE");
+        assert_eq!(
+            bytes.len(),
+            MAX_PASTE_SIZE,
+            "Paste should be truncated to MAX_PASTE_SIZE"
+        );
     }
 }
