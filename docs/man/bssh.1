@@ -171,6 +171,27 @@ Use with -H or -C to execute on a subset of hosts.
 Example: -f "web*" matches web01, web02, etc.
 
 .TP
+.BR \-\-exclude " " \fIHOSTS\fR
+Exclude hosts from target list (comma-separated).
+Supports wildcard patterns: '*' (any chars), '?' (single char), '[abc]' (char set).
+Patterns with wildcards use glob matching; plain patterns use substring matching.
+Applied after --filter option.
+.RS
+.PP
+Examples:
+.IP \[bu] 2
+--exclude "node2" - Exclude single host
+.IP \[bu] 2
+--exclude "web1,web2" - Exclude multiple hosts
+.IP \[bu] 2
+--exclude "db*" - Exclude hosts starting with 'db'
+.IP \[bu] 2
+--exclude "*-backup" - Exclude backup nodes
+.IP \[bu] 2
+--exclude "web[12]" - Exclude web1 and web2
+.RE
+
+.TP
 .BR \-\-parallel " " \fIPARALLEL\fR
 Maximum parallel connections for multi-server mode (default: 10)
 Note: -p is now used for port (SSH compatibility)
@@ -1082,6 +1103,25 @@ Executes command only on hosts matching the pattern 'web*'
 .B bssh -C production -f "db*" "pg_dump --version"
 .RS
 Executes command only on database nodes in the production cluster
+.RE
+
+.TP
+Exclude specific hosts from execution:
+.B bssh -H "node1,node2,node3" --exclude "node2" "uptime"
+.RS
+Executes command on node1 and node3, excluding node2
+.RE
+
+.TP
+.B bssh -C production --exclude "db*" "systemctl restart nginx"
+.RS
+Executes command on all production hosts except database servers
+.RE
+
+.TP
+.B bssh -C production --exclude "web1,web2" "apt update"
+.RS
+Excludes specific hosts web1 and web2 from the cluster operation
 .RE
 
 .TP

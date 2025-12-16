@@ -158,7 +158,109 @@ pub async fn resolve_nodes(
         }
     }
 
+    // Apply host exclusion patterns (--exclude option)
+    if let Some(exclude_patterns) = cli.get_exclude_patterns() {
+        let node_count_before = nodes.len();
+        nodes = exclude_nodes(nodes, exclude_patterns)?;
+        if nodes.is_empty() {
+            let patterns_str = exclude_patterns.join(", ");
+            anyhow::bail!(
+                "All {node_count_before} hosts were excluded by pattern(s): {patterns_str}"
+            );
+        }
+    }
+
     Ok((nodes, cluster_name))
+}
+
+/// Check if a pattern matches a node (hostname or full node string)
+fn pattern_matches_node(pattern: &Pattern, node: &Node) -> bool {
+    pattern.matches(&node.host) || pattern.matches(&node.to_string())
+}
+
+/// Exclude nodes based on patterns (supports wildcards)
+///
+/// Takes a list of nodes and exclusion patterns, returning nodes that don't match
+/// any of the exclusion patterns. Patterns support wildcards like 'db*', '*-backup'.
+pub fn exclude_nodes(nodes: Vec<Node>, patterns: &[String]) -> Result<Vec<Node>> {
+    if patterns.is_empty() {
+        return Ok(nodes);
+    }
+
+    // Compile all exclusion patterns
+    let mut compiled_patterns = Vec::with_capacity(patterns.len());
+    for pattern in patterns {
+        // Security: Validate pattern length to prevent DoS
+        const MAX_PATTERN_LENGTH: usize = 256;
+        if pattern.len() > MAX_PATTERN_LENGTH {
+            anyhow::bail!("Exclusion pattern too long (max {MAX_PATTERN_LENGTH} characters)");
+        }
+
+        // Security: Validate pattern for dangerous constructs
+        if pattern.is_empty() {
+            anyhow::bail!("Exclusion pattern cannot be empty");
+        }
+
+        // Security: Prevent excessive wildcard usage that could cause DoS
+        let wildcard_count = pattern.chars().filter(|c| *c == '*' || *c == '?').count();
+        const MAX_WILDCARDS: usize = 10;
+        if wildcard_count > MAX_WILDCARDS {
+            anyhow::bail!("Exclusion pattern contains too many wildcards (max {MAX_WILDCARDS})");
+        }
+
+        // Security: Check for potential path traversal attempts
+        if pattern.contains("..") || pattern.contains("//") {
+            anyhow::bail!("Exclusion pattern contains invalid sequences");
+        }
+
+        // Security: Sanitize pattern - only allow safe characters for hostnames
+        // Also allow '!' for negation patterns like [!abc] in glob
+        let valid_chars = pattern.chars().all(|c| {
+            c.is_ascii_alphanumeric()
+                || c == '.'
+                || c == '-'
+                || c == '_'
+                || c == '@'
+                || c == ':'
+                || c == '*'
+                || c == '?'
+                || c == '['
+                || c == ']'
+                || c == '!'
+        });
+
+        if !valid_chars {
+            anyhow::bail!("Exclusion pattern contains invalid characters for hostname matching");
+        }
+
+        // Compile the pattern
+        let glob_pattern = Pattern::new(pattern)
+            .with_context(|| format!("Invalid exclusion pattern: {pattern}"))?;
+        compiled_patterns.push((pattern.clone(), glob_pattern));
+    }
+
+    // Filter out nodes that match any exclusion pattern
+    let filtered: Vec<Node> = nodes
+        .into_iter()
+        .filter(|node| {
+            // Keep node if it doesn't match any exclusion pattern
+            !compiled_patterns.iter().any(|(raw_pattern, glob_pattern)| {
+                // For patterns without wildcards, also do exact/contains matching
+                if !raw_pattern.contains('*')
+                    && !raw_pattern.contains('?')
+                    && !raw_pattern.contains('[')
+                {
+                    node.host == *raw_pattern
+                        || node.to_string() == *raw_pattern
+                        || node.host.contains(raw_pattern.as_str())
+                } else {
+                    pattern_matches_node(glob_pattern, node)
+                }
+            })
+        })
+        .collect();
+
+    Ok(filtered)
 }
 
 /// Filter nodes based on a pattern (supports wildcards)
@@ -187,7 +289,7 @@ pub fn filter_nodes(nodes: Vec<Node>, pattern: &str) -> Result<Vec<Node>> {
     }
 
     // Security: Sanitize pattern - only allow safe characters for hostnames
-    // Allow alphanumeric, dots, hyphens, underscores, wildcards, and brackets
+    // Allow alphanumeric, dots, hyphens, underscores, wildcards, brackets, and '!' for negation
     let valid_chars = pattern.chars().all(|c| {
         c.is_ascii_alphanumeric()
             || c == '.'
@@ -199,6 +301,7 @@ pub fn filter_nodes(nodes: Vec<Node>, pattern: &str) -> Result<Vec<Node>> {
             || c == '?'
             || c == '['
             || c == ']'
+            || c == '!'
     });
 
     if !valid_chars {
@@ -207,7 +310,7 @@ pub fn filter_nodes(nodes: Vec<Node>, pattern: &str) -> Result<Vec<Node>> {
 
     // If pattern contains wildcards, use glob matching
     if pattern.contains('*') || pattern.contains('?') || pattern.contains('[') {
-        // Security: Compile pattern with timeout to prevent ReDoS attacks
+        // Compile the glob pattern (DoS protection via length/wildcard limits above)
         let glob_pattern =
             Pattern::new(pattern).with_context(|| format!("Invalid filter pattern: {pattern}"))?;
 
@@ -238,5 +341,247 @@ pub fn filter_nodes(nodes: Vec<Node>, pattern: &str) -> Result<Vec<Node>> {
                 node.host == pattern || node.to_string() == pattern || node.host.contains(pattern)
             })
             .collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn create_test_nodes() -> Vec<Node> {
+        vec![
+            Node::new("web1.example.com".to_string(), 22, "admin".to_string()),
+            Node::new("web2.example.com".to_string(), 22, "admin".to_string()),
+            Node::new("db1.example.com".to_string(), 22, "admin".to_string()),
+            Node::new("db2.example.com".to_string(), 22, "admin".to_string()),
+            Node::new(
+                "cache-backup.example.com".to_string(),
+                22,
+                "admin".to_string(),
+            ),
+        ]
+    }
+
+    #[test]
+    fn test_exclude_single_host_exact() {
+        let nodes = create_test_nodes();
+        let patterns = vec!["web1.example.com".to_string()];
+        let result = exclude_nodes(nodes, &patterns).unwrap();
+
+        assert_eq!(result.len(), 4);
+        assert!(!result.iter().any(|n| n.host == "web1.example.com"));
+    }
+
+    #[test]
+    fn test_exclude_multiple_hosts() {
+        let nodes = create_test_nodes();
+        let patterns = vec![
+            "web1.example.com".to_string(),
+            "db1.example.com".to_string(),
+        ];
+        let result = exclude_nodes(nodes, &patterns).unwrap();
+
+        assert_eq!(result.len(), 3);
+        assert!(!result.iter().any(|n| n.host == "web1.example.com"));
+        assert!(!result.iter().any(|n| n.host == "db1.example.com"));
+    }
+
+    #[test]
+    fn test_exclude_with_wildcard_prefix() {
+        let nodes = create_test_nodes();
+        let patterns = vec!["db*".to_string()];
+        let result = exclude_nodes(nodes, &patterns).unwrap();
+
+        assert_eq!(result.len(), 3);
+        assert!(!result.iter().any(|n| n.host.starts_with("db")));
+    }
+
+    #[test]
+    fn test_exclude_with_wildcard_suffix() {
+        let nodes = create_test_nodes();
+        let patterns = vec!["*-backup*".to_string()];
+        let result = exclude_nodes(nodes, &patterns).unwrap();
+
+        assert_eq!(result.len(), 4);
+        assert!(!result.iter().any(|n| n.host.contains("-backup")));
+    }
+
+    #[test]
+    fn test_exclude_with_question_mark_wildcard() {
+        let nodes = create_test_nodes();
+        let patterns = vec!["web?.example.com".to_string()];
+        let result = exclude_nodes(nodes, &patterns).unwrap();
+
+        assert_eq!(result.len(), 3);
+        assert!(!result.iter().any(|n| n.host.starts_with("web")));
+    }
+
+    #[test]
+    fn test_exclude_multiple_patterns_with_wildcards() {
+        let nodes = create_test_nodes();
+        let patterns = vec!["web*".to_string(), "db*".to_string()];
+        let result = exclude_nodes(nodes, &patterns).unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].host, "cache-backup.example.com");
+    }
+
+    #[test]
+    fn test_exclude_empty_patterns() {
+        let nodes = create_test_nodes();
+        let patterns: Vec<String> = vec![];
+        let result = exclude_nodes(nodes.clone(), &patterns).unwrap();
+
+        assert_eq!(result.len(), nodes.len());
+    }
+
+    #[test]
+    fn test_exclude_no_matches() {
+        let nodes = create_test_nodes();
+        let patterns = vec!["nonexistent*".to_string()];
+        let result = exclude_nodes(nodes.clone(), &patterns).unwrap();
+
+        assert_eq!(result.len(), nodes.len());
+    }
+
+    #[test]
+    fn test_exclude_all_hosts_returns_empty() {
+        let nodes = create_test_nodes();
+        let patterns = vec!["*".to_string()];
+        let result = exclude_nodes(nodes, &patterns).unwrap();
+
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_exclude_pattern_too_long() {
+        let nodes = create_test_nodes();
+        let long_pattern = "a".repeat(300);
+        let patterns = vec![long_pattern];
+        let result = exclude_nodes(nodes, &patterns);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("too long"));
+    }
+
+    #[test]
+    fn test_exclude_empty_pattern() {
+        let nodes = create_test_nodes();
+        let patterns = vec!["".to_string()];
+        let result = exclude_nodes(nodes, &patterns);
+
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("cannot be empty"));
+    }
+
+    #[test]
+    fn test_exclude_too_many_wildcards() {
+        let nodes = create_test_nodes();
+        let patterns = vec!["*a*b*c*d*e*f*g*h*i*j*k*".to_string()];
+        let result = exclude_nodes(nodes, &patterns);
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("too many wildcards"));
+    }
+
+    #[test]
+    fn test_exclude_invalid_characters() {
+        let nodes = create_test_nodes();
+        let patterns = vec!["host;rm -rf /".to_string()];
+        let result = exclude_nodes(nodes, &patterns);
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("invalid characters"));
+    }
+
+    #[test]
+    fn test_exclude_path_traversal_attempt() {
+        let nodes = create_test_nodes();
+        let patterns = vec!["../etc/passwd".to_string()];
+        let result = exclude_nodes(nodes, &patterns);
+
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("invalid sequences"));
+    }
+
+    #[test]
+    fn test_exclude_partial_hostname_match() {
+        let nodes = create_test_nodes();
+        // "web" should match "web1.example.com" and "web2.example.com" via contains
+        let patterns = vec!["web".to_string()];
+        let result = exclude_nodes(nodes, &patterns).unwrap();
+
+        assert_eq!(result.len(), 3);
+        assert!(!result.iter().any(|n| n.host.contains("web")));
+    }
+
+    #[test]
+    fn test_filter_and_exclude_combined() {
+        // Test that filter and exclude work correctly when used together
+        let nodes = create_test_nodes();
+
+        // First filter to only web and db nodes
+        let filtered = filter_nodes(nodes, "*.example.com").unwrap();
+        assert_eq!(filtered.len(), 5);
+
+        // Then exclude db nodes
+        let patterns = vec!["db*".to_string()];
+        let result = exclude_nodes(filtered, &patterns).unwrap();
+
+        assert_eq!(result.len(), 3);
+        assert!(!result.iter().any(|n| n.host.starts_with("db")));
+    }
+
+    #[test]
+    fn test_exclude_with_bracket_pattern() {
+        // Test bracket character range patterns
+        let nodes = create_test_nodes();
+        // [12] should match db1 and db2 but not other nodes
+        let patterns = vec!["db[12].example.com".to_string()];
+        let result = exclude_nodes(nodes, &patterns).unwrap();
+
+        assert_eq!(result.len(), 3);
+        assert!(!result.iter().any(|n| n.host == "db1.example.com"));
+        assert!(!result.iter().any(|n| n.host == "db2.example.com"));
+        assert!(result.iter().any(|n| n.host == "web1.example.com"));
+    }
+
+    #[test]
+    fn test_filter_with_bracket_pattern() {
+        // Test bracket patterns work for filter_nodes as well
+        let nodes = create_test_nodes();
+        let result = filter_nodes(nodes, "web[12].example.com").unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().any(|n| n.host == "web1.example.com"));
+        assert!(result.iter().any(|n| n.host == "web2.example.com"));
+    }
+
+    #[test]
+    fn test_exclude_with_bracket_negation_pattern() {
+        // Test negation bracket patterns [!...]
+        let nodes = vec![
+            Node::new("web1.example.com".to_string(), 22, "admin".to_string()),
+            Node::new("web2.example.com".to_string(), 22, "admin".to_string()),
+            Node::new("web3.example.com".to_string(), 22, "admin".to_string()),
+            Node::new("weba.example.com".to_string(), 22, "admin".to_string()),
+        ];
+        // [!12] should match web3 and weba (anything that is NOT 1 or 2)
+        let patterns = vec!["web[!12].example.com".to_string()];
+        let result = exclude_nodes(nodes, &patterns).unwrap();
+
+        // Should keep web1 and web2 (they DON'T match the exclusion pattern)
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().any(|n| n.host == "web1.example.com"));
+        assert!(result.iter().any(|n| n.host == "web2.example.com"));
     }
 }
