@@ -88,7 +88,7 @@ See "Issue #33 Refactoring Details" section below for comprehensive breakdown.
 - `main.rs` - Clean entry point (69 lines)
 - `app/dispatcher.rs` - Command routing and dispatch (368 lines)
 - `app/initialization.rs` - App initialization and config loading (206 lines)
-- `app/nodes.rs` - Node resolution and filtering (242 lines)
+- `app/nodes.rs` - Node resolution, filtering, and exclusion (587 lines)
 - `app/cache.rs` - Cache statistics and management (142 lines)
 - `app/query.rs` - SSH query options handler (58 lines)
 - `app/utils.rs` - Utility functions (62 lines)

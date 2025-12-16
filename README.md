@@ -182,6 +182,11 @@ bssh -C production "df -h"
 bssh -H "web1,web2,db1,db2" -f "web*" "systemctl status nginx"
 bssh -C production -f "db*" "pg_dump --version"
 
+# Exclude specific hosts from execution
+bssh -H "node1,node2,node3" --exclude "node2" "uptime"
+bssh -C production --exclude "db*" "systemctl restart nginx"
+bssh -C production --exclude "web1,web2" "apt update"
+
 # With custom SSH key
 bssh -C staging -i ~/.ssh/custom_key "systemctl status nginx"
 
@@ -915,7 +920,9 @@ bssh -F ~/.ssh/prod-config -C production upload app.tar.gz /opt/
 ```
 Options:
   -H, --hosts <HOSTS>                     Comma-separated list of hosts (user@host:port format)
-  -c, --cluster <CLUSTER>                 Cluster name from configuration file
+  -C, --cluster <CLUSTER>                 Cluster name from configuration file
+  -f, --filter <PATTERN>                  Filter hosts by pattern (supports wildcards like 'web*')
+  --exclude <HOSTS>                       Exclude hosts from target list (comma-separated, supports wildcards)
   --config <CONFIG>                       Configuration file path [default: ~/.config/bssh/config.yaml]
   -u, --user <USER>                       Default username for SSH connections
   -i, --identity <IDENTITY>               SSH private key file path (prompts for passphrase if encrypted)
