@@ -15,6 +15,7 @@ A high-performance SSH client with **SSH-compatible syntax** for both single-hos
 - **Port Forwarding**: Full support for local (-L), remote (-R), and dynamic (-D) SSH port forwarding
 - **Jump Host Support**: Connect through bastion hosts using OpenSSH ProxyJump syntax (`-J`)
 - **Parallel Execution**: Execute commands across multiple nodes simultaneously
+- **Fail-Fast Mode**: Stop immediately on first failure with `-k` flag (pdsh compatible)
 - **Interactive Terminal UI (TUI)**: Real-time monitoring with 4 view modes (Summary/Detail/Split/Diff) for multi-node operations
 - **Cluster Management**: Define and manage node clusters via configuration files
 - **Progress Tracking**: Real-time progress indicators with smart detection (percentages, fractions, apt/dpkg)
@@ -219,6 +220,13 @@ bssh -C production --connect-timeout 10 "uptime"
 
 # Different timeouts for connection and command
 bssh -C production --connect-timeout 5 --timeout 600 "long-running-job"
+
+# Fail-fast mode: stop immediately on any failure (pdsh -k compatible)
+bssh -k -H "web1,web2,web3" "deploy.sh"
+bssh --fail-fast -C production "critical-script.sh"
+
+# Combine fail-fast with require-all-success for critical operations
+bssh -k --require-all-success -C production "service-restart.sh"
 ```
 
 ### Output Modes

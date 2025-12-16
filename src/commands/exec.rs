@@ -46,6 +46,7 @@ pub struct ExecuteCommandParams<'a> {
     pub check_all_nodes: bool,
     pub sudo_password: Option<Arc<SudoPassword>>,
     pub batch: bool,
+    pub fail_fast: bool,
 }
 
 pub async fn execute_command(params: ExecuteCommandParams<'_>) -> Result<()> {
@@ -212,7 +213,8 @@ async fn execute_command_without_forwarding(params: ExecuteCommandParams<'_>) ->
     .with_connect_timeout(params.connect_timeout)
     .with_jump_hosts(params.jump_hosts.map(|s| s.to_string()))
     .with_sudo_password(params.sudo_password)
-    .with_batch_mode(params.batch);
+    .with_batch_mode(params.batch)
+    .with_fail_fast(params.fail_fast);
 
     // Set keychain usage if on macOS
     #[cfg(target_os = "macos")]

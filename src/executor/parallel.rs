@@ -48,6 +48,7 @@ pub struct ParallelExecutor {
     pub(crate) jump_hosts: Option<String>,
     pub(crate) sudo_password: Option<Arc<SudoPassword>>,
     pub(crate) batch: bool,
+    pub(crate) fail_fast: bool,
 }
 
 impl ParallelExecutor {
@@ -82,6 +83,7 @@ impl ParallelExecutor {
             jump_hosts: None,
             sudo_password: None,
             batch: false,
+            fail_fast: false,
         }
     }
 
@@ -107,6 +109,7 @@ impl ParallelExecutor {
             jump_hosts: None,
             sudo_password: None,
             batch: false,
+            fail_fast: false,
         }
     }
 
@@ -133,6 +136,7 @@ impl ParallelExecutor {
             jump_hosts: None,
             sudo_password: None,
             batch: false,
+            fail_fast: false,
         }
     }
 
@@ -179,10 +183,27 @@ impl ParallelExecutor {
         self
     }
 
+    /// Enable fail-fast mode (pdsh -k compatibility).
+    ///
+    /// When enabled, execution stops immediately when any node fails:
+    /// - Connection failure to any host
+    /// - Non-zero exit code from any command
+    ///
+    /// Pending commands are cancelled and running commands are terminated gracefully.
+    pub fn with_fail_fast(mut self, fail_fast: bool) -> Self {
+        self.fail_fast = fail_fast;
+        self
+    }
+
     /// Execute a command on all nodes in parallel.
     pub async fn execute(&self, command: &str) -> Result<Vec<ExecutionResult>> {
         use std::time::Duration;
         use tokio::signal;
+
+        // Use fail-fast execution if enabled
+        if self.fail_fast {
+            return self.execute_with_fail_fast(command).await;
+        }
 
         let semaphore = Arc::new(Semaphore::new(self.max_parallel));
         let multi_progress = MultiProgress::new();
@@ -289,6 +310,240 @@ impl ParallelExecutor {
             // Small sleep to avoid busy waiting
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
+    }
+
+    /// Execute a command with fail-fast mode enabled.
+    ///
+    /// Stops execution immediately when any node fails (connection error or non-zero exit code).
+    /// Cancels pending commands and terminates running commands gracefully.
+    async fn execute_with_fail_fast(&self, command: &str) -> Result<Vec<ExecutionResult>> {
+        use tokio::sync::watch;
+
+        let semaphore = Arc::new(Semaphore::new(self.max_parallel));
+        let multi_progress = MultiProgress::new();
+        let style = create_progress_style()?;
+
+        // Cancellation token: false = continue, true = cancelled
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        let cancel_tx = Arc::new(cancel_tx);
+
+        // Track all spawned task handles
+        let mut handles: Vec<tokio::task::JoinHandle<ExecutionResult>> =
+            Vec::with_capacity(self.nodes.len());
+
+        // Spawn tasks for each node
+        for node in &self.nodes {
+            let node = node.clone();
+            let command = command.to_string();
+            let key_path = self.key_path.clone();
+            let strict_mode = self.strict_mode;
+            let use_agent = self.use_agent;
+            let use_password = self.use_password;
+            #[cfg(target_os = "macos")]
+            let use_keychain = self.use_keychain;
+            let timeout = self.timeout;
+            let connect_timeout = self.connect_timeout;
+            let jump_hosts = self.jump_hosts.clone();
+            let sudo_password = self.sudo_password.clone();
+            let semaphore = Arc::clone(&semaphore);
+            let pb = setup_progress_bar(&multi_progress, &node, style.clone(), "Connecting...");
+            let mut cancel_rx = cancel_rx.clone();
+
+            let handle = tokio::spawn(async move {
+                // Check if already cancelled before acquiring semaphore
+                if *cancel_rx.borrow() {
+                    pb.finish_with_message("○ Cancelled".to_string());
+                    return ExecutionResult {
+                        node,
+                        result: Err(anyhow::anyhow!("Execution cancelled due to fail-fast")),
+                        is_main_rank: false,
+                    };
+                }
+
+                // Race between semaphore acquisition and cancellation
+                let permit = tokio::select! {
+                    biased;
+                    _ = cancel_rx.changed() => {
+                        pb.finish_with_message("○ Cancelled".to_string());
+                        return ExecutionResult {
+                            node,
+                            result: Err(anyhow::anyhow!("Execution cancelled due to fail-fast")),
+                            is_main_rank: false,
+                        };
+                    }
+                    permit = semaphore.acquire() => {
+                        match permit {
+                            Ok(p) => p,
+                            Err(e) => {
+                                pb.finish_with_message("● Semaphore closed".to_string());
+                                return ExecutionResult {
+                                    node,
+                                    result: Err(anyhow::anyhow!("Semaphore acquisition failed: {e}")),
+                                    is_main_rank: false,
+                                };
+                            }
+                        }
+                    }
+                };
+
+                // Check cancellation again after acquiring semaphore
+                if *cancel_rx.borrow() {
+                    drop(permit);
+                    pb.finish_with_message("○ Cancelled".to_string());
+                    return ExecutionResult {
+                        node,
+                        result: Err(anyhow::anyhow!("Execution cancelled due to fail-fast")),
+                        is_main_rank: false,
+                    };
+                }
+
+                pb.set_message("Executing...".to_string());
+
+                let config = ExecutionConfig {
+                    key_path: key_path.as_deref(),
+                    strict_mode,
+                    use_agent,
+                    use_password,
+                    #[cfg(target_os = "macos")]
+                    use_keychain,
+                    timeout,
+                    connect_timeout,
+                    jump_hosts: jump_hosts.as_deref(),
+                    sudo_password: sudo_password.clone(),
+                };
+
+                // Execute the command (keeping the permit alive)
+                let result = super::connection_manager::execute_on_node_with_jump_hosts(
+                    node.clone(),
+                    &command,
+                    &config,
+                )
+                .await;
+
+                // Release the permit explicitly
+                drop(permit);
+
+                // Format result
+                match &result {
+                    Ok(cmd_result) => {
+                        if cmd_result.is_success() {
+                            pb.finish_with_message("● Success".to_string());
+                        } else {
+                            pb.finish_with_message(format!(
+                                "● Exit code: {}",
+                                cmd_result.exit_status
+                            ));
+                        }
+                    }
+                    Err(e) => {
+                        let error_msg = format!("{e:#}");
+                        let first_line = error_msg.lines().next().unwrap_or("Unknown error");
+                        let short_error = if first_line.len() > 50 {
+                            format!("{}...", &first_line[..47])
+                        } else {
+                            first_line.to_string()
+                        };
+                        pb.finish_with_message(format!("● {short_error}"));
+                    }
+                }
+
+                ExecutionResult {
+                    node,
+                    result,
+                    is_main_rank: false,
+                }
+            });
+
+            handles.push(handle);
+        }
+
+        // Collect results, checking for failures as they complete
+        let mut results: Vec<ExecutionResult> = Vec::with_capacity(handles.len());
+        let mut first_failure: Option<(Node, String)> = None;
+
+        // Process tasks as they complete
+        while !handles.is_empty() {
+            // Wait for any task to complete
+            let (completed_result, index, remaining) = futures::future::select_all(handles).await;
+            handles = remaining;
+
+            match completed_result {
+                Ok(exec_result) => {
+                    // Check if this is a failure
+                    let is_failure = !exec_result.is_success();
+                    let node_info = exec_result.node.clone();
+
+                    // Store failure info if this is the first failure
+                    if is_failure && first_failure.is_none() {
+                        let error_msg = match &exec_result.result {
+                            Ok(cmd_result) => format!("exit code {}", cmd_result.exit_status),
+                            Err(e) => format!("{e}"),
+                        };
+                        first_failure = Some((node_info.clone(), error_msg));
+
+                        // Signal cancellation to remaining tasks
+                        let _ = cancel_tx.send(true);
+
+                        // Report failure
+                        eprintln!(
+                            "\n[fail-fast] Execution stopped: {} failed ({})",
+                            node_info,
+                            first_failure
+                                .as_ref()
+                                .map(|(_, e)| e.as_str())
+                                .unwrap_or("unknown error")
+                        );
+                    }
+
+                    results.push(exec_result);
+                }
+                Err(e) => {
+                    // Task panicked
+                    tracing::error!("Task panicked at index {}: {}", index, e);
+                    if let Some(node) = self.nodes.get(index) {
+                        let error_msg = format!("Task panicked: {e}");
+                        if first_failure.is_none() {
+                            first_failure = Some((node.clone(), error_msg.clone()));
+                            let _ = cancel_tx.send(true);
+                            eprintln!("\n[fail-fast] Execution stopped: {} panicked", node);
+                        }
+                        results.push(ExecutionResult {
+                            node: node.clone(),
+                            result: Err(anyhow::anyhow!("{}", error_msg)),
+                            is_main_rank: false,
+                        });
+                    }
+                }
+            }
+        }
+
+        // Reorder results to match original node order
+        let mut ordered_results: Vec<Option<ExecutionResult>> =
+            (0..self.nodes.len()).map(|_| None).collect();
+        for result in results {
+            if let Some(idx) = self
+                .nodes
+                .iter()
+                .position(|n| n.host == result.node.host && n.port == result.node.port)
+            {
+                ordered_results[idx] = Some(result);
+            }
+        }
+
+        // Convert to final result vector, filling in missing results for cancelled tasks
+        let final_results: Vec<ExecutionResult> = ordered_results
+            .into_iter()
+            .enumerate()
+            .map(|(idx, opt_result)| {
+                opt_result.unwrap_or_else(|| ExecutionResult {
+                    node: self.nodes[idx].clone(),
+                    result: Err(anyhow::anyhow!("Task did not complete (cancelled)")),
+                    is_main_rank: false,
+                })
+            })
+            .collect();
+
+        self.collect_results(final_results.into_iter().map(Ok).collect())
     }
 
     /// Upload a file to all nodes in parallel.
