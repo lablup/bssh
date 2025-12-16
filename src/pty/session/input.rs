@@ -36,8 +36,20 @@ pub fn handle_input_event(event: Event) -> Option<SmallVec<[u8; 64]>> {
         }
         Event::Paste(text) => {
             // Handle paste events from bracketed paste mode
+            // Return None for empty paste to avoid unnecessary channel sends
+            if text.is_empty() {
+                return None;
+            }
+            // Limit paste size to 1MB to prevent memory exhaustion attacks
+            const MAX_PASTE_SIZE: usize = 1024 * 1024; // 1MB
             let bytes = text.into_bytes();
-            Some(SmallVec::from_slice(&bytes))
+            if bytes.len() > MAX_PASTE_SIZE {
+                // Truncate to max size - this is a safety limit, not expected in normal use
+                Some(SmallVec::from_vec(bytes[..MAX_PASTE_SIZE].to_vec()))
+            } else {
+                // Use from_vec to avoid double memory copy
+                Some(SmallVec::from_vec(bytes))
+            }
         }
         Event::Resize(_width, _height) => {
             // Resize events are handled separately
@@ -231,14 +243,13 @@ mod tests {
 
     #[test]
     fn test_paste_event_empty() {
-        // Test paste event with empty text
+        // Test paste event with empty text returns None
+        // Empty paste should not send unnecessary channel messages
         let text = String::new();
-        let event = Event::Paste(text.clone());
+        let event = Event::Paste(text);
         let result = handle_input_event(event);
 
-        assert!(result.is_some());
-        let bytes = result.unwrap();
-        assert_eq!(bytes.as_slice(), &[]);
+        assert!(result.is_none(), "Empty paste should return None");
     }
 
     #[test]
@@ -305,5 +316,19 @@ mod tests {
         let result = handle_input_event(event);
 
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_paste_event_size_limit() {
+        // Test that paste is truncated to MAX_PASTE_SIZE (1MB)
+        const MAX_PASTE_SIZE: usize = 1024 * 1024;
+        // Create a string larger than the limit
+        let text = "A".repeat(MAX_PASTE_SIZE + 1000);
+        let event = Event::Paste(text);
+        let result = handle_input_event(event);
+
+        assert!(result.is_some());
+        let bytes = result.unwrap();
+        assert_eq!(bytes.len(), MAX_PASTE_SIZE, "Paste should be truncated to MAX_PASTE_SIZE");
     }
 }
