@@ -349,79 +349,6 @@ pub fn filter_nodes(nodes: Vec<Node>, pattern: &str) -> Result<Vec<Node>> {
     }
 }
 
-/// Check if a pattern is a hostlist expression (contains range brackets)
-fn is_hostlist_expression(pattern: &str) -> bool {
-    // A hostlist expression has [...] with numbers/ranges inside
-    // But we need to distinguish from glob patterns like [abc]
-    if !pattern.contains('[') || !pattern.contains(']') {
-        return false;
-    }
-
-    // Find bracket content and check if it looks like a hostlist range
-    let mut in_bracket = false;
-    let mut bracket_content = String::new();
-
-    for ch in pattern.chars() {
-        match ch {
-            '[' if !in_bracket => {
-                in_bracket = true;
-                bracket_content.clear();
-            }
-            ']' if in_bracket => {
-                // Check if bracket content looks like a hostlist range
-                // Hostlist: [1-5], [01-05], [1,2,3], [1-3,5-7]
-                // Glob: [abc], [!xyz], [a-z]
-                if looks_like_hostlist_range(&bracket_content) {
-                    return true;
-                }
-                in_bracket = false;
-            }
-            _ if in_bracket => {
-                bracket_content.push(ch);
-            }
-            _ => {}
-        }
-    }
-
-    false
-}
-
-/// Check if bracket content looks like a hostlist numeric range
-fn looks_like_hostlist_range(content: &str) -> bool {
-    if content.is_empty() {
-        return false;
-    }
-
-    // Hostlist ranges are numeric: 1-5, 01-05, 1,2,3, 1-3,5-7
-    // Glob patterns have letters: abc, a-z, !xyz
-    for part in content.split(',') {
-        let part = part.trim();
-        if part.is_empty() {
-            continue;
-        }
-
-        // Check if it's a range (contains -)
-        if part.contains('-') {
-            let parts: Vec<&str> = part.splitn(2, '-').collect();
-            if parts.len() == 2 {
-                // Both parts should be numeric for hostlist
-                if parts[0].chars().all(|c| c.is_ascii_digit())
-                    && parts[1].chars().all(|c| c.is_ascii_digit())
-                {
-                    return true;
-                }
-            }
-        } else {
-            // Single value should be numeric for hostlist
-            if part.chars().all(|c| c.is_ascii_digit()) {
-                return true;
-            }
-        }
-    }
-
-    false
-}
-
 /// Filter nodes with hostlist expression support
 ///
 /// If the pattern contains hostlist expressions (e.g., node[1-5]),
@@ -434,7 +361,7 @@ pub fn filter_nodes_with_hostlist(nodes: Vec<Node>, pattern: &str) -> Result<Vec
     }
 
     // Check if this looks like a hostlist expression
-    if is_hostlist_expression(pattern) {
+    if hostlist::is_hostlist_expression(pattern) {
         // Expand the hostlist expression
         let expanded_patterns = hostlist::expander::expand_host_specs(pattern)
             .with_context(|| format!("Failed to expand filter pattern: {pattern}"))?;
@@ -472,7 +399,7 @@ pub fn exclude_nodes_with_hostlist(nodes: Vec<Node>, patterns: &[String]) -> Res
     let mut glob_patterns = Vec::new();
 
     for pattern in patterns {
-        if is_hostlist_expression(pattern) {
+        if hostlist::is_hostlist_expression(pattern) {
             // Expand hostlist expression
             let expanded = hostlist::expander::expand_host_specs(pattern)
                 .with_context(|| format!("Failed to expand exclusion pattern: {pattern}"))?;
@@ -507,6 +434,7 @@ pub fn exclude_nodes_with_hostlist(nodes: Vec<Node>, patterns: &[String]) -> Res
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bssh::hostlist::is_hostlist_expression;
 
     fn create_test_nodes() -> Vec<Node> {
         vec![
