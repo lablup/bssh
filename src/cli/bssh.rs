@@ -204,6 +204,18 @@ pub struct Cli {
     pub fail_fast: bool,
 
     #[arg(
+        long = "any-failure",
+        help = "Return largest exit code from any node (pdsh -S compatible)\nWhen enabled, returns the maximum exit code from all nodes\nUseful for build/test pipelines where any failure should be reported"
+    )]
+    pub any_failure: bool,
+
+    #[arg(
+        long = "pdsh-compat",
+        help = "Enable pdsh compatibility mode\nAccepts pdsh-style command line arguments (-w, -x, -f, etc.)\nUseful when migrating from pdsh or in mixed environments"
+    )]
+    pub pdsh_compat: bool,
+
+    #[arg(
         trailing_var_arg = true,
         help = "Command to execute on remote hosts",
         allow_hyphen_values = true

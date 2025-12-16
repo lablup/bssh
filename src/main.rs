@@ -13,7 +13,9 @@
 // limitations under the License.
 
 use anyhow::Result;
-use bssh::cli::{Cli, Commands};
+use bssh::cli::{
+    has_pdsh_compat_flag, is_pdsh_compat_mode, remove_pdsh_compat_flag, Cli, Commands, PdshCli,
+};
 use clap::Parser;
 
 mod app;
@@ -23,10 +25,100 @@ use app::{
     query::handle_query, utils::show_usage,
 };
 
+/// Main entry point for bssh
+///
+/// Supports three modes of operation:
+/// 1. Standard bssh CLI mode
+/// 2. pdsh compatibility mode (via symlink, env var, or --pdsh-compat flag)
+/// 3. SSH compatibility mode (single host)
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Check if no arguments were provided
     let args: Vec<String> = std::env::args().collect();
+
+    // Check for pdsh compatibility mode
+    // Priority: env var / binary name > --pdsh-compat flag
+    let pdsh_mode = is_pdsh_compat_mode() || has_pdsh_compat_flag(&args);
+
+    if pdsh_mode {
+        return run_pdsh_mode(&args).await;
+    }
+
+    // Standard bssh mode
+    run_bssh_mode(&args).await
+}
+
+/// Run in pdsh compatibility mode
+///
+/// Parses pdsh-style arguments and converts them to bssh CLI options.
+async fn run_pdsh_mode(args: &[String]) -> Result<()> {
+    // Remove --pdsh-compat flag if present (pdsh parser doesn't know it)
+    let filtered_args = if has_pdsh_compat_flag(args) {
+        remove_pdsh_compat_flag(args)
+    } else {
+        args.to_vec()
+    };
+
+    // Parse pdsh-style arguments
+    let pdsh_cli = PdshCli::parse_from(filtered_args.iter());
+
+    // Handle query mode (-q): show hosts and exit
+    if pdsh_cli.is_query_mode() {
+        return handle_pdsh_query_mode(&pdsh_cli).await;
+    }
+
+    // Convert to bssh CLI
+    let mut cli = pdsh_cli.to_bssh_cli();
+
+    // Check if we have hosts
+    if cli.hosts.is_none() {
+        eprintln!("Error: No hosts specified. Use -w to specify target hosts.");
+        eprintln!("Usage: pdsh -w hosts command");
+        std::process::exit(1);
+    }
+
+    // Check if we have a command (unless in query mode)
+    if cli.command_args.is_empty() {
+        eprintln!("Error: No command specified.");
+        eprintln!("Usage: pdsh -w hosts command");
+        std::process::exit(1);
+    }
+
+    // Initialize and run
+    let ctx = initialize_app(&mut cli, args).await?;
+    dispatch_command(&cli, &ctx).await
+}
+
+/// Handle pdsh query mode (-q)
+///
+/// Shows the list of hosts that would be targeted and exits.
+async fn handle_pdsh_query_mode(pdsh_cli: &PdshCli) -> Result<()> {
+    if let Some(ref hosts_str) = pdsh_cli.hosts {
+        let hosts: Vec<&str> = hosts_str.split(',').map(|s| s.trim()).collect();
+
+        // Apply exclusions if any
+        let excluded: Vec<&str> = pdsh_cli
+            .exclude
+            .as_ref()
+            .map(|x| x.split(',').map(|s| s.trim()).collect())
+            .unwrap_or_default();
+
+        for host in hosts {
+            if !excluded.contains(&host) {
+                println!("{host}");
+            }
+        }
+    } else {
+        eprintln!("Error: No hosts specified for query mode.");
+        eprintln!("Usage: pdsh -w hosts -q");
+        std::process::exit(1);
+    }
+
+    Ok(())
+}
+
+/// Run in standard bssh mode
+async fn run_bssh_mode(args: &[String]) -> Result<()> {
+    // Check if no arguments were provided
     if args.len() == 1 {
         // Show concise usage when no arguments provided (like SSH)
         show_usage();
@@ -63,7 +155,7 @@ async fn main() -> Result<()> {
     }
 
     // Initialize the application and load all configurations
-    let ctx = initialize_app(&mut cli, &args).await?;
+    let ctx = initialize_app(&mut cli, args).await?;
 
     // Dispatch to the appropriate command handler
     dispatch_command(&cli, &ctx).await

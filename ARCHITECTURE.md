@@ -212,6 +212,78 @@ async fn main() -> Result<()> {
 - Subcommand pattern adds complexity but improves UX
 - Modular structure increases file count but improves testability
 
+#### pdsh Compatibility Mode (Issue #97)
+
+bssh supports pdsh compatibility mode, allowing it to act as a drop-in replacement for pdsh. This enables migration from pdsh without modifying existing scripts.
+
+**Module Structure:**
+- `cli/mod.rs` - CLI module exports and pdsh re-exports
+- `cli/bssh.rs` - Standard bssh CLI parser
+- `cli/pdsh.rs` - pdsh-compatible CLI parser and conversion logic
+- `cli/mode_detection_tests.rs` - Tests for mode detection
+
+**Activation Methods:**
+
+1. **Binary name detection**: When bssh is invoked as "pdsh" (via symlink)
+   ```bash
+   ln -s /usr/bin/bssh /usr/local/bin/pdsh
+   pdsh -w hosts "uptime"  # Uses pdsh compat mode
+   ```
+
+2. **Environment variable**: `BSSH_PDSH_COMPAT=1` or `BSSH_PDSH_COMPAT=true`
+   ```bash
+   BSSH_PDSH_COMPAT=1 bssh -w hosts "uptime"
+   ```
+
+3. **CLI flag**: `--pdsh-compat`
+   ```bash
+   bssh --pdsh-compat -w hosts "uptime"
+   ```
+
+**Option Mapping:**
+
+| pdsh option | bssh option | Description |
+|-------------|-------------|-------------|
+| `-w hosts` | `-H hosts` | Target hosts (comma-separated) |
+| `-x hosts` | `--exclude hosts` | Exclude hosts from target list |
+| `-f N` | `--parallel N` | Fanout (parallel connections) |
+| `-l user` | `-l user` | Remote username |
+| `-t N` | `--connect-timeout N` | Connection timeout (seconds) |
+| `-u N` | `--timeout N` | Command timeout (seconds) |
+| `-N` | `--no-prefix` | Disable hostname prefix in output |
+| `-b` | `--batch` | Batch mode (single Ctrl+C terminates) |
+| `-k` | `--fail-fast` | Stop on first failure |
+| `-q` | (query mode) | Show hosts and exit |
+| `-S` | `--any-failure` | Return largest exit code from any node |
+
+**Implementation Details:**
+
+```rust
+// Mode detection in main.rs
+let pdsh_mode = is_pdsh_compat_mode() || has_pdsh_compat_flag(&args);
+
+if pdsh_mode {
+    return run_pdsh_mode(&args).await;
+}
+
+// pdsh CLI parsing and conversion
+let pdsh_cli = PdshCli::parse_from(filtered_args.iter());
+let mut cli = pdsh_cli.to_bssh_cli();
+```
+
+**Design Decisions:**
+
+1. **Separate parser**: pdsh CLI uses its own clap parser to avoid conflicts with bssh options
+2. **Conversion method**: `to_bssh_cli()` converts pdsh options to bssh `Cli` struct
+3. **Query mode**: pdsh `-q` shows target hosts without executing commands
+4. **Default fanout**: pdsh default is 32, bssh default is 10 - pdsh mode uses 32
+
+**Key Points:**
+- Mode detection happens before any argument parsing
+- pdsh and bssh modes are mutually exclusive
+- Unknown pdsh options produce helpful error messages
+- Normal bssh operation is completely unaffected by pdsh compat code
+
 ### 2. Configuration Management (`config/*`)
 
 **Module Structure (Refactored 2025-10-17):**
