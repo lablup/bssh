@@ -113,7 +113,29 @@ Example: -D 1080 (SOCKS5 proxy on localhost:1080), -D *:1080/4 (SOCKS4 on all in
 .TP
 .BR \-H ", " \-\-hosts " " \fIHOSTS\fR
 Comma-separated list of hosts in [user@]hostname[:port] format.
-Example: user1@host1:2222,user2@host2
+Supports pdsh-style hostlist expressions for range expansion.
+.RS
+.PP
+Simple host list:
+.IP \[bu] 2
+-H "user1@host1:2222,user2@host2"
+.PP
+Hostlist expressions (range expansion):
+.IP \[bu] 2
+-H "node[1-5]" \[->] node1, node2, node3, node4, node5
+.IP \[bu] 2
+-H "node[01-05]" \[->] node01, node02, ... (zero-padded)
+.IP \[bu] 2
+-H "node[1,3,5]" \[->] node1, node3, node5 (specific values)
+.IP \[bu] 2
+-H "rack[1-2]-node[1-3]" \[->] 6 hosts (cartesian product)
+.IP \[bu] 2
+-H "web[1-3].example.com" \[->] web1.example.com, web2.example.com, ...
+.IP \[bu] 2
+-H "admin@web[1-3]:22" \[->] expands with user and port preserved
+.IP \[bu] 2
+-H "^/path/to/hostfile" \[->] read hosts from file
+.RE
 
 .TP
 .BR \-C ", " \-\-cluster " " \fICLUSTER\fR
@@ -166,29 +188,47 @@ Password is never logged or printed in any output
 
 .TP
 .BR \-f ", " \-\-filter " " \fIPATTERN\fR
-Filter hosts by pattern (supports wildcards like 'web*').
+Filter hosts by pattern. Supports both wildcards and hostlist expressions.
 Use with -H or -C to execute on a subset of hosts.
-Example: -f "web*" matches web01, web02, etc.
-
-.TP
-.BR \-\-exclude " " \fIHOSTS\fR
-Exclude hosts from target list (comma-separated).
-Supports wildcard patterns: '*' (any chars), '?' (single char), '[abc]' (char set).
-Patterns with wildcards use glob matching; plain patterns use substring matching.
-Applied after --filter option.
 .RS
 .PP
 Examples:
 .IP \[bu] 2
---exclude "node2" - Exclude single host
+-f "web*" \[->] matches web01, web02, etc. (glob pattern)
 .IP \[bu] 2
---exclude "web1,web2" - Exclude multiple hosts
+-f "node[1-5]" \[->] matches node1 through node5 (hostlist expression)
 .IP \[bu] 2
---exclude "db*" - Exclude hosts starting with 'db'
+-f "node[1,3,5]" \[->] matches node1, node3, node5 (specific values)
+.RE
+
+.TP
+.BR \-\-exclude " " \fIHOSTS\fR
+Exclude hosts from target list (comma-separated).
+Supports wildcards, glob patterns, and hostlist expressions.
+Applied after --filter option.
+.RS
+.PP
+Glob patterns:
 .IP \[bu] 2
---exclude "*-backup" - Exclude backup nodes
+--exclude "db*" \[->] exclude hosts starting with 'db'
 .IP \[bu] 2
---exclude "web[12]" - Exclude web1 and web2
+--exclude "*-backup" \[->] exclude backup nodes
+.IP \[bu] 2
+--exclude "web[12]" \[->] exclude web1 and web2 (glob character class)
+.PP
+Hostlist expressions:
+.IP \[bu] 2
+--exclude "node[3-5]" \[->] exclude node3, node4, node5 (range)
+.IP \[bu] 2
+--exclude "node[1,3,5]" \[->] exclude node1, node3, node5 (specific values)
+.IP \[bu] 2
+--exclude "rack[1-2]-node[1-3]" \[->] exclude 6 hosts (cartesian product)
+.PP
+Simple patterns:
+.IP \[bu] 2
+--exclude "node2" \[->] exclude single host
+.IP \[bu] 2
+--exclude "web1,web2" \[->] exclude multiple hosts
 .RE
 
 .TP
@@ -1093,6 +1133,79 @@ Current node's hostname
 Current node's role (main or sub)
 
 Note: Backend.AI multi-node clusters use SSH port 2200 by default, which is automatically configured.
+
+.SH HOSTLIST EXPRESSIONS
+Hostlist expressions provide a compact way to specify multiple hosts using range notation,
+compatible with pdsh syntax. This allows efficient targeting of large numbers of hosts
+without listing each one individually.
+
+.SS Basic Syntax
+.TP
+.B Simple range
+.B node[1-5]
+expands to node1, node2, node3, node4, node5
+.TP
+.B Zero-padded range
+.B node[01-05]
+expands to node01, node02, node03, node04, node05
+.TP
+.B Comma-separated values
+.B node[1,3,5]
+expands to node1, node3, node5
+.TP
+.B Mixed ranges and values
+.B node[1-3,7,9-10]
+expands to node1, node2, node3, node7, node9, node10
+
+.SS Advanced Patterns
+.TP
+.B Multiple ranges (cartesian product)
+.B rack[1-2]-node[1-3]
+expands to rack1-node1, rack1-node2, rack1-node3, rack2-node1, rack2-node2, rack2-node3
+.TP
+.B Domain suffix
+.B web[1-3].example.com
+expands to web1.example.com, web2.example.com, web3.example.com
+.TP
+.B With user and port
+.B admin@server[1-3]:2222
+expands to admin@server1:2222, admin@server2:2222, admin@server3:2222
+
+.SS File Input
+.TP
+.B ^/path/to/hostfile
+Reads hosts from file, one per line. Lines starting with # are comments.
+Maximum file size: 1MB, maximum lines: 100,000.
+
+.SS Using with Options
+Hostlist expressions can be used with:
+.TP
+.B -H, --hosts
+Specify target hosts:
+.B bssh -H "node[1-10]" "uptime"
+.TP
+.B --filter
+Include only matching hosts:
+.B bssh -c cluster --filter "web[1-5]" "systemctl status nginx"
+.TP
+.B --exclude
+Exclude matching hosts:
+.B bssh -c cluster --exclude "node[1,3,5]" "df -h"
+
+.SS Examples
+.nf
+# Execute on 100 nodes
+bssh -H "compute[001-100]" "hostname"
+
+# Target specific racks
+bssh -H "rack[A-C]-node[1-8]" "uptime"
+
+# Use hosts from file
+bssh -H "^/etc/cluster/hosts" "date"
+
+# Combine with exclusions
+bssh -H "node[1-20]" --exclude "node[5,10,15]" "ps aux"
+.fi
 
 .SH EXAMPLES
 

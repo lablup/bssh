@@ -15,7 +15,7 @@
 //! Node resolution and filtering functionality
 
 use anyhow::{Context, Result};
-use bssh::{cli::Cli, config::Config, node::Node, ssh::SshConfig};
+use bssh::{cli::Cli, config::Config, hostlist, node::Node, ssh::SshConfig};
 use glob::Pattern;
 
 /// Parse a node string with SSH config integration
@@ -129,11 +129,14 @@ pub async fn resolve_nodes(
         let node = Node::new(effective_hostname, effective_port, effective_user);
         nodes.push(node);
     } else if let Some(hosts) = &cli.hosts {
-        // Parse hosts from CLI
+        // Parse hosts from CLI with hostlist expression expansion
         for host_str in hosts {
-            // Split by comma if a single argument contains multiple hosts
-            for single_host in host_str.split(',') {
-                let node = parse_node_with_ssh_config(single_host.trim(), ssh_config)?;
+            // Expand hostlist expressions (e.g., node[1-5], rack[1-2]-node[1-3])
+            let expanded_hosts = hostlist::expander::expand_host_specs(host_str)
+                .with_context(|| format!("Failed to expand host expression: {host_str}"))?;
+
+            for single_host in expanded_hosts {
+                let node = parse_node_with_ssh_config(&single_host, ssh_config)?;
                 nodes.push(node);
             }
         }
@@ -152,7 +155,8 @@ pub async fn resolve_nodes(
 
     // Apply host filter if destination is used as a filter pattern
     if let Some(filter) = cli.get_host_filter() {
-        nodes = filter_nodes(nodes, filter)?;
+        // Expand hostlist expressions in filter pattern (e.g., --filter "node[1-5]")
+        nodes = filter_nodes_with_hostlist(nodes, filter)?;
         if nodes.is_empty() {
             anyhow::bail!("No hosts matched the filter pattern: {filter}");
         }
@@ -161,7 +165,8 @@ pub async fn resolve_nodes(
     // Apply host exclusion patterns (--exclude option)
     if let Some(exclude_patterns) = cli.get_exclude_patterns() {
         let node_count_before = nodes.len();
-        nodes = exclude_nodes(nodes, exclude_patterns)?;
+        // Expand hostlist expressions in exclusion patterns
+        nodes = exclude_nodes_with_hostlist(nodes, exclude_patterns)?;
         if nodes.is_empty() {
             let patterns_str = exclude_patterns.join(", ");
             anyhow::bail!(
@@ -344,9 +349,92 @@ pub fn filter_nodes(nodes: Vec<Node>, pattern: &str) -> Result<Vec<Node>> {
     }
 }
 
+/// Filter nodes with hostlist expression support
+///
+/// If the pattern contains hostlist expressions (e.g., node[1-5]),
+/// expands the pattern and filters to matching nodes.
+/// Otherwise, falls back to standard glob/exact matching.
+pub fn filter_nodes_with_hostlist(nodes: Vec<Node>, pattern: &str) -> Result<Vec<Node>> {
+    // Security: Basic validation
+    if pattern.is_empty() {
+        anyhow::bail!("Filter pattern cannot be empty");
+    }
+
+    // Check if this looks like a hostlist expression
+    if hostlist::is_hostlist_expression(pattern) {
+        // Expand the hostlist expression
+        let expanded_patterns = hostlist::expander::expand_host_specs(pattern)
+            .with_context(|| format!("Failed to expand filter pattern: {pattern}"))?;
+
+        // Create a set of expanded patterns for efficient lookup
+        let pattern_set: std::collections::HashSet<&str> =
+            expanded_patterns.iter().map(|s| s.as_str()).collect();
+
+        // Filter nodes that match any expanded pattern
+        let filtered: Vec<Node> = nodes
+            .into_iter()
+            .filter(|node| {
+                pattern_set.contains(node.host.as_str())
+                    || pattern_set.contains(node.to_string().as_str())
+            })
+            .collect();
+
+        Ok(filtered)
+    } else {
+        // Fall back to standard filter_nodes for glob patterns
+        filter_nodes(nodes, pattern)
+    }
+}
+
+/// Exclude nodes with hostlist expression support
+///
+/// Expands any hostlist expressions in exclusion patterns before matching.
+pub fn exclude_nodes_with_hostlist(nodes: Vec<Node>, patterns: &[String]) -> Result<Vec<Node>> {
+    if patterns.is_empty() {
+        return Ok(nodes);
+    }
+
+    // Expand all patterns and collect into a set of hostnames to exclude
+    let mut expanded_patterns = Vec::new();
+    let mut glob_patterns = Vec::new();
+
+    for pattern in patterns {
+        if hostlist::is_hostlist_expression(pattern) {
+            // Expand hostlist expression
+            let expanded = hostlist::expander::expand_host_specs(pattern)
+                .with_context(|| format!("Failed to expand exclusion pattern: {pattern}"))?;
+            expanded_patterns.extend(expanded);
+        } else {
+            // Keep as a glob pattern for later matching
+            glob_patterns.push(pattern.clone());
+        }
+    }
+
+    // Create a set of expanded patterns for O(1) lookup
+    let expanded_set: std::collections::HashSet<&str> =
+        expanded_patterns.iter().map(|s| s.as_str()).collect();
+
+    // First filter by expanded hostlist patterns
+    let mut filtered: Vec<Node> = nodes
+        .into_iter()
+        .filter(|node| {
+            !expanded_set.contains(node.host.as_str())
+                && !expanded_set.contains(node.to_string().as_str())
+        })
+        .collect();
+
+    // Then apply glob patterns using existing exclude_nodes
+    if !glob_patterns.is_empty() {
+        filtered = exclude_nodes(filtered, &glob_patterns)?;
+    }
+
+    Ok(filtered)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bssh::hostlist::is_hostlist_expression;
 
     fn create_test_nodes() -> Vec<Node> {
         vec![
@@ -583,5 +671,164 @@ mod tests {
         assert_eq!(result.len(), 2);
         assert!(result.iter().any(|n| n.host == "web1.example.com"));
         assert!(result.iter().any(|n| n.host == "web2.example.com"));
+    }
+
+    // ==================== Hostlist Expression Tests ====================
+
+    #[test]
+    fn test_is_hostlist_expression_numeric_range() {
+        // Numeric ranges should be detected as hostlist
+        assert!(is_hostlist_expression("node[1-5]"));
+        assert!(is_hostlist_expression("node[01-05]"));
+        assert!(is_hostlist_expression("node[1,2,3]"));
+        assert!(is_hostlist_expression("node[1-3,5-7]"));
+        assert!(is_hostlist_expression("rack[1-2]-node[1-3]"));
+    }
+
+    #[test]
+    fn test_is_hostlist_expression_glob_pattern() {
+        // Glob patterns should NOT be detected as hostlist
+        assert!(!is_hostlist_expression("web*"));
+        assert!(!is_hostlist_expression("web[abc]"));
+        assert!(!is_hostlist_expression("web[a-z]"));
+        assert!(!is_hostlist_expression("web[!12]"));
+        assert!(!is_hostlist_expression("simple.host.com"));
+    }
+
+    #[test]
+    fn test_filter_nodes_with_hostlist_range() {
+        let nodes = vec![
+            Node::new("node1".to_string(), 22, "admin".to_string()),
+            Node::new("node2".to_string(), 22, "admin".to_string()),
+            Node::new("node3".to_string(), 22, "admin".to_string()),
+            Node::new("node4".to_string(), 22, "admin".to_string()),
+            Node::new("node5".to_string(), 22, "admin".to_string()),
+        ];
+
+        // Filter to nodes 1-3 using hostlist expression
+        let result = filter_nodes_with_hostlist(nodes, "node[1-3]").unwrap();
+
+        assert_eq!(result.len(), 3);
+        assert!(result.iter().any(|n| n.host == "node1"));
+        assert!(result.iter().any(|n| n.host == "node2"));
+        assert!(result.iter().any(|n| n.host == "node3"));
+        assert!(!result.iter().any(|n| n.host == "node4"));
+        assert!(!result.iter().any(|n| n.host == "node5"));
+    }
+
+    #[test]
+    fn test_filter_nodes_with_hostlist_comma_separated() {
+        let nodes = vec![
+            Node::new("node1".to_string(), 22, "admin".to_string()),
+            Node::new("node2".to_string(), 22, "admin".to_string()),
+            Node::new("node3".to_string(), 22, "admin".to_string()),
+            Node::new("node4".to_string(), 22, "admin".to_string()),
+            Node::new("node5".to_string(), 22, "admin".to_string()),
+        ];
+
+        // Filter to specific nodes using hostlist expression
+        let result = filter_nodes_with_hostlist(nodes, "node[1,3,5]").unwrap();
+
+        assert_eq!(result.len(), 3);
+        assert!(result.iter().any(|n| n.host == "node1"));
+        assert!(result.iter().any(|n| n.host == "node3"));
+        assert!(result.iter().any(|n| n.host == "node5"));
+    }
+
+    #[test]
+    fn test_filter_nodes_with_hostlist_falls_back_to_glob() {
+        let nodes = create_test_nodes();
+
+        // Glob pattern (not a hostlist) should still work
+        let result = filter_nodes_with_hostlist(nodes, "web*").unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().all(|n| n.host.starts_with("web")));
+    }
+
+    #[test]
+    fn test_exclude_nodes_with_hostlist_range() {
+        let nodes = vec![
+            Node::new("node1".to_string(), 22, "admin".to_string()),
+            Node::new("node2".to_string(), 22, "admin".to_string()),
+            Node::new("node3".to_string(), 22, "admin".to_string()),
+            Node::new("node4".to_string(), 22, "admin".to_string()),
+            Node::new("node5".to_string(), 22, "admin".to_string()),
+        ];
+
+        // Exclude nodes 2-4 using hostlist expression
+        let patterns = vec!["node[2-4]".to_string()];
+        let result = exclude_nodes_with_hostlist(nodes, &patterns).unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().any(|n| n.host == "node1"));
+        assert!(result.iter().any(|n| n.host == "node5"));
+    }
+
+    #[test]
+    fn test_exclude_nodes_with_hostlist_mixed_patterns() {
+        let nodes = vec![
+            Node::new("node1".to_string(), 22, "admin".to_string()),
+            Node::new("node2".to_string(), 22, "admin".to_string()),
+            Node::new("node3".to_string(), 22, "admin".to_string()),
+            Node::new("web1".to_string(), 22, "admin".to_string()),
+            Node::new("web2".to_string(), 22, "admin".to_string()),
+        ];
+
+        // Mix hostlist and glob patterns
+        let patterns = vec!["node[1-2]".to_string(), "web*".to_string()];
+        let result = exclude_nodes_with_hostlist(nodes, &patterns).unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].host, "node3");
+    }
+
+    #[test]
+    fn test_exclude_nodes_with_hostlist_falls_back_to_glob() {
+        let nodes = create_test_nodes();
+
+        // Pure glob pattern (not a hostlist) should still work
+        let patterns = vec!["db*".to_string()];
+        let result = exclude_nodes_with_hostlist(nodes, &patterns).unwrap();
+
+        assert_eq!(result.len(), 3);
+        assert!(!result.iter().any(|n| n.host.starts_with("db")));
+    }
+
+    #[test]
+    fn test_filter_nodes_with_hostlist_zero_padded() {
+        let nodes = vec![
+            Node::new("node01".to_string(), 22, "admin".to_string()),
+            Node::new("node02".to_string(), 22, "admin".to_string()),
+            Node::new("node03".to_string(), 22, "admin".to_string()),
+            Node::new("node04".to_string(), 22, "admin".to_string()),
+            Node::new("node05".to_string(), 22, "admin".to_string()),
+        ];
+
+        // Filter using zero-padded hostlist expression
+        let result = filter_nodes_with_hostlist(nodes, "node[01-03]").unwrap();
+
+        assert_eq!(result.len(), 3);
+        assert!(result.iter().any(|n| n.host == "node01"));
+        assert!(result.iter().any(|n| n.host == "node02"));
+        assert!(result.iter().any(|n| n.host == "node03"));
+    }
+
+    #[test]
+    fn test_exclude_nodes_with_hostlist_cartesian_product() {
+        let nodes = vec![
+            Node::new("rack1-node1".to_string(), 22, "admin".to_string()),
+            Node::new("rack1-node2".to_string(), 22, "admin".to_string()),
+            Node::new("rack2-node1".to_string(), 22, "admin".to_string()),
+            Node::new("rack2-node2".to_string(), 22, "admin".to_string()),
+            Node::new("rack3-node1".to_string(), 22, "admin".to_string()),
+        ];
+
+        // Exclude using cartesian product hostlist expression
+        let patterns = vec!["rack[1-2]-node[1-2]".to_string()];
+        let result = exclude_nodes_with_hostlist(nodes, &patterns).unwrap();
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].host, "rack3-node1");
     }
 }

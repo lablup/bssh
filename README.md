@@ -15,6 +15,7 @@ A high-performance SSH client with **SSH-compatible syntax** for both single-hos
 - **Port Forwarding**: Full support for local (-L), remote (-R), and dynamic (-D) SSH port forwarding
 - **Jump Host Support**: Connect through bastion hosts using OpenSSH ProxyJump syntax (`-J`)
 - **Parallel Execution**: Execute commands across multiple nodes simultaneously
+- **Hostlist Expressions**: pdsh-style range expansion (`node[1-5]`, `rack[1-2]-node[1-3]`) for compact host specification
 - **Fail-Fast Mode**: Stop immediately on first failure with `-k` flag (pdsh compatible)
 - **Interactive Terminal UI (TUI)**: Real-time monitoring with 4 view modes (Summary/Detail/Split/Diff) for multi-node operations
 - **Cluster Management**: Define and manage node clusters via configuration files
@@ -179,14 +180,24 @@ bssh -H "user1@host1.com,user2@host2.com:2222" "uptime"
 # Using cluster from config
 bssh -C production "df -h"
 
+# Hostlist expressions (pdsh-style range expansion)
+bssh -H "node[1-5]" "uptime"                       # node1, node2, node3, node4, node5
+bssh -H "node[01-05]" "df -h"                      # Zero-padded: node01, node02, ...
+bssh -H "node[1,3,5]" "ps aux"                     # Specific values: node1, node3, node5
+bssh -H "rack[1-2]-node[1-3]" "uptime"             # Cartesian product: 6 hosts
+bssh -H "web[1-3].example.com" "nginx -v"          # With domain suffix
+bssh -H "admin@db[01-03]:5432" "psql --version"    # With user and port
+bssh -H "^/etc/hosts.cluster" "uptime"             # Read hosts from file
+
 # Filter specific hosts with pattern matching
 bssh -H "web1,web2,db1,db2" -f "web*" "systemctl status nginx"
 bssh -C production -f "db*" "pg_dump --version"
+bssh -H "node[1-10]" -f "node[1-5]" "uptime"       # Filter with hostlist expression
 
 # Exclude specific hosts from execution
 bssh -H "node1,node2,node3" --exclude "node2" "uptime"
 bssh -C production --exclude "db*" "systemctl restart nginx"
-bssh -C production --exclude "web1,web2" "apt update"
+bssh -H "node[1-10]" --exclude "node[3-5]" "uptime" # Exclude with hostlist expression
 
 # With custom SSH key
 bssh -C staging -i ~/.ssh/custom_key "systemctl status nginx"
