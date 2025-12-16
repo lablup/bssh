@@ -52,6 +52,7 @@ pub async fn run_tui(
     manager: &mut MultiNodeStreamManager,
     cluster_name: &str,
     command: &str,
+    _batch_mode: bool, // Reserved for future use; TUI has its own quit handling
 ) -> Result<TuiExitReason> {
     // Setup terminal with automatic cleanup guard
     let _terminal_guard = TerminalGuard::new()?;
