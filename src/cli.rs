@@ -52,7 +52,7 @@ pub struct Cli {
     #[arg(
         long = "exclude",
         value_delimiter = ',',
-        help = "Exclude hosts from target list (comma-separated)\nSupports wildcard patterns (e.g., 'db*', '*-backup')\nApplied after --filter option"
+        help = "Exclude hosts from target list (comma-separated)\nSupports wildcard patterns: '*' (any chars), '?' (single char), '[abc]' (char set)\nMatching: patterns with wildcards use glob matching; plain patterns use substring matching\nApplied after --filter option"
     )]
     pub exclude: Option<Vec<String>>,
 

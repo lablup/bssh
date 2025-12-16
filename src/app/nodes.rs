@@ -214,6 +214,7 @@ pub fn exclude_nodes(nodes: Vec<Node>, patterns: &[String]) -> Result<Vec<Node>>
         }
 
         // Security: Sanitize pattern - only allow safe characters for hostnames
+        // Also allow '!' for negation patterns like [!abc] in glob
         let valid_chars = pattern.chars().all(|c| {
             c.is_ascii_alphanumeric()
                 || c == '.'
@@ -225,6 +226,7 @@ pub fn exclude_nodes(nodes: Vec<Node>, patterns: &[String]) -> Result<Vec<Node>>
                 || c == '?'
                 || c == '['
                 || c == ']'
+                || c == '!'
         });
 
         if !valid_chars {
@@ -287,7 +289,7 @@ pub fn filter_nodes(nodes: Vec<Node>, pattern: &str) -> Result<Vec<Node>> {
     }
 
     // Security: Sanitize pattern - only allow safe characters for hostnames
-    // Allow alphanumeric, dots, hyphens, underscores, wildcards, and brackets
+    // Allow alphanumeric, dots, hyphens, underscores, wildcards, brackets, and '!' for negation
     let valid_chars = pattern.chars().all(|c| {
         c.is_ascii_alphanumeric()
             || c == '.'
@@ -299,6 +301,7 @@ pub fn filter_nodes(nodes: Vec<Node>, pattern: &str) -> Result<Vec<Node>> {
             || c == '?'
             || c == '['
             || c == ']'
+            || c == '!'
     });
 
     if !valid_chars {
@@ -307,7 +310,7 @@ pub fn filter_nodes(nodes: Vec<Node>, pattern: &str) -> Result<Vec<Node>> {
 
     // If pattern contains wildcards, use glob matching
     if pattern.contains('*') || pattern.contains('?') || pattern.contains('[') {
-        // Security: Compile pattern with timeout to prevent ReDoS attacks
+        // Compile the glob pattern (DoS protection via length/wildcard limits above)
         let glob_pattern =
             Pattern::new(pattern).with_context(|| format!("Invalid filter pattern: {pattern}"))?;
 
@@ -536,5 +539,49 @@ mod tests {
 
         assert_eq!(result.len(), 3);
         assert!(!result.iter().any(|n| n.host.starts_with("db")));
+    }
+
+    #[test]
+    fn test_exclude_with_bracket_pattern() {
+        // Test bracket character range patterns
+        let nodes = create_test_nodes();
+        // [12] should match db1 and db2 but not other nodes
+        let patterns = vec!["db[12].example.com".to_string()];
+        let result = exclude_nodes(nodes, &patterns).unwrap();
+
+        assert_eq!(result.len(), 3);
+        assert!(!result.iter().any(|n| n.host == "db1.example.com"));
+        assert!(!result.iter().any(|n| n.host == "db2.example.com"));
+        assert!(result.iter().any(|n| n.host == "web1.example.com"));
+    }
+
+    #[test]
+    fn test_filter_with_bracket_pattern() {
+        // Test bracket patterns work for filter_nodes as well
+        let nodes = create_test_nodes();
+        let result = filter_nodes(nodes, "web[12].example.com").unwrap();
+
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().any(|n| n.host == "web1.example.com"));
+        assert!(result.iter().any(|n| n.host == "web2.example.com"));
+    }
+
+    #[test]
+    fn test_exclude_with_bracket_negation_pattern() {
+        // Test negation bracket patterns [!...]
+        let nodes = vec![
+            Node::new("web1.example.com".to_string(), 22, "admin".to_string()),
+            Node::new("web2.example.com".to_string(), 22, "admin".to_string()),
+            Node::new("web3.example.com".to_string(), 22, "admin".to_string()),
+            Node::new("weba.example.com".to_string(), 22, "admin".to_string()),
+        ];
+        // [!12] should match web3 and weba (anything that is NOT 1 or 2)
+        let patterns = vec!["web[!12].example.com".to_string()];
+        let result = exclude_nodes(nodes, &patterns).unwrap();
+
+        // Should keep web1 and web2 (they DON'T match the exclusion pattern)
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().any(|n| n.host == "web1.example.com"));
+        assert!(result.iter().any(|n| n.host == "web2.example.com"));
     }
 }
