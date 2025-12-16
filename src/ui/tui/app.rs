@@ -350,13 +350,17 @@ impl TuiApp {
             }
         }
 
-        // Add log panel keybindings if visible
+        // Always show log panel section in help
+        help.push(("", "")); // Empty line as separator
+        help.push(("── Log Panel ──", ""));
         if self.log_panel_visible {
             help.extend_from_slice(&[
-                ("j/k", "Scroll log panel"),
-                ("+/-", "Resize log panel"),
+                ("j/k", "Scroll log up/down"),
+                ("+/-", "Resize panel (3-10 lines)"),
                 ("t", "Toggle timestamps"),
             ]);
+        } else {
+            help.push(("l", "Press to show log panel"));
         }
 
         help

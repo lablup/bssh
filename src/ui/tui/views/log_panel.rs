@@ -19,7 +19,7 @@
 
 use crate::ui::tui::log_buffer::LogBuffer;
 use ratatui::{
-    layout::Rect,
+    layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
@@ -131,14 +131,20 @@ pub fn render(
         })
         .collect();
 
-    // Create scroll indicator
-    let scroll_indicator = if scroll_offset > 0 {
+    // Create left title with scroll indicator
+    let left_title = if scroll_offset > 0 {
         format!(" Logs ({} more below) ", scroll_offset)
     } else if total > available_lines {
         format!(" Logs ({} entries) ", total)
     } else {
         " Logs ".to_string()
     };
+
+    // Create right title with keybinding hints
+    let right_title = Line::from(Span::styled(
+        " j/k:scroll  +/-:resize  t:time ",
+        Style::default().fg(Color::DarkGray),
+    ));
 
     // Fill remaining lines if needed
     let mut display_lines = lines;
@@ -148,7 +154,8 @@ pub fn render(
 
     let paragraph = Paragraph::new(display_lines).block(
         Block::default()
-            .title(scroll_indicator)
+            .title_top(left_title)
+            .title_top(right_title.alignment(Alignment::Right))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::DarkGray)),
     );
