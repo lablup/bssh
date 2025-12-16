@@ -37,6 +37,7 @@ pub struct ExecuteCommandParams<'a> {
     pub use_keychain: bool,
     pub output_dir: Option<&'a Path>,
     pub stream: bool,
+    pub no_prefix: bool,
     pub timeout: Option<u64>,
     pub connect_timeout: Option<u64>,
     pub jump_hosts: Option<&'a str>,
@@ -215,8 +216,11 @@ async fn execute_command_without_forwarding(params: ExecuteCommandParams<'_>) ->
     let executor = executor.with_keychain(params.use_keychain);
 
     // Determine output mode
-    let output_mode =
-        OutputMode::from_args(params.stream, params.output_dir.map(|p| p.to_path_buf()));
+    let output_mode = OutputMode::from_args_with_no_prefix(
+        params.stream,
+        params.output_dir.map(|p| p.to_path_buf()),
+        params.no_prefix,
+    );
 
     // Execute with appropriate mode
     let results = if output_mode.is_normal() {

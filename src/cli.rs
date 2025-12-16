@@ -126,6 +126,13 @@ pub struct Cli {
     pub stream: bool,
 
     #[arg(
+        short = 'N',
+        long = "no-prefix",
+        help = "Disable hostname prefix in output lines (pdsh -N compatibility)\nUseful for programmatic parsing or cleaner display"
+    )]
+    pub no_prefix: bool,
+
+    #[arg(
         long,
         help = "Output directory for per-node command results\nCreates timestamped files:\n  - hostname_TIMESTAMP.stdout (command output)\n  - hostname_TIMESTAMP.stderr (error output)\n  - hostname_TIMESTAMP.error (connection failures)\n  - summary_TIMESTAMP.txt (execution summary)"
     )]

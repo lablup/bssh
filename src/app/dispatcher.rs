@@ -391,6 +391,7 @@ async fn handle_exec_command(cli: &Cli, ctx: &AppContext, command: &str) -> Resu
             use_keychain,
             output_dir: cli.output_dir.as_deref(),
             stream: cli.stream,
+            no_prefix: cli.no_prefix,
             timeout,
             connect_timeout: Some(cli.connect_timeout),
             jump_hosts: cli.jump_hosts.as_deref(),
