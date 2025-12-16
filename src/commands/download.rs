@@ -115,6 +115,7 @@ pub async fn download_file(
                 params.use_agent,
                 params.use_password,
                 None, // No jump hosts from this code path yet
+                None, // Use default connect timeout
             )
             .await;
 

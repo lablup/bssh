@@ -111,6 +111,7 @@ pub(crate) async fn upload_to_node(
     use_agent: bool,
     use_password: bool,
     jump_hosts: Option<&str>,
+    connect_timeout_seconds: Option<u64>,
 ) -> Result<()> {
     let mut client = SshClient::new(node.host.clone(), node.port, node.username.clone());
 
@@ -127,6 +128,7 @@ pub(crate) async fn upload_to_node(
                 use_agent,
                 use_password,
                 jump_hosts,
+                connect_timeout_seconds,
             )
             .await
     } else {
@@ -139,6 +141,7 @@ pub(crate) async fn upload_to_node(
                 use_agent,
                 use_password,
                 jump_hosts,
+                connect_timeout_seconds,
             )
             .await
     }
@@ -155,6 +158,7 @@ pub(crate) async fn download_from_node(
     use_agent: bool,
     use_password: bool,
     jump_hosts: Option<&str>,
+    connect_timeout_seconds: Option<u64>,
 ) -> Result<PathBuf> {
     let mut client = SshClient::new(node.host.clone(), node.port, node.username.clone());
 
@@ -171,6 +175,7 @@ pub(crate) async fn download_from_node(
             use_agent,
             use_password,
             jump_hosts,
+            connect_timeout_seconds,
         )
         .await?;
 
@@ -188,6 +193,7 @@ pub async fn download_dir_from_node(
     use_agent: bool,
     use_password: bool,
     jump_hosts: Option<&str>,
+    connect_timeout_seconds: Option<u64>,
 ) -> Result<PathBuf> {
     let mut client = SshClient::new(node.host.clone(), node.port, node.username.clone());
 
@@ -202,6 +208,7 @@ pub async fn download_dir_from_node(
             use_agent,
             use_password,
             jump_hosts,
+            connect_timeout_seconds,
         )
         .await?;
 

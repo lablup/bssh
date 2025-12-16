@@ -138,6 +138,7 @@ impl SshClient {
     }
 
     /// Create an SSH connection through jump hosts
+    #[allow(clippy::too_many_arguments)]
     pub(super) async fn connect_via_jump_hosts(
         &self,
         jump_hosts: &[crate::jump::parser::JumpHost],
@@ -146,10 +147,13 @@ impl SshClient {
         key_path: Option<&Path>,
         use_agent: bool,
         use_password: bool,
+        connect_timeout_seconds: Option<u64>,
     ) -> Result<Client> {
-        // Create jump host chain
+        // Create jump host chain with user-specified or default connect timeout
+        let connect_timeout =
+            Duration::from_secs(connect_timeout_seconds.unwrap_or(SSH_CONNECT_TIMEOUT_SECS));
         let chain = JumpHostChain::new(jump_hosts.to_vec())
-            .with_connect_timeout(Duration::from_secs(30))
+            .with_connect_timeout(connect_timeout)
             .with_command_timeout(Duration::from_secs(300));
 
         // Connect through the chain
@@ -222,6 +226,7 @@ impl SshClient {
                     key_path,
                     use_agent,
                     use_password,
+                    connect_timeout_seconds,
                 )
                 .await
             }

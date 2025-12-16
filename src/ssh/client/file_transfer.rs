@@ -53,6 +53,7 @@ const SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
 
 impl SshClient {
     /// Upload a single file to the remote host
+    #[allow(clippy::too_many_arguments)]
     pub async fn upload_file(
         &mut self,
         local_path: &Path,
@@ -61,9 +62,17 @@ impl SshClient {
         strict_mode: Option<StrictHostKeyChecking>,
         use_agent: bool,
         use_password: bool,
+        connect_timeout_seconds: Option<u64>,
     ) -> Result<()> {
         let client = self
-            .connect_for_file_transfer(key_path, strict_mode, use_agent, use_password, "file copy")
+            .connect_for_file_transfer(
+                key_path,
+                strict_mode,
+                use_agent,
+                use_password,
+                "file copy",
+                connect_timeout_seconds,
+            )
             .await?;
 
         tracing::debug!("Connected and authenticated successfully");
@@ -112,6 +121,7 @@ impl SshClient {
     }
 
     /// Download a single file from the remote host
+    #[allow(clippy::too_many_arguments)]
     pub async fn download_file(
         &mut self,
         remote_path: &str,
@@ -120,6 +130,7 @@ impl SshClient {
         strict_mode: Option<StrictHostKeyChecking>,
         use_agent: bool,
         use_password: bool,
+        connect_timeout_seconds: Option<u64>,
     ) -> Result<()> {
         let client = self
             .connect_for_file_transfer(
@@ -128,6 +139,7 @@ impl SshClient {
                 use_agent,
                 use_password,
                 "file download",
+                connect_timeout_seconds,
             )
             .await?;
 
@@ -173,6 +185,7 @@ impl SshClient {
     }
 
     /// Upload a directory to the remote host
+    #[allow(clippy::too_many_arguments)]
     pub async fn upload_dir(
         &mut self,
         local_dir_path: &Path,
@@ -181,6 +194,7 @@ impl SshClient {
         strict_mode: Option<StrictHostKeyChecking>,
         use_agent: bool,
         use_password: bool,
+        connect_timeout_seconds: Option<u64>,
     ) -> Result<()> {
         let client = self
             .connect_for_file_transfer(
@@ -189,6 +203,7 @@ impl SshClient {
                 use_agent,
                 use_password,
                 "directory upload",
+                connect_timeout_seconds,
             )
             .await?;
 
@@ -236,6 +251,7 @@ impl SshClient {
     }
 
     /// Download a directory from the remote host
+    #[allow(clippy::too_many_arguments)]
     pub async fn download_dir(
         &mut self,
         remote_dir_path: &str,
@@ -244,6 +260,7 @@ impl SshClient {
         strict_mode: Option<StrictHostKeyChecking>,
         use_agent: bool,
         use_password: bool,
+        connect_timeout_seconds: Option<u64>,
     ) -> Result<()> {
         let client = self
             .connect_for_file_transfer(
@@ -252,6 +269,7 @@ impl SshClient {
                 use_agent,
                 use_password,
                 "directory download",
+                connect_timeout_seconds,
             )
             .await?;
 
@@ -307,6 +325,7 @@ impl SshClient {
         use_agent: bool,
         use_password: bool,
         jump_hosts_spec: Option<&str>,
+        connect_timeout_seconds: Option<u64>,
     ) -> Result<()> {
         tracing::debug!(
             "Uploading file to {}:{} (jump hosts: {:?})",
@@ -322,6 +341,7 @@ impl SshClient {
                 use_agent,
                 use_password,
                 jump_hosts_spec,
+                connect_timeout_seconds,
             )
             .await?;
 
@@ -381,6 +401,7 @@ impl SshClient {
         use_agent: bool,
         use_password: bool,
         jump_hosts_spec: Option<&str>,
+        connect_timeout_seconds: Option<u64>,
     ) -> Result<()> {
         tracing::debug!(
             "Downloading file from {}:{} (jump hosts: {:?})",
@@ -396,6 +417,7 @@ impl SshClient {
                 use_agent,
                 use_password,
                 jump_hosts_spec,
+                connect_timeout_seconds,
             )
             .await?;
 
@@ -451,6 +473,7 @@ impl SshClient {
         use_agent: bool,
         use_password: bool,
         jump_hosts_spec: Option<&str>,
+        connect_timeout_seconds: Option<u64>,
     ) -> Result<()> {
         tracing::debug!(
             "Uploading directory to {}:{} (jump hosts: {:?})",
@@ -466,6 +489,7 @@ impl SshClient {
                 use_agent,
                 use_password,
                 jump_hosts_spec,
+                connect_timeout_seconds,
             )
             .await?;
 
@@ -523,6 +547,7 @@ impl SshClient {
         use_agent: bool,
         use_password: bool,
         jump_hosts_spec: Option<&str>,
+        connect_timeout_seconds: Option<u64>,
     ) -> Result<()> {
         tracing::debug!(
             "Downloading directory from {}:{} (jump hosts: {:?})",
@@ -538,6 +563,7 @@ impl SshClient {
                 use_agent,
                 use_password,
                 jump_hosts_spec,
+                connect_timeout_seconds,
             )
             .await?;
 
@@ -590,6 +616,7 @@ impl SshClient {
         use_agent: bool,
         use_password: bool,
         operation_desc: &str,
+        connect_timeout_seconds: Option<u64>,
     ) -> Result<Client> {
         let addr = (self.host.as_str(), self.port);
         tracing::debug!(
@@ -619,7 +646,8 @@ impl SshClient {
         };
 
         // Connect and authenticate with timeout
-        let connect_timeout = Duration::from_secs(SSH_CONNECT_TIMEOUT_SECS);
+        let timeout_secs = connect_timeout_seconds.unwrap_or(SSH_CONNECT_TIMEOUT_SECS);
+        let connect_timeout = Duration::from_secs(timeout_secs);
         match tokio::time::timeout(
             connect_timeout,
             Client::connect(addr, &self.username, auth_method, check_method),
@@ -633,12 +661,13 @@ impl SshClient {
                 Err(anyhow::anyhow!(detailed).context(e))
             }
             Err(_) => Err(anyhow::anyhow!(
-                "Connection timeout after {SSH_CONNECT_TIMEOUT_SECS} seconds. Host may be unreachable or SSH service not running."
+                "Connection timeout after {timeout_secs} seconds. Host may be unreachable or SSH service not running."
             )),
         }
     }
 
     /// Helper function to connect for file transfer with jump hosts
+    #[allow(clippy::too_many_arguments)]
     async fn connect_for_transfer_with_jump_hosts(
         &self,
         key_path: Option<&Path>,
@@ -646,6 +675,7 @@ impl SshClient {
         use_agent: bool,
         use_password: bool,
         jump_hosts_spec: Option<&str>,
+        connect_timeout_seconds: Option<u64>,
     ) -> Result<Client> {
         // Determine authentication method
         // Note: use_keychain is set to false for file transfers to avoid prompts
@@ -669,7 +699,7 @@ impl SshClient {
             key_path,
             use_agent,
             use_password,
-            None, // Use default connect timeout for file transfers
+            connect_timeout_seconds,
         )
         .await
     }

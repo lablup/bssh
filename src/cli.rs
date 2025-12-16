@@ -157,7 +157,8 @@ pub struct Cli {
         long = "connect-timeout",
         default_value = "30",
         value_name = "SECONDS",
-        help = "SSH connection timeout in seconds [default: 30]"
+        value_parser = clap::value_parser!(u64).range(1..),
+        help = "SSH connection timeout in seconds (minimum: 1)"
     )]
     pub connect_timeout: u64,
 

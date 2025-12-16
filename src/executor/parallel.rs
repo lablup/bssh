@@ -236,6 +236,7 @@ impl ParallelExecutor {
                 let use_agent = self.use_agent;
                 let use_password = self.use_password;
                 let jump_hosts = self.jump_hosts.clone();
+                let connect_timeout = self.connect_timeout;
                 let semaphore = Arc::clone(&semaphore);
                 let pb = setup_progress_bar(&multi_progress, &node, style.clone(), "Connecting...");
 
@@ -248,6 +249,7 @@ impl ParallelExecutor {
                     use_agent,
                     use_password,
                     jump_hosts,
+                    connect_timeout,
                     semaphore,
                     pb,
                 ))
@@ -280,6 +282,7 @@ impl ParallelExecutor {
                 let use_agent = self.use_agent;
                 let use_password = self.use_password;
                 let jump_hosts = self.jump_hosts.clone();
+                let connect_timeout = self.connect_timeout;
                 let semaphore = Arc::clone(&semaphore);
                 let pb = setup_progress_bar(&multi_progress, &node, style.clone(), "Connecting...");
 
@@ -292,6 +295,7 @@ impl ParallelExecutor {
                     use_agent,
                     use_password,
                     jump_hosts,
+                    connect_timeout,
                     semaphore,
                     pb,
                 ))
@@ -347,6 +351,7 @@ impl ParallelExecutor {
                     let use_agent = self.use_agent;
                     let use_password = self.use_password;
                     let jump_hosts = self.jump_hosts.clone();
+                    let connect_timeout = self.connect_timeout;
 
                     tokio::spawn(async move {
                         let _permit = match semaphore.acquire().await {
@@ -371,6 +376,7 @@ impl ParallelExecutor {
                             use_agent,
                             use_password,
                             jump_hosts.as_deref(),
+                            connect_timeout,
                         )
                         .await;
 

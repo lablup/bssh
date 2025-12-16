@@ -115,6 +115,7 @@ pub(crate) async fn upload_file_task(
     use_agent: bool,
     use_password: bool,
     jump_hosts: Option<String>,
+    connect_timeout: Option<u64>,
     semaphore: Arc<Semaphore>,
     pb: ProgressBar,
 ) -> UploadResult {
@@ -140,6 +141,7 @@ pub(crate) async fn upload_file_task(
         use_agent,
         use_password,
         jump_hosts.as_deref(),
+        connect_timeout,
     )
     .await;
 
@@ -173,6 +175,7 @@ pub(crate) async fn download_file_task(
     use_agent: bool,
     use_password: bool,
     jump_hosts: Option<String>,
+    connect_timeout: Option<u64>,
     semaphore: Arc<Semaphore>,
     pb: ProgressBar,
 ) -> DownloadResult {
@@ -210,6 +213,7 @@ pub(crate) async fn download_file_task(
         use_agent,
         use_password,
         jump_hosts.as_deref(),
+        connect_timeout,
     )
     .await;
 
