@@ -17,6 +17,8 @@
 mod constants;
 mod escape_filter;
 mod input;
+mod local_escape;
+mod raw_input;
 mod session_manager;
 mod terminal_modes;
 

@@ -16,7 +16,8 @@
 
 use super::constants::*;
 use super::escape_filter::EscapeSequenceFilter;
-use super::input::handle_input_event;
+use super::local_escape::{LocalAction, LocalEscapeDetector};
+use super::raw_input::RawInputReader;
 use super::terminal_modes::configure_terminal_modes;
 use crate::pty::{
     terminal::{TerminalOps, TerminalStateGuard},
@@ -223,34 +224,69 @@ impl PtySession {
         let cancel_for_input = self.cancel_rx.clone();
 
         // Spawn input reader in blocking thread pool to avoid blocking async runtime
+        // NOTE: TerminalStateGuard has already called enable_raw_mode() at this point,
+        // so stdin.read() will return raw bytes without line buffering
         let input_task = tokio::task::spawn_blocking(move || {
-            // This runs in a dedicated thread pool for blocking operations
+            let mut reader = RawInputReader::new();
+            let mut buffer = [0u8; 1024];
+            let mut escape_detector = LocalEscapeDetector::new();
+
             loop {
                 if *cancel_for_input.borrow() {
                     break;
                 }
 
-                // Poll with timeout since we're in blocking thread
                 let poll_timeout = Duration::from_millis(INPUT_POLL_TIMEOUT_MS);
 
-                // Check for input events with timeout (blocking is OK here)
-                if crossterm::event::poll(poll_timeout).unwrap_or(false) {
-                    match crossterm::event::read() {
-                        Ok(event) => {
-                            if let Some(data) = handle_input_event(event) {
-                                // Use try_send to avoid blocking on bounded channel
-                                if input_tx.try_send(PtyMessage::LocalInput(data)).is_err() {
-                                    // Channel is either full or closed
-                                    // For input, we should break on error as it means session is ending
-                                    break;
+                match reader.poll(poll_timeout) {
+                    Ok(true) => {
+                        match reader.read(&mut buffer) {
+                            Ok(0) => {
+                                // EOF - user closed stdin
+                                tracing::debug!("EOF received on stdin");
+                                break;
+                            }
+                            Ok(n) => {
+                                // Check for local escape sequences (e.g., ~. for disconnect)
+                                if let Some(action) = escape_detector.process(&buffer[..n]) {
+                                    match action {
+                                        LocalAction::Disconnect => {
+                                            tracing::debug!("Disconnect escape sequence detected");
+                                            let _ = input_tx
+                                                .try_send(PtyMessage::Terminate);
+                                            break;
+                                        }
+                                        LocalAction::Passthrough(data) => {
+                                            // Send filtered data
+                                            if input_tx.try_send(PtyMessage::LocalInput(data)).is_err()
+                                            {
+                                                break;
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    // Pass raw bytes through as-is
+                                    // This includes arrow keys, function keys, terminal responses, etc.
+                                    let data = smallvec::SmallVec::from_slice(&buffer[..n]);
+                                    if input_tx.try_send(PtyMessage::LocalInput(data)).is_err() {
+                                        break;
+                                    }
                                 }
                             }
+                            Err(e) => {
+                                let _ =
+                                    input_tx.try_send(PtyMessage::Error(format!("Input error: {e}")));
+                                break;
+                            }
                         }
-                        Err(e) => {
-                            let _ =
-                                input_tx.try_send(PtyMessage::Error(format!("Input error: {e}")));
-                            break;
-                        }
+                    }
+                    Ok(false) => {
+                        // Timeout - continue polling
+                        continue;
+                    }
+                    Err(e) => {
+                        let _ = input_tx.try_send(PtyMessage::Error(format!("Poll error: {e}")));
+                        break;
                     }
                 }
             }
