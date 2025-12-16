@@ -108,7 +108,25 @@ fn expand_segments(segments: &[PatternSegment]) -> Result<Vec<String>, HostlistE
             PatternSegment::Range(range_expr) => {
                 // Expand with all values from the range
                 let values = range_expr.values();
-                let mut new_results = Vec::with_capacity(results.len() * values.len());
+
+                // Use checked multiplication to prevent integer overflow
+                let new_capacity = results.len().checked_mul(values.len()).ok_or_else(|| {
+                    HostlistError::RangeTooLarge {
+                        expression: "cartesian product".to_string(),
+                        count: usize::MAX,
+                        limit: MAX_EXPANSION_SIZE,
+                    }
+                })?;
+
+                if new_capacity > MAX_EXPANSION_SIZE {
+                    return Err(HostlistError::RangeTooLarge {
+                        expression: "cartesian product".to_string(),
+                        count: new_capacity,
+                        limit: MAX_EXPANSION_SIZE,
+                    });
+                }
+
+                let mut new_results = Vec::with_capacity(new_capacity);
 
                 for result in &results {
                     for value in &values {

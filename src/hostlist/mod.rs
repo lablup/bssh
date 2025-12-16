@@ -54,6 +54,79 @@ pub use error::HostlistError;
 pub use expander::{expand_host_spec, expand_host_specs, expand_hostlist};
 pub use parser::{parse_host_pattern, parse_hostfile, HostPattern};
 
+/// Check if a pattern is a hostlist expression (contains numeric range brackets)
+///
+/// Hostlist expressions have brackets containing numeric ranges like [1-5], [01-05], [1,2,3]
+/// Glob patterns have brackets containing characters like [abc], [a-z], [!xyz]
+pub fn is_hostlist_expression(pattern: &str) -> bool {
+    // A hostlist expression has [...] with numbers/ranges inside
+    if !pattern.contains('[') || !pattern.contains(']') {
+        return false;
+    }
+
+    // Find bracket content and check if it looks like a hostlist range
+    let mut in_bracket = false;
+    let mut bracket_content = String::new();
+
+    for ch in pattern.chars() {
+        match ch {
+            '[' if !in_bracket => {
+                in_bracket = true;
+                bracket_content.clear();
+            }
+            ']' if in_bracket => {
+                // Check if bracket content looks like a hostlist range
+                if looks_like_hostlist_range(&bracket_content) {
+                    return true;
+                }
+                in_bracket = false;
+            }
+            _ if in_bracket => {
+                bracket_content.push(ch);
+            }
+            _ => {}
+        }
+    }
+
+    false
+}
+
+/// Check if bracket content looks like a hostlist numeric range
+pub fn looks_like_hostlist_range(content: &str) -> bool {
+    if content.is_empty() {
+        return false;
+    }
+
+    // Hostlist ranges are numeric: 1-5, 01-05, 1,2,3, 1-3,5-7
+    // Glob patterns have letters: abc, a-z, !xyz
+    for part in content.split(',') {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+
+        // Check if it's a range (contains -)
+        if part.contains('-') {
+            let parts: Vec<&str> = part.splitn(2, '-').collect();
+            if parts.len() == 2 {
+                // Both parts should be numeric for hostlist
+                if parts[0].chars().all(|c| c.is_ascii_digit())
+                    && parts[1].chars().all(|c| c.is_ascii_digit())
+                {
+                    return true;
+                }
+            }
+        } else {
+            // Single value should be numeric for hostlist
+            if part.chars().all(|c| c.is_ascii_digit()) {
+                return true;
+            }
+        }
+    }
+
+    false
+}
+
 /// Expand a comma-separated list of host patterns
 ///
 /// This function handles multiple patterns separated by commas,

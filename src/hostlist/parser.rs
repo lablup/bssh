@@ -352,10 +352,10 @@ fn parse_number(s: &str, pattern: &str) -> Result<(i64, usize), HostlistError> {
     }
 
     // Determine padding from leading zeros
-    let (sign, digits) = if let Some(rest) = s.strip_prefix('-') {
-        (-1, rest)
+    let digits = if let Some(rest) = s.strip_prefix('-') {
+        rest
     } else {
-        (1, s)
+        s
     };
 
     // Count padding (leading zeros)
@@ -365,16 +365,20 @@ fn parse_number(s: &str, pattern: &str) -> Result<(i64, usize), HostlistError> {
         0
     };
 
-    // Parse the number
+    // Parse the number (includes sign if present)
     let value: i64 = s.parse().map_err(|_| HostlistError::InvalidNumber {
         expression: pattern.to_string(),
         value: s.to_string(),
     })?;
 
-    let _ = sign; // value already includes sign from parse
-
     Ok((value, padding))
 }
+
+/// Maximum file size for hostfile (1 MB)
+const MAX_HOSTFILE_SIZE: u64 = 1024 * 1024;
+
+/// Maximum number of lines in a hostfile
+const MAX_HOSTFILE_LINES: usize = 100_000;
 
 /// Parse hosts from a file (one per line)
 ///
@@ -385,8 +389,15 @@ fn parse_number(s: &str, pattern: &str) -> Result<(i64, usize), HostlistError> {
 /// # Returns
 ///
 /// A vector of hostnames read from the file.
+///
+/// # Security
+///
+/// This function implements resource limits to prevent DoS attacks:
+/// - Maximum file size: 1 MB
+/// - Maximum number of lines: 100,000
 pub fn parse_hostfile(path: &Path) -> Result<Vec<String>, HostlistError> {
-    let content = std::fs::read_to_string(path).map_err(|e| {
+    // Check file size before reading to prevent resource exhaustion
+    let metadata = std::fs::metadata(path).map_err(|e| {
         if e.kind() == std::io::ErrorKind::NotFound {
             HostlistError::FileNotFound {
                 path: path.display().to_string(),
@@ -399,12 +410,40 @@ pub fn parse_hostfile(path: &Path) -> Result<Vec<String>, HostlistError> {
         }
     })?;
 
+    let file_size = metadata.len();
+    if file_size > MAX_HOSTFILE_SIZE {
+        return Err(HostlistError::FileReadError {
+            path: path.display().to_string(),
+            reason: format!(
+                "file size {} bytes exceeds maximum allowed size of {} bytes",
+                file_size, MAX_HOSTFILE_SIZE
+            ),
+        });
+    }
+
+    let content = std::fs::read_to_string(path).map_err(|e| HostlistError::FileReadError {
+        path: path.display().to_string(),
+        reason: e.to_string(),
+    })?;
+
     let hosts: Vec<String> = content
         .lines()
+        .take(MAX_HOSTFILE_LINES)
         .map(|line| line.trim())
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
         .map(String::from)
         .collect();
+
+    // Check if we hit the line limit
+    if content.lines().count() > MAX_HOSTFILE_LINES {
+        return Err(HostlistError::FileReadError {
+            path: path.display().to_string(),
+            reason: format!(
+                "file contains more than {} lines (limit exceeded)",
+                MAX_HOSTFILE_LINES
+            ),
+        });
+    }
 
     Ok(hosts)
 }
