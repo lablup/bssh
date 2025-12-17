@@ -4,7 +4,7 @@
 
 ## Terminal User Interface (TUI) Architecture
 
-### Status: Fully Implemented (2025-12-10)
+### Status: Fully Implemented
 
 The TUI module provides a real-time interactive terminal interface for monitoring parallel command execution across multiple nodes. Built with `ratatui`, it offers 4 distinct view modes with keyboard-driven navigation and automatic output streaming.
 

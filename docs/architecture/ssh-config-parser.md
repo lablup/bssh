@@ -4,7 +4,7 @@
 
 ### 6. SSH Configuration File Support (`ssh/ssh_config/*`)
 
-**Status:** Fully Implemented (2025-08-28), Enhanced with Include/Match (2025-10-21)
+**Status:** Fully Implemented, Enhanced with Include/Match
 
 **Features:**
 - Complete SSH config file parsing with `-F` option
@@ -292,7 +292,7 @@ Match host *.secure.prod.example.com
 
 ### 7. SSH Configuration Caching (`ssh/config_cache/*`)
 
-**Status:** Implemented (2025-08-28), Refactored (2025-10-17)
+**Status:** Implemented, Refactored
 
 **Module Structure :**
 - `config_cache/manager.rs` - Core cache manager (491 lines)

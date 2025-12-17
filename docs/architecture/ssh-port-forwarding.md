@@ -4,7 +4,7 @@
 
 ## SSH Port Forwarding
 
-### Status: Fully Implemented (2025-08-30)
+### Status: Fully Implemented
 
 ### Overview
 

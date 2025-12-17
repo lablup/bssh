@@ -4,7 +4,7 @@
 
 ## Interactive Mode Architecture
 
-### Status: Fully Implemented (2025-08-22), Refactored (2025-10-17)
+### Status: Fully Implemented, Refactored
 
 **Module Structure :**
 - `interactive/types.rs` - Type definitions and enums (142 lines)
@@ -53,7 +53,7 @@ The PTY implementation provides true terminal emulation for interactive SSH sess
 
 ### Core Components
 
-1. **PTY Session (`pty/session/*`, Refactored 2025-10-17, Enhanced 2025-12-10)**
+1. **PTY Session (`pty/session/*`, Refactored, Enhanced)**
  - **Module Structure:**
  - `session/session_manager.rs` - Core session management (~400 lines)
  - `session/input.rs` - Input event handling (193 lines)

@@ -41,7 +41,7 @@
 
 ### 4.0.1 Command Output Streaming Infrastructure
 
-**Status:** Implemented (2025-10-29) as part of Phase 1 of
+**Status:** Implemented as part of Phase 1
 
 **Design Motivation:**
 Real-time command output streaming enables future UI features such as live progress bars, per-node output display, and streaming aggregation. The infrastructure provides the foundation for responsive UIs while maintaining full backward compatibility with existing synchronous APIs.
@@ -126,7 +126,7 @@ The existing `execute` method was refactored to use `execute_streaming` internal
 
 ### 4.0.2 Multi-Node Stream Management and Output Modes (Phase 2)
 
-**Status:** Implemented (2025-10-29) as part of Phase 2 of
+**Status:** Implemented as part of Phase 2
 
 **Design Motivation:**
 Building on Phase 1's streaming infrastructure, Phase 2 adds independent stream management for multiple nodes and flexible output modes. This enables real-time monitoring of parallel command execution across clusters while maintaining full backward compatibility.
@@ -296,7 +296,7 @@ ls ./results/
 
 ### 4.0.3 Interactive Terminal UI (Phase 3)
 
-**Status:** Implemented (2025-10-30) as part of Phase 3 of
+**Status:** Implemented as part of Phase 3
 
 **Design Motivation:**
 Phase 3 builds on the streaming infrastructure from Phase 1 and multi-node management from Phase 2 to provide a rich interactive Terminal User Interface (TUI) for monitoring parallel SSH command execution. The TUI automatically activates in interactive terminals and provides multiple view modes optimized for different monitoring needs.
@@ -559,7 +559,7 @@ lazy_static = "1.5" # Regex compilation optimization
 
 ### 4.1 Authentication Module (`ssh/auth.rs`)
 
-**Status:** Implemented (2025-10-17) as part of code deduplication refactoring
+**Status:** Implemented as part of code deduplication refactoring
 
 **Design Motivation:**
 Authentication logic was previously duplicated across multiple modules (`ssh/client.rs` and `commands/interactive.rs`) with ~90% code duplication. This created maintenance burden and potential for bugs when fixing authentication issues in one location but not the other.
@@ -655,7 +655,7 @@ Comprehensive test coverage including:
 
 ### 4.2 Sudo Password Support (`security/sudo.rs`)
 
-**Status:** Implemented (2025-12-10) as
+**Status:** Implemented
 
 **Overview:**
 The sudo password module provides secure handling of sudo authentication for commands that require elevated privileges. When enabled with the `-S` flag, bssh automatically detects sudo password prompts in command output and injects the password without user intervention.
@@ -773,7 +773,7 @@ bssh -S -C production "sudo apt update"
 
 ### 5. Connection Pooling (`ssh/pool.rs`)
 
-**Current Status:** Placeholder implementation (2025-08-21)
+**Current Status:** Placeholder implementation
 
 **Design Decision:**
 After thorough analysis, connection pooling was determined to be **not beneficial** for bssh's current usage pattern. The implementation exists as a placeholder for future features.
