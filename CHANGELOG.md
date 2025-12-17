@@ -5,6 +5,88 @@ All notable changes to bssh will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0-rc1] - 2025-12-17
+
+### Added
+- **pdsh Compatibility Mode** (Issues #100-103, #105, #107, #110)
+  - Full pdsh-style command line compatibility when invoked as `pdsh` or with `--pdsh-compat`
+  - `-w hosts` option mapped to `-H hosts` for target host specification
+  - `-x hosts` option mapped to `--exclude hosts` for host exclusion
+  - `-f N` option mapped to `--parallel N` for fanout control
+  - `-l user` option for remote username
+  - `-t N` option mapped to `--connect-timeout N` for connection timeout
+  - `-u N` option mapped to `--timeout N` for command timeout
+  - `-N` option mapped to `--no-prefix` for disabling hostname prefix in output
+  - `-b` option mapped to `--batch` for single Ctrl+C termination
+  - `-k` option mapped to `--fail-fast` for stop on first failure
+  - `-q` query mode to show target hosts and exit
+  - `-S` option mapped to `--any-failure` for returning largest exit code
+
+- **Hostlist Expressions** (Issue #107)
+  - pdsh-style range expansion: `node[1-5]` → node1, node2, node3, node4, node5
+  - Zero-padded ranges: `node[01-05]` → node01, node02, node03, node04, node05
+  - Comma-separated values: `node[1,3,5]` → node1, node3, node5
+  - Cartesian product: `rack[1-2]-node[1-3]` → 6 hosts
+  - Domain suffix support: `web[1-3].example.com`
+  - User and port preservation: `admin@db[01-03]:5432`
+  - File input with `^/path/to/hostfile`
+
+- **In-TUI Log Panel** (Issue #106)
+  - Toggle visibility with `l` key
+  - Color-coded by level: ERROR (red), WARN (yellow), INFO (white), DEBUG (gray)
+  - Configurable buffer size via `BSSH_TUI_LOG_MAX_ENTRIES` (default: 1000, max: 10000)
+  - Panel height adjustable from 3-10 lines with `+`/`-` keys
+  - Scroll with `j`/`k` keys, toggle timestamps with `t`
+
+- **--fail-fast Option** (Issue #103)
+  - `-k` / `--fail-fast` flag to stop immediately on first failure
+  - Compatible with pdsh `-k` option
+  - Cancels pending commands when any node fails
+  - Can be combined with `--require-all-success` for strict error handling
+
+- **--batch Option** (Issue #102)
+  - `-b` / `--batch` flag for single Ctrl+C termination
+  - Compatible with pdsh `-b` option
+  - Useful for non-interactive scripts and CI/CD pipelines
+
+- **--exclude Option** (Issue #100)
+  - `--exclude` / `-x` for host exclusion
+  - Supports wildcards, glob patterns, and hostlist expressions
+  - Applied after `--filter` option
+
+- **--no-prefix Option** (Issue #101)
+  - `-N` / `--no-prefix` for disabling hostname prefix in output
+  - Compatible with pdsh `-N` option
+  - Works with both stream mode and file mode
+
+- **--connect-timeout Option** (PR #103)
+  - Separate connection timeout from command execution timeout
+  - Default: 30 seconds, minimum: 1 second
+  - Useful for fast failure detection on unreachable hosts
+
+### Changed
+- **CI Workflow Simplification**
+  - Merged multiple jobs into single pipeline for efficiency
+
+### Fixed
+- **Environment Variable Test Race Conditions**
+  - Added `#[serial]` attribute to env var tests to prevent race conditions
+  - Tests now run sequentially when accessing shared environment state
+
+- **Connect Timeout Propagation**
+  - Fixed connect_timeout not being propagated through all SSH connection paths
+
+### Documentation
+- **Architecture Restructure** (Issue #109)
+  - Restructured ARCHITECTURE.md into modular documentation
+  - Removed residual dates and fixed incomplete sentences
+
+- **pdsh Compatibility Documentation** (Issue #110)
+  - Added comprehensive pdsh migration guide (docs/pdsh-migration.md)
+  - Added pdsh options reference (docs/pdsh-options.md)
+  - Added pdsh usage examples (docs/pdsh-examples.md)
+  - Added installation scripts for pdsh symlink setup
+
 ## [1.4.2] - 2025-12-16
 
 ### Fixed
@@ -513,6 +595,7 @@ None
 - russh library for native SSH implementation
 - Cross-platform support (Linux and macOS)
 
+[1.5.0-rc1]: https://github.com/lablup/bssh/compare/v1.4.2...v1.5.0rc1
 [1.4.2]: https://github.com/lablup/bssh/compare/v1.4.1...v1.4.2
 [1.4.1]: https://github.com/lablup/bssh/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/lablup/bssh/compare/v1.3.0...v1.4.0

@@ -1,6 +1,6 @@
 [package]
 name = "bssh"
-version = "1.4.2"
+version = "1.5.0-rc1"
 authors = ["Jeongkyu Shin <inureyes@gmail.com>"]
 description = "Parallel SSH command execution tool for cluster management"
 license = "Apache-2.0"
@@ -43,7 +43,7 @@ regex = "1.12.2"
 lazy_static = "1.5"
 ctrlc = "3.5.1"
 signal-hook = "0.3.18"
-nix = { version = "0.29", features = ["poll"] }
+nix = { version = "0.30", features = ["poll"] }
 atty = "0.2.14"
 arrayvec = "0.7.6"
 smallvec = "1.15.1"

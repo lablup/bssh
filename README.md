@@ -1371,6 +1371,7 @@ See the [LICENSE](./LICENSE) file for details.
 ## Changelog
 
 ### Recent Updates
+- **v1.5.0rc1 (2025/12/17):** Add pdsh compatibility mode with -w/-x/-f/-N/-b/-k/-q options, pdsh-style hostlist expressions (node[1-5], rack[1-2]-node[1-3]), in-TUI log panel, --connect-timeout option, --fail-fast/-k and --batch/-b flags
 - **v1.4.2 (2025/12/16):** Fix terminal escape sequence responses displayed on first prompt when starting tmux, fix paste not working in PTY sessions, bump dependencies
 - **v1.4.1 (2025/12/16):** Add comprehensive TUI/streaming tests (84 new tests), extend password fallback for SSH agent auth failures, add TUI module documentation
 - **v1.4.0 (2025/12/15):** Add --sudo-password flag for automated sudo authentication, password fallback with improved SSH debugging, developer tooling (githooks)
