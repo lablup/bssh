@@ -211,7 +211,7 @@ pub struct Cli {
 
     #[arg(
         long = "pdsh-compat",
-        help = "Enable pdsh compatibility mode\nAccepts pdsh-style command line arguments (-w, -x, -f, etc.)\nUseful when migrating from pdsh or in mixed environments"
+        help = "Enable pdsh compatibility mode\nAccepts pdsh-style command line arguments (-w, -x, -f, etc.)\nAuto-enabled when invoked as 'pdsh' via symlink or when BSSH_PDSH_COMPAT=1\nUseful when migrating from pdsh or in mixed environments\nSee docs/pdsh-migration.md for complete migration guide"
     )]
     pub pdsh_compat: bool,
 
