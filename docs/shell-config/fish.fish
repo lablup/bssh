@@ -98,8 +98,10 @@ end
 # ============================================
 # Environment Variables
 # ============================================
-# Set default bssh configuration file location
-set -gx BSSH_CONFIG $HOME/.config/bssh/config.yaml
+# Set default bssh configuration file location (preserve existing if set)
+if not set -q BSSH_CONFIG
+    set -gx BSSH_CONFIG $HOME/.config/bssh/config.yaml
+end
 
 # Enable pdsh compatibility mode globally (if desired)
 # set -gx BSSH_PDSH_COMPAT 1
@@ -205,7 +207,13 @@ function bssh-select
 
     read -P "Enter number: " selection
 
-    if test -n "$selection" -a $selection -ge 1 -a $selection -le (count $clusters)
+    # Validate that selection is a positive integer
+    if not string match -qr '^[0-9]+$' -- "$selection"
+        echo "Invalid selection: must be a number"
+        return 1
+    end
+
+    if test "$selection" -ge 1 -a "$selection" -le (count $clusters)
         set selected_cluster $clusters[$selection]
         echo "Selected: $selected_cluster"
 

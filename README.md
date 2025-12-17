@@ -405,7 +405,7 @@ bssh supports pdsh compatibility mode, enabling it to act as a drop-in replaceme
 **1. Binary symlink** (recommended for full compatibility):
 ```bash
 # Create symlink (done automatically by Homebrew)
-sudo ln -s /usr/bin/bssh /usr/local/bin/pdsh
+sudo ln -sf "$(which bssh)" /usr/local/bin/pdsh
 
 # Now pdsh commands use bssh
 pdsh -w host1,host2 "uptime"

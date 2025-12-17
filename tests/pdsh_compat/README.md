@@ -7,7 +7,6 @@ This directory contains integration tests for pdsh compatibility mode.
 - **test_basic.sh** - Basic command execution tests
 - **test_hostlist.sh** - Hostlist expression expansion tests
 - **test_options.sh** - Option mapping tests
-- **test_edge_cases.sh** - Edge cases and error handling
 
 ## Running Tests
 
@@ -46,7 +45,6 @@ cd tests/pdsh_compat
 ./test_basic.sh
 ./test_hostlist.sh
 ./test_options.sh
-./test_edge_cases.sh
 ```
 
 ## Test Coverage
@@ -71,13 +69,7 @@ cd tests/pdsh_compat
 - Output control (`-N`)
 - Batch mode (`-b`)
 - Fail-fast (`-k`)
-
-### Edge Cases (`test_edge_cases.sh`)
-- Invalid hostlist syntax
-- Connection failures
-- Command timeouts
-- Missing hosts
-- Glob patterns in exclusions
+- Edge cases (invalid syntax, connection failures, timeouts)
 
 ## CI Integration
 

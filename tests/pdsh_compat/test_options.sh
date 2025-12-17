@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # pdsh option mapping tests
 
-set -e
+set -euo pipefail
+
+# Disable errexit for arithmetic expressions (workaround for (()) returning 1 on 0)
+set +e
 
 # Colors for output
 RED='\033[0;31m'
@@ -27,16 +30,16 @@ log_test() {
 
 log_pass() {
     echo -e "${GREEN}[PASS]${NC} $1"
-    ((TESTS_PASSED++))
+    TESTS_PASSED=$((TESTS_PASSED + 1))
 }
 
 log_fail() {
     echo -e "${RED}[FAIL]${NC} $1"
-    ((TESTS_FAILED++))
+    TESTS_FAILED=$((TESTS_FAILED + 1))
 }
 
 run_test() {
-    ((TESTS_RUN++))
+    TESTS_RUN=$((TESTS_RUN + 1))
     local test_name="$1"
     shift
 
