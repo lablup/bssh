@@ -20,10 +20,12 @@
 #[cfg(test)]
 mod tests {
     use crate::cli::pdsh::PDSH_COMPAT_ENV_VAR;
+    use serial_test::serial;
     use std::env;
 
     /// Test that environment variable detection works for "1"
     #[test]
+    #[serial]
     fn test_env_var_detection_one() {
         // Save and restore env var state
         let original = env::var(PDSH_COMPAT_ENV_VAR).ok();
@@ -45,6 +47,7 @@ mod tests {
 
     /// Test that environment variable detection works for "true"
     #[test]
+    #[serial]
     fn test_env_var_detection_true() {
         let original = env::var(PDSH_COMPAT_ENV_VAR).ok();
 
@@ -79,6 +82,7 @@ mod tests {
 
     /// Test that environment variable is not detected when unset
     #[test]
+    #[serial]
     fn test_env_var_not_set() {
         let original = env::var(PDSH_COMPAT_ENV_VAR).ok();
 
@@ -95,6 +99,7 @@ mod tests {
 
     /// Test that invalid env var values are not treated as enabled
     #[test]
+    #[serial]
     fn test_env_var_invalid_values() {
         let original = env::var(PDSH_COMPAT_ENV_VAR).ok();
 
