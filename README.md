@@ -395,11 +395,16 @@ bssh -H nodes --batch --stream "deployment-script.sh"
 
 bssh supports pdsh compatibility mode, enabling it to act as a drop-in replacement for pdsh. This allows seamless migration from pdsh without modifying existing scripts.
 
+**📖 Complete Documentation**:
+- **[Migration Guide](docs/pdsh-migration.md)** - Step-by-step migration from pdsh to bssh
+- **[Options Reference](docs/pdsh-options.md)** - Complete option mapping table
+- **[Examples](docs/pdsh-examples.md)** - Real-world usage patterns
+
 #### Activation Methods
 
 **1. Binary symlink** (recommended for full compatibility):
 ```bash
-# Create symlink
+# Create symlink (done automatically by Homebrew)
 sudo ln -s /usr/bin/bssh /usr/local/bin/pdsh
 
 # Now pdsh commands use bssh
@@ -414,6 +419,12 @@ BSSH_PDSH_COMPAT=1 bssh -w host1,host2 "uptime"
 **3. CLI flag**:
 ```bash
 bssh --pdsh-compat -w host1,host2 "uptime"
+```
+
+**4. Shell alias**:
+```bash
+# Add to ~/.bashrc or ~/.zshrc
+alias pdsh='bssh --pdsh-compat'
 ```
 
 #### pdsh Option Mapping
