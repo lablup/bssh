@@ -280,8 +280,8 @@ fn test_pdsh_to_bssh_default_timeouts() {
 
     // Default connect timeout is 30s
     assert_eq!(bssh_cli.connect_timeout, 30);
-    // Default command timeout is 300s
-    assert_eq!(bssh_cli.timeout, 300);
+    // Default command timeout (None - will use config or 300s default)
+    assert_eq!(bssh_cli.timeout, None);
 }
 
 #[test]
@@ -291,7 +291,7 @@ fn test_pdsh_to_bssh_custom_timeouts() {
     let bssh_cli = pdsh_cli.to_bssh_cli();
 
     assert_eq!(bssh_cli.connect_timeout, 10);
-    assert_eq!(bssh_cli.timeout, 600);
+    assert_eq!(bssh_cli.timeout, Some(600));
 }
 
 #[test]

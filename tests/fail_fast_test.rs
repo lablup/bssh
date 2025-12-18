@@ -314,7 +314,7 @@ fn test_fail_fast_flag_combinations() {
     ];
     let cli = Cli::try_parse_from(args).expect("Should parse with fail-fast and timeout");
     assert!(cli.fail_fast);
-    assert_eq!(cli.timeout, 60);
+    assert_eq!(cli.timeout, Some(60));
 }
 
 /// Test that -k doesn't conflict with existing short options

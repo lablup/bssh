@@ -88,7 +88,7 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
                 cli.password,
                 #[cfg(target_os = "macos")]
                 use_keychain,
-                Some(cli.timeout),
+                cli.timeout,
                 Some(cli.connect_timeout),
             )
             .await
@@ -347,9 +347,11 @@ async fn handle_exec_command(cli: &Cli, ctx: &AppContext, command: &str) -> Resu
         std::process::exit(0);
     } else {
         // Regular command execution
-        let timeout = if cli.timeout > 0 {
-            Some(cli.timeout)
+        let timeout = if let Some(t) = cli.timeout {
+            // User explicitly specified --timeout, use it directly (including 0 for unlimited)
+            Some(t)
         } else {
+            // User did not specify --timeout, fall back to config
             ctx.config
                 .get_timeout(ctx.cluster_name.as_deref().or(cli.cluster.as_deref()))
         };

@@ -282,7 +282,7 @@ impl PdshCli {
             // Map -t to --connect-timeout
             connect_timeout: self.connect_timeout.unwrap_or(30),
             // Map -u to --timeout
-            timeout: self.command_timeout.unwrap_or(300),
+            timeout: self.command_timeout,
             // Map -N to --no-prefix
             no_prefix: self.no_prefix,
             // Map -b to --batch
@@ -526,7 +526,7 @@ mod tests {
         // Connect timeout
         assert_eq!(bssh_cli.connect_timeout, 60);
         // Command timeout
-        assert_eq!(bssh_cli.timeout, 600);
+        assert_eq!(bssh_cli.timeout, Some(600));
         // No prefix flag
         assert!(bssh_cli.no_prefix);
         // Batch flag
@@ -547,8 +547,8 @@ mod tests {
 
         // Default connect timeout (30s)
         assert_eq!(bssh_cli.connect_timeout, 30);
-        // Default command timeout (300s)
-        assert_eq!(bssh_cli.timeout, 300);
+        // Default command timeout (None - will use config or 300s default)
+        assert_eq!(bssh_cli.timeout, None);
         // Default parallel (32 from pdsh fanout)
         assert_eq!(bssh_cli.parallel, 32);
         // Default strict host key checking

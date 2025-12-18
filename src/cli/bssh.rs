@@ -169,10 +169,9 @@ pub struct Cli {
 
     #[arg(
         long,
-        default_value = "300",
-        help = "Command timeout in seconds (0 for unlimited)"
+        help = "Command timeout in seconds (0 for unlimited, default: 300 if not specified)"
     )]
-    pub timeout: u64,
+    pub timeout: Option<u64>,
 
     #[arg(
         long = "connect-timeout",
