@@ -69,3 +69,30 @@ clusters:
     assert_eq!(config.defaults.timeout, Some(0));
     assert_eq!(config.get_timeout(Some("production")), Some(0));
 }
+
+/// Test that --timeout 0 is correctly parsed as Some(0) for unlimited timeout
+/// This is the fix for GitHub issue #112
+#[test]
+fn test_cli_timeout_zero_is_unlimited() {
+    use bssh::cli::Cli;
+    use clap::Parser;
+
+    // Test --timeout 0 is parsed as Some(0), meaning unlimited
+    let args = vec!["bssh", "-H", "user@host", "--timeout", "0", "echo", "test"];
+    let cli = Cli::try_parse_from(args).expect("Should parse --timeout 0");
+    assert_eq!(
+        cli.timeout,
+        Some(0),
+        "--timeout 0 should be Some(0) for unlimited"
+    );
+
+    // Test --timeout with non-zero value
+    let args = vec!["bssh", "-H", "user@host", "--timeout", "60", "echo", "test"];
+    let cli = Cli::try_parse_from(args).expect("Should parse --timeout 60");
+    assert_eq!(cli.timeout, Some(60), "--timeout 60 should be Some(60)");
+
+    // Test no --timeout flag results in None (will use config or default)
+    let args = vec!["bssh", "-H", "user@host", "echo", "test"];
+    let cli = Cli::try_parse_from(args).expect("Should parse without --timeout");
+    assert_eq!(cli.timeout, None, "No --timeout should be None");
+}
