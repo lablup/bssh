@@ -82,6 +82,7 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
+            ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
             ${{ runner.os }}-cargo-${{ matrix.target }}-
 
       # 3) Install Rust toolchain
