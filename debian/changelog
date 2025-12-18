@@ -1,6 +1,6 @@
-bssh (1.5.0~rc1-1~jammy1) jammy; urgency=medium
+bssh (1.5.0-1~jammy1) jammy; urgency=medium
 
-  * v1.5.0rc1
+  * v1.5.0
   ### New Features
   - **pdsh Compatibility Mode**: Full pdsh-style command line compatibility
     - `-w hosts` option mapped to `-H hosts` for target host specification
@@ -27,6 +27,7 @@ bssh (1.5.0~rc1-1~jammy1) jammy; urgency=medium
   - CI workflow simplification by merging jobs into single pipeline
 
   ### Bug Fixes
+  - Fixed --timeout 0 handling to correctly treat as unlimited instead of ignoring
   - Fixed #[serial] attribute for env var tests to prevent race conditions
   - Fixed connect_timeout propagation through all SSH connection paths
 
@@ -36,6 +37,7 @@ bssh (1.5.0~rc1-1~jammy1) jammy; urgency=medium
   ### Technical Details
   - pdsh compatibility layer core infrastructure
   - Comprehensive hostlist expression parser with cartesian product support
+  - Added explicit CLI test for --timeout 0 behavior
 
   ### Dependencies
   None
@@ -46,7 +48,7 @@ bssh (1.5.0~rc1-1~jammy1) jammy; urgency=medium
   ### Known Issues
   None
 
- -- Jeongkyu Shin <inureyes@gmail.com>  Tue, 17 Dec 2025 00:00:00 +0900
+ -- Jeongkyu Shin <inureyes@gmail.com>  Wed, 18 Dec 2025 00:00:00 +0900
 
 bssh (1.4.2-1~jammy1) jammy; urgency=medium
 

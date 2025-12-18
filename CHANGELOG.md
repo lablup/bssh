@@ -5,7 +5,7 @@ All notable changes to bssh will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.5.0-rc1] - 2025-12-17
+## [1.5.0] - 2025-12-18
 
 ### Added
 - **pdsh Compatibility Mode** (Issues #100-103, #105, #107, #110)
@@ -69,6 +69,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Merged multiple jobs into single pipeline for efficiency
 
 ### Fixed
+- **--timeout 0 Handling** (Issue #112)
+  - Fixed --timeout 0 to correctly treat as unlimited execution time
+  - Previously the 0 value was being ignored, causing unexpected timeout behavior
+  - Added explicit CLI test to prevent regression
+
 - **Environment Variable Test Race Conditions**
   - Added `#[serial]` attribute to env var tests to prevent race conditions
   - Tests now run sequentially when accessing shared environment state
@@ -595,7 +600,7 @@ None
 - russh library for native SSH implementation
 - Cross-platform support (Linux and macOS)
 
-[1.5.0-rc1]: https://github.com/lablup/bssh/compare/v1.4.2...v1.5.0rc1
+[1.5.0]: https://github.com/lablup/bssh/compare/v1.4.2...v1.5.0
 [1.4.2]: https://github.com/lablup/bssh/compare/v1.4.1...v1.4.2
 [1.4.1]: https://github.com/lablup/bssh/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/lablup/bssh/compare/v1.3.0...v1.4.0
