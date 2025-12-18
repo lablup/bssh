@@ -105,3 +105,59 @@ fn test_host_key_verification_not_bypassed() {
         "ServerCheckFailed must NOT trigger password fallback - host key verification is a security feature"
     );
 }
+
+// Tests for issue #113: Handle SshError(Disconnect) during authentication
+// The russh library may disconnect the connection before returning authentication failure,
+// which manifests as SshError(Disconnect) instead of KeyAuthFailed.
+
+/// Test that SshError(Disconnect) triggers password fallback.
+/// This is the key fix for GitHub issue #113.
+#[test]
+fn test_ssh_disconnect_during_auth_triggers_password_fallback() {
+    let error = SshError::SshError(russh::Error::Disconnect);
+    assert!(
+        is_auth_error_for_password_fallback(&error),
+        "SshError(Disconnect) should trigger password fallback - \
+         server may disconnect after key authentication rejection (issue #113)"
+    );
+}
+
+/// Test that SshError(RecvError) triggers password fallback.
+/// The server may close the channel during authentication, resulting in RecvError.
+#[test]
+fn test_ssh_recv_error_during_auth_triggers_password_fallback() {
+    let error = SshError::SshError(russh::Error::RecvError);
+    assert!(
+        is_auth_error_for_password_fallback(&error),
+        "SshError(RecvError) should trigger password fallback - \
+         server may close connection during authentication"
+    );
+}
+
+/// Test that other SSH errors (HUP, ConnectionTimeout) do NOT trigger password fallback.
+/// These indicate network issues, not authentication failures.
+#[test]
+fn test_other_ssh_errors_do_not_trigger_fallback() {
+    let non_auth_ssh_errors: Vec<(SshError, &str)> = vec![
+        (
+            SshError::SshError(russh::Error::HUP),
+            "HUP - remote closed connection",
+        ),
+        (
+            SshError::SshError(russh::Error::ConnectionTimeout),
+            "ConnectionTimeout - network issue",
+        ),
+        (
+            SshError::SshError(russh::Error::NotAuthenticated),
+            "NotAuthenticated - auth not attempted yet",
+        ),
+    ];
+
+    for (error, desc) in non_auth_ssh_errors {
+        assert!(
+            !is_auth_error_for_password_fallback(&error),
+            "{} should NOT trigger password fallback",
+            desc
+        );
+    }
+}
