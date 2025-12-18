@@ -72,16 +72,16 @@ impl InteractiveCommand {
 
         // Check if authentication failed and password fallback is allowed
         // This matches SSH key failures as well as SSH agent authentication failures
+        // Also handles the case where russh disconnects during authentication failure
+        // (which returns SshError(Disconnect) instead of KeyAuthFailed)
         let result = match result {
-            Err(
-                SshError::KeyAuthFailed
-                | SshError::AgentAuthenticationFailed
-                | SshError::AgentNoIdentities
-                | SshError::AgentConnectionFailed
-                | SshError::AgentRequestIdentitiesFailed,
-            ) if allow_password_fallback && atty::is(atty::Stream::Stdin) => {
+            Err(ref err)
+                if allow_password_fallback
+                    && atty::is(atty::Stream::Stdin)
+                    && is_auth_error_for_password_fallback(err) =>
+            {
                 tracing::debug!(
-                    "SSH authentication failed for {username}@{host}:{port}, attempting password fallback"
+                    "SSH authentication failed for {username}@{host}:{port} ({err}), attempting password fallback"
                 );
 
                 // Prompt for password (matching OpenSSH behavior)
@@ -473,18 +473,56 @@ impl InteractiveCommand {
 /// - SSH agent has no identities loaded
 /// - SSH agent connection fails
 /// - SSH agent identity request fails
+/// - SSH server disconnects during authentication (russh::Error::Disconnect)
+///   This is a common behavior when the server rejects key authentication
+///   and the russh library drops the connection before returning the auth result.
 ///
 /// These are all cases where falling back to password authentication makes sense,
 /// matching OpenSSH's behavior.
+///
+/// # Important
+/// The SshError(Disconnect) case is particularly important because russh may
+/// disconnect the connection before returning the authentication failure result.
+/// The log flow in this case is:
+/// ```text
+/// userauth_failure -> drop handle -> disconnected SshError(Disconnect)
+/// ```
+/// Without handling this case, password fallback would never be triggered when
+/// key authentication fails on servers that disconnect after auth failure.
 pub fn is_auth_error_for_password_fallback(error: &SshError) -> bool {
-    matches!(
-        error,
+    match error {
+        // Explicit authentication failures
         SshError::KeyAuthFailed
-            | SshError::AgentAuthenticationFailed
-            | SshError::AgentNoIdentities
-            | SshError::AgentConnectionFailed
-            | SshError::AgentRequestIdentitiesFailed
-    )
+        | SshError::AgentAuthenticationFailed
+        | SshError::AgentNoIdentities
+        | SshError::AgentConnectionFailed
+        | SshError::AgentRequestIdentitiesFailed => true,
+
+        // russh may disconnect after auth failure, which manifests as these errors
+        // This is a key fix for GitHub issue #113: the server may disconnect
+        // during authentication, and we should treat this as an auth failure
+        // that can be retried with password.
+        SshError::SshError(russh::Error::Disconnect) => {
+            tracing::debug!(
+                "Treating SshError(Disconnect) as auth failure - server likely \
+                 disconnected after key authentication rejection"
+            );
+            true
+        }
+
+        // RecvError can occur when the server closes the channel during auth
+        SshError::SshError(russh::Error::RecvError) => {
+            tracing::debug!(
+                "Treating SshError(RecvError) as auth failure - server likely \
+                 closed connection during authentication"
+            );
+            true
+        }
+
+        // All other errors should not trigger password fallback
+        // This includes: PasswordWrong, ServerCheckFailed, IoError, etc.
+        _ => false,
+    }
 }
 
 #[cfg(test)]
@@ -572,6 +610,59 @@ mod tests {
         assert!(
             !is_auth_error_for_password_fallback(&error),
             "KeyboardInteractiveAuthFailed should NOT trigger password fallback"
+        );
+    }
+
+    // Tests for issue #113: Handle SshError(Disconnect) during authentication
+    #[test]
+    fn test_ssh_disconnect_triggers_password_fallback() {
+        let error = SshError::SshError(russh::Error::Disconnect);
+        assert!(
+            is_auth_error_for_password_fallback(&error),
+            "SshError(Disconnect) should trigger password fallback - \
+             server may disconnect after key auth rejection"
+        );
+    }
+
+    #[test]
+    fn test_ssh_recv_error_triggers_password_fallback() {
+        let error = SshError::SshError(russh::Error::RecvError);
+        assert!(
+            is_auth_error_for_password_fallback(&error),
+            "SshError(RecvError) should trigger password fallback - \
+             server may close connection during authentication"
+        );
+    }
+
+    #[test]
+    fn test_ssh_hup_does_not_trigger_fallback() {
+        // HUP is a different type of disconnect that happens during normal operation
+        let error = SshError::SshError(russh::Error::HUP);
+        assert!(
+            !is_auth_error_for_password_fallback(&error),
+            "SshError(HUP) should NOT trigger password fallback - \
+             this indicates remote closed connection, not auth failure"
+        );
+    }
+
+    #[test]
+    fn test_ssh_connection_timeout_does_not_trigger_fallback() {
+        let error = SshError::SshError(russh::Error::ConnectionTimeout);
+        assert!(
+            !is_auth_error_for_password_fallback(&error),
+            "SshError(ConnectionTimeout) should NOT trigger password fallback - \
+             this is a network issue, not auth failure"
+        );
+    }
+
+    #[test]
+    fn test_ssh_not_authenticated_does_not_trigger_fallback() {
+        // NotAuthenticated means we haven't tried auth yet, not that auth failed
+        let error = SshError::SshError(russh::Error::NotAuthenticated);
+        assert!(
+            !is_auth_error_for_password_fallback(&error),
+            "SshError(NotAuthenticated) should NOT trigger password fallback - \
+             this means auth hasn't been attempted yet"
         );
     }
 }
