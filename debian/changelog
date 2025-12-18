@@ -1,3 +1,35 @@
+bssh (1.5.1-1~jammy1) jammy; urgency=medium
+
+  * v1.5.1
+  ### New Features
+  None
+
+  ### Improvements
+  None
+
+  ### Bug Fixes
+  - **SSH Disconnect Error Handling**: Handle SshError(Disconnect) during authentication for password fallback (issue #113)
+    - Fixed handling of SSH disconnect errors during authentication phase
+    - Enables proper password fallback when SSH connection is disconnected during auth
+
+  ### CI/CD Improvements
+  None
+
+  ### Technical Details
+  - Extended auth error matching to include SshError::Disconnect variant
+  - Improved robustness of password fallback authentication flow
+
+  ### Dependencies
+  None
+
+  ### Breaking Changes
+  None
+
+  ### Known Issues
+  None
+
+ -- Jeongkyu Shin <inureyes@gmail.com>  Wed, 18 Dec 2025 00:00:00 +0900
+
 bssh (1.5.0-1~jammy1) jammy; urgency=medium
 
   * v1.5.0
