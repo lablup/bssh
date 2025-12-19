@@ -5,6 +5,42 @@ All notable changes to bssh will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0rc1] - 2025-12-19
+
+### Added
+- **Jump Host Configuration Support in YAML** (Issue #115, PR #120)
+  - Global defaults level: `defaults.jump_host` for all clusters
+  - Cluster level: `clusters.<name>.jump_host` for cluster-specific settings
+  - Node level: Per-node `jump_host` in detailed node configuration
+  - Environment variable expansion supported (`${VAR}` or `$VAR` syntax)
+  - Empty string (`""`) explicitly disables jump host inheritance
+  - CLI `-J` option always takes precedence over configuration
+
+### Changed
+- **SSH Config ProxyJump Directive** (Issue #117, PR #119)
+  - ProxyJump directive from SSH config now properly applied when `-J` option not specified
+  - Priority order: CLI `-J` > config.yaml jump_host > SSH config ProxyJump
+- **Documentation Improvements**
+  - Added comprehensive jump_host configuration documentation to README.md
+  - Updated docs/architecture/ssh-jump-hosts.md with detailed architecture
+  - Updated example-config.yaml with all jump_host configuration patterns
+- **CI/CD**
+  - Updated GitHub workflows
+
+### Fixed
+- **Jump Host Authentication** (Issue #116, PR #118)
+  - Properly handle empty SSH agent when authenticating through jump hosts
+  - Fall back to key-based authentication when agent has no identities
+- **Config Fallback** (PR #120)
+  - Environment variables now properly expanded in jump_host values via expand_env_vars
+  - Configuration jump_host properly used in exec and interactive modes
+
+### Technical Details
+- Added `ConfigResolver::resolve_jump_host()` method for centralized jump host resolution
+- Jump host priority: CLI > Node > Cluster > Global defaults
+- Comprehensive test coverage: 424 lines of tests for jump_host configuration
+- Integration tests for all priority levels and edge cases
+
 ## [1.5.1] - 2025-12-18
 
 ### Fixed
@@ -608,6 +644,7 @@ None
 - russh library for native SSH implementation
 - Cross-platform support (Linux and macOS)
 
+[1.6.0rc1]: https://github.com/lablup/bssh/compare/v1.5.1...v1.6.0rc1
 [1.5.1]: https://github.com/lablup/bssh/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/lablup/bssh/compare/v1.4.2...v1.5.0
 [1.4.2]: https://github.com/lablup/bssh/compare/v1.4.1...v1.4.2

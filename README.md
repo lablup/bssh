@@ -1409,6 +1409,7 @@ See the [LICENSE](./LICENSE) file for details.
 ## Changelog
 
 ### Recent Updates
+- **v1.6.0rc1 (2025/12/19):** Add jump_host field support in config.yaml (issue #115), fix SSH config ProxyJump directive application, fix jump host authentication with empty SSH agent (issues #116, #117)
 - **v1.5.1 (2025/12/18):** Fix SSH disconnect error handling during authentication for password fallback (issue #113)
 - **v1.5.0 (2025/12/18):** Add pdsh compatibility mode with -w/-x/-f/-N/-b/-k/-q options, pdsh-style hostlist expressions (node[1-5], rack[1-2]-node[1-3]), in-TUI log panel, --connect-timeout option, --fail-fast/-k and --batch/-b flags, fix --timeout 0 handling for unlimited execution
 - **v1.4.2 (2025/12/16):** Fix terminal escape sequence responses displayed on first prompt when starting tmux, fix paste not working in PTY sessions, bump dependencies
