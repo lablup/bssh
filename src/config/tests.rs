@@ -463,3 +463,51 @@ clusters:
         Some("prod-bastion.example.com".to_string())
     );
 }
+
+#[test]
+fn test_jump_host_env_var_expansion() {
+    // Set up test environment variables
+    unsafe {
+        std::env::set_var("TEST_BASTION_HOST", "bastion.example.com");
+        std::env::set_var("TEST_BASTION_PORT", "2222");
+    }
+
+    let yaml = r#"
+defaults:
+  jump_host: ${TEST_BASTION_HOST}
+
+clusters:
+  production:
+    nodes:
+      - host: prod1.internal
+        jump_host: $TEST_BASTION_HOST:$TEST_BASTION_PORT
+      - host: prod2.internal
+    jump_host: ${TEST_BASTION_HOST}:${TEST_BASTION_PORT}
+"#;
+
+    let config: Config = serde_yaml::from_str(yaml).unwrap();
+
+    // Node-level with $VAR syntax
+    assert_eq!(
+        config.get_jump_host("production", 0),
+        Some("bastion.example.com:2222".to_string())
+    );
+
+    // Cluster-level with ${VAR} syntax
+    assert_eq!(
+        config.get_jump_host("production", 1),
+        Some("bastion.example.com:2222".to_string())
+    );
+
+    // Global default with ${VAR} syntax
+    assert_eq!(
+        config.get_cluster_jump_host(Some("staging")),
+        Some("bastion.example.com".to_string())
+    );
+
+    // Clean up
+    unsafe {
+        std::env::remove_var("TEST_BASTION_HOST");
+        std::env::remove_var("TEST_BASTION_PORT");
+    }
+}
