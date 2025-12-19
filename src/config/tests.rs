@@ -237,3 +237,427 @@ fn test_backendai_env_parsing() {
         std::env::remove_var("BACKENDAI_CLUSTER_ROLE");
     }
 }
+
+#[test]
+fn test_jump_host_global_default() {
+    let yaml = r#"
+defaults:
+  user: admin
+  jump_host: bastion.example.com
+
+clusters:
+  production:
+    nodes:
+      - host: prod1.internal
+      - host: prod2.internal
+"#;
+
+    let config: Config = serde_yaml::from_str(yaml).unwrap();
+
+    // Both nodes should inherit global jump_host
+    assert_eq!(
+        config.get_jump_host("production", 0),
+        Some("bastion.example.com".to_string())
+    );
+    assert_eq!(
+        config.get_jump_host("production", 1),
+        Some("bastion.example.com".to_string())
+    );
+
+    // get_cluster_jump_host should also return global default
+    assert_eq!(
+        config.get_cluster_jump_host(Some("production")),
+        Some("bastion.example.com".to_string())
+    );
+}
+
+#[test]
+fn test_jump_host_cluster_override() {
+    let yaml = r#"
+defaults:
+  jump_host: global-bastion.example.com
+
+clusters:
+  production:
+    nodes:
+      - host: prod1.internal
+      - host: prod2.internal
+    jump_host: prod-bastion.example.com
+
+  staging:
+    nodes:
+      - host: staging1.internal
+"#;
+
+    let config: Config = serde_yaml::from_str(yaml).unwrap();
+
+    // production cluster nodes should use cluster jump_host
+    assert_eq!(
+        config.get_jump_host("production", 0),
+        Some("prod-bastion.example.com".to_string())
+    );
+    assert_eq!(
+        config.get_jump_host("production", 1),
+        Some("prod-bastion.example.com".to_string())
+    );
+
+    // staging cluster should fall back to global default
+    assert_eq!(
+        config.get_jump_host("staging", 0),
+        Some("global-bastion.example.com".to_string())
+    );
+
+    // get_cluster_jump_host should return cluster-level jump_host
+    assert_eq!(
+        config.get_cluster_jump_host(Some("production")),
+        Some("prod-bastion.example.com".to_string())
+    );
+    assert_eq!(
+        config.get_cluster_jump_host(Some("staging")),
+        Some("global-bastion.example.com".to_string())
+    );
+}
+
+#[test]
+fn test_jump_host_node_override() {
+    let yaml = r#"
+defaults:
+  jump_host: global-bastion.example.com
+
+clusters:
+  production:
+    nodes:
+      - host: prod1.internal
+        jump_host: prod1-bastion.example.com
+      - host: prod2.internal
+      - host: prod3.internal
+        jump_host: prod3-bastion:2222
+    jump_host: prod-bastion.example.com
+"#;
+
+    let config: Config = serde_yaml::from_str(yaml).unwrap();
+
+    // prod1 should use node-level jump_host
+    assert_eq!(
+        config.get_jump_host("production", 0),
+        Some("prod1-bastion.example.com".to_string())
+    );
+
+    // prod2 should use cluster-level jump_host (no node override)
+    assert_eq!(
+        config.get_jump_host("production", 1),
+        Some("prod-bastion.example.com".to_string())
+    );
+
+    // prod3 should use node-level jump_host with custom port
+    assert_eq!(
+        config.get_jump_host("production", 2),
+        Some("prod3-bastion:2222".to_string())
+    );
+}
+
+#[test]
+fn test_jump_host_explicit_disable() {
+    let yaml = r#"
+defaults:
+  jump_host: global-bastion.example.com
+
+clusters:
+  production:
+    nodes:
+      - host: prod1.internal
+      - host: prod2.internal
+        jump_host: ""
+    jump_host: prod-bastion.example.com
+
+  direct_access:
+    nodes:
+      - host: direct1.example.com
+    jump_host: ""
+"#;
+
+    let config: Config = serde_yaml::from_str(yaml).unwrap();
+
+    // prod1 should use cluster jump_host
+    assert_eq!(
+        config.get_jump_host("production", 0),
+        Some("prod-bastion.example.com".to_string())
+    );
+
+    // prod2 should have no jump_host (explicitly disabled with empty string)
+    assert_eq!(config.get_jump_host("production", 1), None);
+
+    // direct_access cluster disables jump_host at cluster level
+    assert_eq!(config.get_jump_host("direct_access", 0), None);
+
+    // get_cluster_jump_host should return None for explicitly disabled
+    assert_eq!(config.get_cluster_jump_host(Some("direct_access")), None);
+}
+
+#[test]
+fn test_jump_host_no_config() {
+    let yaml = r#"
+defaults:
+  user: admin
+
+clusters:
+  production:
+    nodes:
+      - host: prod1.internal
+"#;
+
+    let config: Config = serde_yaml::from_str(yaml).unwrap();
+
+    // No jump_host configured anywhere
+    assert_eq!(config.get_jump_host("production", 0), None);
+    assert_eq!(config.get_cluster_jump_host(Some("production")), None);
+    assert_eq!(config.get_cluster_jump_host(None), None);
+}
+
+#[test]
+fn test_jump_host_nonexistent_cluster() {
+    let yaml = r#"
+defaults:
+  jump_host: global-bastion.example.com
+
+clusters:
+  production:
+    nodes:
+      - host: prod1.internal
+"#;
+
+    let config: Config = serde_yaml::from_str(yaml).unwrap();
+
+    // Nonexistent cluster should return global default from get_cluster_jump_host
+    assert_eq!(
+        config.get_cluster_jump_host(Some("nonexistent")),
+        Some("global-bastion.example.com".to_string())
+    );
+
+    // get_jump_host for nonexistent cluster returns global default
+    assert_eq!(
+        config.get_jump_host("nonexistent", 0),
+        Some("global-bastion.example.com".to_string())
+    );
+}
+
+#[test]
+fn test_jump_host_simple_node_config() {
+    let yaml = r#"
+defaults:
+  jump_host: global-bastion.example.com
+
+clusters:
+  production:
+    nodes:
+      - simple-node.internal
+    jump_host: prod-bastion.example.com
+"#;
+
+    let config: Config = serde_yaml::from_str(yaml).unwrap();
+
+    // Simple node (string) should inherit cluster jump_host
+    // Simple nodes cannot have node-level jump_host override
+    assert_eq!(
+        config.get_jump_host("production", 0),
+        Some("prod-bastion.example.com".to_string())
+    );
+}
+
+#[test]
+fn test_jump_host_env_var_expansion() {
+    // Set up test environment variables
+    unsafe {
+        std::env::set_var("TEST_BASTION_HOST", "bastion.example.com");
+        std::env::set_var("TEST_BASTION_PORT", "2222");
+    }
+
+    let yaml = r#"
+defaults:
+  jump_host: ${TEST_BASTION_HOST}
+
+clusters:
+  production:
+    nodes:
+      - host: prod1.internal
+        jump_host: $TEST_BASTION_HOST:$TEST_BASTION_PORT
+      - host: prod2.internal
+    jump_host: ${TEST_BASTION_HOST}:${TEST_BASTION_PORT}
+"#;
+
+    let config: Config = serde_yaml::from_str(yaml).unwrap();
+
+    // Node-level with $VAR syntax
+    assert_eq!(
+        config.get_jump_host("production", 0),
+        Some("bastion.example.com:2222".to_string())
+    );
+
+    // Cluster-level with ${VAR} syntax
+    assert_eq!(
+        config.get_jump_host("production", 1),
+        Some("bastion.example.com:2222".to_string())
+    );
+
+    // Global default with ${VAR} syntax
+    assert_eq!(
+        config.get_cluster_jump_host(Some("staging")),
+        Some("bastion.example.com".to_string())
+    );
+
+    // Clean up
+    unsafe {
+        std::env::remove_var("TEST_BASTION_HOST");
+        std::env::remove_var("TEST_BASTION_PORT");
+    }
+}
+
+#[test]
+fn test_jump_host_out_of_bounds_node_index() {
+    let yaml = r#"
+defaults:
+  jump_host: global-bastion.example.com
+
+clusters:
+  production:
+    nodes:
+      - host: prod1.internal
+    jump_host: prod-bastion.example.com
+"#;
+
+    let config: Config = serde_yaml::from_str(yaml).unwrap();
+
+    // Node at index 0 exists - should use cluster jump_host
+    assert_eq!(
+        config.get_jump_host("production", 0),
+        Some("prod-bastion.example.com".to_string())
+    );
+
+    // Node at index 1 does not exist - should fall back to cluster level
+    assert_eq!(
+        config.get_jump_host("production", 1),
+        Some("prod-bastion.example.com".to_string())
+    );
+
+    // Node at index 100 does not exist - should fall back to cluster level
+    assert_eq!(
+        config.get_jump_host("production", 100),
+        Some("prod-bastion.example.com".to_string())
+    );
+}
+
+#[test]
+fn test_jump_host_mixed_simple_detailed_nodes() {
+    let yaml = r#"
+defaults:
+  jump_host: global-bastion.example.com
+
+clusters:
+  production:
+    nodes:
+      - simple-node1.internal
+      - host: detailed-node1.internal
+        jump_host: special-bastion.example.com
+      - simple-node2.internal
+      - host: detailed-node2.internal
+    jump_host: prod-bastion.example.com
+"#;
+
+    let config: Config = serde_yaml::from_str(yaml).unwrap();
+
+    // Simple node at index 0 - inherits cluster jump_host
+    assert_eq!(
+        config.get_jump_host("production", 0),
+        Some("prod-bastion.example.com".to_string())
+    );
+
+    // Detailed node at index 1 - uses node-level jump_host
+    assert_eq!(
+        config.get_jump_host("production", 1),
+        Some("special-bastion.example.com".to_string())
+    );
+
+    // Simple node at index 2 - inherits cluster jump_host
+    assert_eq!(
+        config.get_jump_host("production", 2),
+        Some("prod-bastion.example.com".to_string())
+    );
+
+    // Detailed node at index 3 without jump_host - inherits cluster jump_host
+    assert_eq!(
+        config.get_jump_host("production", 3),
+        Some("prod-bastion.example.com".to_string())
+    );
+}
+
+#[test]
+fn test_jump_host_with_port_format() {
+    let yaml = r#"
+defaults:
+  jump_host: bastion.example.com:2222
+
+clusters:
+  production:
+    nodes:
+      - host: prod1.internal
+        jump_host: prod-bastion:3333
+      - host: prod2.internal
+    jump_host: cluster-bastion:4444
+"#;
+
+    let config: Config = serde_yaml::from_str(yaml).unwrap();
+
+    // Node with port in jump_host
+    assert_eq!(
+        config.get_jump_host("production", 0),
+        Some("prod-bastion:3333".to_string())
+    );
+
+    // Cluster with port in jump_host
+    assert_eq!(
+        config.get_jump_host("production", 1),
+        Some("cluster-bastion:4444".to_string())
+    );
+
+    // Global default with port
+    assert_eq!(
+        config.get_cluster_jump_host(Some("staging")),
+        Some("bastion.example.com:2222".to_string())
+    );
+}
+
+#[test]
+fn test_jump_host_multi_hop_format() {
+    let yaml = r#"
+defaults:
+  jump_host: hop1.example.com,hop2.example.com
+
+clusters:
+  production:
+    nodes:
+      - host: prod1.internal
+        jump_host: jumpA,jumpB,jumpC
+      - host: prod2.internal
+    jump_host: bastion1,bastion2
+"#;
+
+    let config: Config = serde_yaml::from_str(yaml).unwrap();
+
+    // Node with multi-hop jump_host
+    assert_eq!(
+        config.get_jump_host("production", 0),
+        Some("jumpA,jumpB,jumpC".to_string())
+    );
+
+    // Cluster with multi-hop jump_host
+    assert_eq!(
+        config.get_jump_host("production", 1),
+        Some("bastion1,bastion2".to_string())
+    );
+
+    // Global default with multi-hop
+    assert_eq!(
+        config.get_cluster_jump_host(None),
+        Some("hop1.example.com,hop2.example.com".to_string())
+    );
+}

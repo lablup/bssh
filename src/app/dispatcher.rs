@@ -79,6 +79,12 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
             let use_keychain =
                 determine_use_keychain(&ctx.ssh_config, hostname_for_ssh_config.as_deref());
 
+            // Resolve jump_hosts: CLI takes precedence, then config
+            let jump_hosts = cli.jump_hosts.clone().or_else(|| {
+                ctx.config
+                    .get_cluster_jump_host(ctx.cluster_name.as_deref().or(cli.cluster.as_deref()))
+            });
+
             ping_nodes(
                 ctx.nodes.clone(),
                 ctx.max_parallel,
@@ -90,6 +96,7 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
                 use_keychain,
                 cli.timeout,
                 Some(cli.connect_timeout),
+                jump_hosts,
             )
             .await
         }
@@ -106,6 +113,12 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
                 ctx.cluster_name.as_deref().or(cli.cluster.as_deref()),
             );
 
+            // Resolve jump_hosts: CLI takes precedence, then config
+            let jump_hosts = cli.jump_hosts.clone().or_else(|| {
+                ctx.config
+                    .get_cluster_jump_host(ctx.cluster_name.as_deref().or(cli.cluster.as_deref()))
+            });
+
             let params = FileTransferParams {
                 nodes: ctx.nodes.clone(),
                 max_parallel: ctx.max_parallel,
@@ -115,6 +128,7 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
                 use_password: cli.password,
                 recursive: *recursive,
                 ssh_config: Some(&ctx.ssh_config),
+                jump_hosts,
             };
             upload_file(params, source, destination).await
         }
@@ -131,6 +145,12 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
                 ctx.cluster_name.as_deref().or(cli.cluster.as_deref()),
             );
 
+            // Resolve jump_hosts: CLI takes precedence, then config
+            let jump_hosts = cli.jump_hosts.clone().or_else(|| {
+                ctx.config
+                    .get_cluster_jump_host(ctx.cluster_name.as_deref().or(cli.cluster.as_deref()))
+            });
+
             let params = FileTransferParams {
                 nodes: ctx.nodes.clone(),
                 max_parallel: ctx.max_parallel,
@@ -140,6 +160,7 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
                 use_password: cli.password,
                 recursive: *recursive,
                 ssh_config: Some(&ctx.ssh_config),
+                jump_hosts,
             };
             download_file(params, source, destination).await
         }
@@ -249,6 +270,12 @@ async fn handle_interactive_command(
     #[cfg(target_os = "macos")]
     let use_keychain = determine_use_keychain(&ctx.ssh_config, hostname.as_deref());
 
+    // Resolve jump_hosts: CLI takes precedence, then config
+    let jump_hosts = cli.jump_hosts.clone().or_else(|| {
+        ctx.config
+            .get_cluster_jump_host(ctx.cluster_name.as_deref().or(cli.cluster.as_deref()))
+    });
+
     let interactive_cmd = InteractiveCommand {
         single_node: merged_mode.0,
         multiplex: merged_mode.1,
@@ -265,7 +292,7 @@ async fn handle_interactive_command(
         #[cfg(target_os = "macos")]
         use_keychain,
         strict_mode: ctx.strict_mode,
-        jump_hosts: cli.jump_hosts.clone(),
+        jump_hosts,
         pty_config,
         use_pty,
     };
@@ -311,6 +338,12 @@ async fn handle_exec_command(cli: &Cli, ctx: &AppContext, command: &str) -> Resu
         #[cfg(target_os = "macos")]
         let use_keychain = determine_use_keychain(&ctx.ssh_config, hostname.as_deref());
 
+        // Resolve jump_hosts: CLI takes precedence, then config
+        let jump_hosts = cli.jump_hosts.clone().or_else(|| {
+            ctx.config
+                .get_cluster_jump_host(ctx.cluster_name.as_deref().or(cli.cluster.as_deref()))
+        });
+
         let interactive_cmd = InteractiveCommand {
             single_node: true,
             multiplex: false,
@@ -327,7 +360,7 @@ async fn handle_exec_command(cli: &Cli, ctx: &AppContext, command: &str) -> Resu
             #[cfg(target_os = "macos")]
             use_keychain,
             strict_mode: ctx.strict_mode,
-            jump_hosts: cli.jump_hosts.clone(),
+            jump_hosts,
             pty_config,
             use_pty,
         };
@@ -382,6 +415,12 @@ async fn handle_exec_command(cli: &Cli, ctx: &AppContext, command: &str) -> Resu
             None
         };
 
+        // Resolve jump_hosts: CLI takes precedence, then config
+        let jump_hosts = cli.jump_hosts.clone().or_else(|| {
+            ctx.config
+                .get_cluster_jump_host(ctx.cluster_name.as_deref().or(cli.cluster.as_deref()))
+        });
+
         let params = ExecuteCommandParams {
             nodes: ctx.nodes.clone(),
             command,
@@ -398,7 +437,7 @@ async fn handle_exec_command(cli: &Cli, ctx: &AppContext, command: &str) -> Resu
             no_prefix: cli.no_prefix,
             timeout,
             connect_timeout: Some(cli.connect_timeout),
-            jump_hosts: cli.jump_hosts.as_deref(),
+            jump_hosts: jump_hosts.as_deref(),
             port_forwards: if cli.has_port_forwards() {
                 Some(cli.parse_port_forwards()?)
             } else {

@@ -56,7 +56,8 @@ pub async fn download_file(
         params.strict_mode,
         params.use_agent,
         params.use_password,
-    );
+    )
+    .with_jump_hosts(params.jump_hosts.clone());
     if let Some(ssh_config) = params.ssh_config {
         executor = executor.with_ssh_config(Some(ssh_config.clone()));
     }
@@ -117,9 +118,9 @@ pub async fn download_file(
                 params.strict_mode,
                 params.use_agent,
                 params.use_password,
-                None, // No jump hosts from this code path (ssh_config handles ProxyJump)
-                None, // Use default connect timeout
-                params.ssh_config, // Pass ssh_config for ProxyJump resolution
+                params.jump_hosts.as_deref(), // Pass jump hosts from params
+                None,                         // Use default connect timeout
+                params.ssh_config,            // Pass ssh_config for ProxyJump resolution
             )
             .await;
 

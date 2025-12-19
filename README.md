@@ -699,6 +699,7 @@ defaults:
   ssh_key: ~/.ssh/id_rsa
   parallel: 10
   timeout: 300  # Command timeout in seconds (0 for unlimited)
+  jump_host: bastion.example.com  # Global default jump host (optional)
 
 # Global interactive mode settings (optional)
 interactive:
@@ -726,20 +727,57 @@ clusters:
       - user@web3.example.com:2222
     ssh_key: ~/.ssh/prod_key
     timeout: 600  # Override default timeout for this cluster
+    jump_host: prod-bastion.example.com  # Cluster-specific jump host
     # Cluster-specific interactive settings (overrides global)
     interactive:
       default_mode: single_node
       prompt_format: "prod> "
       work_dir: /var/www
-  
+
   staging:
     nodes:
       - host: staging1.example.com
         port: 2200
         user: deploy
+        jump_host: staging-bastion:2222  # Node-specific jump host
       - staging2.example.com
     user: staging_user
+    jump_host: ""  # Explicitly disable jump host for this cluster
 ```
+
+### Jump Host Configuration in config.yaml
+
+bssh supports configuring jump hosts at three levels in your configuration file, with environment variable support:
+
+**Priority Order** (highest to lowest):
+1. **CLI `-J` option** - Always takes precedence
+2. **Node-level** - Per-node `jump_host` in detailed node config
+3. **Cluster-level** - `jump_host` in cluster defaults
+4. **Global default** - `jump_host` in top-level defaults
+
+**Example:**
+```yaml
+defaults:
+  jump_host: ${BASTION_HOST}  # Environment variables supported
+
+clusters:
+  production:
+    nodes:
+      - host: prod1.internal
+      - host: prod2.internal
+        jump_host: ""  # Explicitly disable for this node
+    jump_host: prod-bastion.example.com
+
+  direct-access:
+    nodes:
+      - host: direct.example.com
+    jump_host: ""  # Empty string disables inheritance
+```
+
+**Notes:**
+- Empty string (`""`) explicitly disables jump host inheritance at any level
+- Environment variables (`${VAR}` or `$VAR`) are expanded in jump_host values
+- Node-level jump_host requires detailed node syntax (not simple hostname strings)
 
 ## SSH Configuration Support
 
