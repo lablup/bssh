@@ -20,33 +20,46 @@ use tokio::sync::Mutex;
 use tracing::{debug, warn};
 use zeroize::Zeroizing;
 
+/// Timeout for SSH agent operations (5 seconds)
+/// This prevents indefinite hangs if the agent is unresponsive (e.g., waiting for hardware token)
+#[cfg(not(target_os = "windows"))]
+const AGENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
 /// Check if the SSH agent has any loaded identities.
 ///
 /// This function queries the SSH agent to determine if it has any keys loaded.
 /// Returns `true` if the agent has at least one identity, `false` otherwise.
-/// If communication with the agent fails, returns `false` to allow fallback to key files.
+/// If communication with the agent fails or times out, returns `false` to allow
+/// fallback to key files.
+///
+/// Note: Includes a 5-second timeout to prevent hanging if the agent is unresponsive.
 #[cfg(not(target_os = "windows"))]
 async fn agent_has_identities() -> bool {
     use russh::keys::agent::client::AgentClient;
+    use tokio::time::timeout;
 
-    match AgentClient::connect_env().await {
-        Ok(mut agent) => match agent.request_identities().await {
-            Ok(identities) => {
-                let has_keys = !identities.is_empty();
-                if has_keys {
-                    debug!("SSH agent has {} loaded identities", identities.len());
-                } else {
-                    debug!("SSH agent is running but has no loaded identities");
-                }
-                has_keys
+    let result = timeout(AGENT_TIMEOUT, async {
+        let mut agent = AgentClient::connect_env().await?;
+        agent.request_identities().await
+    })
+    .await;
+
+    match result {
+        Ok(Ok(identities)) => {
+            let has_keys = !identities.is_empty();
+            if has_keys {
+                debug!("SSH agent has {} loaded identities", identities.len());
+            } else {
+                debug!("SSH agent is running but has no loaded identities");
             }
-            Err(e) => {
-                warn!("Failed to request identities from SSH agent: {e}");
-                false
-            }
-        },
-        Err(e) => {
-            warn!("Failed to connect to SSH agent: {e}");
+            has_keys
+        }
+        Ok(Err(e)) => {
+            warn!("Failed to communicate with SSH agent: {e}");
+            false
+        }
+        Err(_) => {
+            warn!("SSH agent operation timed out after {:?}", AGENT_TIMEOUT);
             false
         }
     }
@@ -65,6 +78,17 @@ pub(super) async fn determine_auth_method(
 ) -> Result<AuthMethod> {
     // For now, use the same auth method determination logic as the main SSH client
     // This could be enhanced to support per-jump-host authentication in the future
+
+    // Cache agent availability check to avoid querying the agent multiple times
+    // (each query involves socket connection and protocol handshake)
+    #[cfg(not(target_os = "windows"))]
+    let agent_available = if std::env::var("SSH_AUTH_SOCK").is_ok() {
+        agent_has_identities().await
+    } else {
+        false
+    };
+    #[cfg(target_os = "windows")]
+    let agent_available = false;
 
     if use_password {
         // SECURITY: Acquire mutex to serialize password prompts
@@ -85,14 +109,12 @@ pub(super) async fn determine_auth_method(
         return Ok(AuthMethod::with_password(&password));
     }
 
-    if use_agent {
+    if use_agent && agent_available {
         #[cfg(not(target_os = "windows"))]
         {
-            if std::env::var("SSH_AUTH_SOCK").is_ok() && agent_has_identities().await {
-                return Ok(AuthMethod::Agent);
-            }
-            // If agent is running but has no identities, fall through to try key files
+            return Ok(AuthMethod::Agent);
         }
+        // If agent is running but has no identities, fall through to try key files
     }
 
     if let Some(key_path) = key_path {
@@ -127,9 +149,9 @@ pub(super) async fn determine_auth_method(
         ));
     }
 
-    // Fallback to SSH agent if available and has identities
+    // Fallback to SSH agent if available and has identities (use cached check)
     #[cfg(not(target_os = "windows"))]
-    if std::env::var("SSH_AUTH_SOCK").is_ok() && agent_has_identities().await {
+    if agent_available {
         return Ok(AuthMethod::Agent);
     }
     // If agent is running but has no identities, fall through to try default key files
