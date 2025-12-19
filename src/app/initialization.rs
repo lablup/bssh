@@ -345,3 +345,96 @@ pub fn determine_use_keychain(ssh_config: &SshConfig, hostname: Option<&str>) ->
 pub fn determine_use_keychain(_ssh_config: &SshConfig, _hostname: Option<&str>) -> bool {
     false
 }
+
+/// Determine the effective jump hosts for a connection.
+///
+/// Priority order:
+/// 1. CLI `-J` option (highest priority)
+/// 2. SSH config `ProxyJump` directive for the hostname
+/// 3. None (direct connection)
+///
+/// # Arguments
+/// * `cli_jump_hosts` - Jump hosts specified via CLI `-J` option
+/// * `ssh_config` - The loaded SSH configuration
+/// * `hostname` - The target hostname to check for ProxyJump config
+///
+/// # Returns
+/// The effective jump host specification, or None for direct connection
+#[allow(dead_code)] // Used for documentation and potential future use
+pub fn determine_effective_jump_hosts(
+    cli_jump_hosts: Option<&str>,
+    ssh_config: &SshConfig,
+    hostname: &str,
+) -> Option<String> {
+    // CLI takes precedence
+    if let Some(jump) = cli_jump_hosts {
+        return Some(jump.to_string());
+    }
+
+    // Fall back to SSH config ProxyJump
+    ssh_config.get_proxy_jump(hostname)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_determine_effective_jump_hosts_cli_takes_precedence() {
+        let ssh_config_content = r#"
+Host example.com
+    ProxyJump bastion.example.com
+"#;
+        let ssh_config = SshConfig::parse(ssh_config_content).unwrap();
+
+        // CLI jump host should take precedence over SSH config
+        let result = determine_effective_jump_hosts(
+            Some("cli-jump.example.com"),
+            &ssh_config,
+            "example.com",
+        );
+        assert_eq!(result, Some("cli-jump.example.com".to_string()));
+    }
+
+    #[test]
+    fn test_determine_effective_jump_hosts_falls_back_to_ssh_config() {
+        let ssh_config_content = r#"
+Host example.com
+    ProxyJump bastion.example.com
+"#;
+        let ssh_config = SshConfig::parse(ssh_config_content).unwrap();
+
+        // Should use SSH config when CLI jump host is not specified
+        let result = determine_effective_jump_hosts(None, &ssh_config, "example.com");
+        assert_eq!(result, Some("bastion.example.com".to_string()));
+    }
+
+    #[test]
+    fn test_determine_effective_jump_hosts_no_jump_host() {
+        let ssh_config = SshConfig::new();
+
+        // Should return None when no jump host is configured
+        let result = determine_effective_jump_hosts(None, &ssh_config, "example.com");
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn test_determine_effective_jump_hosts_wildcard_pattern() {
+        let ssh_config_content = r#"
+Host *.internal
+    ProxyJump gateway.company.com
+
+Host db.internal
+    ProxyJump db-gateway.company.com
+"#;
+        let ssh_config = SshConfig::parse(ssh_config_content).unwrap();
+
+        // Should match the most specific pattern
+        let result = determine_effective_jump_hosts(None, &ssh_config, "db.internal");
+        assert_eq!(result, Some("db-gateway.company.com".to_string()));
+
+        // Should match wildcard pattern
+        let result = determine_effective_jump_hosts(None, &ssh_config, "web.internal");
+        assert_eq!(result, Some("gateway.company.com".to_string()));
+    }
+}

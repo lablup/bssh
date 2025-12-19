@@ -21,6 +21,7 @@ use crate::forwarding::ForwardingType;
 use crate::node::Node;
 use crate::security::SudoPassword;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
+use crate::ssh::SshConfig;
 use crate::ui::OutputFormatter;
 use crate::utils::output::save_outputs_to_files;
 
@@ -47,6 +48,7 @@ pub struct ExecuteCommandParams<'a> {
     pub sudo_password: Option<Arc<SudoPassword>>,
     pub batch: bool,
     pub fail_fast: bool,
+    pub ssh_config: Option<&'a SshConfig>,
 }
 
 pub async fn execute_command(params: ExecuteCommandParams<'_>) -> Result<()> {
@@ -214,7 +216,8 @@ async fn execute_command_without_forwarding(params: ExecuteCommandParams<'_>) ->
     .with_jump_hosts(params.jump_hosts.map(|s| s.to_string()))
     .with_sudo_password(params.sudo_password)
     .with_batch_mode(params.batch)
-    .with_fail_fast(params.fail_fast);
+    .with_fail_fast(params.fail_fast)
+    .with_ssh_config(params.ssh_config.cloned());
 
     // Set keychain usage if on macOS
     #[cfg(target_os = "macos")]

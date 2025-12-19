@@ -330,6 +330,64 @@ pub fn get_max_jump_hosts -> usize {
 - No compilation warnings (after clippy allows)
 - Successfully handles multi-hop scenarios
 
+### SSH Config ProxyJump Integration (Issue #117 - Implemented)
+
+**Implementation:** `src/executor/connection_manager.rs`, `src/app/initialization.rs`
+
+The jump host resolution now integrates with SSH configuration files, automatically using `ProxyJump` directives when no CLI `-J` option is specified:
+
+**Priority Order:**
+1. **CLI `-J` option** (highest priority) - Explicitly specified jump hosts
+2. **SSH config `ProxyJump` directive** - Per-host configuration from `~/.ssh/config`
+3. **None** - Direct connection (no jump host)
+
+**Implementation Details:**
+```rust
+// In connection_manager.rs execute_on_node_with_jump_hosts()
+let ssh_config_jump_hosts = config
+    .ssh_config
+    .and_then(|ssh_config| ssh_config.get_proxy_jump(&node.host));
+
+let effective_jump_hosts = if config.jump_hosts.is_some() {
+    config.jump_hosts  // CLI takes precedence
+} else {
+    ssh_config_jump_hosts.as_deref()  // Fall back to SSH config
+};
+```
+
+**Example SSH Config:**
+```
+Host *.internal
+    ProxyJump bastion.example.com
+
+Host db.internal
+    ProxyJump db-gateway.example.com
+```
+
+**Usage:**
+```bash
+# Automatically uses bastion.example.com from SSH config
+bssh -H web.internal "uptime"
+
+# CLI option overrides SSH config
+bssh -J custom-jump.example.com -H web.internal "uptime"
+
+# Most specific SSH config pattern wins
+bssh -H db.internal "uptime"  # Uses db-gateway.example.com
+```
+
+**Benefits:**
+- Seamless integration with existing SSH workflows
+- Centralized jump host configuration
+- Per-host or wildcard pattern support
+- No need to specify `-J` for frequently accessed internal hosts
+
+**Tests:**
+- Added unit tests in `src/app/initialization.rs::tests`
+- Tests verify CLI precedence over SSH config
+- Tests verify wildcard pattern matching
+- Tests verify fallback behavior
+
 ### Known Limitations
 
 **Connection Pooling:**
@@ -337,14 +395,14 @@ pub fn get_max_jump_hosts -> usize {
 - Each operation establishes fresh tunnel
 - **Rationale:** russh session limitations prevent connection reuse
 
-**Configuration File Support:**
-- Jump hosts only supported via CLI `-J` flag currently
-- Configuration file support for per-cluster jump hosts is not implemented
+**YAML Configuration File Support:**
+- Jump hosts via YAML cluster config not yet implemented
+- Only CLI `-J` and SSH config `ProxyJump` are supported
 - **Future Enhancement:** Add `jump_hosts` field to cluster configuration
 
 ### Future Enhancements
 
-1. **Configuration File Support:**
+1. **YAML Configuration File Support:**
  ```yaml
  clusters:
  production:

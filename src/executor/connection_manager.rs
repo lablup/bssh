@@ -23,7 +23,7 @@ use crate::security::SudoPassword;
 use crate::ssh::{
     client::{CommandResult, ConnectionConfig},
     known_hosts::StrictHostKeyChecking,
-    SshClient,
+    SshClient, SshConfig,
 };
 
 /// Configuration for node execution.
@@ -39,6 +39,7 @@ pub(crate) struct ExecutionConfig<'a> {
     pub connect_timeout: Option<u64>,
     pub jump_hosts: Option<&'a str>,
     pub sudo_password: Option<Arc<SudoPassword>>,
+    pub ssh_config: Option<&'a SshConfig>,
 }
 
 /// Execute a command on a node with jump host support.
@@ -51,6 +52,20 @@ pub(crate) async fn execute_on_node_with_jump_hosts(
 
     let key_path = config.key_path.map(Path::new);
 
+    // Determine effective jump hosts: CLI takes precedence, then SSH config
+    // Store the SSH config jump hosts String to extend its lifetime
+    let ssh_config_jump_hosts = config
+        .ssh_config
+        .and_then(|ssh_config| ssh_config.get_proxy_jump(&node.host));
+
+    let effective_jump_hosts = if config.jump_hosts.is_some() {
+        // CLI jump hosts specified
+        config.jump_hosts
+    } else {
+        // Fall back to SSH config ProxyJump for this specific host
+        ssh_config_jump_hosts.as_deref()
+    };
+
     let connection_config = ConnectionConfig {
         key_path,
         strict_mode: Some(config.strict_mode),
@@ -60,7 +75,7 @@ pub(crate) async fn execute_on_node_with_jump_hosts(
         use_keychain: config.use_keychain,
         timeout_seconds: config.timeout,
         connect_timeout_seconds: config.connect_timeout,
-        jump_hosts_spec: config.jump_hosts,
+        jump_hosts_spec: effective_jump_hosts,
     };
 
     // If sudo password is provided, use streaming execution to handle prompts

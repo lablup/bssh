@@ -407,6 +407,7 @@ async fn handle_exec_command(cli: &Cli, ctx: &AppContext, command: &str) -> Resu
             sudo_password,
             batch: cli.batch,
             fail_fast: cli.fail_fast,
+            ssh_config: Some(&ctx.ssh_config),
         };
         execute_command(params).await
     }
