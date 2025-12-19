@@ -81,11 +81,25 @@ pub(super) async fn determine_auth_method(
 
     // Cache agent availability check to avoid querying the agent multiple times
     // (each query involves socket connection and protocol handshake)
+    // IMPORTANT: First verify the socket file exists before attempting connection
+    // to avoid hangs or delays when SSH_AUTH_SOCK points to a non-existent path
     #[cfg(not(target_os = "windows"))]
-    let agent_available = if std::env::var("SSH_AUTH_SOCK").is_ok() {
-        agent_has_identities().await
-    } else {
-        false
+    let agent_available = {
+        if let Ok(socket_path) = std::env::var("SSH_AUTH_SOCK") {
+            // Verify the socket actually exists before attempting connection
+            let path = std::path::Path::new(&socket_path);
+            if path.exists() {
+                agent_has_identities().await
+            } else {
+                debug!(
+                    "SSH_AUTH_SOCK points to non-existent socket: {}, falling back to key files",
+                    socket_path
+                );
+                false
+            }
+        } else {
+            false
+        }
     };
     #[cfg(target_os = "windows")]
     let agent_available = false;
