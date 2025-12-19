@@ -49,7 +49,7 @@ pub async fn download_file(
     }
 
     let key_path_str = params.key_path.map(|p| p.to_string_lossy().to_string());
-    let executor = ParallelExecutor::new_with_all_options(
+    let mut executor = ParallelExecutor::new_with_all_options(
         params.nodes.clone(),
         params.max_parallel,
         key_path_str.clone(),
@@ -57,6 +57,9 @@ pub async fn download_file(
         params.use_agent,
         params.use_password,
     );
+    if let Some(ssh_config) = params.ssh_config {
+        executor = executor.with_ssh_config(Some(ssh_config.clone()));
+    }
 
     // Check if source contains glob pattern
     let has_glob = validated_source.contains('*')
@@ -106,7 +109,6 @@ pub async fn download_file(
             );
 
             // Use the download_dir_from_node function directly
-            // Note: ssh_config is not passed here yet; will be added when FileTransferParams includes it
             let result = executor::download_dir_from_node(
                 node.clone(),
                 &validated_source,
@@ -115,9 +117,9 @@ pub async fn download_file(
                 params.strict_mode,
                 params.use_agent,
                 params.use_password,
-                None, // No jump hosts from this code path yet
+                None, // No jump hosts from this code path (ssh_config handles ProxyJump)
                 None, // Use default connect timeout
-                None, // TODO: Add ssh_config support to FileTransferParams
+                params.ssh_config, // Pass ssh_config for ProxyJump resolution
             )
             .await;
 

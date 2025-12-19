@@ -114,6 +114,7 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
                 use_agent: cli.use_agent,
                 use_password: cli.password,
                 recursive: *recursive,
+                ssh_config: Some(&ctx.ssh_config),
             };
             upload_file(params, source, destination).await
         }
@@ -138,6 +139,7 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
                 use_agent: cli.use_agent,
                 use_password: cli.password,
                 recursive: *recursive,
+                ssh_config: Some(&ctx.ssh_config),
             };
             download_file(params, source, destination).await
         }

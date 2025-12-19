@@ -19,6 +19,7 @@ use std::path::Path;
 use crate::executor::ParallelExecutor;
 use crate::node::Node;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
+use crate::ssh::SshConfig;
 use crate::ui::OutputFormatter;
 use crate::utils::fs::{format_bytes, resolve_source_files};
 
@@ -30,6 +31,7 @@ pub struct FileTransferParams<'a> {
     pub use_agent: bool,
     pub use_password: bool,
     pub recursive: bool,
+    pub ssh_config: Option<&'a SshConfig>,
 }
 
 pub async fn upload_file(
@@ -76,7 +78,7 @@ pub async fn upload_file(
     );
 
     let key_path_str = params.key_path.map(|p| p.to_string_lossy().to_string());
-    let executor = ParallelExecutor::new_with_all_options(
+    let mut executor = ParallelExecutor::new_with_all_options(
         params.nodes.clone(),
         params.max_parallel,
         key_path_str.clone(),
@@ -84,6 +86,9 @@ pub async fn upload_file(
         params.use_agent,
         params.use_password,
     );
+    if let Some(ssh_config) = params.ssh_config {
+        executor = executor.with_ssh_config(Some(ssh_config.clone()));
+    }
 
     let mut total_success = 0;
     let mut total_failed = 0;
