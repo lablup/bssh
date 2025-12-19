@@ -1,6 +1,6 @@
-bssh (1.6.0~rc1-1~jammy1) jammy; urgency=medium
+bssh (1.6.0-1~jammy1) jammy; urgency=medium
 
-  * v1.6.0rc1
+  * v1.6.0
   ### New Features
   - **Jump Host Configuration Support in YAML**: Added `jump_host` field support in config.yaml (issue #115)
     - Global defaults level: `defaults.jump_host` for all clusters
