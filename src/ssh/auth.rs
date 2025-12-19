@@ -35,6 +35,50 @@ use super::tokio_client::AuthMethod;
 /// Maximum time to wait for password/passphrase input
 const AUTH_PROMPT_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Timeout for SSH agent operations (5 seconds)
+/// This prevents indefinite hangs if the agent is unresponsive (e.g., waiting for hardware token)
+#[cfg(not(target_os = "windows"))]
+const AGENT_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// Check if the SSH agent has any loaded identities.
+///
+/// This function queries the SSH agent to determine if it has any keys loaded.
+/// Returns `true` if the agent has at least one identity, `false` otherwise.
+/// If communication with the agent fails or times out, returns `false` to allow
+/// fallback to key files.
+///
+/// Note: Includes a 5-second timeout to prevent hanging if the agent is unresponsive.
+#[cfg(not(target_os = "windows"))]
+async fn agent_has_identities() -> bool {
+    use russh::keys::agent::client::AgentClient;
+
+    let result = timeout(AGENT_TIMEOUT, async {
+        let mut agent = AgentClient::connect_env().await?;
+        agent.request_identities().await
+    })
+    .await;
+
+    match result {
+        Ok(Ok(identities)) => {
+            let has_keys = !identities.is_empty();
+            if has_keys {
+                tracing::debug!("SSH agent has {} loaded identities", identities.len());
+            } else {
+                tracing::debug!("SSH agent is running but has no loaded identities");
+            }
+            has_keys
+        }
+        Ok(Err(e)) => {
+            tracing::warn!("Failed to communicate with SSH agent: {e}");
+            false
+        }
+        Err(_) => {
+            tracing::warn!("SSH agent operation timed out after {:?}", AGENT_TIMEOUT);
+            false
+        }
+    }
+}
+
 /// Maximum username length to prevent DoS attacks
 const MAX_USERNAME_LENGTH: usize = 256;
 
@@ -387,7 +431,14 @@ impl AuthContext {
         Ok(AuthMethod::with_password(&password))
     }
 
-    /// Attempt SSH agent authentication with atomic check.
+    /// Attempt SSH agent authentication with identity check.
+    ///
+    /// This function verifies that the SSH agent has loaded identities before
+    /// returning `AuthMethod::Agent`. If the agent is running but has no identities,
+    /// it returns `None` to allow fallback to key file authentication.
+    ///
+    /// This matches OpenSSH behavior where `ssh` tries agent first, then falls back
+    /// to key files when the agent returns an empty identity list.
     #[cfg(not(target_os = "windows"))]
     fn agent_auth(&self) -> Result<Option<AuthMethod>> {
         // Atomic check to prevent TOCTOU race condition
@@ -396,8 +447,27 @@ impl AuthContext {
                 // Verify the socket actually exists
                 let path = std::path::Path::new(&socket_path);
                 if path.exists() {
-                    tracing::debug!("Using SSH agent for authentication");
-                    Ok(Some(AuthMethod::Agent))
+                    // Check if agent has any identities using blocking call
+                    // We use a synchronous check here since this is called from sync context
+                    let has_identities = std::thread::spawn(|| {
+                        tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                            .map(|rt| rt.block_on(agent_has_identities()))
+                            .unwrap_or(false)
+                    })
+                    .join()
+                    .unwrap_or(false);
+
+                    if has_identities {
+                        tracing::debug!("Using SSH agent for authentication");
+                        Ok(Some(AuthMethod::Agent))
+                    } else {
+                        tracing::debug!(
+                            "SSH agent is running but has no loaded identities, falling back to key files"
+                        );
+                        Ok(None)
+                    }
                 } else {
                     tracing::warn!("SSH_AUTH_SOCK points to non-existent socket");
                     Ok(None)
