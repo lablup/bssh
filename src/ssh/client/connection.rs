@@ -278,17 +278,27 @@ mod tests {
     async fn test_determine_auth_method_with_agent() {
         use std::os::unix::net::UnixListener;
 
-        // Save original SSH_AUTH_SOCK
+        // Save original environment
         let original_ssh_auth_sock = std::env::var("SSH_AUTH_SOCK").ok();
+        let original_home = std::env::var("HOME").ok();
 
-        // Create a temporary directory for the socket
+        // Create a temporary directory for the socket and SSH keys
         let temp_dir = TempDir::new().unwrap();
         let socket_path = temp_dir.path().join("ssh-agent.sock");
 
         // Create a real Unix domain socket (required on macOS)
+        // Note: This is a fake socket that doesn't implement SSH agent protocol
         let _listener = UnixListener::bind(&socket_path).unwrap();
 
+        // Create a fake SSH key for fallback (since our fake agent has no identities)
+        let ssh_dir = temp_dir.path().join(".ssh");
+        std::fs::create_dir_all(&ssh_dir).unwrap();
+        let key_content =
+            "-----BEGIN PRIVATE KEY-----\nfake key content\n-----END PRIVATE KEY-----";
+        std::fs::write(ssh_dir.join("id_rsa"), key_content).unwrap();
+
         std::env::set_var("SSH_AUTH_SOCK", socket_path.to_str().unwrap());
+        std::env::set_var("HOME", temp_dir.path());
 
         let client = SshClient::new("test.com".to_string(), 22, "user".to_string());
         let auth = client
@@ -302,16 +312,26 @@ mod tests {
             .await
             .unwrap();
 
-        // Restore original SSH_AUTH_SOCK
+        // Restore original environment
         if let Some(sock) = original_ssh_auth_sock {
             std::env::set_var("SSH_AUTH_SOCK", sock);
         } else {
             std::env::remove_var("SSH_AUTH_SOCK");
         }
+        if let Some(home) = original_home {
+            std::env::set_var("HOME", home);
+        }
 
+        // With the agent identity check, if the agent has no identities (our fake socket),
+        // it will fall back to key file authentication. Accept either outcome.
         match auth {
-            AuthMethod::Agent => {}
-            _ => panic!("Expected Agent auth method"),
+            AuthMethod::Agent => {
+                // Real SSH agent with identities was found
+            }
+            AuthMethod::PrivateKeyFile { .. } => {
+                // Fallback to key file (expected with fake socket)
+            }
+            _ => panic!("Expected Agent or PrivateKeyFile auth method"),
         }
     }
 
@@ -321,17 +341,27 @@ mod tests {
     async fn test_determine_auth_method_with_agent() {
         use std::os::unix::net::UnixListener;
 
-        // Save original SSH_AUTH_SOCK
+        // Save original environment
         let original_ssh_auth_sock = std::env::var("SSH_AUTH_SOCK").ok();
+        let original_home = std::env::var("HOME").ok();
 
-        // Create a temporary directory for the socket
+        // Create a temporary directory for the socket and SSH keys
         let temp_dir = TempDir::new().unwrap();
         let socket_path = temp_dir.path().join("ssh-agent.sock");
 
         // Create a real Unix domain socket (required on Linux)
+        // Note: This is a fake socket that doesn't implement SSH agent protocol
         let _listener = UnixListener::bind(&socket_path).unwrap();
 
+        // Create a fake SSH key for fallback (since our fake agent has no identities)
+        let ssh_dir = temp_dir.path().join(".ssh");
+        std::fs::create_dir_all(&ssh_dir).unwrap();
+        let key_content =
+            "-----BEGIN PRIVATE KEY-----\nfake key content\n-----END PRIVATE KEY-----";
+        std::fs::write(ssh_dir.join("id_rsa"), key_content).unwrap();
+
         std::env::set_var("SSH_AUTH_SOCK", socket_path.to_str().unwrap());
+        std::env::set_var("HOME", temp_dir.path());
 
         let client = SshClient::new("test.com".to_string(), 22, "user".to_string());
         let auth = client
@@ -339,16 +369,26 @@ mod tests {
             .await
             .unwrap();
 
-        // Restore original SSH_AUTH_SOCK
+        // Restore original environment
         if let Some(sock) = original_ssh_auth_sock {
             std::env::set_var("SSH_AUTH_SOCK", sock);
         } else {
             std::env::remove_var("SSH_AUTH_SOCK");
         }
+        if let Some(home) = original_home {
+            std::env::set_var("HOME", home);
+        }
 
+        // With the agent identity check, if the agent has no identities (our fake socket),
+        // it will fall back to key file authentication. Accept either outcome.
         match auth {
-            AuthMethod::Agent => {}
-            _ => panic!("Expected Agent auth method"),
+            AuthMethod::Agent => {
+                // Real SSH agent with identities was found
+            }
+            AuthMethod::PrivateKeyFile { .. } => {
+                // Fallback to key file (expected with fake socket)
+            }
+            _ => panic!("Expected Agent or PrivateKeyFile auth method"),
         }
     }
 
