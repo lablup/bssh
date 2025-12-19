@@ -127,10 +127,21 @@ pub(crate) async fn upload_to_node(
     use_password: bool,
     jump_hosts: Option<&str>,
     connect_timeout_seconds: Option<u64>,
+    ssh_config: Option<&SshConfig>,
 ) -> Result<()> {
     let mut client = SshClient::new(node.host.clone(), node.port, node.username.clone());
 
     let key_path = key_path.map(Path::new);
+
+    // Determine effective jump hosts: CLI takes precedence, then SSH config
+    let ssh_config_jump_hosts =
+        ssh_config.and_then(|ssh_config| ssh_config.get_proxy_jump(&node.host));
+
+    let effective_jump_hosts = if jump_hosts.is_some() {
+        jump_hosts
+    } else {
+        ssh_config_jump_hosts.as_deref()
+    };
 
     // Check if the local path is a directory
     if local_path.is_dir() {
@@ -142,7 +153,7 @@ pub(crate) async fn upload_to_node(
                 Some(strict_mode),
                 use_agent,
                 use_password,
-                jump_hosts,
+                effective_jump_hosts,
                 connect_timeout_seconds,
             )
             .await
@@ -155,7 +166,7 @@ pub(crate) async fn upload_to_node(
                 Some(strict_mode),
                 use_agent,
                 use_password,
-                jump_hosts,
+                effective_jump_hosts,
                 connect_timeout_seconds,
             )
             .await
@@ -174,10 +185,21 @@ pub(crate) async fn download_from_node(
     use_password: bool,
     jump_hosts: Option<&str>,
     connect_timeout_seconds: Option<u64>,
+    ssh_config: Option<&SshConfig>,
 ) -> Result<PathBuf> {
     let mut client = SshClient::new(node.host.clone(), node.port, node.username.clone());
 
     let key_path = key_path.map(Path::new);
+
+    // Determine effective jump hosts: CLI takes precedence, then SSH config
+    let ssh_config_jump_hosts =
+        ssh_config.and_then(|ssh_config| ssh_config.get_proxy_jump(&node.host));
+
+    let effective_jump_hosts = if jump_hosts.is_some() {
+        jump_hosts
+    } else {
+        ssh_config_jump_hosts.as_deref()
+    };
 
     // This function handles both files and directories
     // The caller should check if it's a directory and use the appropriate method
@@ -189,7 +211,7 @@ pub(crate) async fn download_from_node(
             Some(strict_mode),
             use_agent,
             use_password,
-            jump_hosts,
+            effective_jump_hosts,
             connect_timeout_seconds,
         )
         .await?;
@@ -209,10 +231,21 @@ pub async fn download_dir_from_node(
     use_password: bool,
     jump_hosts: Option<&str>,
     connect_timeout_seconds: Option<u64>,
+    ssh_config: Option<&SshConfig>,
 ) -> Result<PathBuf> {
     let mut client = SshClient::new(node.host.clone(), node.port, node.username.clone());
 
     let key_path = key_path.map(Path::new);
+
+    // Determine effective jump hosts: CLI takes precedence, then SSH config
+    let ssh_config_jump_hosts =
+        ssh_config.and_then(|ssh_config| ssh_config.get_proxy_jump(&node.host));
+
+    let effective_jump_hosts = if jump_hosts.is_some() {
+        jump_hosts
+    } else {
+        ssh_config_jump_hosts.as_deref()
+    };
 
     client
         .download_dir_with_jump_hosts(
@@ -222,7 +255,7 @@ pub async fn download_dir_from_node(
             Some(strict_mode),
             use_agent,
             use_password,
-            jump_hosts,
+            effective_jump_hosts,
             connect_timeout_seconds,
         )
         .await?;

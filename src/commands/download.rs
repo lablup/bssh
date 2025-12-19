@@ -106,6 +106,7 @@ pub async fn download_file(
             );
 
             // Use the download_dir_from_node function directly
+            // Note: ssh_config is not passed here yet; will be added when FileTransferParams includes it
             let result = executor::download_dir_from_node(
                 node.clone(),
                 &validated_source,
@@ -116,6 +117,7 @@ pub async fn download_file(
                 params.use_password,
                 None, // No jump hosts from this code path yet
                 None, // Use default connect timeout
+                None, // TODO: Add ssh_config support to FileTransferParams
             )
             .await;
 
