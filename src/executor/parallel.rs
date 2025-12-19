@@ -24,6 +24,7 @@ use tokio::sync::Semaphore;
 use crate::node::Node;
 use crate::security::SudoPassword;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
+use crate::ssh::SshConfig;
 
 use super::connection_manager::{download_from_node, ExecutionConfig};
 use super::execution_strategy::{
@@ -49,6 +50,7 @@ pub struct ParallelExecutor {
     pub(crate) sudo_password: Option<Arc<SudoPassword>>,
     pub(crate) batch: bool,
     pub(crate) fail_fast: bool,
+    pub(crate) ssh_config: Option<SshConfig>,
 }
 
 impl ParallelExecutor {
@@ -84,6 +86,7 @@ impl ParallelExecutor {
             sudo_password: None,
             batch: false,
             fail_fast: false,
+            ssh_config: None,
         }
     }
 
@@ -110,6 +113,7 @@ impl ParallelExecutor {
             sudo_password: None,
             batch: false,
             fail_fast: false,
+            ssh_config: None,
         }
     }
 
@@ -137,6 +141,7 @@ impl ParallelExecutor {
             sudo_password: None,
             batch: false,
             fail_fast: false,
+            ssh_config: None,
         }
     }
 
@@ -155,6 +160,12 @@ impl ParallelExecutor {
     /// Set jump hosts for connections.
     pub fn with_jump_hosts(mut self, jump_hosts: Option<String>) -> Self {
         self.jump_hosts = jump_hosts;
+        self
+    }
+
+    /// Set SSH config for ProxyJump directive resolution.
+    pub fn with_ssh_config(mut self, ssh_config: Option<SshConfig>) -> Self {
+        self.ssh_config = ssh_config;
         self
     }
 
@@ -228,6 +239,8 @@ impl ParallelExecutor {
                 let semaphore = Arc::clone(&semaphore);
                 let pb = setup_progress_bar(&multi_progress, &node, style.clone(), "Connecting...");
 
+                let ssh_config_ref = self.ssh_config.clone();
+
                 tokio::spawn(async move {
                     let config = ExecutionConfig {
                         key_path: key_path.as_deref(),
@@ -240,6 +253,7 @@ impl ParallelExecutor {
                         connect_timeout,
                         jump_hosts: jump_hosts.as_deref(),
                         sudo_password: sudo_password.clone(),
+                        ssh_config: ssh_config_ref.as_ref(),
                     };
 
                     execute_command_task(node, command, config, semaphore, pb).await
@@ -331,6 +345,8 @@ impl ParallelExecutor {
         let mut handles: Vec<tokio::task::JoinHandle<ExecutionResult>> =
             Vec::with_capacity(self.nodes.len());
 
+        let ssh_config_for_tasks = self.ssh_config.clone();
+
         // Spawn tasks for each node
         for node in &self.nodes {
             let node = node.clone();
@@ -348,6 +364,7 @@ impl ParallelExecutor {
             let semaphore = Arc::clone(&semaphore);
             let pb = setup_progress_bar(&multi_progress, &node, style.clone(), "Connecting...");
             let mut cancel_rx = cancel_rx.clone();
+            let ssh_config_ref = ssh_config_for_tasks.clone();
 
             let handle = tokio::spawn(async move {
                 // Check if already cancelled before acquiring semaphore
@@ -410,6 +427,7 @@ impl ParallelExecutor {
                     connect_timeout,
                     jump_hosts: jump_hosts.as_deref(),
                     sudo_password: sudo_password.clone(),
+                    ssh_config: ssh_config_ref.as_ref(),
                 };
 
                 // Execute the command (keeping the permit alive)
@@ -575,6 +593,8 @@ impl ParallelExecutor {
                 let semaphore = Arc::clone(&semaphore);
                 let pb = setup_progress_bar(&multi_progress, &node, style.clone(), "Connecting...");
 
+                let ssh_config_ref = self.ssh_config.clone();
+
                 tokio::spawn(upload_file_task(
                     node,
                     local_path,
@@ -585,6 +605,7 @@ impl ParallelExecutor {
                     use_password,
                     jump_hosts,
                     connect_timeout,
+                    ssh_config_ref,
                     semaphore,
                     pb,
                 ))
@@ -684,6 +705,7 @@ impl ParallelExecutor {
                 let connect_timeout = self.connect_timeout;
                 let semaphore = Arc::clone(&semaphore);
                 let pb = setup_progress_bar(&multi_progress, &node, style.clone(), "Connecting...");
+                let ssh_config_ref = self.ssh_config.clone();
 
                 tokio::spawn(download_file_task(
                     node,
@@ -695,6 +717,7 @@ impl ParallelExecutor {
                     use_password,
                     jump_hosts,
                     connect_timeout,
+                    ssh_config_ref,
                     semaphore,
                     pb,
                 ))
@@ -815,6 +838,7 @@ impl ParallelExecutor {
                     let use_password = self.use_password;
                     let jump_hosts = self.jump_hosts.clone();
                     let connect_timeout = self.connect_timeout;
+                    let ssh_config_ref = self.ssh_config.clone();
 
                     tokio::spawn(async move {
                         let _permit = match semaphore.acquire().await {
@@ -840,6 +864,7 @@ impl ParallelExecutor {
                             use_password,
                             jump_hosts.as_deref(),
                             connect_timeout,
+                            ssh_config_ref.as_ref(),
                         )
                         .await;
 
