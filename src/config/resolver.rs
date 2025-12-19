@@ -143,18 +143,22 @@ impl Config {
                 if jh.is_empty() {
                     return None; // Explicitly disabled
                 }
-                return Some(jh.clone());
+                return Some(expand_env_vars(jh));
             }
             // Check cluster-level
             if let Some(jh) = &cluster.defaults.jump_host {
                 if jh.is_empty() {
                     return None; // Explicitly disabled
                 }
-                return Some(jh.clone());
+                return Some(expand_env_vars(jh));
             }
         }
         // Fall back to global default
-        self.defaults.jump_host.clone().filter(|s| !s.is_empty())
+        self.defaults
+            .jump_host
+            .as_ref()
+            .filter(|s| !s.is_empty())
+            .map(|s| expand_env_vars(s))
     }
 
     /// Get jump host for a cluster (cluster-level default).
@@ -171,11 +175,15 @@ impl Config {
                     if jh.is_empty() {
                         return None; // Explicitly disabled
                     }
-                    return Some(jh.clone());
+                    return Some(expand_env_vars(jh));
                 }
             }
         }
         // Fall back to global default
-        self.defaults.jump_host.clone().filter(|s| !s.is_empty())
+        self.defaults
+            .jump_host
+            .as_ref()
+            .filter(|s| !s.is_empty())
+            .map(|s| expand_env_vars(s))
     }
 }
