@@ -17,7 +17,40 @@ use crate::ssh::tokio_client::{AuthMethod, ClientHandler};
 use anyhow::{Context, Result};
 use std::path::Path;
 use tokio::sync::Mutex;
+use tracing::{debug, warn};
 use zeroize::Zeroizing;
+
+/// Check if the SSH agent has any loaded identities.
+///
+/// This function queries the SSH agent to determine if it has any keys loaded.
+/// Returns `true` if the agent has at least one identity, `false` otherwise.
+/// If communication with the agent fails, returns `false` to allow fallback to key files.
+#[cfg(not(target_os = "windows"))]
+async fn agent_has_identities() -> bool {
+    use russh::keys::agent::client::AgentClient;
+
+    match AgentClient::connect_env().await {
+        Ok(mut agent) => match agent.request_identities().await {
+            Ok(identities) => {
+                let has_keys = !identities.is_empty();
+                if has_keys {
+                    debug!("SSH agent has {} loaded identities", identities.len());
+                } else {
+                    debug!("SSH agent is running but has no loaded identities");
+                }
+                has_keys
+            }
+            Err(e) => {
+                warn!("Failed to request identities from SSH agent: {e}");
+                false
+            }
+        },
+        Err(e) => {
+            warn!("Failed to connect to SSH agent: {e}");
+            false
+        }
+    }
+}
 
 /// Determine authentication method for a jump host
 ///
@@ -55,9 +88,10 @@ pub(super) async fn determine_auth_method(
     if use_agent {
         #[cfg(not(target_os = "windows"))]
         {
-            if std::env::var("SSH_AUTH_SOCK").is_ok() {
+            if std::env::var("SSH_AUTH_SOCK").is_ok() && agent_has_identities().await {
                 return Ok(AuthMethod::Agent);
             }
+            // If agent is running but has no identities, fall through to try key files
         }
     }
 
@@ -93,11 +127,12 @@ pub(super) async fn determine_auth_method(
         ));
     }
 
-    // Fallback to SSH agent if available
+    // Fallback to SSH agent if available and has identities
     #[cfg(not(target_os = "windows"))]
-    if std::env::var("SSH_AUTH_SOCK").is_ok() {
+    if std::env::var("SSH_AUTH_SOCK").is_ok() && agent_has_identities().await {
         return Ok(AuthMethod::Agent);
     }
+    // If agent is running but has no identities, fall through to try default key files
 
     // Try default key files
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
