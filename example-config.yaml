@@ -4,13 +4,15 @@ defaults:
   port: 22
   ssh_key: ~/.ssh/id_rsa
   parallel: 10
+  # Global default jump host (optional) - used for all clusters unless overridden
+  # jump_host: bastion.example.com
 
 clusters:
   local:
     nodes:
       - localhost
     user: ${USER}
-  
+
   dev:
     nodes:
       - dev1.example.com
@@ -18,7 +20,7 @@ clusters:
       - dev3.example.com
     user: developer
     ssh_key: ~/.ssh/dev_key
-  
+
   production:
     nodes:
       - host: prod1.example.com
@@ -27,6 +29,34 @@ clusters:
       - host: prod2.example.com
         port: 2222
         user: admin
+        # Node-level jump host override (optional)
+        # jump_host: prod2-bastion.example.com
       - host: prod3.example.com
       - host: prod4.example.com
     ssh_key: ~/.ssh/prod_key
+    # Cluster-level jump host (optional) - applies to all nodes in this cluster
+    # jump_host: prod-bastion.example.com
+
+  # Example: Cluster behind a jump host/bastion
+  internal:
+    nodes:
+      - host: internal1.private
+      - host: internal2.private
+      - host: internal3.private
+    user: admin
+    jump_host: bastion.example.com  # All nodes accessible via bastion
+
+  # Example: Mixed direct and jump host access
+  hybrid:
+    nodes:
+      - host: behind-firewall.internal
+        jump_host: gateway.example.com  # Needs jump host
+      - host: direct-access.example.com
+        jump_host: ""  # Empty string disables jump host (direct connection)
+    jump_host: default-bastion.example.com  # Default for cluster
+
+  # Example: Multi-hop jump chain with environment variables
+  secure:
+    nodes:
+      - host: target.secure.internal
+    jump_host: ${FIRST_HOP},${SECOND_HOP}  # Comma-separated for multi-hop

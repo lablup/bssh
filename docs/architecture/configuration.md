@@ -74,39 +74,90 @@ The configuration system uses the following core data structures:
 
 ```rust
 pub struct Config {
- pub clusters: HashMap<String, Cluster>,
- pub default_cluster: Option<String>,
- pub ssh_config: SshConfig,
+    pub defaults: Defaults,
+    pub clusters: HashMap<String, Cluster>,
+    pub default_cluster: Option<String>,
+    pub ssh_config: SshConfig,
+}
+
+pub struct Defaults {
+    pub user: Option<String>,
+    pub port: Option<u16>,
+    pub ssh_key: Option<PathBuf>,
+    pub parallel: Option<usize>,
+    pub jump_host: Option<String>,  // Global default jump host
 }
 
 pub struct Cluster {
- pub nodes: Vec<Node>,
- pub ssh_key: Option<PathBuf>,
- pub user: Option<String>,
+    pub nodes: Vec<NodeConfig>,
+    pub defaults: ClusterDefaults,
+    pub interactive: Option<InteractiveConfig>,
+}
+
+pub struct ClusterDefaults {
+    pub user: Option<String>,
+    pub port: Option<u16>,
+    pub ssh_key: Option<PathBuf>,
+    pub jump_host: Option<String>,  // Cluster-level jump host
+}
+
+// Node can be simple string or detailed config
+pub enum NodeConfig {
+    Simple(String),  // "host" or "user@host:port"
+    Detailed {
+        host: String,
+        port: Option<u16>,
+        user: Option<String>,
+        jump_host: Option<String>,  // Node-level jump host
+    },
 }
 ```
+
+### Jump Host Resolution
+
+Jump hosts are resolved with the following priority (highest to lowest):
+1. **CLI `-J` option** - Always takes precedence
+2. **SSH config `ProxyJump`** - From `~/.ssh/config`
+3. **Node-level config** - Per-node `jump_host` field
+4. **Cluster-level config** - Cluster `defaults.jump_host`
+5. **Global defaults** - Top-level `defaults.jump_host`
+
+An empty string (`""`) explicitly disables jump host inheritance.
 
 ### Configuration File Example
 
 ```yaml
 default_cluster: production
 
-clusters:
- production:
- nodes:
- - host: node1.example.com
- port: 22
- user: admin
- - host: node2.example.com
- port: 22
- user: admin
- ssh_key: ~/.ssh/id_rsa
+defaults:
+  user: admin
+  port: 22
+  ssh_key: ~/.ssh/id_rsa
+  jump_host: global-bastion.example.com  # Default for all clusters
 
- staging:
- nodes:
- - host: staging1.example.com
- - host: staging2.example.com
- user: deploy
+clusters:
+  production:
+    nodes:
+      - host: node1.example.com
+        port: 22
+        user: admin
+      - host: node2.example.com
+        port: 22
+        user: admin
+        jump_host: node2-bastion.example.com  # Node-specific override
+    ssh_key: ~/.ssh/id_rsa
+    jump_host: prod-bastion.example.com  # Cluster-level jump host
+
+  staging:
+    nodes:
+      - host: staging1.example.com
+      - host: staging2.example.com
+    user: deploy
+
+  direct_access:
+    nodes:
+      - host: external.example.com
+    jump_host: ""  # Explicitly disable jump host for this cluster
 ```
 
 ---

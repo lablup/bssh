@@ -425,6 +425,7 @@ defaults:
   port: 22
   ssh_key: ~/.ssh/id_rsa
   parallel: 10
+  jump_host: bastion.example.com      # Global default jump host
 
 # Global interactive mode settings (optional)
 interactive:
@@ -443,6 +444,7 @@ clusters:
       - web2.example.com
       - user@web3.example.com:2222
     ssh_key: ~/.ssh/prod_key
+    jump_host: prod-bastion.example.com   # Cluster-level jump host
     # Cluster-specific interactive settings (overrides global)
     interactive:
       default_mode: single_node
@@ -454,8 +456,52 @@ clusters:
       - host: staging1.example.com
         port: 2200
         user: deploy
+        jump_host: staging-bastion.example.com  # Node-level jump host
       - staging2.example.com
     user: staging_user
+    jump_host: ""   # Empty string disables jump host for this cluster
+.fi
+
+.SS Jump Host Configuration in YAML
+Jump hosts can be configured at three levels with the following priority:
+
+.IP 1. 4
+\fBNode-level\fR (highest priority) - applies to specific node only
+.IP 2. 4
+\fBCluster-level\fR - applies to all nodes in the cluster
+.IP 3. 4
+\fBGlobal defaults\fR - applies to all clusters without explicit jump_host
+
+.PP
+The CLI \fB-J\fR option always takes precedence over configuration file settings.
+
+.PP
+Special values:
+.IP \[bu] 2
+Empty string (\fB""\fR) - explicitly disables jump host inheritance
+.IP \[bu] 2
+Environment variables supported: \fB${VAR}\fR or \fB$VAR\fR syntax
+
+.PP
+Example with all levels:
+.nf
+defaults:
+  jump_host: global-bastion.example.com
+
+clusters:
+  production:
+    nodes:
+      - host: web1.internal
+        jump_host: special-bastion.example.com   # Uses special-bastion
+      - host: web2.internal                       # Uses prod-bastion
+      - host: direct.example.com
+        jump_host: ""                             # Direct connection (no jump)
+    jump_host: prod-bastion.example.com
+
+  direct_cluster:
+    nodes:
+      - host: external.example.com
+    jump_host: ""   # Cluster disables inherited global jump_host
 .fi
 
 .SH SSH CONFIGURATION OPTIONS

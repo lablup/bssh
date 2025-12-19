@@ -395,38 +395,67 @@ bssh -H db.internal "uptime"  # Uses db-gateway.example.com
 - Each operation establishes fresh tunnel
 - **Rationale:** russh session limitations prevent connection reuse
 
-**YAML Configuration File Support:**
-- Jump hosts via YAML cluster config not yet implemented
-- Only CLI `-J` and SSH config `ProxyJump` are supported
-- **Future Enhancement:** Add `jump_hosts` field to cluster configuration
+### YAML Configuration File Support (Issue #115 - Implemented)
+
+**Implementation:** `src/config/types.rs`, `src/config/resolver.rs`
+
+Jump hosts can now be configured in the YAML configuration file at three levels:
+
+**Configuration Levels (priority order):**
+1. **Node-level** (highest) - Per-node `jump_host` field
+2. **Cluster-level** - Cluster `defaults.jump_host` or inline `jump_host`
+3. **Global defaults** - Top-level `defaults.jump_host`
+
+**Example Configuration:**
+```yaml
+defaults:
+  jump_host: global-bastion.example.com
+
+clusters:
+  production:
+    nodes:
+      - host: web1.internal
+        jump_host: special-bastion.example.com  # Node-level override
+      - host: web2.internal                      # Uses cluster jump_host
+      - host: direct.example.com
+        jump_host: ""                            # Disabled (direct connection)
+    jump_host: prod-bastion.example.com          # Cluster-level
+
+  direct_cluster:
+    nodes:
+      - external.example.com
+    jump_host: ""  # Cluster disables inherited global jump_host
+```
+
+**Special Values:**
+- Empty string (`""`) - Explicitly disables jump host inheritance
+- Environment variables - Supports `${VAR}` and `$VAR` syntax
+
+**Resolution Methods:**
+- `config.get_jump_host(cluster_name, node_index)` - Get effective jump host for a node
+- `config.get_cluster_jump_host(Some(cluster_name))` - Get cluster-level jump host
+
+**Priority with CLI and SSH Config:**
+1. CLI `-J` option (highest)
+2. SSH config `ProxyJump` directive
+3. YAML config (node → cluster → global)
 
 ### Future Enhancements
 
-1. **YAML Configuration File Support:**
- ```yaml
- clusters:
- production:
- jump_hosts: "bastion1.example.com,bastion2.example.com"
- nodes:
- - internal-host1
- - internal-host2
- ```
+1. **Jump Host Connection Pooling:**
+   - Reuse jump host connections across multiple target nodes
+   - Significant performance improvement for cluster operations
+   - Requires russh session lifecycle improvements
 
-2. **Jump Host Connection Pooling:**
- - Reuse jump host connections across multiple target nodes
- - Significant performance improvement for cluster operations
- - Requires russh session lifecycle improvements
+2. **Smart Timeout Calculation:**
+   - Measure actual round-trip times per hop
+   - Adjust timeouts dynamically based on observed latency
+   - Provide faster failures for genuinely unreachable hosts
 
-3. **Smart Timeout Calculation:**
- - Measure actual round-trip times per hop
- - Adjust timeouts dynamically based on observed latency
- - Provide faster failures for genuinely unreachable hosts
-
-4. **Parallel Jump Host Establishment:**
- - When connecting to multiple targets through same jump hosts
- - Establish jump chain once, multiplex to targets
- - Reduces connection overhead for cluster operations
-
+3. **Parallel Jump Host Establishment:**
+   - When connecting to multiple targets through same jump hosts
+   - Establish jump chain once, multiplex to targets
+   - Reduces connection overhead for cluster operations
 
 ---
 
