@@ -114,7 +114,14 @@ pub struct Cli {
     #[arg(
         short = 'J',
         long = "jump-host",
-        help = "Comma-separated list of jump hosts (ProxyJump)\nSpecify in [user@]hostname[:port] format, e.g.: 'jump1.example.com' or 'user@jump1:2222,jump2'\nSupports multiple hops for complex network topologies"
+        help = "Comma-separated list of jump hosts (ProxyJump)\n\
+               Format: [user@]hostname[:port]\n\
+               Examples:\n  \
+                 bai@bastion:4300          (user 'bai' on port 4300)\n  \
+                 bastion.example.com       (current local user, port 22)\n  \
+                 user@hop1:22,admin@hop2   (multi-hop chain)\n\
+               Note: If no username specified, your current local username is used.\n\
+               This is separate from -u/--user which sets the destination server user."
     )]
     pub jump_hosts: Option<String>,
 

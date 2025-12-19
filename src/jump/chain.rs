@@ -342,6 +342,24 @@ impl JumpHostChain {
             .await
             .with_context(|| format!("Rate limited for jump host {}", jump_host.host))?;
 
+        // Log the effective username being used, especially helpful when auto-detected
+        let effective_user = jump_host.effective_user();
+        if jump_host.user.is_none() {
+            tracing::info!(
+                "Connecting to jump host {}:{} as user '{}' (auto-detected from current user)",
+                jump_host.host,
+                jump_host.effective_port(),
+                effective_user
+            );
+        } else {
+            tracing::info!(
+                "Connecting to jump host {}:{} as user '{}'",
+                jump_host.host,
+                jump_host.effective_port(),
+                effective_user
+            );
+        }
+
         let auth_method = auth::determine_auth_method(
             jump_host,
             key_path,
@@ -356,7 +374,7 @@ impl JumpHostChain {
             self.connect_timeout,
             crate::ssh::tokio_client::Client::connect(
                 (jump_host.host.as_str(), jump_host.effective_port()),
-                &jump_host.effective_user(),
+                &effective_user,
                 auth_method,
                 check_method,
             ),

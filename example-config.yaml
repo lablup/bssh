@@ -1,4 +1,14 @@
 # Example configuration for bssh
+#
+# USER FIELD BEHAVIOR:
+# - 'user' in defaults/cluster applies to DESTINATION nodes only
+# - For jump hosts, specify username in jump_host string: user@jumphost:port
+# - If no username in jump_host, your current local username ($USER) is used
+#
+# Example:
+#   user: admin              # Used for destination nodes
+#   jump_host: bai@bastion   # User 'bai' for bastion, 'admin' for destination
+#
 defaults:
   user: ubuntu
   port: 22
@@ -38,13 +48,17 @@ clusters:
     # jump_host: prod-bastion.example.com
 
   # Example: Cluster behind a jump host/bastion
+  # IMPORTANT: 'user' field applies to DESTINATION nodes only.
+  # For jump host authentication, specify username in jump_host string: user@host:port
+  # If no username is specified in jump_host, your current local username is used.
   internal:
     nodes:
       - host: internal1.private
       - host: internal2.private
       - host: internal3.private
-    user: admin
-    jump_host: bastion.example.com  # All nodes accessible via bastion
+    user: admin  # User for internal*.private (destination nodes)
+    jump_host: jumpuser@bastion.example.com  # User 'jumpuser' for bastion (jump host)
+    # Alternative: jump_host: bastion.example.com  # Uses your local username for bastion
 
   # Example: Mixed direct and jump host access
   hybrid:

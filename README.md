@@ -779,6 +779,24 @@ clusters:
 - Environment variables (`${VAR}` or `$VAR`) are expanded in jump_host values
 - Node-level jump_host requires detailed node syntax (not simple hostname strings)
 
+**Important: Username Handling**
+
+The `user` field in config applies only to **destination nodes**, not to jump hosts:
+
+```yaml
+clusters:
+  internal:
+    nodes:
+      - 192.168.0.100
+    user: admin              # Used for destination (192.168.0.100)
+    jump_host: bai@bastion   # User 'bai' for bastion (jump host)
+```
+
+- **With username in jump_host:** `bai@bastion:4300` → uses "bai" for bastion
+- **Without username:** `bastion:4300` → uses your current local username (like OpenSSH)
+
+If jump host authentication fails due to username mismatch, specify the username explicitly in the `jump_host` field.
+
 ## SSH Configuration Support
 
 bssh fully supports OpenSSH-compatible configuration files via the `-F` flag or default SSH config locations (`~/.ssh/config`, `/etc/ssh/ssh_config`). In addition to standard SSH directives, bssh supports advanced options for certificate-based authentication and port forwarding control.
@@ -1135,7 +1153,7 @@ Options:
   -A, --use-agent                         Use SSH agent for authentication (Unix/Linux/macOS only)
   -P, --password                          Use password authentication (will prompt for password)
   -S, --sudo-password                     Prompt for sudo password to auto-respond to sudo prompts
-  -J, --jump-host <JUMP_HOSTS>            Comma-separated list of jump hosts (ProxyJump)
+  -J, --jump-host <JUMP_HOSTS>            Jump hosts: [user@]host[:port],... (uses local user if not specified)
   -L, --local-forward <SPEC>              Local port forwarding [bind_address:]port:host:hostport
   -R, --remote-forward <SPEC>             Remote port forwarding [bind_address:]port:host:hostport
   -D, --dynamic-forward <SPEC>            Dynamic port forwarding (SOCKS) [bind_address:]port[/version]

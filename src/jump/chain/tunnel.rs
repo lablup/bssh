@@ -136,16 +136,25 @@ pub(super) async fn connect_through_tunnel(
 
     // Authenticate
     let mut handle = handle;
-    authenticate_connection(&mut handle, &jump_host.effective_user(), auth_method)
-        .await
-        .with_context(|| {
-            format!(
-                "Failed to authenticate to jump host {}:{} as user {}",
-                jump_host.host,
-                jump_host.effective_port(),
-                jump_host.effective_user()
-            )
-        })?;
+    let host_desc = format!(
+        "jump host '{}:{}'",
+        jump_host.host,
+        jump_host.effective_port()
+    );
+    authenticate_connection(
+        &mut handle,
+        &jump_host.effective_user(),
+        auth_method,
+        &host_desc,
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "Failed to authenticate to {} as user '{}'",
+            host_desc,
+            jump_host.effective_user()
+        )
+    })?;
 
     // Create our Client wrapper
     let client =
@@ -237,11 +246,13 @@ pub(super) async fn connect_to_destination(
 
     // Authenticate to the final destination
     let mut handle = handle;
-    authenticate_connection(&mut handle, destination_user, dest_auth_method)
+    let dest_desc = format!("destination '{}:{}'", destination_host, destination_port);
+    authenticate_connection(&mut handle, destination_user, dest_auth_method, &dest_desc)
         .await
         .with_context(|| {
             format!(
-                "Failed to authenticate to destination {destination_host}:{destination_port} as user {destination_user}"
+                "Failed to authenticate to {} as user '{}'",
+                dest_desc, destination_user
             )
         })?;
 

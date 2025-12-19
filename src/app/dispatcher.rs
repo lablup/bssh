@@ -416,10 +416,22 @@ async fn handle_exec_command(cli: &Cli, ctx: &AppContext, command: &str) -> Resu
         };
 
         // Resolve jump_hosts: CLI takes precedence, then config
-        let jump_hosts = cli.jump_hosts.clone().or_else(|| {
-            ctx.config
-                .get_cluster_jump_host(ctx.cluster_name.as_deref().or(cli.cluster.as_deref()))
-        });
+        let effective_cluster_name = ctx.cluster_name.as_deref().or(cli.cluster.as_deref());
+        let config_jump_host = ctx.config.get_cluster_jump_host(effective_cluster_name);
+        let jump_hosts = cli.jump_hosts.clone().or(config_jump_host.clone());
+
+        // Debug logging for jump host resolution
+        tracing::debug!(
+            "Jump host resolution: cli={:?}, config={:?}, effective={:?}, cluster={:?}",
+            cli.jump_hosts,
+            config_jump_host,
+            jump_hosts,
+            effective_cluster_name
+        );
+
+        if let Some(ref jh) = jump_hosts {
+            tracing::info!("Using jump host: {}", jh);
+        }
 
         let params = ExecuteCommandParams {
             nodes: ctx.nodes.clone(),
