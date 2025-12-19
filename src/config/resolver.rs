@@ -57,7 +57,9 @@ impl Config {
                         n
                     })?
                 }
-                NodeConfig::Detailed { host, port, user } => {
+                NodeConfig::Detailed {
+                    host, port, user, ..
+                } => {
                     // Expand environment variables
                     let expanded_host = expand_env_vars(host);
 
@@ -120,5 +122,60 @@ impl Config {
         }
 
         self.defaults.parallel
+    }
+
+    /// Get jump host for a specific node in a cluster.
+    ///
+    /// Resolution priority (highest to lowest):
+    /// 1. Node-level `jump_host` (in `NodeConfig::Detailed`)
+    /// 2. Cluster-level `jump_host` (in `ClusterDefaults`)
+    /// 3. Global default `jump_host` (in `Defaults`)
+    ///
+    /// Empty string (`""`) explicitly disables jump host inheritance.
+    pub fn get_jump_host(&self, cluster_name: &str, node_index: usize) -> Option<String> {
+        if let Some(cluster) = self.get_cluster(cluster_name) {
+            // Check node-level first
+            if let Some(NodeConfig::Detailed {
+                jump_host: Some(jh),
+                ..
+            }) = cluster.nodes.get(node_index)
+            {
+                if jh.is_empty() {
+                    return None; // Explicitly disabled
+                }
+                return Some(jh.clone());
+            }
+            // Check cluster-level
+            if let Some(jh) = &cluster.defaults.jump_host {
+                if jh.is_empty() {
+                    return None; // Explicitly disabled
+                }
+                return Some(jh.clone());
+            }
+        }
+        // Fall back to global default
+        self.defaults.jump_host.clone().filter(|s| !s.is_empty())
+    }
+
+    /// Get jump host for a cluster (cluster-level default).
+    ///
+    /// Resolution priority (highest to lowest):
+    /// 1. Cluster-level `jump_host` (in `ClusterDefaults`)
+    /// 2. Global default `jump_host` (in `Defaults`)
+    ///
+    /// Empty string (`""`) explicitly disables jump host inheritance.
+    pub fn get_cluster_jump_host(&self, cluster_name: Option<&str>) -> Option<String> {
+        if let Some(cluster_name) = cluster_name {
+            if let Some(cluster) = self.get_cluster(cluster_name) {
+                if let Some(jh) = &cluster.defaults.jump_host {
+                    if jh.is_empty() {
+                        return None; // Explicitly disabled
+                    }
+                    return Some(jh.clone());
+                }
+            }
+        }
+        // Fall back to global default
+        self.defaults.jump_host.clone().filter(|s| !s.is_empty())
     }
 }

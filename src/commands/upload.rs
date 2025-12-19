@@ -32,6 +32,8 @@ pub struct FileTransferParams<'a> {
     pub use_password: bool,
     pub recursive: bool,
     pub ssh_config: Option<&'a SshConfig>,
+    /// Jump hosts specification for connections.
+    pub jump_hosts: Option<String>,
 }
 
 pub async fn upload_file(
@@ -85,7 +87,8 @@ pub async fn upload_file(
         params.strict_mode,
         params.use_agent,
         params.use_password,
-    );
+    )
+    .with_jump_hosts(params.jump_hosts.clone());
     if let Some(ssh_config) = params.ssh_config {
         executor = executor.with_ssh_config(Some(ssh_config.clone()));
     }

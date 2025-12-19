@@ -79,6 +79,12 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
             let use_keychain =
                 determine_use_keychain(&ctx.ssh_config, hostname_for_ssh_config.as_deref());
 
+            // Resolve jump_hosts: CLI takes precedence, then config
+            let jump_hosts = cli.jump_hosts.clone().or_else(|| {
+                ctx.config
+                    .get_cluster_jump_host(ctx.cluster_name.as_deref().or(cli.cluster.as_deref()))
+            });
+
             ping_nodes(
                 ctx.nodes.clone(),
                 ctx.max_parallel,
@@ -90,6 +96,7 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
                 use_keychain,
                 cli.timeout,
                 Some(cli.connect_timeout),
+                jump_hosts,
             )
             .await
         }
@@ -106,6 +113,12 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
                 ctx.cluster_name.as_deref().or(cli.cluster.as_deref()),
             );
 
+            // Resolve jump_hosts: CLI takes precedence, then config
+            let jump_hosts = cli.jump_hosts.clone().or_else(|| {
+                ctx.config
+                    .get_cluster_jump_host(ctx.cluster_name.as_deref().or(cli.cluster.as_deref()))
+            });
+
             let params = FileTransferParams {
                 nodes: ctx.nodes.clone(),
                 max_parallel: ctx.max_parallel,
@@ -115,6 +128,7 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
                 use_password: cli.password,
                 recursive: *recursive,
                 ssh_config: Some(&ctx.ssh_config),
+                jump_hosts,
             };
             upload_file(params, source, destination).await
         }
@@ -131,6 +145,12 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
                 ctx.cluster_name.as_deref().or(cli.cluster.as_deref()),
             );
 
+            // Resolve jump_hosts: CLI takes precedence, then config
+            let jump_hosts = cli.jump_hosts.clone().or_else(|| {
+                ctx.config
+                    .get_cluster_jump_host(ctx.cluster_name.as_deref().or(cli.cluster.as_deref()))
+            });
+
             let params = FileTransferParams {
                 nodes: ctx.nodes.clone(),
                 max_parallel: ctx.max_parallel,
@@ -140,6 +160,7 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
                 use_password: cli.password,
                 recursive: *recursive,
                 ssh_config: Some(&ctx.ssh_config),
+                jump_hosts,
             };
             download_file(params, source, destination).await
         }

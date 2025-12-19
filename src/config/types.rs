@@ -38,6 +38,9 @@ pub struct Defaults {
     pub ssh_key: Option<String>,
     pub parallel: Option<usize>,
     pub timeout: Option<u64>,
+    /// Jump host specification for all connections.
+    /// Empty string explicitly disables jump host inheritance.
+    pub jump_host: Option<String>,
 }
 
 /// Interactive mode configuration.
@@ -117,6 +120,9 @@ pub struct ClusterDefaults {
     pub ssh_key: Option<String>,
     pub parallel: Option<usize>,
     pub timeout: Option<u64>,
+    /// Jump host specification for this cluster.
+    /// Empty string explicitly disables jump host inheritance.
+    pub jump_host: Option<String>,
 }
 
 /// Node configuration within a cluster.
@@ -130,6 +136,10 @@ pub enum NodeConfig {
         port: Option<u16>,
         #[serde(default)]
         user: Option<String>,
+        /// Jump host specification for this node.
+        /// Empty string explicitly disables jump host inheritance.
+        #[serde(default)]
+        jump_host: Option<String>,
     },
 }
 
