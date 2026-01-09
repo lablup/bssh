@@ -109,7 +109,8 @@ Built on russh and russh-sftp with custom tokio_client wrapper:
 - Host key verification (known_hosts support)
 - Command execution with streaming output
 - SFTP file transfers (upload/download)
-- Connection timeout and keepalive handling
+- Connection timeout handling
+- Configurable SSH keepalive (ServerAliveInterval, ServerAliveCountMax)
 
 ### Terminal User Interface (TUI)
 **Documentation**: [docs/architecture/tui.md](./docs/architecture/tui.md)
@@ -265,7 +266,10 @@ See [LICENSE](./LICENSE) file for licensing information.
 - **Parallelism**: Adjust `--parallel` flag (default: 10)
 - **Connection timeout**: Use `--connect-timeout` (default: 30s)
 - **Command timeout**: Use `--timeout` (default: 5min)
-- **Keep-alive**: Automatic via russh (every 30s)
+- **Keepalive**: Configurable via `--server-alive-interval` (default: 60s) and `--server-alive-count-max` (default: 3)
+  - Interval of 0 disables keepalive
+  - Connection is considered dead after `interval * (count_max + 1)` seconds without response
+  - Equivalent to OpenSSH `ServerAliveInterval` and `ServerAliveCountMax` options
 
 ### Configuration Schema
 

@@ -28,6 +28,7 @@ A high-performance SSH client with **SSH-compatible syntax** for both single-hos
 - **Interactive Mode**: Interactive shell sessions with single-node or multiplexed multi-node support
 - **SSH Config Caching**: High-performance caching of SSH configurations with TTL and file modification detection
 - **Configurable Timeouts**: Set both connection timeout (`--connect-timeout`) and command execution timeout (`--timeout`) with support for unlimited execution
+- **SSH Keepalive**: Configurable keepalive settings (`--server-alive-interval`, `--server-alive-count-max`) to prevent idle connection timeouts
 
 ## Installation
 
@@ -232,6 +233,15 @@ bssh -C production --connect-timeout 10 "uptime"
 
 # Different timeouts for connection and command
 bssh -C production --connect-timeout 5 --timeout 600 "long-running-job"
+
+# Configure SSH keepalive (prevent idle connection timeouts)
+bssh -C production --server-alive-interval 30 "long-running-job"
+
+# Disable keepalive (set interval to 0)
+bssh -C production --server-alive-interval 0 "quick-job"
+
+# Keepalive with custom max retries (default: 3)
+bssh -C production --server-alive-interval 60 --server-alive-count-max 5 "long-running-job"
 
 # Fail-fast mode: stop immediately on any failure (pdsh -k compatible)
 bssh -k -H "web1,web2,web3" "deploy.sh"
@@ -701,6 +711,8 @@ defaults:
   parallel: 10
   timeout: 300  # Command timeout in seconds (0 for unlimited)
   jump_host: bastion.example.com  # Global default jump host (optional)
+  server_alive_interval: 60  # SSH keepalive interval in seconds (0 to disable)
+  server_alive_count_max: 3  # Max keepalive messages without response
 
 # Global interactive mode settings (optional)
 interactive:
@@ -1162,6 +1174,8 @@ Options:
   -p, --parallel <PARALLEL>               Maximum parallel connections [default: 10]
   --timeout <TIMEOUT>                     Command timeout in seconds (0 for unlimited) [default: 300]
   --connect-timeout <SECONDS>             SSH connection timeout in seconds (minimum: 1) [default: 30]
+  --server-alive-interval <SECONDS>       SSH keepalive interval in seconds (0 to disable) [default: 60]
+  --server-alive-count-max <COUNT>        Max keepalive messages without response [default: 3]
   --output-dir <OUTPUT_DIR>               Output directory for command results
   -N, --no-prefix                         Disable hostname prefix in output (pdsh -N compatibility)
   -v, --verbose                           Increase verbosity (-v, -vv, -vvv)

@@ -41,6 +41,13 @@ pub struct Defaults {
     /// Jump host specification for all connections.
     /// Empty string explicitly disables jump host inheritance.
     pub jump_host: Option<String>,
+    /// SSH keepalive interval in seconds.
+    /// Sends keepalive packets to prevent idle connection timeouts.
+    /// Default: 60 seconds. Set to 0 to disable.
+    pub server_alive_interval: Option<u64>,
+    /// Maximum keepalive messages without response before disconnect.
+    /// Default: 3
+    pub server_alive_count_max: Option<usize>,
 }
 
 /// Interactive mode configuration.
@@ -123,6 +130,13 @@ pub struct ClusterDefaults {
     /// Jump host specification for this cluster.
     /// Empty string explicitly disables jump host inheritance.
     pub jump_host: Option<String>,
+    /// SSH keepalive interval in seconds.
+    /// Sends keepalive packets to prevent idle connection timeouts.
+    /// Default: 60 seconds. Set to 0 to disable.
+    pub server_alive_interval: Option<u64>,
+    /// Maximum keepalive messages without response before disconnect.
+    /// Default: 3
+    pub server_alive_count_max: Option<usize>,
 }
 
 /// Node configuration within a cluster.

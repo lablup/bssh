@@ -25,7 +25,7 @@ use super::connection::JumpHostConnection;
 use super::parser::{get_max_jump_hosts, JumpHost};
 use super::rate_limiter::ConnectionRateLimiter;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
-use crate::ssh::tokio_client::AuthMethod;
+use crate::ssh::tokio_client::{AuthMethod, SshConnectionConfig};
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::sync::Arc;
@@ -42,6 +42,7 @@ use tracing::{debug, info, warn};
 /// * Automatic retry with exponential backoff
 /// * Connection health monitoring
 /// * Thread-safe credential prompting
+/// * SSH keepalive configuration to prevent idle connection timeouts
 #[derive(Debug)]
 pub struct JumpHostChain {
     /// The jump hosts in order (empty for direct connections)
@@ -65,6 +66,8 @@ pub struct JumpHostChain {
     /// Mutex to serialize authentication prompts
     /// SECURITY: Prevents credential prompt race conditions with multiple jump hosts
     auth_mutex: Arc<Mutex<()>>,
+    /// SSH connection configuration (keepalive settings)
+    ssh_connection_config: SshConnectionConfig,
 }
 
 impl JumpHostChain {
@@ -100,7 +103,17 @@ impl JumpHostChain {
             max_idle_time: Duration::from_secs(300), // 5 minutes
             max_connection_age: Duration::from_secs(1800), // 30 minutes
             auth_mutex: Arc::new(Mutex::new(())),
+            ssh_connection_config: SshConnectionConfig::default(),
         }
+    }
+
+    /// Set SSH connection configuration (keepalive settings)
+    ///
+    /// Configures keepalive interval and maximum attempts to prevent
+    /// idle connection timeouts during jump host operations.
+    pub fn with_ssh_connection_config(mut self, config: SshConnectionConfig) -> Self {
+        self.ssh_connection_config = config;
+        self
     }
 
     /// Create a direct connection chain (no jump hosts)
@@ -188,6 +201,7 @@ impl JumpHostChain {
                 dest_strict_mode,
                 self.connect_timeout,
                 &self.rate_limiter,
+                &self.ssh_connection_config,
             )
             .await
         } else {
@@ -266,6 +280,7 @@ impl JumpHostChain {
                 self.connect_timeout,
                 &self.rate_limiter,
                 &self.auth_mutex,
+                &self.ssh_connection_config,
             )
             .await
             .with_context(|| {
@@ -290,6 +305,7 @@ impl JumpHostChain {
             dest_strict_mode.unwrap_or(StrictHostKeyChecking::AcceptNew),
             self.connect_timeout,
             &self.rate_limiter,
+            &self.ssh_connection_config,
         )
         .await
         .with_context(|| {
@@ -372,11 +388,12 @@ impl JumpHostChain {
 
         let client = tokio::time::timeout(
             self.connect_timeout,
-            crate::ssh::tokio_client::Client::connect(
+            crate::ssh::tokio_client::Client::connect_with_ssh_config(
                 (jump_host.host.as_str(), jump_host.effective_port()),
                 &effective_user,
                 auth_method,
                 check_method,
+                &self.ssh_connection_config,
             ),
         )
         .await

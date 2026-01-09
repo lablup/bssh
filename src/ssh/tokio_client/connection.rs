@@ -20,9 +20,94 @@
 use russh::client::{Config, Handle, Handler};
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Duration;
 use std::{fmt::Debug, io};
 
 use super::authentication::{AuthMethod, ServerCheckMethod};
+
+/// Default keepalive interval in seconds.
+/// Sends keepalive packets every 60 seconds to detect dead connections.
+pub const DEFAULT_KEEPALIVE_INTERVAL: u64 = 60;
+
+/// Default maximum keepalive attempts before considering connection dead.
+/// With 60s interval and 3 max, connection failure is detected within 180s.
+pub const DEFAULT_KEEPALIVE_MAX: usize = 3;
+
+/// SSH connection configuration for keepalive and timeout settings.
+///
+/// This struct provides a centralized way to configure SSH connection
+/// parameters, particularly for keepalive functionality which prevents
+/// idle connections from being terminated by firewalls or NAT devices.
+///
+/// # Example
+///
+/// ```no_run
+/// use bssh::ssh::tokio_client::SshConnectionConfig;
+///
+/// // Use defaults (60s interval, 3 max attempts)
+/// let config = SshConnectionConfig::default();
+///
+/// // Custom configuration
+/// let config = SshConnectionConfig::new()
+///     .with_keepalive_interval(Some(30))
+///     .with_keepalive_max(5);
+///
+/// // Disable keepalive
+/// let config = SshConnectionConfig::new()
+///     .with_keepalive_interval(None);
+/// ```
+#[derive(Debug, Clone)]
+pub struct SshConnectionConfig {
+    /// Interval in seconds between keepalive packets.
+    /// None disables keepalive.
+    /// Default: 60 seconds
+    pub keepalive_interval: Option<u64>,
+
+    /// Maximum number of keepalive packets to send without response
+    /// before considering the connection dead.
+    /// Default: 3
+    pub keepalive_max: usize,
+}
+
+impl Default for SshConnectionConfig {
+    fn default() -> Self {
+        Self {
+            keepalive_interval: Some(DEFAULT_KEEPALIVE_INTERVAL),
+            keepalive_max: DEFAULT_KEEPALIVE_MAX,
+        }
+    }
+}
+
+impl SshConnectionConfig {
+    /// Create a new configuration with default values.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the keepalive interval in seconds.
+    /// Pass None to disable keepalive.
+    #[must_use]
+    pub fn with_keepalive_interval(mut self, interval: Option<u64>) -> Self {
+        self.keepalive_interval = interval;
+        self
+    }
+
+    /// Set the maximum number of keepalive attempts.
+    #[must_use]
+    pub fn with_keepalive_max(mut self, max: usize) -> Self {
+        self.keepalive_max = max;
+        self
+    }
+
+    /// Convert this configuration to a russh client Config.
+    pub fn to_russh_config(&self) -> Config {
+        Config {
+            keepalive_interval: self.keepalive_interval.map(Duration::from_secs),
+            keepalive_max: self.keepalive_max,
+            ..Default::default()
+        }
+    }
+}
 use super::ToSocketAddrsWithHostname;
 
 /// A ssh connection to a remote server.
@@ -63,7 +148,7 @@ pub struct Client {
 }
 
 impl Client {
-    /// Open a ssh connection to a remote host.
+    /// Open a ssh connection to a remote host with default keepalive settings.
     ///
     /// `addr` is an address of the remote host. Anything which implements
     /// [`ToSocketAddrsWithHostname`] trait can be supplied for the address;
@@ -74,17 +159,68 @@ impl Client {
     /// each of the addresses until a connection is successful.
     /// Authentification is tried on the first successful connection and the whole
     /// process aborted if this fails.
+    ///
+    /// This method uses default keepalive settings (60s interval, 3 max attempts)
+    /// to prevent idle connection timeouts.
     pub async fn connect(
         addr: impl ToSocketAddrsWithHostname,
         username: &str,
         auth: AuthMethod,
         server_check: ServerCheckMethod,
     ) -> Result<Self, super::Error> {
-        Self::connect_with_config(addr, username, auth, server_check, Config::default()).await
+        Self::connect_with_ssh_config(
+            addr,
+            username,
+            auth,
+            server_check,
+            &SshConnectionConfig::default(),
+        )
+        .await
+    }
+
+    /// Connect with custom SSH connection configuration.
+    ///
+    /// This method allows specifying keepalive settings and other connection
+    /// parameters through [`SshConnectionConfig`].
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use bssh::ssh::tokio_client::{Client, AuthMethod, ServerCheckMethod, SshConnectionConfig};
+    ///
+    /// #[tokio::main]
+    /// async fn main() -> Result<(), bssh::ssh::tokio_client::Error> {
+    ///     let ssh_config = SshConnectionConfig::new()
+    ///         .with_keepalive_interval(Some(30))
+    ///         .with_keepalive_max(5);
+    ///
+    ///     let client = Client::connect_with_ssh_config(
+    ///         ("example.com", 22),
+    ///         "user",
+    ///         AuthMethod::with_key_file("~/.ssh/id_rsa", None),
+    ///         ServerCheckMethod::DefaultKnownHostsFile,
+    ///         &ssh_config,
+    ///     ).await?;
+    ///
+    ///     Ok(())
+    /// }
+    /// ```
+    pub async fn connect_with_ssh_config(
+        addr: impl ToSocketAddrsWithHostname,
+        username: &str,
+        auth: AuthMethod,
+        server_check: ServerCheckMethod,
+        ssh_config: &SshConnectionConfig,
+    ) -> Result<Self, super::Error> {
+        let config = ssh_config.to_russh_config();
+        Self::connect_with_config(addr, username, auth, server_check, config).await
     }
 
     /// Same as `connect`, but with the option to specify a non default
     /// [`russh::client::Config`].
+    ///
+    /// For most use cases, prefer [`connect_with_ssh_config`] which provides
+    /// a higher-level API with sensible defaults.
     pub async fn connect_with_config(
         addr: impl ToSocketAddrsWithHostname,
         username: &str,

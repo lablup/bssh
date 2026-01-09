@@ -143,6 +143,24 @@ impl SshConfig {
         resolver::get_proxy_jump(&self.hosts, hostname)
     }
 
+    /// Get an integer option value for a hostname.
+    ///
+    /// Currently supports:
+    /// - `serveraliveinterval` - Keepalive interval in seconds
+    /// - `serveralivecountmax` - Maximum keepalive messages before disconnect
+    ///
+    /// Option names are case-insensitive.
+    pub fn get_int_option(&self, hostname: Option<&str>, option: &str) -> Option<i64> {
+        let hostname = hostname.unwrap_or("*");
+        let config = self.find_host_config(hostname);
+
+        match option.to_lowercase().as_str() {
+            "serveraliveinterval" => config.server_alive_interval.map(|v| v as i64),
+            "serveralivecountmax" => config.server_alive_count_max.map(|v| v as i64),
+            _ => None,
+        }
+    }
+
     /// Get all host configurations (for debugging)
     pub fn get_all_configs(&self) -> &[SshHostConfig] {
         &self.hosts

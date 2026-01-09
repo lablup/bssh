@@ -190,6 +190,20 @@ pub struct Cli {
     pub connect_timeout: u64,
 
     #[arg(
+        long = "server-alive-interval",
+        value_name = "SECONDS",
+        help = "Keepalive interval in seconds (default: 60, 0 to disable)\nSends keepalive packets to prevent idle connection timeouts.\nMatches OpenSSH ServerAliveInterval option."
+    )]
+    pub server_alive_interval: Option<u64>,
+
+    #[arg(
+        long = "server-alive-count-max",
+        value_name = "COUNT",
+        help = "Max keepalive messages without response before disconnect (default: 3)\nConnection is considered dead after this many missed keepalives.\nMatches OpenSSH ServerAliveCountMax option."
+    )]
+    pub server_alive_count_max: Option<usize>,
+
+    #[arg(
         long,
         help = "Require all nodes to succeed (v1.0-v1.1 behavior)\nDefault: return main rank's exit code (v1.2+)\nUseful for health checks and monitoring where all nodes must be operational"
     )]

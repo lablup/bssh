@@ -29,6 +29,10 @@
 - Support for SSH agent, key-based, and password authentication
 - Configurable timeouts and retry logic
 - Full SFTP support for file transfers
+- SSH keepalive support via `SshConnectionConfig`:
+  - `keepalive_interval`: Interval between keepalive packets (default: 60s, 0 to disable)
+  - `keepalive_max`: Maximum unanswered keepalive packets before disconnect (default: 3)
+  - Equivalent to OpenSSH `ServerAliveInterval` and `ServerAliveCountMax`
 
 **Security Implementation:**
 - Host key verification with three modes:

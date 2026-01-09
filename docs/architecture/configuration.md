@@ -85,7 +85,10 @@ pub struct Defaults {
     pub port: Option<u16>,
     pub ssh_key: Option<PathBuf>,
     pub parallel: Option<usize>,
+    pub timeout: Option<u64>,
     pub jump_host: Option<String>,  // Global default jump host
+    pub server_alive_interval: Option<u64>,  // SSH keepalive interval
+    pub server_alive_count_max: Option<usize>,  // Max keepalive attempts
 }
 
 pub struct Cluster {
@@ -98,7 +101,11 @@ pub struct ClusterDefaults {
     pub user: Option<String>,
     pub port: Option<u16>,
     pub ssh_key: Option<PathBuf>,
+    pub parallel: Option<usize>,
+    pub timeout: Option<u64>,
     pub jump_host: Option<String>,  // Cluster-level jump host
+    pub server_alive_interval: Option<u64>,  // SSH keepalive interval
+    pub server_alive_count_max: Option<usize>,  // Max keepalive attempts
 }
 
 // Node can be simple string or detailed config
@@ -133,7 +140,10 @@ defaults:
   user: admin
   port: 22
   ssh_key: ~/.ssh/id_rsa
+  timeout: 300
   jump_host: global-bastion.example.com  # Default for all clusters
+  server_alive_interval: 60  # SSH keepalive interval in seconds
+  server_alive_count_max: 3  # Max keepalive attempts before disconnect
 
 clusters:
   production:

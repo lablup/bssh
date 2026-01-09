@@ -23,6 +23,7 @@ use crate::security::SudoPassword;
 use crate::ssh::{
     client::{CommandResult, ConnectionConfig},
     known_hosts::StrictHostKeyChecking,
+    tokio_client::SshConnectionConfig,
     SshClient, SshConfig,
 };
 
@@ -40,6 +41,11 @@ pub(crate) struct ExecutionConfig<'a> {
     pub jump_hosts: Option<&'a str>,
     pub sudo_password: Option<Arc<SudoPassword>>,
     pub ssh_config: Option<&'a SshConfig>,
+    /// SSH connection configuration (keepalive settings).
+    /// Note: This field is currently passed through the executor for future use.
+    /// Keepalive is applied at the Client::connect_with_ssh_config level.
+    #[allow(dead_code)]
+    pub ssh_connection_config: Option<&'a SshConnectionConfig>,
 }
 
 /// Execute a command on a node with jump host support.

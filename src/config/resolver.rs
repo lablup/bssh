@@ -186,4 +186,40 @@ impl Config {
             .filter(|s| !s.is_empty())
             .map(|s| expand_env_vars(s))
     }
+
+    /// Get SSH keepalive interval for a cluster.
+    ///
+    /// Resolution priority (highest to lowest):
+    /// 1. Cluster-level `server_alive_interval`
+    /// 2. Global default `server_alive_interval`
+    ///
+    /// Returns None if not specified (defaults will be applied at connection time).
+    pub fn get_server_alive_interval(&self, cluster_name: Option<&str>) -> Option<u64> {
+        if let Some(cluster_name) = cluster_name {
+            if let Some(cluster) = self.get_cluster(cluster_name) {
+                if let Some(interval) = cluster.defaults.server_alive_interval {
+                    return Some(interval);
+                }
+            }
+        }
+        self.defaults.server_alive_interval
+    }
+
+    /// Get SSH keepalive count max for a cluster.
+    ///
+    /// Resolution priority (highest to lowest):
+    /// 1. Cluster-level `server_alive_count_max`
+    /// 2. Global default `server_alive_count_max`
+    ///
+    /// Returns None if not specified (defaults will be applied at connection time).
+    pub fn get_server_alive_count_max(&self, cluster_name: Option<&str>) -> Option<usize> {
+        if let Some(cluster_name) = cluster_name {
+            if let Some(cluster) = self.get_cluster(cluster_name) {
+                if let Some(count) = cluster.defaults.server_alive_count_max {
+                    return Some(count);
+                }
+            }
+        }
+        self.defaults.server_alive_count_max
+    }
 }
