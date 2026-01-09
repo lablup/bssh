@@ -16,7 +16,7 @@ use super::auth::authenticate_connection;
 use crate::jump::parser::JumpHost;
 use crate::jump::rate_limiter::ConnectionRateLimiter;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
-use crate::ssh::tokio_client::{AuthMethod, Client, ClientHandler};
+use crate::ssh::tokio_client::{AuthMethod, Client, ClientHandler, SshConnectionConfig};
 use anyhow::{Context, Result};
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::path::Path;
@@ -35,6 +35,7 @@ pub(super) async fn connect_through_tunnel(
     connect_timeout: std::time::Duration,
     rate_limiter: &ConnectionRateLimiter,
     auth_mutex: &tokio::sync::Mutex<()>,
+    ssh_connection_config: &SshConnectionConfig,
 ) -> Result<Client> {
     debug!(
         "Opening tunnel to jump host: {} ({}:{})",
@@ -85,8 +86,8 @@ pub(super) async fn connect_through_tunnel(
     )
     .await?;
 
-    // Create a basic russh client config
-    let config = Arc::new(russh::client::Config::default());
+    // Create russh client config with keepalive settings
+    let config = Arc::new(ssh_connection_config.to_russh_config());
 
     // Create a simple handler for the connection
     let socket_addr: SocketAddr = format!("{}:{}", jump_host.host, jump_host.effective_port())
@@ -174,6 +175,7 @@ pub(super) async fn connect_to_destination(
     strict_mode: StrictHostKeyChecking,
     connect_timeout: std::time::Duration,
     rate_limiter: &ConnectionRateLimiter,
+    ssh_connection_config: &SshConnectionConfig,
 ) -> Result<Client> {
     debug!(
         "Opening tunnel to destination: {}:{} as user {}",
@@ -207,8 +209,8 @@ pub(super) async fn connect_to_destination(
     // Convert the channel to a stream
     let stream = channel.into_stream();
 
-    // Create SSH client over the tunnel stream
-    let config = Arc::new(russh::client::Config::default());
+    // Create SSH client over the tunnel stream with keepalive settings
+    let config = Arc::new(ssh_connection_config.to_russh_config());
     let check_method = match strict_mode {
         StrictHostKeyChecking::No => crate::ssh::tokio_client::ServerCheckMethod::NoCheck,
         _ => crate::ssh::known_hosts::get_check_method(strict_mode),

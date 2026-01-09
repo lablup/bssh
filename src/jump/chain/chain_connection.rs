@@ -15,11 +15,12 @@
 use super::types::{JumpConnection, JumpInfo};
 use crate::jump::rate_limiter::ConnectionRateLimiter;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
-use crate::ssh::tokio_client::{AuthMethod, Client};
+use crate::ssh::tokio_client::{AuthMethod, Client, SshConnectionConfig};
 use anyhow::{Context, Result};
 use tracing::{debug, info};
 
 /// Establish a direct connection (no jump hosts)
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn connect_direct(
     host: &str,
     port: u16,
@@ -28,6 +29,7 @@ pub(super) async fn connect_direct(
     strict_mode: Option<StrictHostKeyChecking>,
     connect_timeout: std::time::Duration,
     rate_limiter: &ConnectionRateLimiter,
+    ssh_connection_config: &SshConnectionConfig,
 ) -> Result<JumpConnection> {
     debug!("Establishing direct connection to {}:{}", host, port);
 
@@ -44,7 +46,13 @@ pub(super) async fn connect_direct(
 
     let client = tokio::time::timeout(
         connect_timeout,
-        Client::connect((host, port), username, auth_method, check_method),
+        Client::connect_with_ssh_config(
+            (host, port),
+            username,
+            auth_method,
+            check_method,
+            ssh_connection_config,
+        ),
     )
     .await
     .with_context(|| {

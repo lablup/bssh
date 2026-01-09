@@ -24,6 +24,7 @@ use tokio::sync::Semaphore;
 use crate::node::Node;
 use crate::security::SudoPassword;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
+use crate::ssh::tokio_client::SshConnectionConfig;
 use crate::ssh::SshConfig;
 
 use super::connection_manager::{download_from_node, ExecutionConfig};
@@ -51,6 +52,8 @@ pub struct ParallelExecutor {
     pub(crate) batch: bool,
     pub(crate) fail_fast: bool,
     pub(crate) ssh_config: Option<SshConfig>,
+    /// SSH connection configuration (keepalive settings)
+    pub(crate) ssh_connection_config: SshConnectionConfig,
 }
 
 impl ParallelExecutor {
@@ -87,6 +90,7 @@ impl ParallelExecutor {
             batch: false,
             fail_fast: false,
             ssh_config: None,
+            ssh_connection_config: SshConnectionConfig::default(),
         }
     }
 
@@ -114,6 +118,7 @@ impl ParallelExecutor {
             batch: false,
             fail_fast: false,
             ssh_config: None,
+            ssh_connection_config: SshConnectionConfig::default(),
         }
     }
 
@@ -142,6 +147,7 @@ impl ParallelExecutor {
             batch: false,
             fail_fast: false,
             ssh_config: None,
+            ssh_connection_config: SshConnectionConfig::default(),
         }
     }
 
@@ -206,6 +212,29 @@ impl ParallelExecutor {
         self
     }
 
+    /// Set SSH connection configuration (keepalive settings).
+    ///
+    /// Configures keepalive interval and maximum attempts to prevent
+    /// idle connection timeouts during long-running operations.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use bssh::executor::ParallelExecutor;
+    /// use bssh::ssh::tokio_client::SshConnectionConfig;
+    ///
+    /// let config = SshConnectionConfig::new()
+    ///     .with_keepalive_interval(Some(30))
+    ///     .with_keepalive_max(5);
+    ///
+    /// let executor = ParallelExecutor::new(nodes, 10, None)
+    ///     .with_ssh_connection_config(config);
+    /// ```
+    pub fn with_ssh_connection_config(mut self, config: SshConnectionConfig) -> Self {
+        self.ssh_connection_config = config;
+        self
+    }
+
     /// Execute a command on all nodes in parallel.
     pub async fn execute(&self, command: &str) -> Result<Vec<ExecutionResult>> {
         use std::time::Duration;
@@ -240,6 +269,7 @@ impl ParallelExecutor {
                 let pb = setup_progress_bar(&multi_progress, &node, style.clone(), "Connecting...");
 
                 let ssh_config_ref = self.ssh_config.clone();
+                let ssh_connection_config = self.ssh_connection_config.clone();
 
                 tokio::spawn(async move {
                     let config = ExecutionConfig {
@@ -254,6 +284,7 @@ impl ParallelExecutor {
                         jump_hosts: jump_hosts.as_deref(),
                         sudo_password: sudo_password.clone(),
                         ssh_config: ssh_config_ref.as_ref(),
+                        ssh_connection_config: Some(&ssh_connection_config),
                     };
 
                     execute_command_task(node, command, config, semaphore, pb).await
@@ -346,6 +377,7 @@ impl ParallelExecutor {
             Vec::with_capacity(self.nodes.len());
 
         let ssh_config_for_tasks = self.ssh_config.clone();
+        let ssh_connection_config_for_tasks = self.ssh_connection_config.clone();
 
         // Spawn tasks for each node
         for node in &self.nodes {
@@ -365,6 +397,7 @@ impl ParallelExecutor {
             let pb = setup_progress_bar(&multi_progress, &node, style.clone(), "Connecting...");
             let mut cancel_rx = cancel_rx.clone();
             let ssh_config_ref = ssh_config_for_tasks.clone();
+            let ssh_connection_config_ref = ssh_connection_config_for_tasks.clone();
 
             let handle = tokio::spawn(async move {
                 // Check if already cancelled before acquiring semaphore
@@ -428,6 +461,7 @@ impl ParallelExecutor {
                     jump_hosts: jump_hosts.as_deref(),
                     sudo_password: sudo_password.clone(),
                     ssh_config: ssh_config_ref.as_ref(),
+                    ssh_connection_config: Some(&ssh_connection_config_ref),
                 };
 
                 // Execute the command (keeping the permit alive)

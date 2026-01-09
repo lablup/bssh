@@ -325,6 +325,8 @@ impl PdshCli {
             local_forwards: Vec::new(),
             remote_forwards: Vec::new(),
             dynamic_forwards: Vec::new(),
+            server_alive_interval: None,
+            server_alive_count_max: None,
         }
     }
 }

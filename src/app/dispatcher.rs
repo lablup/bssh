@@ -28,6 +28,7 @@ use bssh::{
     config::InteractiveMode,
     pty::PtyConfig,
     security::get_sudo_password,
+    ssh::tokio_client::{SshConnectionConfig, DEFAULT_KEEPALIVE_INTERVAL, DEFAULT_KEEPALIVE_MAX},
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -433,6 +434,44 @@ async fn handle_exec_command(cli: &Cli, ctx: &AppContext, command: &str) -> Resu
             tracing::info!("Using jump host: {}", jh);
         }
 
+        // Build SSH connection config with precedence: CLI > SSH config > YAML config > defaults
+        let keepalive_interval = cli
+            .server_alive_interval
+            .or_else(|| {
+                ctx.ssh_config
+                    .get_int_option(hostname.as_deref(), "serveraliveinterval")
+                    .map(|v| v as u64)
+            })
+            .or_else(|| ctx.config.get_server_alive_interval(effective_cluster_name))
+            .unwrap_or(DEFAULT_KEEPALIVE_INTERVAL);
+
+        let keepalive_max = cli
+            .server_alive_count_max
+            .or_else(|| {
+                ctx.ssh_config
+                    .get_int_option(hostname.as_deref(), "serveralivecountmax")
+                    .map(|v| v as usize)
+            })
+            .or_else(|| {
+                ctx.config
+                    .get_server_alive_count_max(effective_cluster_name)
+            })
+            .unwrap_or(DEFAULT_KEEPALIVE_MAX);
+
+        let ssh_connection_config = SshConnectionConfig::new()
+            .with_keepalive_interval(if keepalive_interval == 0 {
+                None
+            } else {
+                Some(keepalive_interval)
+            })
+            .with_keepalive_max(keepalive_max);
+
+        tracing::debug!(
+            "SSH keepalive config: interval={:?}s, max={}",
+            ssh_connection_config.keepalive_interval,
+            ssh_connection_config.keepalive_max
+        );
+
         let params = ExecuteCommandParams {
             nodes: ctx.nodes.clone(),
             command,
@@ -461,6 +500,7 @@ async fn handle_exec_command(cli: &Cli, ctx: &AppContext, command: &str) -> Resu
             batch: cli.batch,
             fail_fast: cli.fail_fast,
             ssh_config: Some(&ctx.ssh_config),
+            ssh_connection_config,
         };
         execute_command(params).await
     }
