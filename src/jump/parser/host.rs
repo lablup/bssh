@@ -38,7 +38,9 @@ impl JumpHost {
 
     /// Get the effective username (provided or current user)
     pub fn effective_user(&self) -> String {
-        self.user.clone().unwrap_or_else(whoami::username)
+        self.user
+            .clone()
+            .unwrap_or_else(|| whoami::username().unwrap_or_else(|_| "user".to_string()))
     }
 
     /// Get the effective port (provided or default SSH port)

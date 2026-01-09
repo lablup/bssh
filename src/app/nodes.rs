@@ -76,14 +76,7 @@ pub fn parse_node_with_ssh_config(node_str: &str, ssh_config: &SshConfig) -> Res
             .or_else(|_| std::env::var("LOGNAME"))
             .unwrap_or_else(|_| {
                 // Try to get current user from system
-                #[cfg(unix)]
-                {
-                    whoami::username()
-                }
-                #[cfg(not(unix))]
-                {
-                    "user".to_string()
-                }
+                whoami::username().unwrap_or_else(|_| "user".to_string())
             })
     };
     let effective_port = ssh_config.get_effective_port(raw_host, cli_port);

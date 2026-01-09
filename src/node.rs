@@ -62,17 +62,7 @@ impl Node {
                 std::env::var("USER")
                     .or_else(|_| std::env::var("USERNAME"))
                     .or_else(|_| std::env::var("LOGNAME"))
-                    .unwrap_or_else(|_| {
-                        // Try to get current user from system
-                        #[cfg(unix)]
-                        {
-                            whoami::username()
-                        }
-                        #[cfg(not(unix))]
-                        {
-                            "user".to_string()
-                        }
-                    })
+                    .unwrap_or_else(|_| whoami::username().unwrap_or_else(|_| "user".to_string()))
             });
 
         Ok(Node {
@@ -141,7 +131,7 @@ mod tests {
         let current_user = std::env::var("USER")
             .or_else(|_| std::env::var("USERNAME"))
             .or_else(|_| std::env::var("LOGNAME"))
-            .unwrap_or_else(|_| whoami::username());
+            .unwrap_or_else(|_| whoami::username().unwrap_or_else(|_| "user".to_string()));
         assert_eq!(node.username, current_user);
         // Specifically verify it doesn't default to root when we're not root
         if current_user != "root" {

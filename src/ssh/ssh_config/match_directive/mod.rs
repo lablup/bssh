@@ -94,7 +94,7 @@ impl MatchContext {
     /// Create a new match context
     pub fn new(hostname: String, remote_user: Option<String>) -> Result<Self> {
         // Get local username
-        let local_user = whoami::username();
+        let local_user = whoami::username().unwrap_or_else(|_| "user".to_string());
 
         let mut variables = HashMap::new();
         variables.insert("h".to_string(), hostname.clone());
@@ -343,7 +343,7 @@ mod tests {
     fn test_match_localuser_condition() {
         let context = MatchContext::new("example.com".to_string(), None).unwrap();
 
-        let local_user = whoami::username();
+        let local_user = whoami::username().unwrap();
         let condition = MatchCondition::LocalUser(vec![local_user.clone()]);
         assert!(condition.matches(&context).unwrap());
 
@@ -433,7 +433,7 @@ mod tests {
     fn test_match_localuser_with_wildcards() {
         let context = MatchContext::new("example.com".to_string(), None).unwrap();
 
-        let local_user = whoami::username();
+        let local_user = whoami::username().unwrap();
 
         // Test wildcard pattern
         if local_user.len() > 2 {

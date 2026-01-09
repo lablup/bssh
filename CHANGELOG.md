@@ -18,10 +18,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **Documentation**: Added GitHub downloads badge to README
 
+### Dependencies
+- Updated russh from 0.55.0 to 0.56.0
+- Updated ratatui from 0.29.0 to 0.30.0
+- Updated signal-hook from 0.3.18 to 0.4.1
+- Updated whoami from 1.6.1 to 2.0.1
+- Updated unicode-width from 0.2.0 to 0.2.2
+
 ### Technical Details
 - Implemented SSH keepalive packet sending at configurable intervals
 - Automatic connection termination after max retries without response
 - Keepalive settings work with jump host connections
+- Adapted to whoami 2.0 API changes (username() now returns Result)
 
 ## [1.6.0] - 2025-12-19
 
