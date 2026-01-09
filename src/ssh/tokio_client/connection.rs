@@ -197,7 +197,7 @@ impl Client {
     ///     let client = Client::connect_with_ssh_config(
     ///         ("example.com", 22),
     ///         "user",
-    ///         AuthMethod::with_key_file("~/.ssh/id_rsa"),
+    ///         AuthMethod::with_key_file("~/.ssh/id_rsa", None),
     ///         ServerCheckMethod::DefaultKnownHostsFile,
     ///         &ssh_config,
     ///     ).await?;

@@ -222,6 +222,9 @@ impl ParallelExecutor {
     /// ```no_run
     /// use bssh::executor::ParallelExecutor;
     /// use bssh::ssh::tokio_client::SshConnectionConfig;
+    /// use bssh::node::Node;
+    ///
+    /// let nodes = vec![Node::new("example.com".to_string(), 22, "user".to_string())];
     ///
     /// let config = SshConnectionConfig::new()
     ///     .with_keepalive_interval(Some(30))
