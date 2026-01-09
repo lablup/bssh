@@ -1,3 +1,38 @@
+bssh (1.7.0-1~jammy1) jammy; urgency=medium
+
+  * v1.7.0
+  ### New Features
+  - **SSH Keepalive Support**: Added SSH keepalive to prevent idle connection timeouts (#122)
+    - `--server-alive-interval` option: Configure keepalive interval in seconds (default: 60, 0 to disable)
+    - `--server-alive-count-max` option: Maximum keepalive messages without response before disconnect (default: 3)
+    - Configuration support in config.yaml via `server_alive_interval` and `server_alive_count_max` fields
+    - Helps maintain long-running sessions through firewalls that drop idle connections
+
+  ### Improvements
+  - **Documentation**: Added GitHub downloads badge to README
+
+  ### Bug Fixes
+  None
+
+  ### CI/CD Improvements
+  None
+
+  ### Technical Details
+  - Implemented SSH keepalive packet sending at configurable intervals
+  - Automatic connection termination after max retries without response
+  - Full integration with all execution modes (exec, interactive, file transfer)
+
+  ### Dependencies
+  - Updated various dependencies to latest versions
+
+  ### Breaking Changes
+  None
+
+  ### Known Issues
+  None
+
+ -- Jeongkyu Shin <inureyes@gmail.com>  Thu, 09 Jan 2026 00:00:00 +0900
+
 bssh (1.6.0-1~jammy1) jammy; urgency=medium
 
   * v1.6.0

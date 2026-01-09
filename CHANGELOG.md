@@ -5,6 +5,24 @@ All notable changes to bssh will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] - 2026-01-09
+
+### Added
+- **SSH Keepalive Support** (Issue #122)
+  - `--server-alive-interval` option: Configure keepalive interval in seconds (default: 60, 0 to disable)
+  - `--server-alive-count-max` option: Maximum keepalive messages without response before disconnect (default: 3)
+  - Configuration support in config.yaml via `server_alive_interval` and `server_alive_count_max` fields
+  - Helps maintain long-running sessions through firewalls and NATs that drop idle connections
+  - Full integration with exec, interactive, and file transfer modes
+
+### Changed
+- **Documentation**: Added GitHub downloads badge to README
+
+### Technical Details
+- Implemented SSH keepalive packet sending at configurable intervals
+- Automatic connection termination after max retries without response
+- Keepalive settings work with jump host connections
+
 ## [1.6.0] - 2025-12-19
 
 ### Added
@@ -644,6 +662,7 @@ None
 - russh library for native SSH implementation
 - Cross-platform support (Linux and macOS)
 
+[1.7.0]: https://github.com/lablup/bssh/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/lablup/bssh/compare/v1.5.1...v1.6.0
 [1.5.1]: https://github.com/lablup/bssh/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/lablup/bssh/compare/v1.4.2...v1.5.0
