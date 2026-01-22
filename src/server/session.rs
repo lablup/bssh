@@ -30,7 +30,8 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
-use russh::ChannelId;
+use russh::server::Msg;
+use russh::{Channel, ChannelId};
 
 /// Unique identifier for an SSH session.
 ///
@@ -184,10 +185,12 @@ impl PtyConfig {
 /// State of an SSH channel.
 ///
 /// Tracks the current mode and configuration of a channel.
-#[derive(Debug)]
 pub struct ChannelState {
     /// The channel ID.
     pub channel_id: ChannelId,
+
+    /// The underlying channel for subsystem communication.
+    channel: Option<Channel<Msg>>,
 
     /// Current operation mode.
     pub mode: ChannelMode,
@@ -199,15 +202,44 @@ pub struct ChannelState {
     pub eof_received: bool,
 }
 
+impl std::fmt::Debug for ChannelState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ChannelState")
+            .field("channel_id", &self.channel_id)
+            .field("has_channel", &self.channel.is_some())
+            .field("mode", &self.mode)
+            .field("pty", &self.pty)
+            .field("eof_received", &self.eof_received)
+            .finish()
+    }
+}
+
 impl ChannelState {
     /// Create a new channel state.
     pub fn new(channel_id: ChannelId) -> Self {
         Self {
             channel_id,
+            channel: None,
             mode: ChannelMode::Idle,
             pty: None,
             eof_received: false,
         }
+    }
+
+    /// Create a new channel state with the underlying channel.
+    pub fn with_channel(channel: Channel<Msg>) -> Self {
+        Self {
+            channel_id: channel.id(),
+            channel: Some(channel),
+            mode: ChannelMode::Idle,
+            pty: None,
+            eof_received: false,
+        }
+    }
+
+    /// Take the underlying channel (consumes it for use with subsystems).
+    pub fn take_channel(&mut self) -> Option<Channel<Msg>> {
+        self.channel.take()
     }
 
     /// Check if the channel has a PTY attached.

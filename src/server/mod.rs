@@ -49,6 +49,7 @@ pub mod config;
 pub mod exec;
 pub mod handler;
 pub mod session;
+pub mod sftp;
 
 use std::net::SocketAddr;
 use std::path::Path;

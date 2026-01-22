@@ -248,6 +248,7 @@ SSH server implementation using the russh library for accepting incoming connect
 - `handler.rs` - `SshHandler` implementing `russh::server::Handler` trait
 - `session.rs` - Session state management (`SessionManager`, `SessionInfo`, `ChannelState`)
 - `exec.rs` - Command execution for SSH exec requests
+- `sftp.rs` - SFTP subsystem handler with path traversal prevention
 - `auth/` - Authentication provider infrastructure
 
 **Key Components**:
@@ -300,6 +301,17 @@ SSH server implementation using the russh library for accepting incoming connect
   - Session creation and cleanup
   - Idle session management
   - Authentication state tracking
+
+- **SftpHandler**: SFTP subsystem handler (`src/server/sftp.rs`)
+  - Implements `russh_sftp::server::Handler` trait for file transfer operations
+  - Path traversal prevention with chroot-like isolation
+  - File operations: open, read, write, close
+  - Directory operations: opendir, readdir, mkdir, rmdir
+  - Attribute operations: stat, lstat, fstat, setstat, fsetstat
+  - Path operations: realpath, rename, remove, readlink, symlink
+  - Symlink validation ensures targets remain within root directory
+  - Handle limit enforcement to prevent resource exhaustion
+  - Read size capping to prevent memory exhaustion
 
 ### Server Authentication Module
 

@@ -31,6 +31,7 @@ use super::auth::AuthProvider;
 use super::config::ServerConfig;
 use super::exec::CommandExecutor;
 use super::session::{ChannelState, PtyConfig, SessionId, SessionInfo, SessionManager};
+use super::sftp::SftpHandler;
 use crate::shared::rate_limit::RateLimiter;
 
 /// SSH handler for a single client connection.
@@ -186,11 +187,13 @@ impl russh::server::Handler for SshHandler {
         let channel_id = channel.id();
         tracing::debug!(
             peer = ?self.peer_addr,
+            channel = ?channel_id,
             "Channel opened for session"
         );
 
+        // Store the channel itself so we can use it for subsystems like SFTP
         self.channels
-            .insert(channel_id, ChannelState::new(channel_id));
+            .insert(channel_id, ChannelState::with_channel(channel));
         async { Ok(true) }
     }
 
@@ -626,7 +629,8 @@ impl russh::server::Handler for SshHandler {
 
     /// Handle subsystem request.
     ///
-    /// Placeholder implementation - will be implemented in a future issue.
+    /// Handles SFTP subsystem requests by creating an SftpHandler and running
+    /// the SFTP server on the channel stream.
     fn subsystem_request(
         &mut self,
         channel_id: ChannelId,
@@ -635,19 +639,106 @@ impl russh::server::Handler for SshHandler {
     ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
         tracing::debug!(
             subsystem = %name,
+            channel = ?channel_id,
+            peer = ?self.peer_addr,
             "Subsystem request"
         );
 
+        // Handle SFTP subsystem
         if name == "sftp" {
-            if let Some(channel_state) = self.channels.get_mut(&channel_id) {
-                channel_state.set_sftp();
+            // Check if SFTP is enabled (default: enabled)
+            // In future, this should check config.sftp.enabled
+
+            // Get the channel from our stored channels
+            let channel = self.channels.get_mut(&channel_id).and_then(|state| {
+                state.set_sftp();
+                state.take_channel()
+            });
+
+            let channel = match channel {
+                Some(ch) => ch,
+                None => {
+                    tracing::warn!(
+                        channel = ?channel_id,
+                        "SFTP request but channel not found or already taken"
+                    );
+                    let _ = session.channel_failure(channel_id);
+                    return async { Ok(()) }.boxed();
+                }
+            };
+
+            // Get authenticated user info
+            let username = match self.session_info.as_ref().and_then(|s| s.user.clone()) {
+                Some(user) => user,
+                None => {
+                    tracing::warn!(
+                        channel = ?channel_id,
+                        "SFTP request without authenticated user"
+                    );
+                    let _ = session.channel_failure(channel_id);
+                    return async { Ok(()) }.boxed();
+                }
+            };
+
+            // Clone what we need for the async block
+            let auth_provider = Arc::clone(&self.auth_provider);
+            let peer_addr = self.peer_addr;
+
+            // Signal success before spawning the SFTP handler
+            let _ = session.channel_success(channel_id);
+
+            return async move {
+                // Get user info from auth provider
+                let user_info = match auth_provider.get_user_info(&username).await {
+                    Ok(Some(info)) => info,
+                    Ok(None) => {
+                        tracing::error!(
+                            user = %username,
+                            "User not found after authentication for SFTP"
+                        );
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        tracing::error!(
+                            user = %username,
+                            error = %e,
+                            "Failed to get user info for SFTP"
+                        );
+                        return Ok(());
+                    }
+                };
+
+                tracing::info!(
+                    user = %username,
+                    peer = ?peer_addr,
+                    home = %user_info.home_dir.display(),
+                    "Starting SFTP session"
+                );
+
+                // Create SFTP handler with user's home directory as root
+                let sftp_handler = SftpHandler::new(user_info.clone(), Some(user_info.home_dir));
+
+                // Run SFTP server on the channel stream
+                russh_sftp::server::run(channel.into_stream(), sftp_handler).await;
+
+                tracing::info!(
+                    user = %username,
+                    peer = ?peer_addr,
+                    "SFTP session ended"
+                );
+
+                Ok(())
             }
+            .boxed();
         }
 
-        // Placeholder - reject for now
-        // Will be implemented in #132 for SFTP
+        // Unknown subsystem - reject
+        tracing::debug!(
+            subsystem = %name,
+            "Unknown subsystem, rejecting"
+        );
         let _ = session.channel_failure(channel_id);
-        async { Ok(()) }
+        async { Ok(()) }.boxed()
     }
 
     /// Handle incoming data from the client.
