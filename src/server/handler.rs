@@ -83,9 +83,7 @@ impl SshHandler {
 
     /// Get the authenticated username, if any.
     pub fn username(&self) -> Option<&str> {
-        self.session_info
-            .as_ref()
-            .and_then(|s| s.user.as_deref())
+        self.session_info.as_ref().and_then(|s| s.user.as_deref())
     }
 
     /// Build the method set of allowed authentication methods.
@@ -128,7 +126,8 @@ impl russh::server::Handler for SshHandler {
             "Channel opened for session"
         );
 
-        self.channels.insert(channel_id, ChannelState::new(channel_id));
+        self.channels
+            .insert(channel_id, ChannelState::new(channel_id));
         async { Ok(true) }
     }
 
@@ -215,9 +214,7 @@ impl russh::server::Handler for SshHandler {
 
         async move {
             if exceeded {
-                tracing::warn!(
-                    "Max authentication attempts exceeded"
-                );
+                tracing::warn!("Max authentication attempts exceeded");
                 return Ok(Auth::Reject {
                     proceed_with_methods: None,
                     partial_success: false,
@@ -265,9 +262,7 @@ impl russh::server::Handler for SshHandler {
 
         async move {
             if exceeded {
-                tracing::warn!(
-                    "Max authentication attempts exceeded"
-                );
+                tracing::warn!("Max authentication attempts exceeded");
                 return Ok(Auth::Reject {
                     proceed_with_methods: None,
                     partial_success: false,
@@ -322,9 +317,7 @@ impl russh::server::Handler for SshHandler {
             channel_state.set_pty(pty_config);
             let _ = session.channel_success(channel_id);
         } else {
-            tracing::warn!(
-                "PTY request for unknown channel"
-            );
+            tracing::warn!("PTY request for unknown channel");
             let _ = session.channel_failure(channel_id);
         }
 
@@ -364,9 +357,7 @@ impl russh::server::Handler for SshHandler {
         channel_id: ChannelId,
         session: &mut Session,
     ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
-        tracing::debug!(
-            "Shell request"
-        );
+        tracing::debug!("Shell request");
 
         if let Some(channel_state) = self.channels.get_mut(&channel_id) {
             channel_state.set_shell();
@@ -426,9 +417,7 @@ impl russh::server::Handler for SshHandler {
         channel_id: ChannelId,
         _session: &mut Session,
     ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
-        tracing::debug!(
-            "Channel EOF received"
-        );
+        tracing::debug!("Channel EOF received");
 
         if let Some(channel_state) = self.channels.get_mut(&channel_id) {
             channel_state.mark_eof();
@@ -443,9 +432,7 @@ impl russh::server::Handler for SshHandler {
         channel_id: ChannelId,
         _session: &mut Session,
     ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
-        tracing::debug!(
-            "Channel closed"
-        );
+        tracing::debug!("Channel closed");
 
         self.channels.remove(&channel_id);
         async { Ok(()) }
@@ -552,13 +539,52 @@ mod tests {
 
     #[test]
     fn test_auth_attempts_not_exceeded() {
-        let config = Arc::new(
-            ServerConfig::builder()
-                .max_auth_attempts(3)
-                .build(),
-        );
+        let config = Arc::new(ServerConfig::builder().max_auth_attempts(3).build());
         let handler = SshHandler::new(Some(test_addr()), config, test_sessions());
 
         assert!(!handler.auth_attempts_exceeded());
+    }
+
+    #[test]
+    fn test_handler_no_peer_addr() {
+        let handler = SshHandler::new(None, test_config(), test_sessions());
+
+        assert!(handler.peer_addr().is_none());
+        assert!(handler.session_id().is_none());
+        assert!(!handler.is_authenticated());
+    }
+
+    #[test]
+    fn test_allowed_methods_publickey_only() {
+        let config = Arc::new(
+            ServerConfig::builder()
+                .allow_password_auth(false)
+                .allow_publickey_auth(true)
+                .allow_keyboard_interactive(false)
+                .build(),
+        );
+        let handler = SshHandler::new(Some(test_addr()), config, test_sessions());
+        let methods = handler.allowed_methods();
+
+        assert!(methods.contains(&MethodKind::PublicKey));
+        assert!(!methods.contains(&MethodKind::Password));
+        assert!(!methods.contains(&MethodKind::KeyboardInteractive));
+    }
+
+    #[test]
+    fn test_allowed_methods_password_only() {
+        let config = Arc::new(
+            ServerConfig::builder()
+                .allow_password_auth(true)
+                .allow_publickey_auth(false)
+                .allow_keyboard_interactive(false)
+                .build(),
+        );
+        let handler = SshHandler::new(Some(test_addr()), config, test_sessions());
+        let methods = handler.allowed_methods();
+
+        assert!(!methods.contains(&MethodKind::PublicKey));
+        assert!(methods.contains(&MethodKind::Password));
+        assert!(!methods.contains(&MethodKind::KeyboardInteractive));
     }
 }

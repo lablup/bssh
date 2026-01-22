@@ -164,7 +164,13 @@ pub struct PtyConfig {
 
 impl PtyConfig {
     /// Create a new PTY configuration.
-    pub fn new(term: String, col_width: u32, row_height: u32, pix_width: u32, pix_height: u32) -> Self {
+    pub fn new(
+        term: String,
+        col_width: u32,
+        row_height: u32,
+        pix_width: u32,
+        pix_height: u32,
+    ) -> Self {
         Self {
             term,
             col_width,
@@ -482,5 +488,102 @@ mod tests {
         assert_eq!(pty.row_height, 50);
         assert_eq!(pty.pix_width, 1024);
         assert_eq!(pty.pix_height, 768);
+    }
+
+    #[test]
+    fn test_session_id_as_u64() {
+        let id = SessionId::new();
+        assert!(id.as_u64() > 0);
+    }
+
+    #[test]
+    fn test_session_info_no_peer_addr() {
+        let info = SessionInfo::new(None);
+
+        assert!(info.peer_addr.is_none());
+        assert!(info.user.is_none());
+        assert!(!info.authenticated);
+    }
+
+    #[test]
+    fn test_session_info_duration() {
+        let info = SessionInfo::new(Some(test_addr()));
+        // Duration should be 0 or very small immediately after creation
+        assert!(info.duration_secs() < 2);
+    }
+
+    #[test]
+    fn test_session_manager_default() {
+        let manager = SessionManager::default();
+        assert_eq!(manager.session_count(), 0);
+    }
+
+    #[test]
+    fn test_session_manager_iter() {
+        let mut manager = SessionManager::new();
+        let info1 = manager.create_session(Some(test_addr())).unwrap();
+        let info2 = manager.create_session(Some(test_addr())).unwrap();
+
+        let sessions: Vec<_> = manager.iter().collect();
+        assert_eq!(sessions.len(), 2);
+
+        let ids: Vec<_> = sessions.iter().map(|(id, _)| **id).collect();
+        assert!(ids.contains(&info1.id));
+        assert!(ids.contains(&info2.id));
+    }
+
+    #[test]
+    fn test_session_manager_cleanup_idle() {
+        let mut manager = SessionManager::new();
+
+        // Create unauthenticated session
+        let _info = manager.create_session(Some(test_addr())).unwrap();
+
+        // Duration of a just-created session is 0 seconds, so max_idle_secs of 0
+        // means only sessions with duration > 0 would be removed.
+        // Since the session duration is 0 (or very close), it won't be removed.
+        // Use a very high threshold to verify the function works correctly.
+        let removed = manager.cleanup_idle_sessions(1000);
+        assert_eq!(removed, 0);
+        assert_eq!(manager.session_count(), 1);
+    }
+
+    #[test]
+    fn test_session_manager_cleanup_preserves_authenticated() {
+        let mut manager = SessionManager::new();
+
+        // Create and authenticate a session
+        let info = manager.create_session(Some(test_addr())).unwrap();
+        if let Some(session) = manager.get_mut(info.id) {
+            session.authenticate("user");
+        }
+
+        // Cleanup should not remove authenticated sessions
+        let removed = manager.cleanup_idle_sessions(0);
+        assert_eq!(removed, 0);
+        assert_eq!(manager.session_count(), 1);
+    }
+
+    #[test]
+    fn test_channel_mode_exec() {
+        let mode = ChannelMode::Exec {
+            command: "ls -la".to_string(),
+        };
+        match mode {
+            ChannelMode::Exec { command } => assert_eq!(command, "ls -la"),
+            _ => panic!("Expected Exec mode"),
+        }
+    }
+
+    #[test]
+    fn test_channel_mode_shell() {
+        let mode = ChannelMode::Shell;
+        assert_eq!(mode, ChannelMode::Shell);
+    }
+
+    #[test]
+    fn test_channel_mode_sftp() {
+        let mode = ChannelMode::Sftp;
+        assert_eq!(mode, ChannelMode::Sftp);
     }
 }

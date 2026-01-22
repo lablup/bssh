@@ -59,7 +59,9 @@ use tokio::sync::RwLock;
 
 pub use self::config::{ServerConfig, ServerConfigBuilder};
 pub use self::handler::SshHandler;
-pub use self::session::{ChannelMode, ChannelState, PtyConfig, SessionId, SessionInfo, SessionManager};
+pub use self::session::{
+    ChannelMode, ChannelState, PtyConfig, SessionId, SessionInfo, SessionManager,
+};
 
 /// The main SSH server struct.
 ///
@@ -169,10 +171,7 @@ impl BsshServer {
             keys.push(key);
         }
 
-        tracing::info!(
-            key_count = keys.len(),
-            "Loaded host keys"
-        );
+        tracing::info!(key_count = keys.len(), "Loaded host keys");
 
         Ok(russh::server::Config {
             keys,
@@ -302,9 +301,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_session_count() {
-        let config = ServerConfig::builder()
-            .host_key("/nonexistent/key")
-            .build();
+        let config = ServerConfig::builder().host_key("/nonexistent/key").build();
         let server = BsshServer::new(config);
 
         assert_eq!(server.session_count().await, 0);

@@ -282,4 +282,36 @@ mod tests {
         config.add_host_key("/path/to/key");
         assert!(config.has_host_keys());
     }
+
+    #[test]
+    fn test_config_new() {
+        let config = ServerConfig::new();
+        assert!(config.host_keys.is_empty());
+        assert_eq!(config.listen_address, "0.0.0.0:2222");
+    }
+
+    #[test]
+    fn test_builder_host_keys_vec() {
+        let config = ServerConfig::builder()
+            .host_keys(vec!["/path/to/key1".into(), "/path/to/key2".into()])
+            .build();
+
+        assert_eq!(config.host_keys.len(), 2);
+    }
+
+    #[test]
+    fn test_builder_auth_timeout() {
+        let config = ServerConfig::builder().auth_timeout_secs(60).build();
+
+        assert_eq!(config.auth_timeout_secs, 60);
+        assert_eq!(config.auth_timeout(), Duration::from_secs(60));
+    }
+
+    #[test]
+    fn test_builder_idle_timeout() {
+        let config = ServerConfig::builder().idle_timeout_secs(600).build();
+
+        assert_eq!(config.idle_timeout_secs, 600);
+        assert_eq!(config.idle_timeout(), Some(Duration::from_secs(600)));
+    }
 }
