@@ -318,9 +318,8 @@ impl PublicKeyVerifier {
                 return Ok(());
             }
             Err(e) => {
-                return Err(e).with_context(|| {
-                    format!("Failed to get metadata for {}", path.display())
-                });
+                return Err(e)
+                    .with_context(|| format!("Failed to get metadata for {}", path.display()));
             }
         };
 
@@ -468,9 +467,8 @@ impl PublicKeyVerifier {
 
         // Parse the public key
         let key_str = format!("{key_type} {key_data}");
-        let key = parse_public_key(&key_str).with_context(|| {
-            format!("Failed to parse public key of type {key_type}")
-        })?;
+        let key = parse_public_key(&key_str)
+            .with_context(|| format!("Failed to parse public key of type {key_type}"))?;
 
         Ok(AuthorizedKey {
             key,
@@ -532,9 +530,9 @@ impl AuthProvider for PublicKeyVerifier {
         let username_result = validate_username(username);
 
         // Always compute the path, even if username is invalid
-        let path = self.config.get_authorized_keys_path(
-            username_result.as_deref().unwrap_or("_invalid_")
-        );
+        let path = self
+            .config
+            .get_authorized_keys_path(username_result.as_deref().unwrap_or("_invalid_"));
 
         // Always perform a filesystem check using symlink_metadata to avoid following symlinks
         let file_exists = std::fs::symlink_metadata(&path)
@@ -663,7 +661,10 @@ mod tests {
     fn test_config_with_directory() {
         let config = PublicKeyAuthConfig::with_directory("/etc/bssh/keys");
         let path = config.get_authorized_keys_path("testuser");
-        assert_eq!(path, PathBuf::from("/etc/bssh/keys/testuser/authorized_keys"));
+        assert_eq!(
+            path,
+            PathBuf::from("/etc/bssh/keys/testuser/authorized_keys")
+        );
     }
 
     #[test]
@@ -741,7 +742,8 @@ mod tests {
         let verifier = PublicKeyVerifier::new(PublicKeyAuthConfig::default());
 
         // Create a dummy key for testing
-        let key_str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+        let key_str =
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
         let key = parse_public_key(key_str).unwrap();
 
         // Path traversal attempt should fail

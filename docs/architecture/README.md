@@ -33,6 +33,7 @@ bssh is a high-performance parallel SSH command execution tool with SSH-compatib
 ### Server Components
 
 - **SSH Server Module** - SSH server implementation using russh (see main ARCHITECTURE.md)
+- **Server Authentication** - Authentication providers including public key verification (see main ARCHITECTURE.md)
 
 ## Navigation
 

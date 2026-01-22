@@ -198,6 +198,7 @@ SSH server implementation using the russh library for accepting incoming connect
 - `config.rs` - `ServerConfig` with builder pattern for server settings
 - `handler.rs` - `SshHandler` implementing `russh::server::Handler` trait
 - `session.rs` - Session state management (`SessionManager`, `SessionInfo`, `ChannelState`)
+- `auth/` - Authentication provider infrastructure
 
 **Key Components**:
 
@@ -205,14 +206,17 @@ SSH server implementation using the russh library for accepting incoming connect
   - Accepts connections on configured address
   - Loads host keys from OpenSSH format files
   - Configures russh with authentication settings
+  - Creates shared rate limiter for authentication attempts
 
 - **ServerConfig**: Configuration options with builder pattern
   - Host key paths and listen address
   - Connection limits and timeouts
   - Authentication method toggles (password, publickey, keyboard-interactive)
+  - Public key authentication configuration (authorized_keys location)
 
 - **SshHandler**: Per-connection handler for SSH protocol events
-  - Authentication handling (placeholder implementations)
+  - Public key authentication via AuthProvider trait
+  - Rate limiting for authentication attempts
   - Channel operations (open, close, EOF, data)
   - PTY, exec, shell, and subsystem request handling
 
@@ -221,7 +225,58 @@ SSH server implementation using the russh library for accepting incoming connect
   - Idle session management
   - Authentication state tracking
 
-**Current Status**: Foundation implementation with placeholder authentication. Actual authentication and command execution will be implemented in follow-up issues (#126-#132).
+### Server Authentication Module
+
+The authentication subsystem (`src/server/auth/`) provides extensible authentication for the SSH server:
+
+**Structure**:
+- `mod.rs` - Module exports and re-exports
+- `provider.rs` - `AuthProvider` trait definition
+- `publickey.rs` - `PublicKeyVerifier` implementation
+
+**AuthProvider Trait**:
+
+The `AuthProvider` trait defines the interface for all authentication backends:
+
+```rust
+#[async_trait]
+pub trait AuthProvider: Send + Sync {
+    async fn verify_publickey(&self, username: &str, key: &PublicKey) -> Result<AuthResult>;
+    async fn verify_password(&self, username: &str, password: &str) -> Result<AuthResult>;
+    async fn get_user_info(&self, username: &str) -> Result<Option<UserInfo>>;
+    async fn user_exists(&self, username: &str) -> Result<bool>;
+}
+```
+
+**PublicKeyVerifier**:
+
+Implements public key authentication by parsing OpenSSH authorized_keys files:
+
+- **Key file location modes**:
+  - Directory mode: `{dir}/{username}/authorized_keys`
+  - Pattern mode: `/home/{user}/.ssh/authorized_keys`
+
+- **Supported key types**:
+  - ssh-ed25519, ssh-ed448
+  - ssh-rsa, ssh-dss
+  - ecdsa-sha2-nistp256/384/521
+  - Security keys (sk-ssh-ed25519, sk-ecdsa-sha2-nistp256)
+
+- **Key options parsing**:
+  - `command="..."` - Force specific command
+  - `from="..."` - Restrict source addresses
+  - `no-pty`, `no-port-forwarding`, `no-agent-forwarding`, `no-X11-forwarding`
+  - `environment="..."` - Set environment variables
+
+**Security Features**:
+
+- **Username validation**: Prevents path traversal attacks (e.g., `../etc/passwd`)
+- **File permission checks** (Unix): Rejects world/group-writable files and symlinks
+- **Symlink protection**: Uses `symlink_metadata()` to detect and reject symlinks
+- **Parent directory validation**: Checks parent directory permissions
+- **Rate limiting**: Token bucket rate limiter for authentication attempts
+- **Timing attack mitigation**: Constant-time behavior in `user_exists()` check
+- **Comprehensive logging**: All authentication attempts are logged
 
 ## Data Flow
 
