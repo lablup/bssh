@@ -67,7 +67,32 @@ impl SshHandler {
     ) -> Self {
         let auth_provider = config.create_auth_provider();
         // Rate limiter: allow burst of 5 attempts, refill 1 attempt per second
+        // Note: This creates a per-handler rate limiter. For production use,
+        // prefer with_rate_limiter() to share a rate limiter across handlers.
         let rate_limiter = RateLimiter::with_simple_config(5, 1.0);
+
+        Self {
+            peer_addr,
+            config,
+            sessions,
+            auth_provider,
+            rate_limiter,
+            session_info: None,
+            channels: HashMap::new(),
+        }
+    }
+
+    /// Create a new SSH handler with a shared rate limiter.
+    ///
+    /// This is the preferred constructor for production use as it shares
+    /// the rate limiter across all handlers, providing server-wide rate limiting.
+    pub fn with_rate_limiter(
+        peer_addr: Option<SocketAddr>,
+        config: Arc<ServerConfig>,
+        sessions: Arc<RwLock<SessionManager>>,
+        rate_limiter: RateLimiter<String>,
+    ) -> Self {
+        let auth_provider = config.create_auth_provider();
 
         Self {
             peer_addr,

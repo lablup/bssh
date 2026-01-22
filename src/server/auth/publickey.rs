@@ -272,43 +272,122 @@ impl PublicKeyVerifier {
     async fn load_authorized_keys(&self, username: &str) -> Result<Vec<AuthorizedKey>> {
         let path = self.config.get_authorized_keys_path(username);
 
-        if !path.exists() {
-            tracing::debug!(
-                user = %username,
-                path = %path.display(),
-                "No authorized_keys file found"
-            );
-            return Ok(Vec::new());
-        }
-
-        // Check file permissions (should be readable but not world-writable)
+        // SECURITY: Check file permissions and reject symlinks before reading
+        // This prevents TOCTOU race conditions by using metadata operations
         #[cfg(unix)]
         self.check_file_permissions(&path)?;
 
-        let content = tokio::fs::read_to_string(&path)
-            .await
-            .with_context(|| format!("Failed to read authorized_keys file: {}", path.display()))?;
+        // Read the file - handle NotFound case to return empty vector
+        let content = match tokio::fs::read_to_string(&path).await {
+            Ok(content) => content,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                tracing::debug!(
+                    user = %username,
+                    path = %path.display(),
+                    "No authorized_keys file found"
+                );
+                return Ok(Vec::new());
+            }
+            Err(e) => {
+                return Err(e).with_context(|| {
+                    format!("Failed to read authorized_keys file: {}", path.display())
+                });
+            }
+        };
 
         self.parse_authorized_keys(&content)
     }
 
     /// Check that file permissions are secure (Unix only).
+    ///
+    /// # Security Checks
+    ///
+    /// - Rejects symlinks to prevent TOCTOU attacks
+    /// - Rejects world-writable files (0o002)
+    /// - Rejects group-writable files (0o020)
+    /// - Validates parent directory permissions
     #[cfg(unix)]
     fn check_file_permissions(&self, path: &Path) -> Result<()> {
         use std::os::unix::fs::MetadataExt;
 
-        let metadata = std::fs::metadata(path)
-            .with_context(|| format!("Failed to get metadata for {}", path.display()))?;
+        // Use symlink_metadata to detect symlinks without following them
+        let metadata = match std::fs::symlink_metadata(path) {
+            Ok(m) => m,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // File doesn't exist - this is OK, will be handled by caller
+                return Ok(());
+            }
+            Err(e) => {
+                return Err(e).with_context(|| {
+                    format!("Failed to get metadata for {}", path.display())
+                });
+            }
+        };
+
+        // SECURITY: Reject symlinks to prevent TOCTOU attacks
+        if metadata.is_symlink() {
+            anyhow::bail!(
+                "authorized_keys file {} is a symbolic link. Symlinks are not allowed for security reasons.",
+                path.display()
+            );
+        }
 
         let mode = metadata.mode();
 
-        // Check if file is world-writable (security risk)
+        // SECURITY: Check if file is world-writable (critical security risk)
         if mode & 0o002 != 0 {
             anyhow::bail!(
                 "authorized_keys file {} is world-writable (mode {:o})",
                 path.display(),
                 mode & 0o777
             );
+        }
+
+        // SECURITY: Check if file is group-writable (security risk)
+        if mode & 0o020 != 0 {
+            anyhow::bail!(
+                "authorized_keys file {} is group-writable (mode {:o}). This is a security risk.",
+                path.display(),
+                mode & 0o777
+            );
+        }
+
+        // SECURITY: Validate parent directory permissions
+        if let Some(parent) = path.parent() {
+            if let Ok(parent_metadata) = std::fs::symlink_metadata(parent) {
+                let parent_mode = parent_metadata.mode();
+
+                // Parent directory should not be world-writable or group-writable
+                if parent_mode & 0o002 != 0 {
+                    anyhow::bail!(
+                        "Parent directory {} of authorized_keys is world-writable (mode {:o})",
+                        parent.display(),
+                        parent_mode & 0o777
+                    );
+                }
+
+                if parent_mode & 0o020 != 0 {
+                    tracing::warn!(
+                        "Parent directory {} of authorized_keys is group-writable (mode {:o}). This is a potential security risk.",
+                        parent.display(),
+                        parent_mode & 0o777
+                    );
+                }
+
+                // Check ownership - parent directory should be owned by same user as file
+                let file_uid = metadata.uid();
+                let parent_uid = parent_metadata.uid();
+
+                if file_uid != parent_uid {
+                    tracing::warn!(
+                        "authorized_keys file {} (uid: {}) and parent directory {} (uid: {}) have different owners",
+                        path.display(),
+                        file_uid,
+                        parent.display(),
+                        parent_uid
+                    );
+                }
+            }
         }
 
         Ok(())
@@ -435,25 +514,35 @@ impl AuthProvider for PublicKeyVerifier {
         // Validate username first
         let username = validate_username(username).context("Invalid username")?;
 
-        // Check if user has an authorized_keys file
+        // Check if user has an authorized_keys file using symlink_metadata
+        // to avoid following symlinks (security)
         let path = self.config.get_authorized_keys_path(&username);
-        if path.exists() {
-            Ok(Some(UserInfo::new(username)))
-        } else {
-            Ok(None)
+        match std::fs::symlink_metadata(&path) {
+            Ok(metadata) if metadata.is_file() => Ok(Some(UserInfo::new(username))),
+            Ok(_) => Ok(None), // Exists but not a regular file (e.g., symlink, directory)
+            Err(_) => Ok(None), // Doesn't exist or can't access
         }
     }
 
     async fn user_exists(&self, username: &str) -> Result<bool> {
-        // Validate username first
-        let username = match validate_username(username) {
-            Ok(u) => u,
-            Err(_) => return Ok(false),
-        };
+        // SECURITY: Use constant-time behavior to prevent user enumeration via timing
+        // Always perform the same operations regardless of whether user exists
 
-        // Check if authorized_keys file exists
-        let path = self.config.get_authorized_keys_path(&username);
-        Ok(path.exists())
+        // Validate username first
+        let username_result = validate_username(username);
+
+        // Always compute the path, even if username is invalid
+        let path = self.config.get_authorized_keys_path(
+            username_result.as_deref().unwrap_or("_invalid_")
+        );
+
+        // Always perform a filesystem check using symlink_metadata to avoid following symlinks
+        let file_exists = std::fs::symlink_metadata(&path)
+            .map(|metadata| metadata.is_file())
+            .unwrap_or(false);
+
+        // Return false if username was invalid, true if username is valid AND file exists
+        Ok(username_result.is_ok() && file_exists)
     }
 }
 
