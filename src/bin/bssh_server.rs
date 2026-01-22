@@ -335,10 +335,7 @@ fn check_config(cli: &Cli) -> Result<()> {
     println!("  Environment variables: {}", config.shell.env.len());
 
     println!("\nSecurity:");
-    println!(
-        "  Max auth attempts: {}",
-        config.security.max_auth_attempts
-    );
+    println!("  Max auth attempts: {}", config.security.max_auth_attempts);
     println!("  Ban time: {}s", config.security.ban_time);
     println!(
         "  Max sessions per user: {}",
@@ -413,9 +410,7 @@ fn gen_host_key(key_type: &str, output: &PathBuf, _bits: u32) -> Result<()> {
     }
 
     println!("✓ Host key generated: {}", output.display());
-    println!(
-        "\nAdd this to your configuration file or use -k/--host-key argument:"
-    );
+    println!("\nAdd this to your configuration file or use -k/--host-key argument:");
     println!("  --host-key {}", output.display());
     println!("\nOr in YAML config:");
     println!("server:");
@@ -515,6 +510,7 @@ fn write_pid_file(path: &PathBuf) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn test_cli_parsing() {
@@ -541,5 +537,360 @@ mod tests {
         assert_eq!(args.bind_address, Some("127.0.0.1".to_string()));
         assert_eq!(args.port, Some(2222));
         assert_eq!(args.host_keys.len(), 1);
+    }
+
+    #[test]
+    fn test_cli_args_conversion_empty() {
+        let cli = Cli {
+            command: None,
+            config: None,
+            bind_address: None,
+            port: None,
+            host_keys: vec![],
+            verbose: 0,
+            foreground: false,
+            pid_file: None,
+        };
+
+        let args: CliArgs = (&cli).into();
+        assert_eq!(args.bind_address, None);
+        assert_eq!(args.port, None);
+        assert!(args.host_keys.is_empty());
+    }
+
+    #[test]
+    fn test_cli_args_conversion_multiple_host_keys() {
+        let cli = Cli {
+            command: None,
+            config: None,
+            bind_address: None,
+            port: None,
+            host_keys: vec![
+                PathBuf::from("/test/key1"),
+                PathBuf::from("/test/key2"),
+                PathBuf::from("/test/key3"),
+            ],
+            verbose: 0,
+            foreground: false,
+            pid_file: None,
+        };
+
+        let args: CliArgs = (&cli).into();
+        assert_eq!(args.host_keys.len(), 3);
+    }
+
+    #[test]
+    fn test_cli_parsing_with_subcommand() {
+        use clap::Parser;
+
+        // Test run subcommand
+        let args = Cli::try_parse_from(["bssh-server", "run"]).unwrap();
+        assert!(matches!(args.command, Some(Commands::Run)));
+
+        // Test gen-config subcommand
+        let args = Cli::try_parse_from(["bssh-server", "gen-config"]).unwrap();
+        assert!(matches!(
+            args.command,
+            Some(Commands::GenConfig { output: None })
+        ));
+
+        // Test gen-config with output
+        let args =
+            Cli::try_parse_from(["bssh-server", "gen-config", "-o", "/tmp/config.yaml"]).unwrap();
+        if let Some(Commands::GenConfig { output }) = args.command {
+            assert_eq!(output, Some(PathBuf::from("/tmp/config.yaml")));
+        } else {
+            panic!("Expected GenConfig command");
+        }
+
+        // Test hash-password subcommand
+        let args = Cli::try_parse_from(["bssh-server", "hash-password"]).unwrap();
+        assert!(matches!(args.command, Some(Commands::HashPassword)));
+
+        // Test check-config subcommand
+        let args = Cli::try_parse_from(["bssh-server", "check-config"]).unwrap();
+        assert!(matches!(args.command, Some(Commands::CheckConfig)));
+
+        // Test version subcommand
+        let args = Cli::try_parse_from(["bssh-server", "version"]).unwrap();
+        assert!(matches!(args.command, Some(Commands::Version)));
+    }
+
+    #[test]
+    fn test_cli_parsing_gen_host_key() {
+        use clap::Parser;
+
+        // Test gen-host-key with required output
+        let args =
+            Cli::try_parse_from(["bssh-server", "gen-host-key", "-o", "/tmp/host_key"]).unwrap();
+        if let Some(Commands::GenHostKey {
+            key_type,
+            output,
+            bits,
+        }) = args.command
+        {
+            assert_eq!(key_type, "ed25519"); // default
+            assert_eq!(output, PathBuf::from("/tmp/host_key"));
+            assert_eq!(bits, 4096); // default
+        } else {
+            panic!("Expected GenHostKey command");
+        }
+
+        // Test gen-host-key with all options
+        let args = Cli::try_parse_from([
+            "bssh-server",
+            "gen-host-key",
+            "-t",
+            "rsa",
+            "-o",
+            "/tmp/host_key",
+            "--bits",
+            "2048",
+        ])
+        .unwrap();
+        if let Some(Commands::GenHostKey {
+            key_type,
+            output,
+            bits,
+        }) = args.command
+        {
+            assert_eq!(key_type, "rsa");
+            assert_eq!(output, PathBuf::from("/tmp/host_key"));
+            assert_eq!(bits, 2048);
+        } else {
+            panic!("Expected GenHostKey command");
+        }
+    }
+
+    #[test]
+    fn test_cli_global_options() {
+        use clap::Parser;
+
+        // Test global options
+        let args = Cli::try_parse_from([
+            "bssh-server",
+            "-c",
+            "/etc/bssh/config.yaml",
+            "-b",
+            "192.168.1.1",
+            "-p",
+            "2222",
+            "-k",
+            "/etc/bssh/key1",
+            "-k",
+            "/etc/bssh/key2",
+            "-vvv",
+            "-D",
+            "--pid-file",
+            "/var/run/bssh.pid",
+            "run",
+        ])
+        .unwrap();
+
+        assert_eq!(args.config, Some(PathBuf::from("/etc/bssh/config.yaml")));
+        assert_eq!(args.bind_address, Some("192.168.1.1".to_string()));
+        assert_eq!(args.port, Some(2222));
+        assert_eq!(args.host_keys.len(), 2);
+        assert_eq!(args.verbose, 3);
+        assert!(args.foreground);
+        assert_eq!(args.pid_file, Some(PathBuf::from("/var/run/bssh.pid")));
+    }
+
+    #[test]
+    fn test_gen_config_to_stdout() {
+        // gen_config with None output should print to stdout (captured by the function)
+        let result = gen_config(None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_gen_config_to_file() {
+        let temp_dir = tempdir().unwrap();
+        let config_path = temp_dir.path().join("server.yaml");
+
+        let result = gen_config(Some(config_path.clone()));
+        assert!(result.is_ok());
+
+        // Verify file was created
+        assert!(config_path.exists());
+
+        // Verify file has content
+        let content = fs::read_to_string(&config_path).unwrap();
+        assert!(!content.is_empty());
+        assert!(content.contains("server:"));
+        assert!(content.contains("bind_address"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_gen_config_file_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = tempdir().unwrap();
+        let config_path = temp_dir.path().join("server.yaml");
+
+        let result = gen_config(Some(config_path.clone()));
+        assert!(result.is_ok());
+
+        // Verify file permissions are 0600
+        let metadata = fs::metadata(&config_path).unwrap();
+        let permissions = metadata.permissions();
+        assert_eq!(permissions.mode() & 0o777, 0o600);
+    }
+
+    #[test]
+    fn test_show_version() {
+        let result = show_version();
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_gen_host_key_ed25519() {
+        let temp_dir = tempdir().unwrap();
+        let key_path = temp_dir.path().join("host_key_ed25519");
+
+        let result = gen_host_key("ed25519", &key_path, 4096);
+        assert!(result.is_ok());
+
+        // Verify file was created
+        assert!(key_path.exists());
+
+        // Verify file has OpenSSH key format
+        let content = fs::read_to_string(&key_path).unwrap();
+        assert!(content.contains("-----BEGIN OPENSSH PRIVATE KEY-----"));
+        assert!(content.contains("-----END OPENSSH PRIVATE KEY-----"));
+    }
+
+    #[test]
+    fn test_gen_host_key_rsa() {
+        let temp_dir = tempdir().unwrap();
+        let key_path = temp_dir.path().join("host_key_rsa");
+
+        let result = gen_host_key("rsa", &key_path, 2048);
+        assert!(result.is_ok());
+
+        // Verify file was created
+        assert!(key_path.exists());
+
+        // Verify file has OpenSSH key format
+        let content = fs::read_to_string(&key_path).unwrap();
+        assert!(content.contains("-----BEGIN OPENSSH PRIVATE KEY-----"));
+        assert!(content.contains("-----END OPENSSH PRIVATE KEY-----"));
+    }
+
+    #[test]
+    fn test_gen_host_key_invalid_type() {
+        let temp_dir = tempdir().unwrap();
+        let key_path = temp_dir.path().join("host_key_invalid");
+
+        let result = gen_host_key("dsa", &key_path, 4096);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Unknown key type"));
+    }
+
+    #[test]
+    fn test_gen_host_key_rsa_small_bits() {
+        let temp_dir = tempdir().unwrap();
+        let key_path = temp_dir.path().join("host_key_rsa_small");
+
+        let result = gen_host_key("rsa", &key_path, 1024);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("RSA key size must be at least 2048"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn test_gen_host_key_file_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = tempdir().unwrap();
+        let key_path = temp_dir.path().join("host_key_ed25519");
+
+        let result = gen_host_key("ed25519", &key_path, 4096);
+        assert!(result.is_ok());
+
+        // Verify file permissions are 0600
+        let metadata = fs::metadata(&key_path).unwrap();
+        let permissions = metadata.permissions();
+        assert_eq!(permissions.mode() & 0o777, 0o600);
+    }
+
+    #[test]
+    fn test_gen_host_key_case_insensitive() {
+        let temp_dir = tempdir().unwrap();
+
+        // Test uppercase
+        let key_path = temp_dir.path().join("host_key_ED25519");
+        let result = gen_host_key("ED25519", &key_path, 4096);
+        assert!(result.is_ok());
+
+        // Test mixed case
+        let key_path = temp_dir.path().join("host_key_Ed25519");
+        let result = gen_host_key("Ed25519", &key_path, 4096);
+        assert!(result.is_ok());
+
+        // Test RSA uppercase
+        let key_path = temp_dir.path().join("host_key_RSA");
+        let result = gen_host_key("RSA", &key_path, 2048);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_write_pid_file() {
+        let temp_dir = tempdir().unwrap();
+        let pid_path = temp_dir.path().join("test.pid");
+
+        let result = write_pid_file(&pid_path);
+        assert!(result.is_ok());
+
+        // Verify file was created with current PID
+        let content = fs::read_to_string(&pid_path).unwrap();
+        let pid: u32 = content.parse().unwrap();
+        assert_eq!(pid, std::process::id());
+    }
+
+    #[test]
+    fn test_write_pid_file_overwrite_stale() {
+        let temp_dir = tempdir().unwrap();
+        let pid_path = temp_dir.path().join("test.pid");
+
+        // Write a stale PID (non-existent process)
+        // PID 1 is init and always exists, so use a very high unlikely PID
+        fs::write(&pid_path, "999999999").unwrap();
+
+        // Should succeed because the process doesn't exist
+        let result = write_pid_file(&pid_path);
+        assert!(result.is_ok());
+
+        // Verify file was updated with current PID
+        let content = fs::read_to_string(&pid_path).unwrap();
+        let pid: u32 = content.parse().unwrap();
+        assert_eq!(pid, std::process::id());
+    }
+
+    #[test]
+    fn test_write_pid_file_invalid_content() {
+        let temp_dir = tempdir().unwrap();
+        let pid_path = temp_dir.path().join("test.pid");
+
+        // Write invalid content
+        fs::write(&pid_path, "not-a-pid").unwrap();
+
+        // Should succeed because the content is not a valid PID
+        let result = write_pid_file(&pid_path);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_default_command_is_run() {
+        use clap::Parser;
+
+        // No subcommand should default to run behavior
+        let args = Cli::try_parse_from(["bssh-server"]).unwrap();
+        assert!(args.command.is_none());
+        // In main(), None is treated the same as Some(Commands::Run)
     }
 }
