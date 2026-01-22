@@ -822,16 +822,46 @@ impl russh::server::Handler for SshHandler {
                 return Ok(());
             }
 
-            // Store shell session in channel state
+            // Get data sender and PTY handle from shell session
+            // These are used by data and window_change handlers while we wait
+            let data_tx = shell_session.data_sender();
+            let pty = Arc::clone(shell_session.pty());
+
+            // Store shell handles in channel state for data/resize handlers
             if let Some(channel_state) = channels.get_mut(&channel_id) {
-                channel_state.set_shell_session(shell_session);
+                if let Some(tx) = data_tx {
+                    channel_state.set_shell_handles(tx, pty);
+                }
             }
 
             tracing::info!(
                 user = %username,
                 peer = ?peer_addr,
-                "Shell session started"
+                "Shell session started, waiting for exit"
             );
+
+            // Wait for the shell session to complete
+            // This keeps the handler alive so data transmission works properly
+            let exit_code = shell_session.run_until_exit().await;
+
+            // Clear shell handles from channel state
+            if let Some(channel_state) = channels.get_mut(&channel_id) {
+                channel_state.clear_shell_handles();
+            }
+
+            tracing::info!(
+                user = %username,
+                peer = ?peer_addr,
+                exit_code = %exit_code,
+                "Shell session ended"
+            );
+
+            // Send exit status, EOF, and close channel
+            let _ = handle
+                .exit_status_request(channel_id, exit_code as u32)
+                .await;
+            let _ = handle.eof(channel_id).await;
+            let _ = handle.close(channel_id).await;
 
             Ok(())
         }
@@ -968,11 +998,14 @@ impl russh::server::Handler for SshHandler {
         );
 
         // Get the data sender if there's an active shell session
-        let data_sender = self
-            .channels
-            .get(&channel_id)
-            .and_then(|state| state.shell_session.as_ref())
-            .and_then(|shell| shell.data_sender());
+        // First try shell_data_tx (used when handler is waiting on shell)
+        // Then fall back to shell_session.data_sender() for compatibility
+        let data_sender = self.channels.get(&channel_id).and_then(|state| {
+            state
+                .shell_data_tx
+                .clone()
+                .or_else(|| state.shell_session.as_ref().and_then(|s| s.data_sender()))
+        });
 
         if let Some(tx) = data_sender {
             let data = data.to_vec();
@@ -1023,11 +1056,14 @@ impl russh::server::Handler for SshHandler {
         }
 
         // Get the PTY mutex if there's an active shell session
-        let pty_mutex = self
-            .channels
-            .get(&channel_id)
-            .and_then(|state| state.shell_session.as_ref())
-            .map(|shell| Arc::clone(shell.pty()));
+        // First try shell_pty (used when handler is waiting on shell)
+        // Then fall back to shell_session.pty() for compatibility
+        let pty_mutex = self.channels.get(&channel_id).and_then(|state| {
+            state
+                .shell_pty
+                .clone()
+                .or_else(|| state.shell_session.as_ref().map(|s| Arc::clone(s.pty())))
+        });
 
         if let Some(pty) = pty_mutex {
             return async move {
