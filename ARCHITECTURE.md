@@ -189,6 +189,52 @@ Common utilities for code reuse between bssh client and server implementations:
 
 The `security` and `jump::rate_limiter` modules re-export from shared for backward compatibility.
 
+### Server CLI Binary
+**Binary**: `bssh-server`
+
+The `bssh-server` binary provides a command-line interface for managing and operating the SSH server:
+
+**Subcommands**:
+- **run** - Start the SSH server (default when no subcommand specified)
+- **gen-config** - Generate a configuration file template with secure defaults
+- **hash-password** - Hash passwords for configuration using bcrypt
+- **check-config** - Validate configuration files and display settings
+- **gen-host-key** - Generate SSH host keys (Ed25519 or RSA)
+- **version** - Show version and build information
+
+**Global Options**:
+- `-c, --config <FILE>` - Configuration file path
+- `-b, --bind-address <ADDR>` - Override bind address
+- `-p, --port <PORT>` - Override listen port
+- `-k, --host-key <FILE>` - Host key file(s) (can be repeated)
+- `-v, --verbose` - Verbosity level (repeatable: -v, -vv, -vvv)
+- `-D, --foreground` - Run in foreground (don't daemonize)
+- `--pid-file <FILE>` - PID file path
+
+**Usage Examples**:
+```bash
+# Generate configuration template
+bssh-server gen-config -o /etc/bssh/server.yaml
+
+# Generate Ed25519 host key (recommended)
+bssh-server gen-host-key -t ed25519 -o /etc/bssh/ssh_host_ed25519_key
+
+# Generate RSA host key (for compatibility)
+bssh-server gen-host-key -t rsa -o /etc/bssh/ssh_host_rsa_key --bits 4096
+
+# Hash a password for configuration
+bssh-server hash-password
+
+# Validate configuration
+bssh-server check-config -c /etc/bssh/server.yaml
+
+# Start server with configuration file
+bssh-server -c /etc/bssh/server.yaml
+
+# Start server with CLI overrides
+bssh-server -c /etc/bssh/server.yaml -p 2222 -b 0.0.0.0 -k /path/to/key
+```
+
 ### SSH Server Module
 **Documentation**: [docs/architecture/server-configuration.md](./docs/architecture/server-configuration.md)
 

@@ -335,9 +335,70 @@ export BSSH_AUTH_METHODS=publickey,password
 bssh-server
 ```
 
+## Server CLI Commands
+
+The `bssh-server` binary provides several management commands:
+
+### Generate Configuration Template
+
+```bash
+# Output to stdout
+bssh-server gen-config
+
+# Write to file with secure permissions (0600)
+bssh-server gen-config -o /etc/bssh/server.yaml
+```
+
+### Generate Host Keys
+
+```bash
+# Generate Ed25519 key (recommended, fast, secure)
+bssh-server gen-host-key -t ed25519 -o /etc/bssh/ssh_host_ed25519_key
+
+# Generate RSA key with custom size
+bssh-server gen-host-key -t rsa -o /etc/bssh/ssh_host_rsa_key --bits 4096
+```
+
+Generated keys have secure permissions (0600) and are in OpenSSH format.
+
+### Hash Passwords
+
+```bash
+# Interactive password hashing with bcrypt
+bssh-server hash-password
+```
+
+This prompts for a password, confirms it, and outputs a bcrypt hash suitable for use in the configuration file.
+
+### Validate Configuration
+
+```bash
+# Check default config locations
+bssh-server check-config
+
+# Check specific config file
+bssh-server check-config -c /etc/bssh/server.yaml
+```
+
+Displays all configuration settings and validates the file format.
+
+### Start Server
+
+```bash
+# Start with config file
+bssh-server -c /etc/bssh/server.yaml
+
+# Start with CLI overrides
+bssh-server -c /etc/bssh/server.yaml -p 2222 -b 0.0.0.0
+
+# Run in foreground with verbose logging
+bssh-server -c /etc/bssh/server.yaml -D -vvv
+```
+
 ---
 
 **Related Documentation:**
+- [Server CLI Binary](../../ARCHITECTURE.md#server-cli-binary)
 - [SSH Server Module](../../ARCHITECTURE.md#ssh-server-module)
 - [Server Authentication](../../ARCHITECTURE.md#server-authentication-module)
 - [Client Configuration Management](./configuration.md)
