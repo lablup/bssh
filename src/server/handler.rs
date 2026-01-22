@@ -829,32 +829,19 @@ impl russh::server::Handler for SshHandler {
                 "Starting shell session"
             );
 
-            // Run the shell session - this runs the I/O loop directly in this
-            // async context (not spawned) which is required for russh to process
-            // outgoing Handle messages properly
-            let exit_code = match shell_session.run(&user_info, handle.clone()).await {
-                Ok(code) => code,
-                Err(e) => {
-                    tracing::error!(
-                        user = %username,
-                        error = %e,
-                        "Shell session error"
-                    );
-                    1
-                }
-            };
-
-            // Clear shell handles from channel state
-            if let Some(channel_state) = channels.get_mut(&channel_id) {
-                channel_state.clear_shell_handles();
+            // Start the shell session - this spawns an I/O task and returns immediately
+            // The I/O task runs independently, allowing russh to process outgoing messages
+            if let Err(e) = shell_session.run(&user_info, handle.clone()).await {
+                tracing::error!(
+                    user = %username,
+                    error = %e,
+                    "Failed to start shell session"
+                );
+                let _ = handle.close(channel_id).await;
             }
 
-            tracing::info!(
-                user = %username,
-                peer = ?peer_addr,
-                exit_code = %exit_code,
-                "Shell session ended"
-            );
+            // Note: Shell handles in channel_state will be cleaned up when the channel closes
+            // The spawned I/O task will send exit_status and close the channel when done
 
             Ok(())
         }
