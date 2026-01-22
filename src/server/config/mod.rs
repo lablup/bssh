@@ -71,7 +71,9 @@ pub use loader::{generate_config_template, load_config};
 pub use types::*;
 
 // Re-export the original config types for backward compatibility
-use super::auth::{AuthProvider, PublicKeyAuthConfig, PublicKeyVerifier};
+use super::auth::{
+    AuthProvider, CompositeAuthProvider, PasswordAuthConfig, PublicKeyAuthConfig, PublicKeyVerifier,
+};
 use super::exec::ExecConfig;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -140,6 +142,10 @@ pub struct ServerConfig {
     #[serde(default)]
     pub publickey_auth: PublicKeyAuthConfigSerde,
 
+    /// Configuration for password authentication.
+    #[serde(default)]
+    pub password_auth: PasswordAuthConfigSerde,
+
     /// Configuration for command execution.
     #[serde(default)]
     pub exec: ExecConfig,
@@ -163,6 +169,26 @@ impl From<PublicKeyAuthConfigSerde> for PublicKeyAuthConfig {
             PublicKeyAuthConfig::with_pattern(pattern)
         } else {
             PublicKeyAuthConfig::default()
+        }
+    }
+}
+
+/// Serializable configuration for password authentication.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PasswordAuthConfigSerde {
+    /// Path to YAML file containing user definitions.
+    pub users_file: Option<PathBuf>,
+
+    /// Inline user definitions.
+    #[serde(default)]
+    pub users: Vec<UserDefinition>,
+}
+
+impl From<PasswordAuthConfigSerde> for PasswordAuthConfig {
+    fn from(serde_config: PasswordAuthConfigSerde) -> Self {
+        PasswordAuthConfig {
+            users_file: serde_config.users_file,
+            users: serde_config.users,
         }
     }
 }
@@ -205,6 +231,7 @@ impl Default for ServerConfig {
             allow_keyboard_interactive: false,
             banner: None,
             publickey_auth: PublicKeyAuthConfigSerde::default(),
+            password_auth: PasswordAuthConfigSerde::default(),
             exec: ExecConfig::default(),
         }
     }
@@ -248,9 +275,74 @@ impl ServerConfig {
     }
 
     /// Create an auth provider based on the configuration.
+    ///
+    /// This creates a composite auth provider that supports:
+    /// - Public key authentication (if `allow_publickey_auth` is true)
+    /// - Password authentication (if `allow_password_auth` is true)
+    ///
+    /// The provider is created synchronously using a blocking runtime.
+    /// For async creation, use `create_auth_provider_async`.
     pub fn create_auth_provider(&self) -> Arc<dyn AuthProvider> {
-        let config: PublicKeyAuthConfig = self.publickey_auth.clone().into();
-        Arc::new(PublicKeyVerifier::new(config))
+        // If neither method is enabled, return a public key only provider (will reject all)
+        if !self.allow_publickey_auth && !self.allow_password_auth {
+            let config: PublicKeyAuthConfig = self.publickey_auth.clone().into();
+            return Arc::new(PublicKeyVerifier::new(config));
+        }
+
+        // If only public key auth is enabled, use simple provider
+        if self.allow_publickey_auth && !self.allow_password_auth {
+            let config: PublicKeyAuthConfig = self.publickey_auth.clone().into();
+            return Arc::new(PublicKeyVerifier::new(config));
+        }
+
+        // If password auth is enabled, we need to create a composite provider
+        // Use blocking call since this is called during server startup
+        let publickey_config = if self.allow_publickey_auth {
+            Some(self.publickey_auth.clone().into())
+        } else {
+            None
+        };
+
+        let password_config = if self.allow_password_auth {
+            Some(self.password_auth.clone().into())
+        } else {
+            None
+        };
+
+        // Create the composite provider using blocking runtime
+        // This is safe because this is only called during server initialization
+        match tokio::runtime::Handle::try_current() {
+            Ok(handle) => {
+                match tokio::task::block_in_place(|| {
+                    handle.block_on(CompositeAuthProvider::new(
+                        publickey_config,
+                        password_config,
+                    ))
+                }) {
+                    Ok(provider) => Arc::new(provider),
+                    Err(e) => {
+                        tracing::error!(error = %e, "Failed to create composite auth provider, falling back to publickey only");
+                        let config: PublicKeyAuthConfig = self.publickey_auth.clone().into();
+                        Arc::new(PublicKeyVerifier::new(config))
+                    }
+                }
+            }
+            Err(_) => {
+                // No async runtime, create a new one
+                let rt = tokio::runtime::Runtime::new().expect("Failed to create runtime");
+                match rt.block_on(CompositeAuthProvider::new(
+                    publickey_config,
+                    password_config,
+                )) {
+                    Ok(provider) => Arc::new(provider),
+                    Err(e) => {
+                        tracing::error!(error = %e, "Failed to create composite auth provider, falling back to publickey only");
+                        let config: PublicKeyAuthConfig = self.publickey_auth.clone().into();
+                        Arc::new(PublicKeyVerifier::new(config))
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -341,6 +433,18 @@ impl ServerConfigBuilder {
         self
     }
 
+    /// Set the password users file path.
+    pub fn password_users_file(mut self, path: impl Into<PathBuf>) -> Self {
+        self.config.password_auth.users_file = Some(path.into());
+        self
+    }
+
+    /// Set inline password users.
+    pub fn password_users(mut self, users: Vec<UserDefinition>) -> Self {
+        self.config.password_auth.users = users;
+        self
+    }
+
     /// Set the exec configuration.
     pub fn exec(mut self, exec_config: ExecConfig) -> Self {
         self.config.exec = exec_config;
@@ -404,6 +508,10 @@ impl ServerFileConfig {
             publickey_auth: PublicKeyAuthConfigSerde {
                 authorized_keys_dir: self.auth.publickey.authorized_keys_dir,
                 authorized_keys_pattern: self.auth.publickey.authorized_keys_pattern,
+            },
+            password_auth: PasswordAuthConfigSerde {
+                users_file: self.auth.password.users_file,
+                users: self.auth.password.users,
             },
             exec: ExecConfig {
                 default_shell: self.shell.default,

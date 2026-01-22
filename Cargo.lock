@@ -383,6 +383,7 @@ name = "bssh"
 version = "1.7.0"
 dependencies = [
  "anyhow",
+ "argon2",
  "arrayvec",
  "async-trait",
  "atty",

@@ -257,6 +257,7 @@ fn gen_config(output: Option<PathBuf>) -> Result<()> {
 
 /// Hash a password for configuration
 async fn hash_password() -> Result<()> {
+    use bssh::server::auth::hash_password as generate_hash;
     use rpassword::read_password;
 
     print!("Enter password: ");
@@ -269,7 +270,7 @@ async fn hash_password() -> Result<()> {
 
     // Warn about weak passwords (but still allow them)
     if password.len() < 8 {
-        println!("\n⚠ Warning: Password is shorter than 8 characters.");
+        println!("\n Warning: Password is shorter than 8 characters.");
         println!("   This is considered weak and may be easily compromised.");
         println!("   Consider using a longer password for better security.\n");
     }
@@ -282,8 +283,8 @@ async fn hash_password() -> Result<()> {
         anyhow::bail!("Passwords do not match");
     }
 
-    // Use bcrypt for password hashing (cost factor 12)
-    let hash = bcrypt::hash(&password, 12).context("Failed to hash password")?;
+    // Use Argon2id for password hashing (recommended algorithm)
+    let hash = generate_hash(&password).context("Failed to hash password")?;
 
     println!("\nPassword hash (use in configuration):");
     println!("{}", hash);
@@ -295,6 +296,8 @@ async fn hash_password() -> Result<()> {
     println!("    users:");
     println!("      - name: username");
     println!("        password_hash: \"{}\"", hash);
+    println!("\nNote: This hash uses Argon2id algorithm (recommended).");
+    println!("      bcrypt hashes are also supported for compatibility.");
 
     Ok(())
 }

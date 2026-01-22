@@ -46,9 +46,13 @@
 //! // verifier.verify("username", &public_key).await
 //! ```
 
+pub mod composite;
+pub mod password;
 pub mod provider;
 pub mod publickey;
 
+pub use composite::CompositeAuthProvider;
+pub use password::{hash_password, verify_password_hash, PasswordAuthConfig, PasswordVerifier};
 pub use provider::AuthProvider;
 pub use publickey::{AuthKeyOptions, AuthorizedKey, PublicKeyAuthConfig, PublicKeyVerifier};
 

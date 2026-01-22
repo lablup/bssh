@@ -55,6 +55,7 @@ shell-words = "1.1.1"
 libc = "0.2"
 ipnetwork = "0.20"
 bcrypt = "0.16"
+argon2 = "0.5"
 rand = "0.8"
 ssh-key = { version = "0.6", features = ["std"] }
 
