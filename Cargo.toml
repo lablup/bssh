@@ -53,6 +53,7 @@ fastrand = "2.3.0"
 tokio-util = "0.7.17"
 shell-words = "1.1.1"
 libc = "0.2"
+ipnetwork = "0.20"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3.5.1"
