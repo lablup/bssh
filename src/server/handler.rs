@@ -811,19 +811,8 @@ impl russh::server::Handler for SshHandler {
                 }
             };
 
-            // Start shell session
-            if let Err(e) = shell_session.start(&user_info, handle.clone()).await {
-                tracing::error!(
-                    user = %username,
-                    error = %e,
-                    "Failed to start shell session"
-                );
-                let _ = handle.close(channel_id).await;
-                return Ok(());
-            }
-
-            // Get data sender and PTY handle from shell session
-            // These are used by data and window_change handlers while we wait
+            // Get data sender and PTY handle from shell session BEFORE running
+            // These are used by data and window_change handlers while the shell runs
             let data_tx = shell_session.data_sender();
             let pty = Arc::clone(shell_session.pty());
 
@@ -837,12 +826,23 @@ impl russh::server::Handler for SshHandler {
             tracing::info!(
                 user = %username,
                 peer = ?peer_addr,
-                "Shell session started, waiting for exit"
+                "Starting shell session"
             );
 
-            // Wait for the shell session to complete
-            // This keeps the handler alive so data transmission works properly
-            let exit_code = shell_session.run_until_exit().await;
+            // Run the shell session - this runs the I/O loop directly in this
+            // async context (not spawned) which is required for russh to process
+            // outgoing Handle messages properly
+            let exit_code = match shell_session.run(&user_info, handle.clone()).await {
+                Ok(code) => code,
+                Err(e) => {
+                    tracing::error!(
+                        user = %username,
+                        error = %e,
+                        "Shell session error"
+                    );
+                    1
+                }
+            };
 
             // Clear shell handles from channel state
             if let Some(channel_state) = channels.get_mut(&channel_id) {
@@ -855,13 +855,6 @@ impl russh::server::Handler for SshHandler {
                 exit_code = %exit_code,
                 "Shell session ended"
             );
-
-            // Send exit status, EOF, and close channel
-            let _ = handle
-                .exit_status_request(channel_id, exit_code as u32)
-                .await;
-            let _ = handle.eof(channel_id).await;
-            let _ = handle.close(channel_id).await;
 
             Ok(())
         }
@@ -998,14 +991,10 @@ impl russh::server::Handler for SshHandler {
         );
 
         // Get the data sender if there's an active shell session
-        // First try shell_data_tx (used when handler is waiting on shell)
-        // Then fall back to shell_session.data_sender() for compatibility
-        let data_sender = self.channels.get(&channel_id).and_then(|state| {
-            state
-                .shell_data_tx
-                .clone()
-                .or_else(|| state.shell_session.as_ref().and_then(|s| s.data_sender()))
-        });
+        let data_sender = self
+            .channels
+            .get(&channel_id)
+            .and_then(|state| state.shell_data_tx.clone());
 
         if let Some(tx) = data_sender {
             let data = data.to_vec();
@@ -1056,14 +1045,10 @@ impl russh::server::Handler for SshHandler {
         }
 
         // Get the PTY mutex if there's an active shell session
-        // First try shell_pty (used when handler is waiting on shell)
-        // Then fall back to shell_session.pty() for compatibility
-        let pty_mutex = self.channels.get(&channel_id).and_then(|state| {
-            state
-                .shell_pty
-                .clone()
-                .or_else(|| state.shell_session.as_ref().map(|s| Arc::clone(s.pty())))
-        });
+        let pty_mutex = self
+            .channels
+            .get(&channel_id)
+            .and_then(|state| state.shell_pty.clone());
 
         if let Some(pty) = pty_mutex {
             return async move {
