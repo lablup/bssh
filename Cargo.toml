@@ -54,6 +54,9 @@ tokio-util = "0.7.17"
 shell-words = "1.1.1"
 libc = "0.2"
 ipnetwork = "0.20"
+bcrypt = "0.16"
+rand = "0.8"
+ssh-key = { version = "0.6", features = ["std"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3.5.1"
@@ -71,4 +74,8 @@ mockall = "0.14"
 [[bench]]
 name = "large_output_benchmark"
 harness = false
+
+[[bin]]
+name = "bssh-server"
+path = "src/bin/bssh_server.rs"
 

@@ -25,3 +25,4 @@ Thumbs.db
 .gemini/
 references/
 vendor/
+bssh-server.yaml
