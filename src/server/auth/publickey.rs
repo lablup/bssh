@@ -129,17 +129,62 @@ impl PublicKeyAuthConfig {
         } else if let Some(ref dir) = self.authorized_keys_dir {
             dir.join(username).join("authorized_keys")
         } else {
-            // Default to home directory pattern
-            PathBuf::from(format!("/home/{username}/.ssh/authorized_keys"))
+            // Default to platform-specific home directory pattern
+            PathBuf::from(format!(
+                "{}/.ssh/authorized_keys",
+                default_home_dir(username)
+            ))
         }
     }
+}
+
+/// Get the default home directory path for a username based on platform.
+#[cfg(target_os = "macos")]
+fn default_home_dir(username: &str) -> String {
+    format!("/Users/{username}")
+}
+
+#[cfg(target_os = "linux")]
+fn default_home_dir(username: &str) -> String {
+    format!("/home/{username}")
+}
+
+#[cfg(target_os = "windows")]
+fn default_home_dir(username: &str) -> String {
+    format!("C:\\Users\\{username}")
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+fn default_home_dir(username: &str) -> String {
+    format!("/home/{username}")
+}
+
+/// Get the default authorized_keys pattern for the current platform.
+#[cfg(target_os = "macos")]
+fn default_authorized_keys_pattern() -> String {
+    "/Users/{user}/.ssh/authorized_keys".to_string()
+}
+
+#[cfg(target_os = "linux")]
+fn default_authorized_keys_pattern() -> String {
+    "/home/{user}/.ssh/authorized_keys".to_string()
+}
+
+#[cfg(target_os = "windows")]
+fn default_authorized_keys_pattern() -> String {
+    "C:\\Users\\{user}\\.ssh\\authorized_keys".to_string()
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+fn default_authorized_keys_pattern() -> String {
+    "/home/{user}/.ssh/authorized_keys".to_string()
 }
 
 impl Default for PublicKeyAuthConfig {
     fn default() -> Self {
         Self {
             authorized_keys_dir: None,
-            authorized_keys_pattern: Some("/home/{user}/.ssh/authorized_keys".to_string()),
+            authorized_keys_pattern: Some(default_authorized_keys_pattern()),
         }
     }
 }
@@ -678,7 +723,12 @@ mod tests {
     fn test_config_default() {
         let config = PublicKeyAuthConfig::default();
         let path = config.get_authorized_keys_path("testuser");
-        assert_eq!(path, PathBuf::from("/home/testuser/.ssh/authorized_keys"));
+        // Platform-specific expected path
+        let expected = PathBuf::from(format!(
+            "{}/.ssh/authorized_keys",
+            default_home_dir("testuser")
+        ));
+        assert_eq!(path, expected);
     }
 
     #[test]

@@ -219,7 +219,7 @@ impl ShellSession {
 
                 // Set controlling terminal
                 // TIOCSCTTY with arg 0 means don't steal from another session
-                if nix::libc::ioctl(0, nix::libc::TIOCSCTTY, 0) < 0 {
+                if nix::libc::ioctl(0, nix::libc::TIOCSCTTY as nix::libc::c_ulong, 0) < 0 {
                     return Err(std::io::Error::last_os_error());
                 }
 
