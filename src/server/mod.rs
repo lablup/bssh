@@ -25,6 +25,7 @@
 //! - [`SshHandler`]: Handles SSH protocol events for each connection
 //! - [`SessionManager`]: Tracks active sessions
 //! - [`ServerConfig`]: Server configuration options
+//! - [`auth`]: Authentication providers (public key, password)
 //!
 //! # Example
 //!
@@ -43,6 +44,7 @@
 //! }
 //! ```
 
+pub mod auth;
 pub mod config;
 pub mod handler;
 pub mod session;
@@ -56,6 +58,8 @@ use anyhow::{Context, Result};
 use russh::server::Server;
 use tokio::net::{TcpListener, ToSocketAddrs};
 use tokio::sync::RwLock;
+
+use crate::shared::rate_limit::RateLimiter;
 
 pub use self::config::{ServerConfig, ServerConfigBuilder};
 pub use self::handler::SshHandler;
@@ -198,9 +202,14 @@ impl BsshServer {
             "SSH server listening"
         );
 
+        // Create shared rate limiter for all handlers
+        // Allow burst of 5 auth attempts, refill 1 attempt per second
+        let rate_limiter = RateLimiter::with_simple_config(5, 1.0);
+
         let mut server = BsshServerRunner {
             config: Arc::clone(&self.config),
             sessions: Arc::clone(&self.sessions),
+            rate_limiter,
         };
 
         // Use run_on_socket which handles the server loop
@@ -229,6 +238,8 @@ impl BsshServer {
 struct BsshServerRunner {
     config: Arc<ServerConfig>,
     sessions: Arc<RwLock<SessionManager>>,
+    /// Shared rate limiter for authentication attempts across all handlers
+    rate_limiter: RateLimiter<String>,
 }
 
 impl russh::server::Server for BsshServerRunner {
@@ -240,10 +251,11 @@ impl russh::server::Server for BsshServerRunner {
             "New client connection"
         );
 
-        SshHandler::new(
+        SshHandler::with_rate_limiter(
             peer_addr,
             Arc::clone(&self.config),
             Arc::clone(&self.sessions),
+            self.rate_limiter.clone(),
         )
     }
 

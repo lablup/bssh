@@ -26,8 +26,10 @@ use russh::server::{Auth, Msg, Session};
 use russh::{Channel, ChannelId, MethodKind, MethodSet, Pty};
 use tokio::sync::RwLock;
 
+use super::auth::AuthProvider;
 use super::config::ServerConfig;
 use super::session::{ChannelState, PtyConfig, SessionId, SessionInfo, SessionManager};
+use crate::shared::rate_limit::RateLimiter;
 
 /// SSH handler for a single client connection.
 ///
@@ -43,6 +45,12 @@ pub struct SshHandler {
     /// Shared session manager.
     sessions: Arc<RwLock<SessionManager>>,
 
+    /// Authentication provider for verifying credentials.
+    auth_provider: Arc<dyn AuthProvider>,
+
+    /// Rate limiter for authentication attempts.
+    rate_limiter: RateLimiter<String>,
+
     /// Session information for this connection.
     session_info: Option<SessionInfo>,
 
@@ -57,10 +65,63 @@ impl SshHandler {
         config: Arc<ServerConfig>,
         sessions: Arc<RwLock<SessionManager>>,
     ) -> Self {
+        let auth_provider = config.create_auth_provider();
+        // Rate limiter: allow burst of 5 attempts, refill 1 attempt per second
+        // Note: This creates a per-handler rate limiter. For production use,
+        // prefer with_rate_limiter() to share a rate limiter across handlers.
+        let rate_limiter = RateLimiter::with_simple_config(5, 1.0);
+
         Self {
             peer_addr,
             config,
             sessions,
+            auth_provider,
+            rate_limiter,
+            session_info: None,
+            channels: HashMap::new(),
+        }
+    }
+
+    /// Create a new SSH handler with a shared rate limiter.
+    ///
+    /// This is the preferred constructor for production use as it shares
+    /// the rate limiter across all handlers, providing server-wide rate limiting.
+    pub fn with_rate_limiter(
+        peer_addr: Option<SocketAddr>,
+        config: Arc<ServerConfig>,
+        sessions: Arc<RwLock<SessionManager>>,
+        rate_limiter: RateLimiter<String>,
+    ) -> Self {
+        let auth_provider = config.create_auth_provider();
+
+        Self {
+            peer_addr,
+            config,
+            sessions,
+            auth_provider,
+            rate_limiter,
+            session_info: None,
+            channels: HashMap::new(),
+        }
+    }
+
+    /// Create a new SSH handler with a custom auth provider.
+    ///
+    /// This is useful for testing or when you need a different auth provider.
+    pub fn with_auth_provider(
+        peer_addr: Option<SocketAddr>,
+        config: Arc<ServerConfig>,
+        sessions: Arc<RwLock<SessionManager>>,
+        auth_provider: Arc<dyn AuthProvider>,
+    ) -> Self {
+        let rate_limiter = RateLimiter::with_simple_config(5, 1.0);
+
+        Self {
+            peer_addr,
+            config,
+            sessions,
+            auth_provider,
+            rate_limiter,
             session_info: None,
             channels: HashMap::new(),
         }
@@ -189,7 +250,7 @@ impl russh::server::Handler for SshHandler {
 
     /// Handle public key authentication.
     ///
-    /// Placeholder implementation - will be implemented in a future issue.
+    /// Verifies the public key against the user's authorized_keys file.
     fn auth_publickey(
         &mut self,
         user: &str,
@@ -212,27 +273,115 @@ impl russh::server::Handler for SshHandler {
         let mut methods = self.allowed_methods();
         methods.remove(MethodKind::PublicKey);
 
+        // Clone what we need for the async block
+        let auth_provider = Arc::clone(&self.auth_provider);
+        let rate_limiter = self.rate_limiter.clone();
+        let peer_addr = self.peer_addr;
+        let user = user.to_string();
+        let public_key = public_key.clone();
+
+        // Get mutable reference to session_info for authentication update
+        let session_info = &mut self.session_info;
+
         async move {
             if exceeded {
-                tracing::warn!("Max authentication attempts exceeded");
+                tracing::warn!(
+                    user = %user,
+                    peer = ?peer_addr,
+                    "Max authentication attempts exceeded"
+                );
                 return Ok(Auth::Reject {
                     proceed_with_methods: None,
                     partial_success: false,
                 });
             }
 
-            // Placeholder - reject but allow other methods
-            // Will be implemented in #126
-            let proceed = if methods.is_empty() {
-                None
-            } else {
-                Some(methods)
-            };
+            // Check rate limiting based on peer address
+            let rate_key = peer_addr
+                .map(|addr| addr.ip().to_string())
+                .unwrap_or_else(|| "unknown".to_string());
 
-            Ok(Auth::Reject {
-                proceed_with_methods: proceed,
-                partial_success: false,
-            })
+            if rate_limiter.is_rate_limited(&rate_key).await {
+                tracing::warn!(
+                    user = %user,
+                    peer = ?peer_addr,
+                    "Rate limited authentication attempt"
+                );
+                return Ok(Auth::Reject {
+                    proceed_with_methods: None,
+                    partial_success: false,
+                });
+            }
+
+            // Try to acquire a rate limit token
+            if rate_limiter.try_acquire(&rate_key).await.is_err() {
+                tracing::warn!(
+                    user = %user,
+                    peer = ?peer_addr,
+                    "Rate limit exceeded"
+                );
+                return Ok(Auth::Reject {
+                    proceed_with_methods: None,
+                    partial_success: false,
+                });
+            }
+
+            // Verify public key using auth provider
+            match auth_provider.verify_publickey(&user, &public_key).await {
+                Ok(result) if result.is_accepted() => {
+                    tracing::info!(
+                        user = %user,
+                        peer = ?peer_addr,
+                        key_type = %public_key.algorithm(),
+                        "Public key authentication successful"
+                    );
+
+                    // Mark session as authenticated
+                    if let Some(ref mut info) = session_info {
+                        info.authenticate(&user);
+                    }
+
+                    Ok(Auth::Accept)
+                }
+                Ok(_) => {
+                    tracing::debug!(
+                        user = %user,
+                        peer = ?peer_addr,
+                        key_type = %public_key.algorithm(),
+                        "Public key authentication rejected"
+                    );
+
+                    let proceed = if methods.is_empty() {
+                        None
+                    } else {
+                        Some(methods)
+                    };
+
+                    Ok(Auth::Reject {
+                        proceed_with_methods: proceed,
+                        partial_success: false,
+                    })
+                }
+                Err(e) => {
+                    tracing::error!(
+                        user = %user,
+                        peer = ?peer_addr,
+                        error = %e,
+                        "Error during public key verification"
+                    );
+
+                    let proceed = if methods.is_empty() {
+                        None
+                    } else {
+                        Some(methods)
+                    };
+
+                    Ok(Auth::Reject {
+                        proceed_with_methods: proceed,
+                        partial_success: false,
+                    })
+                }
+            }
         }
     }
 
@@ -476,6 +625,8 @@ impl Drop for SshHandler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shared::auth_types::{AuthResult, UserInfo};
+    use async_trait::async_trait;
     use std::net::{IpAddr, Ipv4Addr};
 
     fn test_addr() -> SocketAddr {
@@ -495,6 +646,66 @@ mod tests {
         Arc::new(RwLock::new(SessionManager::new()))
     }
 
+    /// Test auth provider that always accepts
+    struct AcceptAllAuthProvider;
+
+    #[async_trait]
+    impl AuthProvider for AcceptAllAuthProvider {
+        async fn verify_publickey(
+            &self,
+            _username: &str,
+            _key: &ssh_key::PublicKey,
+        ) -> anyhow::Result<AuthResult> {
+            Ok(AuthResult::Accept)
+        }
+
+        async fn verify_password(
+            &self,
+            _username: &str,
+            _password: &str,
+        ) -> anyhow::Result<AuthResult> {
+            Ok(AuthResult::Accept)
+        }
+
+        async fn get_user_info(&self, username: &str) -> anyhow::Result<Option<UserInfo>> {
+            Ok(Some(UserInfo::new(username)))
+        }
+
+        async fn user_exists(&self, _username: &str) -> anyhow::Result<bool> {
+            Ok(true)
+        }
+    }
+
+    /// Test auth provider that always rejects
+    struct RejectAllAuthProvider;
+
+    #[async_trait]
+    impl AuthProvider for RejectAllAuthProvider {
+        async fn verify_publickey(
+            &self,
+            _username: &str,
+            _key: &ssh_key::PublicKey,
+        ) -> anyhow::Result<AuthResult> {
+            Ok(AuthResult::Reject)
+        }
+
+        async fn verify_password(
+            &self,
+            _username: &str,
+            _password: &str,
+        ) -> anyhow::Result<AuthResult> {
+            Ok(AuthResult::Reject)
+        }
+
+        async fn get_user_info(&self, _username: &str) -> anyhow::Result<Option<UserInfo>> {
+            Ok(None)
+        }
+
+        async fn user_exists(&self, _username: &str) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+    }
+
     #[test]
     fn test_handler_creation() {
         let handler = SshHandler::new(Some(test_addr()), test_config(), test_sessions());
@@ -503,6 +714,18 @@ mod tests {
         assert!(handler.session_id().is_none());
         assert!(!handler.is_authenticated());
         assert!(handler.username().is_none());
+    }
+
+    #[test]
+    fn test_handler_with_custom_auth_provider() {
+        let handler = SshHandler::with_auth_provider(
+            Some(test_addr()),
+            test_config(),
+            test_sessions(),
+            Arc::new(AcceptAllAuthProvider),
+        );
+
+        assert_eq!(handler.peer_addr(), Some(test_addr()));
     }
 
     #[test]
