@@ -466,20 +466,20 @@ impl CommandExecutor {
 
         // Detect command chaining attempts (CRITICAL security check)
         let chaining_patterns = [
-            ";",      // Command separator
-            "&&",     // AND operator
-            "||",     // OR operator
-            "|",      // Pipe
-            "`",      // Command substitution (backticks)
-            "$(",     // Command substitution
-            "$((",    // Arithmetic expansion
-            ">",      // Redirection
-            ">>",     // Append redirection
-            "<",      // Input redirection
-            "<<<",    // Here string
-            "&",      // Background execution (at end)
-            "\n",     // Newline command separator
-            "\r",     // Carriage return
+            ";",   // Command separator
+            "&&",  // AND operator
+            "||",  // OR operator
+            "|",   // Pipe
+            "`",   // Command substitution (backticks)
+            "$(",  // Command substitution
+            "$((", // Arithmetic expansion
+            ">",   // Redirection
+            ">>",  // Append redirection
+            "<",   // Input redirection
+            "<<<", // Here string
+            "&",   // Background execution (at end)
+            "\n",  // Newline command separator
+            "\r",  // Carriage return
         ];
 
         for pattern in &chaining_patterns {
@@ -541,10 +541,9 @@ impl CommandExecutor {
                 || command.contains("&&")
                 || command.contains("||")
                 || command.contains("$(")
-                || command.contains('`') {
-                anyhow::bail!(
-                    "Command chaining is not allowed when using command allowlist"
-                );
+                || command.contains('`')
+            {
+                anyhow::bail!("Command chaining is not allowed when using command allowlist");
             }
 
             // Extract the command name (first word before any space)
@@ -663,7 +662,9 @@ mod tests {
 
         // Test that command chaining is blocked even with allowed commands
         assert!(executor.validate_command("ls; rm -rf /").is_err());
-        assert!(executor.validate_command("cat /etc/passwd && rm -rf /").is_err());
+        assert!(executor
+            .validate_command("cat /etc/passwd && rm -rf /")
+            .is_err());
     }
 
     #[test]
@@ -784,10 +785,8 @@ mod tests {
 
     #[test]
     fn test_allowlist_exact_match() {
-        let config = ExecConfig::new().with_allowed_commands(vec![
-            "ls".to_string(),
-            "cat".to_string(),
-        ]);
+        let config =
+            ExecConfig::new().with_allowed_commands(vec!["ls".to_string(), "cat".to_string()]);
         let executor = CommandExecutor::new(config);
 
         // Exact command names should work

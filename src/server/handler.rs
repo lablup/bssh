@@ -783,6 +783,7 @@ mod tests {
     }
 
     /// Test auth provider that always rejects
+    #[allow(dead_code)] // May be used in future tests
     struct RejectAllAuthProvider;
 
     #[async_trait]
