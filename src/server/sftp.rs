@@ -392,10 +392,7 @@ impl russh_sftp::server::Handler for SftpHandler {
             {
                 let handles_guard = handles.lock().await;
                 if handles_guard.len() >= MAX_HANDLES {
-                    return Err(SftpError::new(
-                        StatusCode::Failure,
-                        "Too many open handles",
-                    ));
+                    return Err(SftpError::new(StatusCode::Failure, "Too many open handles"));
                 }
             }
 
@@ -621,10 +618,7 @@ impl russh_sftp::server::Handler for SftpHandler {
             {
                 let handles_guard = handles.lock().await;
                 if handles_guard.len() >= MAX_HANDLES {
-                    return Err(SftpError::new(
-                        StatusCode::Failure,
-                        "Too many open handles",
-                    ));
+                    return Err(SftpError::new(StatusCode::Failure, "Too many open handles"));
                 }
             }
 
@@ -1161,10 +1155,8 @@ impl russh_sftp::server::Handler for SftpHandler {
             if target.is_absolute() {
                 // Resolve target through our path resolution to ensure it's within root
                 let target_str = target.to_string_lossy();
-                let resolved_target = match SftpHandler::resolve_path_static(
-                    &target_str,
-                    &root_dir,
-                ) {
+                let resolved_target = match SftpHandler::resolve_path_static(&target_str, &root_dir)
+                {
                     Ok(p) => p,
                     Err(e) => {
                         tracing::warn!(
@@ -1394,5 +1386,222 @@ mod tests {
         let longname = SftpHandler::build_longname("mydir", &attrs);
         assert!(longname.starts_with('d'));
         assert!(longname.contains("rwxr-xr-x"));
+    }
+
+    #[test]
+    fn test_build_longname_symlink() {
+        let attrs = FileAttributes {
+            size: Some(20),
+            uid: Some(1000),
+            user: None,
+            gid: Some(1000),
+            group: None,
+            permissions: Some(0o120777), // Symlink with lrwxrwxrwx
+            atime: None,
+            mtime: None,
+        };
+
+        let longname = SftpHandler::build_longname("link", &attrs);
+        assert!(longname.starts_with('l'));
+        assert!(longname.contains("rwxrwxrwx"));
+    }
+
+    #[test]
+    fn test_build_longname_no_permissions() {
+        let attrs = FileAttributes {
+            size: Some(0),
+            uid: None,
+            user: None,
+            gid: None,
+            group: None,
+            permissions: None,
+            atime: None,
+            mtime: None,
+        };
+
+        let longname = SftpHandler::build_longname("unknown", &attrs);
+        // Should handle missing permissions gracefully
+        assert!(longname.contains("unknown"));
+        // With no permissions, defaults to 0, so all dashes
+        assert!(longname.starts_with('-'));
+    }
+
+    #[test]
+    fn test_resolve_path_empty_string() {
+        let handler = test_handler();
+
+        // Empty string should resolve to root
+        let result = handler.resolve_path("").unwrap();
+        assert_eq!(result, PathBuf::from("/home/testuser"));
+    }
+
+    #[test]
+    fn test_resolve_path_special_characters() {
+        let handler = test_handler();
+
+        // Path with spaces
+        let result = handler.resolve_path("my documents/file name.txt").unwrap();
+        assert_eq!(
+            result,
+            PathBuf::from("/home/testuser/my documents/file name.txt")
+        );
+
+        // Path with unicode characters
+        let result = handler.resolve_path("documents/test-file.txt").unwrap();
+        assert_eq!(
+            result,
+            PathBuf::from("/home/testuser/documents/test-file.txt")
+        );
+    }
+
+    #[test]
+    fn test_resolve_path_encoded_traversal() {
+        let handler = test_handler();
+
+        // Encoded patterns should be treated as literal path components
+        // (the path component itself is ".." not percent encoding)
+        let result = handler.resolve_path("%2e%2e/etc/passwd").unwrap();
+        // %2e%2e is treated as a literal directory name, not decoded
+        assert_eq!(result, PathBuf::from("/home/testuser/%2e%2e/etc/passwd"));
+        assert!(result.starts_with("/home/testuser"));
+    }
+
+    #[test]
+    fn test_resolve_path_multiple_slashes() {
+        let handler = test_handler();
+
+        // Multiple consecutive slashes should be normalized
+        let result = handler.resolve_path("///documents///file.txt").unwrap();
+        // Path normalization in std collapses multiple slashes
+        assert!(result.starts_with("/home/testuser"));
+        assert!(result.to_string_lossy().contains("documents"));
+        assert!(result.to_string_lossy().contains("file.txt"));
+    }
+
+    #[test]
+    fn test_resolve_path_dot_only() {
+        let handler = test_handler();
+
+        // Single dot
+        let result = handler.resolve_path(".").unwrap();
+        assert_eq!(result, PathBuf::from("/home/testuser"));
+
+        // Double dot clamped to root
+        let result = handler.resolve_path("..").unwrap();
+        assert_eq!(result, PathBuf::from("/home/testuser"));
+    }
+
+    #[test]
+    fn test_resolve_path_alternating_dots() {
+        let handler = test_handler();
+
+        // Alternating . and ..
+        let result = handler.resolve_path("./a/../b/./c/../d").unwrap();
+        assert_eq!(result, PathBuf::from("/home/testuser/b/d"));
+        assert!(result.starts_with("/home/testuser"));
+    }
+
+    #[test]
+    fn test_sftp_error_helpers() {
+        // Test all error helper methods
+        let err = SftpError::not_supported();
+        assert_eq!(err.code, StatusCode::OpUnsupported);
+
+        let err = SftpError::no_such_file(Path::new("/test/path"));
+        assert_eq!(err.code, StatusCode::NoSuchFile);
+        assert!(err.message.contains("/test/path"));
+
+        let err = SftpError::permission_denied("custom message");
+        assert_eq!(err.code, StatusCode::PermissionDenied);
+        assert_eq!(err.message, "custom message");
+
+        let err = SftpError::invalid_handle();
+        assert_eq!(err.code, StatusCode::Failure);
+
+        let err = SftpError::failure("generic failure");
+        assert_eq!(err.code, StatusCode::Failure);
+        assert_eq!(err.message, "generic failure");
+
+        let err = SftpError::eof();
+        assert_eq!(err.code, StatusCode::Eof);
+    }
+
+    #[test]
+    fn test_sftp_error_display() {
+        let err = SftpError::new(StatusCode::NoSuchFile, "test error message");
+        let display = format!("{}", err);
+        assert!(display.contains("test error message"));
+    }
+
+    #[test]
+    fn test_sftp_error_to_status_code() {
+        let err = SftpError::permission_denied("test");
+        let code: StatusCode = err.into();
+        assert_eq!(code, StatusCode::PermissionDenied);
+    }
+
+    #[test]
+    fn test_sftp_error_from_io_eof() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "eof");
+        let sftp_err: SftpError = io_err.into();
+        assert_eq!(sftp_err.code, StatusCode::Eof);
+    }
+
+    #[test]
+    fn test_sftp_error_from_io_other() {
+        let io_err = std::io::Error::new(std::io::ErrorKind::Other, "other error");
+        let sftp_err: SftpError = io_err.into();
+        assert_eq!(sftp_err.code, StatusCode::Failure);
+    }
+
+    #[test]
+    fn test_handler_creation_with_default_root() {
+        let user = UserInfo::new("testuser");
+        let handler = SftpHandler::new(user, None);
+
+        // Should default to filesystem root
+        let result = handler.resolve_path("etc/passwd").unwrap();
+        assert_eq!(result, PathBuf::from("/etc/passwd"));
+    }
+
+    #[test]
+    fn test_resolve_path_static() {
+        // Test the static method directly
+        let root = PathBuf::from("/chroot/jail");
+
+        let result = SftpHandler::resolve_path_static("test.txt", &root).unwrap();
+        assert_eq!(result, PathBuf::from("/chroot/jail/test.txt"));
+
+        let result = SftpHandler::resolve_path_static("../escape", &root).unwrap();
+        // Escape attempt is clamped to root
+        assert_eq!(result, PathBuf::from("/chroot/jail/escape"));
+
+        let result = SftpHandler::resolve_path_static("/absolute/path", &root).unwrap();
+        assert_eq!(result, PathBuf::from("/chroot/jail/absolute/path"));
+    }
+
+    #[test]
+    fn test_metadata_to_attrs() {
+        // Create a temporary file to get real metadata
+        use std::fs::File;
+        use std::io::Write;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let file_path = dir.path().join("test.txt");
+        {
+            let mut file = File::create(&file_path).unwrap();
+            writeln!(file, "test content").unwrap();
+        }
+
+        let metadata = std::fs::metadata(&file_path).unwrap();
+        let attrs = SftpHandler::metadata_to_attrs(&metadata);
+
+        assert!(attrs.size.is_some());
+        assert!(attrs.uid.is_some());
+        assert!(attrs.gid.is_some());
+        assert!(attrs.permissions.is_some());
+        assert!(attrs.mtime.is_some());
+        assert!(attrs.atime.is_some());
     }
 }

@@ -36,6 +36,7 @@ bssh is a high-performance parallel SSH command execution tool with SSH-compatib
 - **Server CLI (`bssh-server`)** - Server management commands including host key generation, password hashing, config validation (see main ARCHITECTURE.md)
 - **SSH Server Module** - SSH server implementation using russh (see main ARCHITECTURE.md)
 - **Server Authentication** - Authentication providers including public key verification (see main ARCHITECTURE.md)
+- **SFTP Handler** - SFTP subsystem with path traversal prevention and chroot-like isolation (see main ARCHITECTURE.md)
 
 ## Navigation
 
