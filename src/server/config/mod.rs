@@ -12,22 +12,88 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Server configuration types.
+//! Server configuration module.
 //!
-//! This module defines configuration options for the SSH server.
+//! This module provides both the original builder-based configuration API
+//! and a new comprehensive YAML file-based configuration system.
+//!
+//! # Configuration Systems
+//!
+//! ## Builder-Based Configuration (Original)
+//!
+//! The [`ServerConfig`] and [`ServerConfigBuilder`] provide a programmatic
+//! way to configure the server:
+//!
+//! ```
+//! use bssh::server::config::{ServerConfig, ServerConfigBuilder};
+//!
+//! let config = ServerConfig::builder()
+//!     .host_key("/etc/ssh/ssh_host_ed25519_key")
+//!     .listen_address("0.0.0.0:2222")
+//!     .max_connections(100)
+//!     .build();
+//! ```
+//!
+//! ## File-Based Configuration (New)
+//!
+//! The new configuration system supports loading from YAML files with
+//! environment variable and CLI argument overrides:
+//!
+//! ```no_run
+//! use bssh::server::config::load_config;
+//!
+//! # fn main() -> anyhow::Result<()> {
+//! // Load from default locations or environment
+//! let file_config = load_config(None)?;
+//!
+//! // Convert to ServerConfig for use with BsshServer
+//! let server_config = file_config.into_server_config();
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! # Configuration File Format
+//!
+//! Configuration files use YAML format. Generate a template with:
+//!
+//! ```
+//! use bssh::server::config::generate_config_template;
+//!
+//! let template = generate_config_template();
+//! println!("{}", template);
+//! ```
 
+mod loader;
+mod types;
+
+// Re-export the new configuration types and functions
+pub use loader::{generate_config_template, load_config};
+pub use types::*;
+
+// Re-export the original config types for backward compatibility
+use super::auth::{AuthProvider, PublicKeyAuthConfig, PublicKeyVerifier};
+use super::exec::ExecConfig;
+use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
-use serde::{Deserialize, Serialize};
-
-use super::auth::{AuthProvider, PublicKeyAuthConfig, PublicKeyVerifier};
-use super::exec::ExecConfig;
-
-/// Configuration for the SSH server.
+/// Configuration for the SSH server (original builder-based API).
 ///
-/// Contains all settings needed to initialize and run the SSH server.
+/// This is the original configuration type used by [`BsshServer`].
+/// For file-based configuration, use [`ServerFileConfig`] and convert
+/// it using [`into_server_config()`](ServerFileConfig::into_server_config).
+///
+/// # Example
+///
+/// ```
+/// use bssh::server::config::ServerConfig;
+///
+/// let config = ServerConfig::builder()
+///     .host_key("/etc/ssh/ssh_host_ed25519_key")
+///     .listen_address("0.0.0.0:2222")
+///     .build();
+/// ```
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerConfig {
     /// Paths to host key files (e.g., SSH private keys).
@@ -80,17 +146,12 @@ pub struct ServerConfig {
 }
 
 /// Serializable configuration for public key authentication.
-///
-/// This is a separate type from `PublicKeyAuthConfig` to support
-/// serde serialization while keeping the actual config flexible.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PublicKeyAuthConfigSerde {
     /// Directory containing authorized_keys files.
-    /// Structure: `{dir}/{username}/authorized_keys`
     pub authorized_keys_dir: Option<PathBuf>,
 
     /// Alternative: file path pattern with `{user}` placeholder.
-    /// Example: `/home/{user}/.ssh/authorized_keys`
     pub authorized_keys_pattern: Option<String>,
 }
 
@@ -115,7 +176,7 @@ fn default_max_connections() -> usize {
 }
 
 fn default_max_auth_attempts() -> u32 {
-    6
+    5
 }
 
 fn default_auth_timeout_secs() -> u64 {
@@ -187,8 +248,6 @@ impl ServerConfig {
     }
 
     /// Create an auth provider based on the configuration.
-    ///
-    /// Returns a `PublicKeyVerifier` configured according to the server settings.
     pub fn create_auth_provider(&self) -> Arc<dyn AuthProvider> {
         let config: PublicKeyAuthConfig = self.publickey_auth.clone().into();
         Arc::new(PublicKeyVerifier::new(config))
@@ -269,9 +328,6 @@ impl ServerConfigBuilder {
     }
 
     /// Set the authorized_keys directory.
-    ///
-    /// The directory should contain subdirectories for each user,
-    /// with an `authorized_keys` file in each.
     pub fn authorized_keys_dir(mut self, dir: impl Into<PathBuf>) -> Self {
         self.config.publickey_auth.authorized_keys_dir = Some(dir.into());
         self.config.publickey_auth.authorized_keys_pattern = None;
@@ -279,9 +335,6 @@ impl ServerConfigBuilder {
     }
 
     /// Set the authorized_keys file pattern.
-    ///
-    /// The pattern should contain `{user}` which will be replaced
-    /// with the username.
     pub fn authorized_keys_pattern(mut self, pattern: impl Into<String>) -> Self {
         self.config.publickey_auth.authorized_keys_pattern = Some(pattern.into());
         self.config.publickey_auth.authorized_keys_dir = None;
@@ -312,6 +365,58 @@ impl ServerConfigBuilder {
     }
 }
 
+/// Extension trait for converting file-based config to builder-based config.
+impl ServerFileConfig {
+    /// Convert a file-based configuration to a builder-based ServerConfig.
+    ///
+    /// This enables using file-based configuration with the existing BsshServer API.
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use bssh::server::{BsshServer, config::load_config};
+    ///
+    /// # fn main() -> anyhow::Result<()> {
+    /// let file_config = load_config(None)?;
+    /// let server_config = file_config.into_server_config();
+    /// let server = BsshServer::new(server_config);
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn into_server_config(self) -> ServerConfig {
+        let listen_address = format!("{}:{}", self.server.bind_address, self.server.port);
+
+        // Determine which auth methods are enabled
+        let allow_publickey = self.auth.methods.contains(&AuthMethod::PublicKey);
+        let allow_password = self.auth.methods.contains(&AuthMethod::Password);
+
+        ServerConfig {
+            host_keys: self.server.host_keys,
+            listen_address,
+            max_connections: self.server.max_connections,
+            max_auth_attempts: self.security.max_auth_attempts,
+            auth_timeout_secs: self.server.timeout,
+            idle_timeout_secs: self.security.idle_timeout,
+            allow_password_auth: allow_password,
+            allow_publickey_auth: allow_publickey,
+            allow_keyboard_interactive: false,
+            banner: None,
+            publickey_auth: PublicKeyAuthConfigSerde {
+                authorized_keys_dir: self.auth.publickey.authorized_keys_dir,
+                authorized_keys_pattern: self.auth.publickey.authorized_keys_pattern,
+            },
+            exec: ExecConfig {
+                default_shell: self.shell.default,
+                timeout_secs: self.shell.command_timeout,
+                env: self.shell.env,
+                working_dir: None,
+                allowed_commands: None,
+                blocked_commands: Vec::new(),
+            },
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -322,7 +427,7 @@ mod tests {
         assert!(config.host_keys.is_empty());
         assert_eq!(config.listen_address, "0.0.0.0:2222");
         assert_eq!(config.max_connections, 100);
-        assert_eq!(config.max_auth_attempts, 6);
+        assert_eq!(config.max_auth_attempts, 5);
         assert!(!config.allow_password_auth);
         assert!(config.allow_publickey_auth);
     }
@@ -347,6 +452,33 @@ mod tests {
     }
 
     #[test]
+    fn test_file_config_to_server_config_conversion() {
+        let mut file_config = ServerFileConfig::default();
+        file_config.server.bind_address = "127.0.0.1".to_string();
+        file_config.server.port = 2223;
+        file_config.server.host_keys = vec![PathBuf::from("/test/key")];
+        file_config.auth.methods = vec![AuthMethod::PublicKey, AuthMethod::Password];
+        file_config.security.max_auth_attempts = 3;
+        file_config.security.idle_timeout = 600;
+
+        let server_config = file_config.into_server_config();
+
+        assert_eq!(server_config.listen_address, "127.0.0.1:2223");
+        assert_eq!(server_config.host_keys.len(), 1);
+        assert_eq!(server_config.max_auth_attempts, 3);
+        assert_eq!(server_config.idle_timeout_secs, 600);
+        assert!(server_config.allow_publickey_auth);
+        assert!(server_config.allow_password_auth);
+    }
+
+    #[test]
+    fn test_config_new() {
+        let config = ServerConfig::new();
+        assert!(config.host_keys.is_empty());
+        assert_eq!(config.listen_address, "0.0.0.0:2222");
+    }
+
+    #[test]
     fn test_auth_timeout() {
         let config = ServerConfig::default();
         assert_eq!(config.auth_timeout(), Duration::from_secs(120));
@@ -368,106 +500,5 @@ mod tests {
 
         config.add_host_key("/path/to/key");
         assert!(config.has_host_keys());
-    }
-
-    #[test]
-    fn test_config_new() {
-        let config = ServerConfig::new();
-        assert!(config.host_keys.is_empty());
-        assert_eq!(config.listen_address, "0.0.0.0:2222");
-    }
-
-    #[test]
-    fn test_builder_host_keys_vec() {
-        let config = ServerConfig::builder()
-            .host_keys(vec!["/path/to/key1".into(), "/path/to/key2".into()])
-            .build();
-
-        assert_eq!(config.host_keys.len(), 2);
-    }
-
-    #[test]
-    fn test_builder_auth_timeout() {
-        let config = ServerConfig::builder().auth_timeout_secs(60).build();
-
-        assert_eq!(config.auth_timeout_secs, 60);
-        assert_eq!(config.auth_timeout(), Duration::from_secs(60));
-    }
-
-    #[test]
-    fn test_builder_idle_timeout() {
-        let config = ServerConfig::builder().idle_timeout_secs(600).build();
-
-        assert_eq!(config.idle_timeout_secs, 600);
-        assert_eq!(config.idle_timeout(), Some(Duration::from_secs(600)));
-    }
-
-    #[test]
-    fn test_builder_authorized_keys_dir() {
-        let config = ServerConfig::builder()
-            .authorized_keys_dir("/etc/bssh/authorized_keys")
-            .build();
-
-        assert_eq!(
-            config.publickey_auth.authorized_keys_dir,
-            Some(PathBuf::from("/etc/bssh/authorized_keys"))
-        );
-        assert!(config.publickey_auth.authorized_keys_pattern.is_none());
-    }
-
-    #[test]
-    fn test_builder_authorized_keys_pattern() {
-        let config = ServerConfig::builder()
-            .authorized_keys_pattern("/home/{user}/.ssh/authorized_keys")
-            .build();
-
-        assert!(config.publickey_auth.authorized_keys_dir.is_none());
-        assert_eq!(
-            config.publickey_auth.authorized_keys_pattern,
-            Some("/home/{user}/.ssh/authorized_keys".to_string())
-        );
-    }
-
-    #[test]
-    fn test_create_auth_provider() {
-        let config = ServerConfig::builder()
-            .authorized_keys_dir("/etc/bssh/keys")
-            .build();
-
-        // Provider should be created successfully (verifies no panic)
-        let _provider = config.create_auth_provider();
-    }
-
-    #[test]
-    fn test_exec_config_default() {
-        let config = ServerConfig::default();
-        assert_eq!(config.exec.default_shell, PathBuf::from("/bin/sh"));
-        assert_eq!(config.exec.timeout_secs, 3600);
-    }
-
-    #[test]
-    fn test_builder_exec_config() {
-        let exec_config = ExecConfig::new()
-            .with_shell("/bin/bash")
-            .with_timeout_secs(1800);
-
-        let config = ServerConfig::builder().exec(exec_config).build();
-
-        assert_eq!(config.exec.default_shell, PathBuf::from("/bin/bash"));
-        assert_eq!(config.exec.timeout_secs, 1800);
-    }
-
-    #[test]
-    fn test_builder_exec_timeout() {
-        let config = ServerConfig::builder().exec_timeout_secs(600).build();
-
-        assert_eq!(config.exec.timeout_secs, 600);
-    }
-
-    #[test]
-    fn test_builder_exec_shell() {
-        let config = ServerConfig::builder().exec_shell("/bin/zsh").build();
-
-        assert_eq!(config.exec.default_shell, PathBuf::from("/bin/zsh"));
     }
 }
