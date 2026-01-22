@@ -829,19 +829,60 @@ impl russh::server::Handler for SshHandler {
                 "Starting shell session"
             );
 
-            // Start the shell session - this spawns an I/O task and returns immediately
-            // The I/O task runs independently, allowing russh to process outgoing messages
-            if let Err(e) = shell_session.run(&user_info, handle.clone()).await {
+            // Spawn shell process first
+            if let Err(e) = shell_session.spawn_shell_process(&user_info).await {
                 tracing::error!(
                     user = %username,
                     error = %e,
-                    "Failed to start shell session"
+                    "Failed to spawn shell process"
                 );
                 let _ = handle.close(channel_id).await;
+                return Ok(());
             }
 
-            // Note: Shell handles in channel_state will be cleaned up when the channel closes
-            // The spawned I/O task will send exit_status and close the channel when done
+            // Get resources for the I/O loop
+            let channel_id_for_task = shell_session.channel_id();
+            let pty = Arc::clone(shell_session.pty());
+            let data_rx = shell_session
+                .take_data_receiver()
+                .expect("data_rx should exist");
+            let child = shell_session.take_child();
+            let handle_for_task = handle.clone();
+
+            tracing::debug!(
+                channel = ?channel_id_for_task,
+                "Spawning shell I/O task"
+            );
+
+            // Spawn the I/O loop as a separate task
+            tokio::spawn(async move {
+                let exit_code = crate::server::shell::run_shell_io_loop(
+                    channel_id_for_task,
+                    pty,
+                    child,
+                    data_rx,
+                    &handle_for_task,
+                )
+                .await;
+
+                tracing::info!(
+                    channel = ?channel_id_for_task,
+                    exit_code = exit_code,
+                    "Shell process exited, sending exit status"
+                );
+
+                let _ = handle_for_task
+                    .exit_status_request(channel_id_for_task, exit_code as u32)
+                    .await;
+                let _ = handle_for_task.eof(channel_id_for_task).await;
+                let _ = handle_for_task.close(channel_id_for_task).await;
+
+                tracing::debug!(
+                    channel = ?channel_id_for_task,
+                    exit_code = exit_code,
+                    "Shell I/O task completed"
+                );
+            });
 
             Ok(())
         }

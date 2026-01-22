@@ -99,58 +99,6 @@ impl ShellSession {
         })
     }
 
-    /// Start the shell session by spawning an I/O loop task.
-    ///
-    /// This method spawns the shell process and starts a separate tokio task
-    /// for the bidirectional I/O forwarding loop. It returns immediately
-    /// after spawning, allowing the russh handler to return and the event
-    /// loop to process outgoing messages.
-    ///
-    /// **IMPORTANT**: This method spawns a separate task because russh's
-    /// architecture requires the handler to return before outgoing messages
-    /// (from `Handle::data()`) can be processed. The spawned task runs
-    /// independently and sends data through the Handle.
-    ///
-    /// # Arguments
-    ///
-    /// * `user_info` - Information about the authenticated user
-    /// * `handle` - The russh session handle for sending data
-    ///
-    /// # Returns
-    ///
-    /// Returns Ok(()) after spawning the shell. The actual exit code is
-    /// sent via exit_status_request when the shell exits.
-    pub async fn run(&mut self, user_info: &UserInfo, handle: Handle) -> Result<()> {
-        // Spawn shell process
-        let child = self.spawn_shell(user_info).await?;
-        self.child = Some(child);
-
-        // Take the data receiver - we'll use it in the I/O loop
-        let data_rx = self.data_rx.take().expect("data_rx should exist");
-
-        // Take ownership of fields needed for the spawned task
-        let channel_id = self.channel_id;
-        let pty = Arc::clone(&self.pty);
-        let child = self.child.take();
-
-        // Spawn the I/O loop as a separate task
-        // This allows the handler to return and russh to process outgoing messages
-        tokio::spawn(async move {
-            let exit_code = run_shell_io_loop(channel_id, pty, child, data_rx, &handle).await;
-
-            // Send exit status, EOF, and close channel
-            let _ = handle
-                .exit_status_request(channel_id, exit_code as u32)
-                .await;
-            let _ = handle.eof(channel_id).await;
-            let _ = handle.close(channel_id).await;
-
-            tracing::debug!(channel = ?channel_id, exit_code = exit_code, "Shell I/O task completed");
-        });
-
-        Ok(())
-    }
-
     /// Spawn the shell process.
     async fn spawn_shell(&self, user_info: &UserInfo) -> Result<Child> {
         let pty = self.pty.lock().await;
@@ -268,9 +216,37 @@ impl ShellSession {
         self.data_tx.clone()
     }
 
+    /// Take the data receiver for use in the I/O loop.
+    ///
+    /// This should be called before spawning the I/O task.
+    pub fn take_data_receiver(&mut self) -> Option<mpsc::Receiver<Vec<u8>>> {
+        self.data_rx.take()
+    }
+
+    /// Take the child process for use in the I/O loop.
+    ///
+    /// This should be called after spawning the shell.
+    pub fn take_child(&mut self) -> Option<Child> {
+        self.child.take()
+    }
+
     /// Get a reference to the PTY mutex for resize operations.
     pub fn pty(&self) -> &Arc<Mutex<PtyMaster>> {
         &self.pty
+    }
+
+    /// Get the channel ID for this shell session.
+    pub fn channel_id(&self) -> ChannelId {
+        self.channel_id
+    }
+
+    /// Spawn the shell process.
+    ///
+    /// This should be called before taking the child process and data receiver.
+    pub async fn spawn_shell_process(&mut self, user_info: &UserInfo) -> Result<()> {
+        let child = self.spawn_shell(user_info).await?;
+        self.child = Some(child);
+        Ok(())
     }
 
     /// Handle window size change.
@@ -302,7 +278,7 @@ impl ShellSession {
 /// # Returns
 ///
 /// Returns the exit code of the shell process.
-async fn run_shell_io_loop(
+pub async fn run_shell_io_loop(
     channel_id: ChannelId,
     pty: Arc<Mutex<PtyMaster>>,
     mut child: Option<Child>,
@@ -353,9 +329,11 @@ async fn run_shell_io_loop(
                         return wait_for_child(&mut child).await;
                     }
                     Ok(n) => {
-                        tracing::trace!(channel = ?channel_id, bytes = n, "Read from PTY");
+                        tracing::debug!(channel = ?channel_id, bytes = n, "Read from PTY, calling handle.data()");
                         let data = CryptoVec::from_slice(&buf[..n]);
-                        if handle.data(channel_id, data).await.is_err() {
+                        let send_result = handle.data(channel_id, data).await;
+                        tracing::debug!(channel = ?channel_id, success = send_result.is_ok(), "handle.data() completed");
+                        if send_result.is_err() {
                             tracing::debug!(
                                 channel = ?channel_id,
                                 "Failed to send data to channel"
