@@ -178,6 +178,17 @@ MPI-compatible exit code handling:
 - Automatic main rank detection (Backend.AI integration)
 - Preserves actual exit codes (SIGSEGV=139, OOM=137, etc.)
 
+### Shared Module
+
+Common utilities for code reuse between bssh client and potential server implementations:
+
+- **Validation**: Input validation for usernames, hostnames, paths with security checks
+- **Rate Limiting**: Generic token bucket rate limiter for connection/auth throttling
+- **Authentication Types**: Common auth result types and user info structures
+- **Error Types**: Shared error types for validation, auth, connection, and rate limiting
+
+The `security` and `jump::rate_limiter` modules re-export from shared for backward compatibility.
+
 ## Data Flow
 
 ### Command Execution Flow

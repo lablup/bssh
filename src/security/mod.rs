@@ -14,12 +14,21 @@
 
 //! Security utilities for validating and sanitizing user input and handling
 //! sensitive data securely.
+//!
+//! # Re-exports
+//!
+//! This module re-exports validation functions from the shared module for
+//! backward compatibility. New code should prefer importing directly from
+//! `crate::shared::validation`.
 
 mod sudo;
-mod validation;
 
-// Re-export validation functions
-pub use validation::{
+// Keep the validation module for backward compatibility but it now re-exports
+// from shared
+pub mod validation;
+
+// Re-export validation functions from shared module for backward compatibility
+pub use crate::shared::validation::{
     sanitize_error_message, validate_hostname, validate_local_path, validate_remote_path,
     validate_username,
 };

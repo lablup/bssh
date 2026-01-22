@@ -46,7 +46,7 @@ pub(super) async fn connect_through_tunnel(
 
     // Apply rate limiting for intermediate jump hosts
     rate_limiter
-        .try_acquire(&jump_host.host)
+        .try_acquire(&jump_host.host.clone())
         .await
         .with_context(|| format!("Rate limited for jump host {}", jump_host.host))?;
 
@@ -184,7 +184,7 @@ pub(super) async fn connect_to_destination(
 
     // Apply rate limiting for final destination
     rate_limiter
-        .try_acquire(destination_host)
+        .try_acquire(&destination_host.to_string())
         .await
         .with_context(|| format!("Rate limited for destination {destination_host}"))?;
 

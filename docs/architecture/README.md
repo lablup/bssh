@@ -71,6 +71,8 @@ src/
 ├── interactive/ → Interactive Mode
 ├── jump/ → Jump Host Support
 ├── forward/ → Port Forwarding
+├── shared/ → Shared utilities (validation, rate limiting, auth types, errors)
+├── security/ → Security utilities (re-exports from shared for compatibility)
 └── commands/ → Command Implementations
 ```
 

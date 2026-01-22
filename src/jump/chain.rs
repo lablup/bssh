@@ -145,7 +145,7 @@ impl JumpHostChain {
     /// * `max_burst` - Maximum number of connections allowed in a burst
     /// * `refill_rate` - Number of connections allowed per second (sustained rate)
     pub fn with_rate_limit(mut self, max_burst: u32, refill_rate: f64) -> Self {
-        self.rate_limiter = ConnectionRateLimiter::with_config(max_burst, refill_rate);
+        self.rate_limiter = ConnectionRateLimiter::with_simple_config(max_burst, refill_rate);
         self
     }
 
@@ -354,7 +354,7 @@ impl JumpHostChain {
 
         // Apply rate limiting to prevent DoS attacks on jump hosts
         self.rate_limiter
-            .try_acquire(&jump_host.host)
+            .try_acquire(&jump_host.host.clone())
             .await
             .with_context(|| format!("Rate limited for jump host {}", jump_host.host))?;
 
