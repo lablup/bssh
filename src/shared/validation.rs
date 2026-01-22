@@ -530,4 +530,24 @@ mod tests {
         assert!(validate_username("").is_err());
         assert!(validate_username(&"a".repeat(50)).is_err());
     }
+
+    #[test]
+    fn test_sanitize_error_message() {
+        // Test standalone IP address at start of message
+        let msg = "192.168.1.1 refused connection";
+        let sanitized = sanitize_error_message(msg);
+        assert!(sanitized.contains("<ip-address>"));
+        assert!(!sanitized.contains("192.168.1.1"));
+
+        // Test username redaction (user 'name' pattern)
+        let msg = "Authentication failed for user 'johndoe'";
+        let sanitized = sanitize_error_message(msg);
+        assert!(sanitized.contains("<redacted>"));
+        assert!(!sanitized.contains("johndoe"));
+
+        // Test message without sensitive info passes through
+        let msg = "Connection timed out";
+        let sanitized = sanitize_error_message(msg);
+        assert_eq!(sanitized, "Connection timed out");
+    }
 }

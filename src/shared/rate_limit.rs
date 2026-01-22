@@ -280,13 +280,8 @@ where
         } else {
             let wait_time = (1.0 - bucket.tokens) / self.config.refill_rate;
             // Log without exposing the key to prevent information disclosure
-            warn!(
-                "Rate limit exceeded: wait {:.1}s before retry",
-                wait_time
-            );
-            bail!(
-                "Rate limit exceeded. Please wait {wait_time:.1} seconds before retrying."
-            )
+            warn!("Rate limit exceeded: wait {:.1}s before retry", wait_time);
+            bail!("Rate limit exceeded. Please wait {wait_time:.1} seconds before retrying.")
         }
     }
 
