@@ -30,6 +30,10 @@ bssh is a high-performance parallel SSH command execution tool with SSH-compatib
 
 - **[Exit Code Strategy](./exit-code-strategy.md)** - Main rank detection, exit code strategies, MPI compatibility
 
+### Server Components
+
+- **SSH Server Module** - SSH server implementation using russh (see main ARCHITECTURE.md)
+
 ## Navigation
 
 - [Main Architecture Documentation](../../ARCHITECTURE.md)
@@ -71,6 +75,7 @@ src/
 ├── interactive/ → Interactive Mode
 ├── jump/ → Jump Host Support
 ├── forward/ → Port Forwarding
+├── server/ → SSH Server (handler, session, config)
 ├── shared/ → Shared utilities (validation, rate limiting, auth types, errors)
 ├── security/ → Security utilities (re-exports from shared for compatibility)
 └── commands/ → Command Implementations

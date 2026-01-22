@@ -180,7 +180,7 @@ MPI-compatible exit code handling:
 
 ### Shared Module
 
-Common utilities for code reuse between bssh client and potential server implementations:
+Common utilities for code reuse between bssh client and server implementations:
 
 - **Validation**: Input validation for usernames, hostnames, paths with security checks
 - **Rate Limiting**: Generic token bucket rate limiter for connection/auth throttling
@@ -188,6 +188,40 @@ Common utilities for code reuse between bssh client and potential server impleme
 - **Error Types**: Shared error types for validation, auth, connection, and rate limiting
 
 The `security` and `jump::rate_limiter` modules re-export from shared for backward compatibility.
+
+### SSH Server Module
+
+SSH server implementation using the russh library for accepting incoming connections:
+
+**Structure** (`src/server/`):
+- `mod.rs` - `BsshServer` struct and `russh::server::Server` trait implementation
+- `config.rs` - `ServerConfig` with builder pattern for server settings
+- `handler.rs` - `SshHandler` implementing `russh::server::Handler` trait
+- `session.rs` - Session state management (`SessionManager`, `SessionInfo`, `ChannelState`)
+
+**Key Components**:
+
+- **BsshServer**: Main server struct managing the SSH server lifecycle
+  - Accepts connections on configured address
+  - Loads host keys from OpenSSH format files
+  - Configures russh with authentication settings
+
+- **ServerConfig**: Configuration options with builder pattern
+  - Host key paths and listen address
+  - Connection limits and timeouts
+  - Authentication method toggles (password, publickey, keyboard-interactive)
+
+- **SshHandler**: Per-connection handler for SSH protocol events
+  - Authentication handling (placeholder implementations)
+  - Channel operations (open, close, EOF, data)
+  - PTY, exec, shell, and subsystem request handling
+
+- **SessionManager**: Tracks active sessions with configurable capacity
+  - Session creation and cleanup
+  - Idle session management
+  - Authentication state tracking
+
+**Current Status**: Foundation implementation with placeholder authentication. Actual authentication and command execution will be implemented in follow-up issues (#126-#132).
 
 ## Data Flow
 
