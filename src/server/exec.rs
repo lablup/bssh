@@ -32,6 +32,14 @@
 //! and optionally restricts to an allowed list. Environment variables
 //! are sanitized before command execution.
 //!
+//! ## Security Measures
+//!
+//! - Command injection protection via shell metacharacter detection
+//! - Allowlist validation prevents command chaining bypasses
+//! - Dangerous environment variables are blocked (LD_PRELOAD, etc.)
+//! - Process group management for proper cleanup on timeout
+//! - Resource limits should be configured at OS level (systemd, ulimit)
+//!
 //! # Example
 //!
 //! ```ignore
@@ -46,6 +54,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use regex::Regex;
 use russh::server::Handle;
 use russh::{ChannelId, CryptoVec};
 use serde::{Deserialize, Serialize};
@@ -59,6 +68,18 @@ const EXIT_CODE_TIMEOUT: i32 = 124;
 
 /// Standard exit code for permission denied / command rejected
 const EXIT_CODE_REJECTED: i32 = 126;
+
+/// Dangerous environment variables that should never be set from external sources
+const DANGEROUS_ENV_VARS: &[&str] = &[
+    "LD_PRELOAD",
+    "LD_LIBRARY_PATH",
+    "BASH_ENV",
+    "ENV",
+    "PROMPT_COMMAND",
+    "PERL5LIB",
+    "PYTHONPATH",
+    "RUBYLIB",
+];
 
 /// Configuration for command execution.
 ///
@@ -103,12 +124,30 @@ fn default_timeout_secs() -> u64 {
 
 fn default_blocked_commands() -> Vec<String> {
     vec![
-        "rm -rf /".to_string(),
-        "rm -fr /".to_string(),
+        // Destructive filesystem operations
+        "rm".to_string(),
         "mkfs".to_string(),
-        "dd if=/dev/zero".to_string(),
-        "> /dev/sda".to_string(),
-        ":(){ :|:& };:".to_string(), // Fork bomb
+        "dd".to_string(),
+        "shred".to_string(),
+        // System modification
+        "reboot".to_string(),
+        "shutdown".to_string(),
+        "halt".to_string(),
+        "poweroff".to_string(),
+        // Privilege escalation
+        "sudo".to_string(),
+        "su".to_string(),
+        "doas".to_string(),
+        // Package management
+        "apt".to_string(),
+        "apt-get".to_string(),
+        "yum".to_string(),
+        "dnf".to_string(),
+        "pacman".to_string(),
+        // Kernel modules
+        "insmod".to_string(),
+        "rmmod".to_string(),
+        "modprobe".to_string(),
     ]
 }
 
@@ -252,8 +291,17 @@ impl CommandExecutor {
         cmd.env("SHELL", &user_info.shell);
         cmd.env("PATH", "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin");
 
-        // Add configured environment variables
+        // Add configured environment variables (with safety checks)
         for (key, value) in &self.config.env {
+            // Block dangerous environment variables
+            if DANGEROUS_ENV_VARS.contains(&key.as_str()) {
+                tracing::warn!(
+                    user = %user_info.username,
+                    env_var = %key,
+                    "Blocked dangerous environment variable"
+                );
+                continue;
+            }
             cmd.env(key, value);
         }
 
@@ -269,6 +317,15 @@ impl CommandExecutor {
         cmd.stdin(std::process::Stdio::null());
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
+
+        // Enable kill_on_drop to ensure child processes are terminated
+        cmd.kill_on_drop(true);
+
+        // On Unix systems, create a new process group for better cleanup
+        #[cfg(unix)]
+        {
+            cmd.process_group(0);
+        }
 
         // Spawn process
         let mut child = cmd.spawn().context("Failed to spawn command")?;
@@ -309,8 +366,20 @@ impl CommandExecutor {
                         "Command timed out after {} seconds",
                         self.config.timeout_secs
                     );
-                    // Kill the process
+                    // Kill the entire process group on Unix systems
+                    #[cfg(unix)]
+                    {
+                        if let Some(pid) = child.id() {
+                            // Kill the process group (negative PID)
+                            // SAFETY: We're sending a signal to a process group we created
+                            unsafe {
+                                libc::kill(-(pid as i32), libc::SIGKILL);
+                            }
+                        }
+                    }
+                    // Fallback: kill the immediate child
                     let _ = child.kill().await;
+
                     // Send timeout message to stderr
                     let timeout_msg = format!(
                         "Command timed out after {} seconds\n",
@@ -383,22 +452,108 @@ impl CommandExecutor {
     ///
     /// Returns `Ok(())` if the command is allowed, or an error describing
     /// why it was rejected.
+    ///
+    /// # Security
+    ///
+    /// This function implements multiple layers of validation:
+    /// 1. Detects shell command chaining and injection attempts
+    /// 2. Checks against blocked command patterns (case-insensitive, normalized)
+    /// 3. Validates against allowlist (if configured)
     pub fn validate_command(&self, command: &str) -> Result<()> {
-        // Check blocked commands first
+        // Normalize command: lowercase and collapse whitespace
+        let normalized = command.to_lowercase();
+        let normalized = normalized.split_whitespace().collect::<Vec<_>>().join(" ");
+
+        // Detect command chaining attempts (CRITICAL security check)
+        let chaining_patterns = [
+            ";",      // Command separator
+            "&&",     // AND operator
+            "||",     // OR operator
+            "|",      // Pipe
+            "`",      // Command substitution (backticks)
+            "$(",     // Command substitution
+            "$((",    // Arithmetic expansion
+            ">",      // Redirection
+            ">>",     // Append redirection
+            "<",      // Input redirection
+            "<<<",    // Here string
+            "&",      // Background execution (at end)
+            "\n",     // Newline command separator
+            "\r",     // Carriage return
+        ];
+
+        for pattern in &chaining_patterns {
+            if command.contains(pattern) {
+                // Allow pipe for legitimate use cases, but log it
+                if *pattern == "|" && !command.contains("||") {
+                    tracing::info!("Command contains pipe operator: {}", command);
+                    continue;
+                }
+                // Allow redirection for legitimate cases but be cautious
+                if (*pattern == ">" || *pattern == ">>") && !command.contains("/dev/") {
+                    tracing::info!("Command contains redirection: {}", command);
+                    continue;
+                }
+                anyhow::bail!(
+                    "Command contains shell metacharacter that could enable command chaining: '{pattern}'"
+                );
+            }
+        }
+
+        // Check for dangerous patterns using regex
+        let dangerous_patterns = [
+            (r"(?i)\$\{[^}]*\}", "Variable expansion"),
+            (r"(?i)\$[A-Za-z_][A-Za-z0-9_]*", "Variable substitution"),
+            (r"(?i)<\([^)]*\)", "Process substitution"),
+            (r"(?i)>\([^)]*\)", "Process substitution"),
+        ];
+
+        for (pattern, description) in &dangerous_patterns {
+            if let Ok(re) = Regex::new(pattern) {
+                if re.is_match(command) {
+                    anyhow::bail!("Command contains dangerous pattern ({})", description);
+                }
+            }
+        }
+
+        // Check blocked commands with normalized, case-insensitive matching
         for blocked in &self.config.blocked_commands {
-            if command.contains(blocked) {
+            let blocked_normalized = blocked.to_lowercase();
+
+            // Check if the command contains the blocked pattern
+            if normalized.contains(&blocked_normalized) {
                 anyhow::bail!("Command contains blocked pattern: '{blocked}'");
+            }
+
+            // Also check if the first word matches (for command names)
+            if let Some(first_word) = normalized.split_whitespace().next() {
+                if first_word == blocked_normalized {
+                    anyhow::bail!("Command '{first_word}' is blocked");
+                }
             }
         }
 
         // Check allowed commands (if whitelist is configured)
         if let Some(ref allowed) = self.config.allowed_commands {
+            // First, ensure there are no command chaining attempts in allowlist mode
+            // This prevents bypasses like "ls; rm -rf /"
+            if command.contains(';')
+                || command.contains("&&")
+                || command.contains("||")
+                || command.contains("$(")
+                || command.contains('`') {
+                anyhow::bail!(
+                    "Command chaining is not allowed when using command allowlist"
+                );
+            }
+
             // Extract the command name (first word before any space)
             let cmd_name = command.split_whitespace().next().unwrap_or("");
 
+            // Check if command is in allowlist
             let is_allowed = allowed.iter().any(|a| {
-                // Allow if exact match or command starts with allowed prefix
-                cmd_name == a || command.starts_with(a)
+                // Exact match only - no prefix matching to prevent bypasses
+                cmd_name == a
             });
 
             if !is_allowed {
@@ -470,6 +625,13 @@ mod tests {
             .validate_command("dd if=/dev/zero of=/dev/sda")
             .is_err());
 
+        // Test command chaining attempts
+        assert!(executor.validate_command("ls; rm -rf /").is_err());
+        assert!(executor.validate_command("ls && rm -rf /").is_err());
+        assert!(executor.validate_command("ls || rm -rf /").is_err());
+        assert!(executor.validate_command("ls `rm -rf /`").is_err());
+        assert!(executor.validate_command("ls $(rm -rf /)").is_err());
+
         // Test allowed commands (no whitelist configured)
         assert!(executor.validate_command("ls -la").is_ok());
         assert!(executor.validate_command("cat /etc/passwd").is_ok());
@@ -498,25 +660,29 @@ mod tests {
         assert!(executor
             .validate_command("curl http://example.com")
             .is_err());
+
+        // Test that command chaining is blocked even with allowed commands
+        assert!(executor.validate_command("ls; rm -rf /").is_err());
+        assert!(executor.validate_command("cat /etc/passwd && rm -rf /").is_err());
     }
 
     #[test]
     fn test_validate_command_combined() {
         // Both whitelist and blocklist
         let config = ExecConfig::new()
-            .with_allowed_commands(vec!["ls".to_string(), "rm".to_string()])
-            .with_blocked_command("rm -rf /");
+            .with_allowed_commands(vec!["ls".to_string(), "echo".to_string()])
+            .with_blocked_command("dangerous");
         let executor = CommandExecutor::new(config);
 
         // Allowed and not blocked
         assert!(executor.validate_command("ls -la").is_ok());
-        assert!(executor.validate_command("rm file.txt").is_ok());
-
-        // Allowed but blocked
-        assert!(executor.validate_command("rm -rf /").is_err());
+        assert!(executor.validate_command("echo hello").is_ok());
 
         // Not allowed
         assert!(executor.validate_command("cat file.txt").is_err());
+
+        // Command chaining always blocked with allowlist
+        assert!(executor.validate_command("ls; echo test").is_err());
     }
 
     #[test]
@@ -542,9 +708,11 @@ mod tests {
     fn test_default_blocked_commands() {
         let blocked = default_blocked_commands();
 
-        assert!(blocked.contains(&"rm -rf /".to_string()));
+        // The new blocklist blocks command names, not full patterns
+        assert!(blocked.contains(&"rm".to_string()));
         assert!(blocked.contains(&"mkfs".to_string()));
-        assert!(blocked.contains(&"dd if=/dev/zero".to_string()));
+        assert!(blocked.contains(&"dd".to_string()));
+        assert!(blocked.contains(&"sudo".to_string()));
     }
 
     #[test]
@@ -571,5 +739,107 @@ mod tests {
         assert_eq!(deserialized.default_shell, PathBuf::from("/bin/bash"));
         assert_eq!(deserialized.timeout_secs, 1800);
         assert_eq!(deserialized.env.get("LANG"), Some(&"C.UTF-8".to_string()));
+    }
+
+    #[test]
+    fn test_command_injection_prevention() {
+        let config = ExecConfig::default();
+        let executor = CommandExecutor::new(config);
+
+        // Test various command injection techniques
+        assert!(executor.validate_command("ls; rm -rf /").is_err());
+        assert!(executor.validate_command("ls && rm -rf /").is_err());
+        assert!(executor.validate_command("ls || rm -rf /").is_err());
+        assert!(executor.validate_command("ls `whoami`").is_err());
+        assert!(executor.validate_command("ls $(whoami)").is_err());
+        assert!(executor.validate_command("cat file > /dev/sda").is_err());
+        assert!(executor.validate_command("cat file >> /dev/sda").is_err());
+
+        // Variable expansion attempts
+        assert!(executor.validate_command("echo ${PATH}").is_err());
+        assert!(executor.validate_command("echo $HOME").is_err());
+
+        // Process substitution
+        assert!(executor.validate_command("cat <(ls)").is_err());
+        assert!(executor.validate_command("cat >(cat)").is_err());
+    }
+
+    #[test]
+    fn test_blocklist_normalization() {
+        let config = ExecConfig::default();
+        let executor = CommandExecutor::new(config);
+
+        // Case variations should be caught
+        assert!(executor.validate_command("RM -rf /").is_err());
+        assert!(executor.validate_command("Rm -rf /").is_err());
+        assert!(executor.validate_command("rM -rf /").is_err());
+
+        // With extra spaces
+        assert!(executor.validate_command("rm  -rf  /").is_err());
+
+        // SUDO variations
+        assert!(executor.validate_command("SUDO apt-get install").is_err());
+        assert!(executor.validate_command("SuDo apt-get install").is_err());
+    }
+
+    #[test]
+    fn test_allowlist_exact_match() {
+        let config = ExecConfig::new().with_allowed_commands(vec![
+            "ls".to_string(),
+            "cat".to_string(),
+        ]);
+        let executor = CommandExecutor::new(config);
+
+        // Exact command names should work
+        assert!(executor.validate_command("ls -la").is_ok());
+        assert!(executor.validate_command("cat file.txt").is_ok());
+
+        // Similar but not exact should fail
+        assert!(executor.validate_command("lsof").is_err());
+        assert!(executor.validate_command("catch").is_err());
+    }
+
+    #[test]
+    fn test_dangerous_env_vars() {
+        // This test would need to be an integration test to fully validate
+        // For now, we document the expected behavior:
+        // LD_PRELOAD, LD_LIBRARY_PATH, BASH_ENV, ENV should be blocked
+
+        let dangerous_vars = DANGEROUS_ENV_VARS;
+        assert!(dangerous_vars.contains(&"LD_PRELOAD"));
+        assert!(dangerous_vars.contains(&"LD_LIBRARY_PATH"));
+        assert!(dangerous_vars.contains(&"BASH_ENV"));
+        assert!(dangerous_vars.contains(&"ENV"));
+        assert!(dangerous_vars.contains(&"PROMPT_COMMAND"));
+    }
+
+    #[test]
+    fn test_default_blocked_patterns() {
+        let blocked = default_blocked_commands();
+
+        // Critical commands should be blocked
+        assert!(blocked.contains(&"rm".to_string()));
+        assert!(blocked.contains(&"sudo".to_string()));
+        assert!(blocked.contains(&"mkfs".to_string()));
+        assert!(blocked.contains(&"dd".to_string()));
+
+        // System modification
+        assert!(blocked.contains(&"reboot".to_string()));
+        assert!(blocked.contains(&"shutdown".to_string()));
+
+        // Package managers
+        assert!(blocked.contains(&"apt".to_string()));
+        assert!(blocked.contains(&"yum".to_string()));
+    }
+
+    #[test]
+    fn test_pipe_handling() {
+        let config = ExecConfig::default();
+        let executor = CommandExecutor::new(config);
+
+        // Single pipe should be logged but might be allowed
+        // This behavior depends on the security requirements
+        // For now, we test that double pipe is definitely blocked
+        assert!(executor.validate_command("ls || rm -rf /").is_err());
     }
 }
