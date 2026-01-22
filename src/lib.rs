@@ -22,6 +22,7 @@ pub mod jump;
 pub mod node;
 pub mod pty;
 pub mod security;
+pub mod server;
 pub mod shared;
 pub mod ssh;
 pub mod ui;
