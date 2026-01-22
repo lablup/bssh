@@ -153,10 +153,10 @@ impl fmt::Display for AuthError {
             AuthError::MethodNotSupported(method) => {
                 write!(f, "Authentication method '{method}' not supported")
             }
-            AuthError::UserNotAllowed(user) => {
-                write!(f, "User '{user}' is not allowed to connect")
+            AuthError::UserNotAllowed(_) => {
+                write!(f, "User is not allowed to connect")
             }
-            AuthError::AccountLocked(user) => write!(f, "Account '{user}' is locked"),
+            AuthError::AccountLocked(_) => write!(f, "Account is locked"),
             AuthError::TooManyAttempts => write!(f, "Too many authentication attempts"),
             AuthError::Timeout => write!(f, "Authentication timed out"),
             AuthError::AgentNotAvailable => write!(f, "SSH agent not available"),

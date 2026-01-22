@@ -27,6 +27,66 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
+/// Maximum recursion depth for validating non-existent paths
+const MAX_PATH_VALIDATION_DEPTH: u32 = 20;
+
+/// Helper function to validate non-existent paths with recursion depth limit.
+///
+/// This prevents infinite recursion when validating paths with non-existent parents.
+fn validate_nonexistent_path(path: &Path, depth: u32) -> Result<PathBuf> {
+    // Check recursion depth to prevent stack overflow
+    if depth >= MAX_PATH_VALIDATION_DEPTH {
+        anyhow::bail!("Path validation depth exceeded (max {MAX_PATH_VALIDATION_DEPTH} levels)");
+    }
+
+    if let Some(parent) = path.parent() {
+        if parent.as_os_str().is_empty() {
+            // Parent is empty, use current directory
+            Ok(std::env::current_dir()
+                .with_context(|| "Failed to get current directory")?
+                .join(path))
+        } else if parent.exists() {
+            let canonical_parent = parent
+                .canonicalize()
+                .with_context(|| format!("Failed to canonicalize parent path: {parent:?}"))?;
+
+            // Get the file name
+            let file_name = path
+                .file_name()
+                .ok_or_else(|| anyhow::anyhow!("Invalid path: no file name component"))?;
+
+            // Validate file name doesn't contain path separators
+            let file_name_str = file_name.to_string_lossy();
+            if file_name_str.contains('/') || file_name_str.contains('\\') {
+                anyhow::bail!("Invalid file name: contains path separator");
+            }
+
+            Ok(canonical_parent.join(file_name))
+        } else {
+            // Parent doesn't exist, recursively validate with depth tracking
+            let canonical_parent = validate_nonexistent_path(parent, depth + 1)?;
+
+            // Get the file name
+            let file_name = path
+                .file_name()
+                .ok_or_else(|| anyhow::anyhow!("Invalid path: no file name component"))?;
+
+            // Validate file name doesn't contain path separators
+            let file_name_str = file_name.to_string_lossy();
+            if file_name_str.contains('/') || file_name_str.contains('\\') {
+                anyhow::bail!("Invalid file name: contains path separator");
+            }
+
+            Ok(canonical_parent.join(file_name))
+        }
+    } else {
+        // No parent, treat as relative to current directory
+        Ok(std::env::current_dir()
+            .with_context(|| "Failed to get current directory")?
+            .join(path))
+    }
+}
+
 /// Validate and sanitize a local file path to prevent path traversal attacks.
 ///
 /// This function ensures:
@@ -85,40 +145,7 @@ pub fn validate_local_path(path: &Path) -> Result<PathBuf> {
             .with_context(|| format!("Failed to canonicalize path: {path:?}"))?
     } else {
         // For non-existent paths, validate the parent directory
-        if let Some(parent) = path.parent() {
-            if parent.as_os_str().is_empty() {
-                // Parent is empty, use current directory
-                std::env::current_dir()
-                    .with_context(|| "Failed to get current directory")?
-                    .join(path)
-            } else if parent.exists() {
-                let canonical_parent = parent
-                    .canonicalize()
-                    .with_context(|| format!("Failed to canonicalize parent path: {parent:?}"))?;
-
-                // Get the file name
-                let file_name = path
-                    .file_name()
-                    .ok_or_else(|| anyhow::anyhow!("Invalid path: no file name component"))?;
-
-                // Validate file name doesn't contain path separators
-                let file_name_str = file_name.to_string_lossy();
-                if file_name_str.contains('/') || file_name_str.contains('\\') {
-                    anyhow::bail!("Invalid file name: contains path separator");
-                }
-
-                canonical_parent.join(file_name)
-            } else {
-                // Parent doesn't exist, recursively create and validate
-                validate_local_path(parent)?;
-                validate_local_path(path)?
-            }
-        } else {
-            // No parent, treat as relative to current directory
-            std::env::current_dir()
-                .with_context(|| "Failed to get current directory")?
-                .join(path)
-        }
+        validate_nonexistent_path(path, 0)?
     };
 
     Ok(canonical)
@@ -190,8 +217,14 @@ pub fn validate_remote_path(path: &str) -> Result<String> {
         anyhow::bail!("Remote path contains potential command substitution");
     }
 
-    // Check for path traversal
-    if path.contains("../") || path.starts_with("..") || path.ends_with("..") {
+    // Check for path traversal - all possible patterns
+    if path.contains("../")
+        || path.contains("/..")
+        || path.starts_with("../")
+        || path.starts_with("/..")
+        || path.ends_with("/..")
+        || path == ".."
+    {
         anyhow::bail!("Remote path contains path traversal sequence");
     }
 
@@ -376,7 +409,6 @@ pub fn validate_username(username: &str) -> Result<String> {
 /// // IP address is redacted
 /// ```
 pub fn sanitize_error_message(message: &str) -> String {
-    // Replace specific user mentions with generic text
     let mut sanitized = message.to_string();
 
     // Remove specific usernames (format: user 'username')
@@ -388,29 +420,32 @@ pub fn sanitize_error_message(message: &str) -> String {
         }
     }
 
-    // Remove hostname:port combinations
-    // Match patterns like "on hostname:port" or "to hostname:port"
-    let re_patterns = [
-        r" on [a-zA-Z0-9\.\-]+:[0-9]+",
-        r" to [a-zA-Z0-9\.\-]+:[0-9]+",
-        r" at [a-zA-Z0-9\.\-]+:[0-9]+",
-        r" from [a-zA-Z0-9\.\-]+:[0-9]+",
+    // Remove hostname:port combinations in common patterns
+    // We process these sequentially since each replacement may affect subsequent ones
+    let patterns = [
+        (" on ", " on <host>"),
+        (" to ", " to <host>"),
+        (" at ", " at <host>"),
+        (" from ", " from <host>"),
     ];
 
-    for _pattern in &re_patterns {
-        // Simple pattern matching without regex for security
-        // This is a simplified approach - in production, consider using a proper regex library
-        if sanitized.contains(" on ")
-            || sanitized.contains(" to ")
-            || sanitized.contains(" at ")
-            || sanitized.contains(" from ")
-        {
-            // Replace with generic message
-            sanitized = sanitized
-                .replace(" on ", " on <host>")
-                .replace(" to ", " to <host>")
-                .replace(" at ", " at <host>")
-                .replace(" from ", " from <host>");
+    for (pattern, replacement) in &patterns {
+        if sanitized.contains(pattern) {
+            // Find pattern and replace following hostname:port
+            let parts: Vec<&str> = sanitized.split(pattern).collect();
+            let mut result = String::new();
+
+            for (i, part) in parts.iter().enumerate() {
+                result.push_str(part);
+                if i < parts.len() - 1 {
+                    result.push_str(replacement);
+                    // Skip the actual hostname:port in the next part
+                    if let Some(next_space) = parts[i + 1].find(' ') {
+                        result.push_str(&parts[i + 1][next_space..]);
+                    }
+                }
+            }
+            sanitized = result;
         }
     }
 

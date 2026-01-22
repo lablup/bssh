@@ -254,8 +254,9 @@ where
         let mut buckets = self.buckets.write().await;
         let now = Instant::now();
 
-        // Clean up old buckets periodically
-        if buckets.len() > 100 {
+        // Clean up old buckets periodically to prevent unbounded memory growth
+        // Use a lower threshold to trigger cleanup more frequently
+        if buckets.len() > 10 {
             self.cleanup_old_buckets(&mut buckets, now);
         }
 
@@ -278,12 +279,13 @@ where
             Ok(())
         } else {
             let wait_time = (1.0 - bucket.tokens) / self.config.refill_rate;
+            // Log without exposing the key to prevent information disclosure
             warn!(
-                "Rate limit exceeded for {}: wait {:.1}s before retry",
-                key, wait_time
+                "Rate limit exceeded: wait {:.1}s before retry",
+                wait_time
             );
             bail!(
-                "Rate limit exceeded for {key}. Please wait {wait_time:.1} seconds before retrying."
+                "Rate limit exceeded. Please wait {wait_time:.1} seconds before retrying."
             )
         }
     }
