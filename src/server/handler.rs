@@ -26,6 +26,7 @@ use russh::keys::ssh_key;
 use russh::server::{Auth, Msg, Session};
 use russh::{Channel, ChannelId, MethodKind, MethodSet, Pty};
 use tokio::sync::RwLock;
+use zeroize::Zeroizing;
 
 use super::auth::AuthProvider;
 use super::config::ServerConfig;
@@ -420,7 +421,8 @@ impl russh::server::Handler for SshHandler {
         let rate_limiter = self.rate_limiter.clone();
         let peer_addr = self.peer_addr;
         let user = user.to_string();
-        let password = password.to_string();
+        // Use Zeroizing to ensure password is securely cleared from memory when dropped
+        let password = Zeroizing::new(password.to_string());
         let allow_password = self.config.allow_password_auth;
 
         // Get mutable reference to session_info for authentication update
