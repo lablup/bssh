@@ -48,8 +48,10 @@ pub mod auth;
 pub mod config;
 pub mod exec;
 pub mod handler;
+pub mod pty;
 pub mod session;
 pub mod sftp;
+pub mod shell;
 
 use std::net::SocketAddr;
 use std::path::Path;
@@ -66,9 +68,11 @@ use crate::shared::rate_limit::RateLimiter;
 pub use self::config::{ServerConfig, ServerConfigBuilder};
 pub use self::exec::{CommandExecutor, ExecConfig};
 pub use self::handler::SshHandler;
+pub use self::pty::{PtyConfig as PtyMasterConfig, PtyMaster};
 pub use self::session::{
     ChannelMode, ChannelState, PtyConfig, SessionId, SessionInfo, SessionManager,
 };
+pub use self::shell::ShellSession;
 
 /// The main SSH server struct.
 ///

@@ -31,8 +31,10 @@ use zeroize::Zeroizing;
 use super::auth::AuthProvider;
 use super::config::ServerConfig;
 use super::exec::CommandExecutor;
+use super::pty::PtyConfig as PtyMasterConfig;
 use super::session::{ChannelState, PtyConfig, SessionId, SessionInfo, SessionManager};
 use super::sftp::SftpHandler;
+use super::shell::ShellSession;
 use crate::shared::rate_limit::RateLimiter;
 
 /// SSH handler for a single client connection.
@@ -716,22 +718,124 @@ impl russh::server::Handler for SshHandler {
 
     /// Handle shell request.
     ///
-    /// Placeholder implementation - will be implemented in a future issue.
+    /// Starts an interactive shell session for the authenticated user.
     fn shell_request(
         &mut self,
         channel_id: ChannelId,
         session: &mut Session,
     ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
-        tracing::debug!("Shell request");
+        tracing::debug!(channel = ?channel_id, "Shell request");
 
-        if let Some(channel_state) = self.channels.get_mut(&channel_id) {
-            channel_state.set_shell();
+        // Get authenticated user info
+        let username = match self.session_info.as_ref().and_then(|s| s.user.clone()) {
+            Some(user) => user,
+            None => {
+                tracing::warn!(
+                    channel = ?channel_id,
+                    "Shell request without authenticated user"
+                );
+                let _ = session.channel_failure(channel_id);
+                return async { Ok(()) }.boxed();
+            }
+        };
+
+        // Get PTY configuration (if set during pty_request)
+        let pty_config = self
+            .channels
+            .get(&channel_id)
+            .and_then(|state| state.pty.as_ref())
+            .map(|pty| {
+                PtyMasterConfig::new(
+                    pty.term.clone(),
+                    pty.col_width,
+                    pty.row_height,
+                    pty.pix_width,
+                    pty.pix_height,
+                )
+            })
+            .unwrap_or_default();
+
+        // Clone what we need for the async block
+        let auth_provider = Arc::clone(&self.auth_provider);
+        let handle = session.handle();
+        let peer_addr = self.peer_addr;
+
+        // Get mutable reference to channel state
+        let channels = &mut self.channels;
+
+        // Signal success before starting shell
+        let _ = session.channel_success(channel_id);
+
+        async move {
+            // Get user info from auth provider
+            let user_info = match auth_provider.get_user_info(&username).await {
+                Ok(Some(info)) => info,
+                Ok(None) => {
+                    tracing::error!(
+                        user = %username,
+                        "User not found after authentication for shell"
+                    );
+                    let _ = handle.close(channel_id).await;
+                    return Ok(());
+                }
+                Err(e) => {
+                    tracing::error!(
+                        user = %username,
+                        error = %e,
+                        "Failed to get user info for shell"
+                    );
+                    let _ = handle.close(channel_id).await;
+                    return Ok(());
+                }
+            };
+
+            tracing::info!(
+                user = %username,
+                peer = ?peer_addr,
+                term = %pty_config.term,
+                size = %format!("{}x{}", pty_config.col_width, pty_config.row_height),
+                "Starting shell session"
+            );
+
+            // Create shell session
+            let mut shell_session = match ShellSession::new(channel_id, pty_config) {
+                Ok(session) => session,
+                Err(e) => {
+                    tracing::error!(
+                        user = %username,
+                        error = %e,
+                        "Failed to create shell session"
+                    );
+                    let _ = handle.close(channel_id).await;
+                    return Ok(());
+                }
+            };
+
+            // Start shell session
+            if let Err(e) = shell_session.start(&user_info, handle.clone()).await {
+                tracing::error!(
+                    user = %username,
+                    error = %e,
+                    "Failed to start shell session"
+                );
+                let _ = handle.close(channel_id).await;
+                return Ok(());
+            }
+
+            // Store shell session in channel state
+            if let Some(channel_state) = channels.get_mut(&channel_id) {
+                channel_state.set_shell_session(shell_session);
+            }
+
+            tracing::info!(
+                user = %username,
+                peer = ?peer_addr,
+                "Shell session started"
+            );
+
+            Ok(())
         }
-
-        // Placeholder - reject for now
-        // Will be implemented in #129
-        let _ = session.channel_failure(channel_id);
-        async { Ok(()) }
+        .boxed()
     }
 
     /// Handle subsystem request.
@@ -849,19 +953,98 @@ impl russh::server::Handler for SshHandler {
     }
 
     /// Handle incoming data from the client.
+    ///
+    /// Forwards data to the active shell session if one exists.
     fn data(
         &mut self,
-        _channel_id: ChannelId,
+        channel_id: ChannelId,
         data: &[u8],
         _session: &mut Session,
     ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
         tracing::trace!(
+            channel = ?channel_id,
             bytes = %data.len(),
             "Received data"
         );
 
-        // Placeholder - data handling will be implemented with exec/shell/sftp
-        async { Ok(()) }
+        // Get the data sender if there's an active shell session
+        let data_sender = self
+            .channels
+            .get(&channel_id)
+            .and_then(|state| state.shell_session.as_ref())
+            .and_then(|shell| shell.data_sender());
+
+        if let Some(tx) = data_sender {
+            let data = data.to_vec();
+            return async move {
+                if let Err(e) = tx.send(data).await {
+                    tracing::debug!(
+                        channel = ?channel_id,
+                        error = %e,
+                        "Error forwarding data to shell"
+                    );
+                }
+                Ok(())
+            }
+            .boxed();
+        }
+
+        async { Ok(()) }.boxed()
+    }
+
+    /// Handle window size change request.
+    ///
+    /// Updates the PTY window size for active shell sessions.
+    #[allow(clippy::too_many_arguments)]
+    fn window_change_request(
+        &mut self,
+        channel_id: ChannelId,
+        col_width: u32,
+        row_height: u32,
+        pix_width: u32,
+        pix_height: u32,
+        _session: &mut Session,
+    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
+        tracing::debug!(
+            channel = ?channel_id,
+            cols = col_width,
+            rows = row_height,
+            "Window change request"
+        );
+
+        // Update stored PTY config
+        if let Some(state) = self.channels.get_mut(&channel_id) {
+            if let Some(ref mut pty) = state.pty {
+                pty.col_width = col_width;
+                pty.row_height = row_height;
+                pty.pix_width = pix_width;
+                pty.pix_height = pix_height;
+            }
+        }
+
+        // Get the PTY mutex if there's an active shell session
+        let pty_mutex = self
+            .channels
+            .get(&channel_id)
+            .and_then(|state| state.shell_session.as_ref())
+            .map(|shell| Arc::clone(shell.pty()));
+
+        if let Some(pty) = pty_mutex {
+            return async move {
+                let mut pty_guard = pty.lock().await;
+                if let Err(e) = pty_guard.resize(col_width, row_height) {
+                    tracing::debug!(
+                        channel = ?channel_id,
+                        error = %e,
+                        "Error resizing shell PTY"
+                    );
+                }
+                Ok(())
+            }
+            .boxed();
+        }
+
+        async { Ok(()) }.boxed()
     }
 
     /// Handle channel EOF from the client.
