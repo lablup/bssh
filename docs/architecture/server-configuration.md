@@ -118,7 +118,7 @@ auth:
     # Inline user definitions
     users:
       - name: testuser
-        password_hash: "$6$rounds=656000$..."  # openssl passwd -6
+        password_hash: "$argon2id$v=19$m=19456,t=2,p=1$..."  # bssh-server hash-password
         shell: /bin/bash
         home: /home/testuser
         env:
@@ -364,11 +364,19 @@ Generated keys have secure permissions (0600) and are in OpenSSH format.
 ### Hash Passwords
 
 ```bash
-# Interactive password hashing with bcrypt
+# Interactive password hashing with Argon2id (recommended)
 bssh-server hash-password
 ```
 
-This prompts for a password, confirms it, and outputs a bcrypt hash suitable for use in the configuration file.
+This prompts for a password, confirms it, and outputs an Argon2id hash suitable for use in the configuration file. Argon2id is the OWASP-recommended password hashing algorithm with memory-hard properties that resist GPU and ASIC attacks.
+
+The generated hash includes:
+- Algorithm: Argon2id (variant resistant to both side-channel and GPU attacks)
+- Memory cost: 19 MiB
+- Time cost: 2 iterations
+- Parallelism: 1
+
+Note: bcrypt hashes are also supported for backward compatibility with existing configurations.
 
 ### Validate Configuration
 

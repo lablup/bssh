@@ -26,6 +26,7 @@ use russh::keys::ssh_key;
 use russh::server::{Auth, Msg, Session};
 use russh::{Channel, ChannelId, MethodKind, MethodSet, Pty};
 use tokio::sync::RwLock;
+use zeroize::Zeroizing;
 
 use super::auth::AuthProvider;
 use super::config::ServerConfig;
@@ -392,11 +393,12 @@ impl russh::server::Handler for SshHandler {
 
     /// Handle password authentication.
     ///
-    /// Placeholder implementation - will be implemented in a future issue.
+    /// Verifies the password against configured users using the auth provider.
+    /// Implements rate limiting and tracks failed authentication attempts.
     fn auth_password(
         &mut self,
         user: &str,
-        _password: &str,
+        password: &str,
     ) -> impl std::future::Future<Output = Result<Auth, Self::Error>> + Send {
         tracing::debug!(
             user = %user,
@@ -414,27 +416,132 @@ impl russh::server::Handler for SshHandler {
         let mut methods = self.allowed_methods();
         methods.remove(MethodKind::Password);
 
+        // Clone what we need for the async block
+        let auth_provider = Arc::clone(&self.auth_provider);
+        let rate_limiter = self.rate_limiter.clone();
+        let peer_addr = self.peer_addr;
+        let user = user.to_string();
+        // Use Zeroizing to ensure password is securely cleared from memory when dropped
+        let password = Zeroizing::new(password.to_string());
+        let allow_password = self.config.allow_password_auth;
+
+        // Get mutable reference to session_info for authentication update
+        let session_info = &mut self.session_info;
+
         async move {
+            // Check if password auth is enabled
+            if !allow_password {
+                tracing::debug!(
+                    user = %user,
+                    "Password authentication disabled"
+                );
+                let proceed = if methods.is_empty() {
+                    None
+                } else {
+                    Some(methods)
+                };
+                return Ok(Auth::Reject {
+                    proceed_with_methods: proceed,
+                    partial_success: false,
+                });
+            }
+
             if exceeded {
-                tracing::warn!("Max authentication attempts exceeded");
+                tracing::warn!(
+                    user = %user,
+                    peer = ?peer_addr,
+                    "Max authentication attempts exceeded"
+                );
                 return Ok(Auth::Reject {
                     proceed_with_methods: None,
                     partial_success: false,
                 });
             }
 
-            // Placeholder - reject but allow other methods
-            // Will be implemented in #127
-            let proceed = if methods.is_empty() {
-                None
-            } else {
-                Some(methods)
-            };
+            // Check rate limiting based on peer address
+            let rate_key = peer_addr
+                .map(|addr| addr.ip().to_string())
+                .unwrap_or_else(|| "unknown".to_string());
 
-            Ok(Auth::Reject {
-                proceed_with_methods: proceed,
-                partial_success: false,
-            })
+            if rate_limiter.is_rate_limited(&rate_key).await {
+                tracing::warn!(
+                    user = %user,
+                    peer = ?peer_addr,
+                    "Rate limited password authentication attempt"
+                );
+                return Ok(Auth::Reject {
+                    proceed_with_methods: None,
+                    partial_success: false,
+                });
+            }
+
+            // Try to acquire a rate limit token
+            if rate_limiter.try_acquire(&rate_key).await.is_err() {
+                tracing::warn!(
+                    user = %user,
+                    peer = ?peer_addr,
+                    "Rate limit exceeded for password authentication"
+                );
+                return Ok(Auth::Reject {
+                    proceed_with_methods: None,
+                    partial_success: false,
+                });
+            }
+
+            // Verify password using auth provider
+            match auth_provider.verify_password(&user, &password).await {
+                Ok(result) if result.is_accepted() => {
+                    tracing::info!(
+                        user = %user,
+                        peer = ?peer_addr,
+                        "Password authentication successful"
+                    );
+
+                    // Mark session as authenticated
+                    if let Some(ref mut info) = session_info {
+                        info.authenticate(&user);
+                    }
+
+                    Ok(Auth::Accept)
+                }
+                Ok(_) => {
+                    tracing::debug!(
+                        user = %user,
+                        peer = ?peer_addr,
+                        "Password authentication rejected"
+                    );
+
+                    let proceed = if methods.is_empty() {
+                        None
+                    } else {
+                        Some(methods)
+                    };
+
+                    Ok(Auth::Reject {
+                        proceed_with_methods: proceed,
+                        partial_success: false,
+                    })
+                }
+                Err(e) => {
+                    tracing::error!(
+                        user = %user,
+                        peer = ?peer_addr,
+                        error = %e,
+                        "Error during password verification"
+                    );
+
+                    let proceed = if methods.is_empty() {
+                        None
+                    } else {
+                        Some(methods)
+                    };
+
+                    Ok(Auth::Reject {
+                        proceed_with_methods: proceed,
+                        partial_success: false,
+                    })
+                }
+            }
         }
     }
 
