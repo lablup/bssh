@@ -153,6 +153,12 @@ struct DirEntryInfo {
     attrs: FileAttributes,
 }
 
+/// Maximum number of open handles per session to prevent resource exhaustion.
+const MAX_HANDLES: usize = 1000;
+
+/// Maximum read buffer size (64KB) to prevent memory exhaustion.
+const MAX_READ_SIZE: u32 = 65536;
+
 /// SFTP server handler.
 ///
 /// Implements the SFTP protocol for file transfer operations with
@@ -202,28 +208,17 @@ impl SftpHandler {
         format!("h{}", self.handle_counter)
     }
 
-    /// Resolve a client path to an absolute filesystem path.
-    ///
-    /// This method prevents path traversal attacks by:
-    /// 1. Joining the path with the root directory
-    /// 2. Normalizing the path (resolving "." and ".." components)
-    /// 3. Verifying the result is within the root directory
-    ///
-    /// # Security
-    ///
-    /// This is critical for security. The resolved path must always
-    /// start with the root directory to prevent access to files
-    /// outside the allowed area.
-    pub fn resolve_path(&self, path: &str) -> Result<PathBuf, SftpError> {
+    /// Static helper for path resolution (used in symlink validation).
+    fn resolve_path_static(path: &str, root_dir: &Path) -> Result<PathBuf, SftpError> {
         let path = Path::new(path);
 
         // Normalize the path manually without following symlinks
         let normalized = if path.is_absolute() {
             // Strip the leading "/" and join with root
             let stripped = path.strip_prefix("/").unwrap_or(path);
-            self.root_dir.join(stripped)
+            root_dir.join(stripped)
         } else {
-            self.root_dir.join(path)
+            root_dir.join(path)
         };
 
         // Normalize path components (handle ".." and ".")
@@ -235,12 +230,12 @@ impl SftpHandler {
                 Component::CurDir => {} // Skip "."
                 Component::ParentDir => {
                     // Go up but don't go above root
-                    if resolved.starts_with(&self.root_dir) && resolved != self.root_dir {
+                    if resolved.starts_with(root_dir) && resolved != root_dir {
                         resolved.pop();
                     }
                     // If we can't go up, stay at root
-                    if !resolved.starts_with(&self.root_dir) {
-                        resolved = self.root_dir.clone();
+                    if !resolved.starts_with(root_dir) {
+                        resolved = root_dir.to_path_buf();
                     }
                 }
                 Component::RootDir => resolved.push("/"),
@@ -249,12 +244,11 @@ impl SftpHandler {
         }
 
         // Ensure the resolved path is within the root
-        if !resolved.starts_with(&self.root_dir) {
+        if !resolved.starts_with(root_dir) {
             tracing::warn!(
-                user = %self.user_info.username,
                 requested = %path.display(),
                 resolved = %resolved.display(),
-                root = %self.root_dir.display(),
+                root = %root_dir.display(),
                 "Path traversal attempt detected"
             );
             return Err(SftpError::permission_denied(
@@ -269,6 +263,22 @@ impl SftpHandler {
         );
 
         Ok(resolved)
+    }
+
+    /// Resolve a client path to an absolute filesystem path.
+    ///
+    /// This method prevents path traversal attacks by:
+    /// 1. Joining the path with the root directory
+    /// 2. Normalizing the path (resolving "." and ".." components)
+    /// 3. Verifying the result is within the root directory
+    ///
+    /// # Security
+    ///
+    /// This is critical for security. The resolved path must always
+    /// start with the root directory to prevent access to files
+    /// outside the allowed area.
+    pub fn resolve_path(&self, path: &str) -> Result<PathBuf, SftpError> {
+        Self::resolve_path_static(path, &self.root_dir)
     }
 
     /// Convert file metadata to SFTP FileAttributes.
@@ -367,6 +377,7 @@ impl russh_sftp::server::Handler for SftpHandler {
         let path_result = self.resolve_path(&filename);
         let handle_id = self.new_handle();
         let handles = Arc::clone(&self.handles);
+        let root_dir = self.root_dir.clone();
 
         tracing::debug!(
             user = %self.user_info.username,
@@ -377,7 +388,47 @@ impl russh_sftp::server::Handler for SftpHandler {
         );
 
         async move {
+            // Check handle limit before acquiring lock
+            {
+                let handles_guard = handles.lock().await;
+                if handles_guard.len() >= MAX_HANDLES {
+                    return Err(SftpError::new(
+                        StatusCode::Failure,
+                        "Too many open handles",
+                    ));
+                }
+            }
+
             let path = path_result?;
+
+            // Check if the path is a symlink and validate the target
+            let metadata = fs::symlink_metadata(&path).await;
+            if let Ok(meta) = metadata {
+                if meta.is_symlink() {
+                    // Follow the symlink and ensure target is within root
+                    let target = fs::read_link(&path).await?;
+                    let resolved_target = if target.is_absolute() {
+                        target
+                    } else {
+                        // Resolve relative symlink from the symlink's directory
+                        let base = path.parent().unwrap_or(&root_dir);
+                        let joined = base.join(&target);
+                        // Use tokio's canonicalize for async operation
+                        tokio::fs::canonicalize(&joined).await.unwrap_or(target)
+                    };
+
+                    if !resolved_target.starts_with(&root_dir) {
+                        tracing::warn!(
+                            path = %path.display(),
+                            target = %resolved_target.display(),
+                            "Symlink target outside root directory"
+                        );
+                        return Err(SftpError::permission_denied(
+                            "Symlink target outside allowed directory",
+                        ));
+                    }
+                }
+            }
 
             // Build open options from flags
             let mut opts = OpenOptions::new();
@@ -431,6 +482,17 @@ impl russh_sftp::server::Handler for SftpHandler {
         let handles = Arc::clone(&self.handles);
 
         async move {
+            // Cap read size to prevent memory exhaustion
+            let capped_len = len.min(MAX_READ_SIZE);
+            if len > MAX_READ_SIZE {
+                tracing::warn!(
+                    handle = %handle,
+                    requested = len,
+                    capped = capped_len,
+                    "Read size exceeds maximum, capping to MAX_READ_SIZE"
+                );
+            }
+
             let mut handles_guard = handles.lock().await;
             let handle_entry = handles_guard.get_mut(&handle);
 
@@ -443,7 +505,7 @@ impl russh_sftp::server::Handler for SftpHandler {
             file.seek(SeekFrom::Start(offset)).await?;
 
             // Read data
-            let mut buffer = vec![0u8; len as usize];
+            let mut buffer = vec![0u8; capped_len as usize];
             let bytes_read = file.read(&mut buffer).await?;
 
             if bytes_read == 0 {
@@ -545,6 +607,7 @@ impl russh_sftp::server::Handler for SftpHandler {
         let resolved = self.resolve_path(&path);
         let handle_id = self.new_handle();
         let handles = Arc::clone(&self.handles);
+        let root_dir = self.root_dir.clone();
 
         tracing::debug!(
             user = %self.user_info.username,
@@ -554,25 +617,48 @@ impl russh_sftp::server::Handler for SftpHandler {
         );
 
         async move {
+            // Check handle limit before acquiring lock
+            {
+                let handles_guard = handles.lock().await;
+                if handles_guard.len() >= MAX_HANDLES {
+                    return Err(SftpError::new(
+                        StatusCode::Failure,
+                        "Too many open handles",
+                    ));
+                }
+            }
+
             let resolved_path = resolved?;
 
             // Read directory entries
             let mut entries = Vec::new();
             let mut read_dir = fs::read_dir(&resolved_path).await?;
 
-            // Add "." and ".." entries
-            if let Ok(meta) = fs::metadata(&resolved_path).await {
+            // Add "." entry
+            if let Ok(meta) = fs::symlink_metadata(&resolved_path).await {
                 entries.push(DirEntryInfo {
                     filename: ".".to_string(),
                     attrs: SftpHandler::metadata_to_attrs(&meta),
                 });
             }
+
+            // Add ".." entry only if parent is within root
             if let Some(parent) = resolved_path.parent() {
-                if let Ok(meta) = fs::metadata(parent).await {
-                    entries.push(DirEntryInfo {
-                        filename: "..".to_string(),
-                        attrs: SftpHandler::metadata_to_attrs(&meta),
-                    });
+                if parent.starts_with(&root_dir) {
+                    if let Ok(meta) = fs::symlink_metadata(parent).await {
+                        entries.push(DirEntryInfo {
+                            filename: "..".to_string(),
+                            attrs: SftpHandler::metadata_to_attrs(&meta),
+                        });
+                    }
+                } else if resolved_path == root_dir {
+                    // At root boundary, use root's own metadata for ".."
+                    if let Ok(meta) = fs::symlink_metadata(&resolved_path).await {
+                        entries.push(DirEntryInfo {
+                            filename: "..".to_string(),
+                            attrs: SftpHandler::metadata_to_attrs(&meta),
+                        });
+                    }
                 }
             }
 
@@ -664,9 +750,38 @@ impl russh_sftp::server::Handler for SftpHandler {
         path: String,
     ) -> impl std::future::Future<Output = Result<Attrs, Self::Error>> + Send {
         let resolved = self.resolve_path(&path);
+        let root_dir = self.root_dir.clone();
 
         async move {
             let path = resolved?;
+
+            // Use symlink_metadata first to check if it's a symlink
+            let symlink_meta = fs::symlink_metadata(&path).await?;
+
+            if symlink_meta.is_symlink() {
+                // Follow the symlink and validate the target is within root
+                let target = fs::read_link(&path).await?;
+                let resolved_target = if target.is_absolute() {
+                    target
+                } else {
+                    let base = path.parent().unwrap_or(&root_dir);
+                    let joined = base.join(&target);
+                    tokio::fs::canonicalize(&joined).await.unwrap_or(target)
+                };
+
+                if !resolved_target.starts_with(&root_dir) {
+                    tracing::warn!(
+                        path = %path.display(),
+                        target = %resolved_target.display(),
+                        "stat: Symlink target outside root directory"
+                    );
+                    return Err(SftpError::permission_denied(
+                        "Symlink target outside allowed directory",
+                    ));
+                }
+            }
+
+            // Now get the metadata (following symlinks)
             let metadata = fs::metadata(&path).await?;
             let attrs = SftpHandler::metadata_to_attrs(&metadata);
 
@@ -966,10 +1081,42 @@ impl russh_sftp::server::Handler for SftpHandler {
         path: String,
     ) -> impl std::future::Future<Output = Result<Name, Self::Error>> + Send {
         let resolved = self.resolve_path(&path);
+        let root_dir = self.root_dir.clone();
 
         async move {
             let path = resolved?;
             let target = fs::read_link(&path).await?;
+
+            // If target is absolute and outside root, convert to safe relative path
+            let safe_target = if target.is_absolute() {
+                // Resolve the absolute target
+                let resolved_target = if let Ok(canonical) = tokio::fs::canonicalize(&target).await
+                {
+                    canonical
+                } else {
+                    target.clone()
+                };
+
+                // If target is outside root, redact it
+                if !resolved_target.starts_with(&root_dir) {
+                    tracing::warn!(
+                        symlink = %path.display(),
+                        target = %resolved_target.display(),
+                        "readlink: Symlink target outside root, redacting"
+                    );
+                    // Return a safe placeholder instead of exposing system paths
+                    PathBuf::from("[target outside root]")
+                } else {
+                    // Convert to path relative to root for safe display
+                    resolved_target
+                        .strip_prefix(&root_dir)
+                        .map(PathBuf::from)
+                        .unwrap_or(target)
+                }
+            } else {
+                // Relative targets are safe to expose as-is
+                target
+            };
 
             let attrs = FileAttributes {
                 size: None,
@@ -985,7 +1132,7 @@ impl russh_sftp::server::Handler for SftpHandler {
             Ok(Name {
                 id,
                 files: vec![russh_sftp::protocol::File {
-                    filename: target.display().to_string(),
+                    filename: safe_target.display().to_string(),
                     longname: String::new(),
                     attrs,
                 }],
@@ -1002,11 +1149,88 @@ impl russh_sftp::server::Handler for SftpHandler {
     ) -> impl std::future::Future<Output = Result<Status, Self::Error>> + Send {
         let link_resolved = self.resolve_path(&linkpath);
         let user = self.user_info.username.clone();
+        let root_dir = self.root_dir.clone();
 
         async move {
             let link_path = link_resolved?;
 
-            // Create symbolic link (target is used as-is, not resolved)
+            // Validate the target path to prevent symlink attacks
+            let target = Path::new(&targetpath);
+
+            // If target is absolute, ensure it's within root
+            if target.is_absolute() {
+                // Resolve target through our path resolution to ensure it's within root
+                let target_str = target.to_string_lossy();
+                let resolved_target = match SftpHandler::resolve_path_static(
+                    &target_str,
+                    &root_dir,
+                ) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        tracing::warn!(
+                            user = %user,
+                            link = %link_path.display(),
+                            target = %targetpath,
+                            "Rejected symlink with target outside root"
+                        );
+                        return Err(e);
+                    }
+                };
+
+                if !resolved_target.starts_with(&root_dir) {
+                    tracing::warn!(
+                        user = %user,
+                        link = %link_path.display(),
+                        target = %targetpath,
+                        resolved = %resolved_target.display(),
+                        "Symlink target resolves outside root"
+                    );
+                    return Err(SftpError::permission_denied(
+                        "Symlink target must be within root directory",
+                    ));
+                }
+            } else {
+                // For relative targets, verify they resolve within root when combined with link parent
+                let link_parent = link_path.parent().unwrap_or(&root_dir);
+                let mut resolved = link_parent.to_path_buf();
+
+                for component in target.components() {
+                    use std::path::Component;
+                    match component {
+                        Component::Normal(c) => resolved.push(c),
+                        Component::CurDir => {}
+                        Component::ParentDir => {
+                            if !resolved.pop() || !resolved.starts_with(&root_dir) {
+                                tracing::warn!(
+                                    user = %user,
+                                    link = %link_path.display(),
+                                    target = %targetpath,
+                                    "Relative symlink target escapes root"
+                                );
+                                return Err(SftpError::permission_denied(
+                                    "Symlink target must be within root directory",
+                                ));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                if !resolved.starts_with(&root_dir) {
+                    tracing::warn!(
+                        user = %user,
+                        link = %link_path.display(),
+                        target = %targetpath,
+                        resolved = %resolved.display(),
+                        "Relative symlink resolves outside root"
+                    );
+                    return Err(SftpError::permission_denied(
+                        "Symlink target must be within root directory",
+                    ));
+                }
+            }
+
+            // Create symbolic link (target is used as-is, but validated)
             #[cfg(unix)]
             tokio::fs::symlink(&targetpath, &link_path).await?;
 
