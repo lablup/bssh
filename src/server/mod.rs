@@ -25,6 +25,7 @@
 //! - [`SshHandler`]: Handles SSH protocol events for each connection
 //! - [`SessionManager`]: Tracks active sessions
 //! - [`ServerConfig`]: Server configuration options
+//! - [`auth`]: Authentication providers (public key, password)
 //!
 //! # Example
 //!
@@ -43,6 +44,7 @@
 //! }
 //! ```
 
+pub mod auth;
 pub mod config;
 pub mod handler;
 pub mod session;

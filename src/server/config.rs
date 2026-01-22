@@ -17,9 +17,12 @@
 //! This module defines configuration options for the SSH server.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
+
+use super::auth::{AuthProvider, PublicKeyAuthConfig, PublicKeyVerifier};
 
 /// Configuration for the SSH server.
 ///
@@ -65,6 +68,37 @@ pub struct ServerConfig {
     /// Banner message displayed to clients before authentication.
     #[serde(default)]
     pub banner: Option<String>,
+
+    /// Configuration for public key authentication.
+    #[serde(default)]
+    pub publickey_auth: PublicKeyAuthConfigSerde,
+}
+
+/// Serializable configuration for public key authentication.
+///
+/// This is a separate type from `PublicKeyAuthConfig` to support
+/// serde serialization while keeping the actual config flexible.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PublicKeyAuthConfigSerde {
+    /// Directory containing authorized_keys files.
+    /// Structure: `{dir}/{username}/authorized_keys`
+    pub authorized_keys_dir: Option<PathBuf>,
+
+    /// Alternative: file path pattern with `{user}` placeholder.
+    /// Example: `/home/{user}/.ssh/authorized_keys`
+    pub authorized_keys_pattern: Option<String>,
+}
+
+impl From<PublicKeyAuthConfigSerde> for PublicKeyAuthConfig {
+    fn from(serde_config: PublicKeyAuthConfigSerde) -> Self {
+        if let Some(dir) = serde_config.authorized_keys_dir {
+            PublicKeyAuthConfig::with_directory(dir)
+        } else if let Some(pattern) = serde_config.authorized_keys_pattern {
+            PublicKeyAuthConfig::with_pattern(pattern)
+        } else {
+            PublicKeyAuthConfig::default()
+        }
+    }
 }
 
 fn default_listen_address() -> String {
@@ -104,6 +138,7 @@ impl Default for ServerConfig {
             allow_publickey_auth: true,
             allow_keyboard_interactive: false,
             banner: None,
+            publickey_auth: PublicKeyAuthConfigSerde::default(),
         }
     }
 }
@@ -143,6 +178,14 @@ impl ServerConfig {
     /// Add a host key path.
     pub fn add_host_key(&mut self, path: impl Into<PathBuf>) {
         self.host_keys.push(path.into());
+    }
+
+    /// Create an auth provider based on the configuration.
+    ///
+    /// Returns a `PublicKeyVerifier` configured according to the server settings.
+    pub fn create_auth_provider(&self) -> Arc<dyn AuthProvider> {
+        let config: PublicKeyAuthConfig = self.publickey_auth.clone().into();
+        Arc::new(PublicKeyVerifier::new(config))
     }
 }
 
@@ -216,6 +259,26 @@ impl ServerConfigBuilder {
     /// Set the banner message.
     pub fn banner(mut self, banner: impl Into<String>) -> Self {
         self.config.banner = Some(banner.into());
+        self
+    }
+
+    /// Set the authorized_keys directory.
+    ///
+    /// The directory should contain subdirectories for each user,
+    /// with an `authorized_keys` file in each.
+    pub fn authorized_keys_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.config.publickey_auth.authorized_keys_dir = Some(dir.into());
+        self.config.publickey_auth.authorized_keys_pattern = None;
+        self
+    }
+
+    /// Set the authorized_keys file pattern.
+    ///
+    /// The pattern should contain `{user}` which will be replaced
+    /// with the username.
+    pub fn authorized_keys_pattern(mut self, pattern: impl Into<String>) -> Self {
+        self.config.publickey_auth.authorized_keys_pattern = Some(pattern.into());
+        self.config.publickey_auth.authorized_keys_dir = None;
         self
     }
 
@@ -313,5 +376,41 @@ mod tests {
 
         assert_eq!(config.idle_timeout_secs, 600);
         assert_eq!(config.idle_timeout(), Some(Duration::from_secs(600)));
+    }
+
+    #[test]
+    fn test_builder_authorized_keys_dir() {
+        let config = ServerConfig::builder()
+            .authorized_keys_dir("/etc/bssh/authorized_keys")
+            .build();
+
+        assert_eq!(
+            config.publickey_auth.authorized_keys_dir,
+            Some(PathBuf::from("/etc/bssh/authorized_keys"))
+        );
+        assert!(config.publickey_auth.authorized_keys_pattern.is_none());
+    }
+
+    #[test]
+    fn test_builder_authorized_keys_pattern() {
+        let config = ServerConfig::builder()
+            .authorized_keys_pattern("/home/{user}/.ssh/authorized_keys")
+            .build();
+
+        assert!(config.publickey_auth.authorized_keys_dir.is_none());
+        assert_eq!(
+            config.publickey_auth.authorized_keys_pattern,
+            Some("/home/{user}/.ssh/authorized_keys".to_string())
+        );
+    }
+
+    #[test]
+    fn test_create_auth_provider() {
+        let config = ServerConfig::builder()
+            .authorized_keys_dir("/etc/bssh/keys")
+            .build();
+
+        // Provider should be created successfully (verifies no panic)
+        let _provider = config.create_auth_provider();
     }
 }
