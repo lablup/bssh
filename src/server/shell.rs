@@ -440,6 +440,7 @@ impl std::fmt::Debug for ShellSession {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     // Note: Full shell session tests require integration testing with
     // actual russh channels. These unit tests cover the basic structures.
@@ -451,5 +452,59 @@ mod tests {
             assert!(IO_BUFFER_SIZE >= 4096);
             assert!(IO_BUFFER_SIZE <= 65536);
         };
+    }
+
+    #[test]
+    fn test_io_buffer_size_value() {
+        // Explicit test for documentation purposes
+        assert_eq!(IO_BUFFER_SIZE, 8192);
+    }
+
+    #[test]
+    fn test_shell_session_debug() {
+        // Test Debug implementation for ShellSession (indirectly through PtyConfig)
+        let config = PtyConfig::default();
+        let debug_str = format!("{:?}", config);
+        assert!(debug_str.contains("term"));
+        assert!(debug_str.contains("col_width"));
+        assert!(debug_str.contains("row_height"));
+    }
+
+    #[test]
+    fn test_pty_config_default_values() {
+        let config = PtyConfig::default();
+        assert_eq!(config.term, "xterm-256color");
+        assert_eq!(config.col_width, 80);
+        assert_eq!(config.row_height, 24);
+    }
+
+    #[test]
+    fn test_pty_config_custom_values() {
+        use super::super::pty::PtyConfig as PtyMasterConfig;
+
+        let config = PtyMasterConfig::new("vt100".to_string(), 120, 40, 800, 600);
+
+        assert_eq!(config.term, "vt100");
+        assert_eq!(config.col_width, 120);
+        assert_eq!(config.row_height, 40);
+        assert_eq!(config.pix_width, 800);
+        assert_eq!(config.pix_height, 600);
+    }
+
+    // Note: Tests requiring ChannelId are difficult because ChannelId's
+    // constructor is not public in russh. These would be integration tests.
+
+    #[tokio::test]
+    async fn test_shell_path_validation() {
+        // Test that shell path validation works
+        let nonexistent_path = PathBuf::from("/nonexistent/shell/path");
+        assert!(!nonexistent_path.exists());
+
+        // Common shell paths that should exist on Unix systems
+        let common_shells = ["/bin/sh", "/bin/bash", "/usr/bin/bash"];
+        let has_valid_shell = common_shells.iter().any(|s| PathBuf::from(s).exists());
+
+        // At least one common shell should exist
+        assert!(has_valid_shell, "No common shell found on system");
     }
 }

@@ -403,6 +403,89 @@ bssh-server -c /etc/bssh/server.yaml -p 2222 -b 0.0.0.0
 bssh-server -c /etc/bssh/server.yaml -D -vvv
 ```
 
+## Shell Session Architecture
+
+The bssh-server supports interactive shell sessions through a PTY (pseudo-terminal) subsystem. This enables users to connect and run interactive programs like vim, top, or bash.
+
+### PTY Management
+
+The PTY module (`src/server/pty.rs`) handles pseudo-terminal operations:
+
+**Key Components:**
+- **PtyMaster**: Manages the master side of a PTY pair
+  - Opens PTY pair using `openpty()` from the nix crate
+  - Provides async I/O via tokio's `AsyncFd`
+  - Handles window resize events with `TIOCSWINSZ` ioctl
+  - Configurable terminal type and dimensions
+
+**Configuration:**
+```rust
+use bssh::server::pty::{PtyConfig, PtyMaster};
+
+// Create PTY with custom configuration
+let config = PtyConfig::new(
+    "xterm-256color".to_string(),  // Terminal type
+    80,   // Columns
+    24,   // Rows
+    0,    // Pixel width (optional)
+    0,    // Pixel height (optional)
+);
+
+let pty = PtyMaster::open(config)?;
+```
+
+### Shell Session Handler
+
+The shell module (`src/server/shell.rs`) manages interactive SSH shell sessions:
+
+**Features:**
+- Spawns user's login shell with `-l` flag
+- Sets up proper terminal environment (TERM, HOME, USER, SHELL, PATH)
+- Creates new session and sets controlling terminal (setsid, TIOCSCTTY)
+- Bidirectional I/O forwarding between SSH channel and PTY
+- Window resize event forwarding
+- Graceful shutdown with process cleanup
+
+**Session Lifecycle:**
+1. SSH client sends `pty-request` with terminal configuration
+2. SSH client sends `shell` request
+3. Server creates PTY pair and spawns shell process
+4. I/O forwarding tasks handle data flow:
+   - PTY master -> SSH channel (stdout/stderr)
+   - SSH channel -> PTY master (stdin)
+5. Window resize events update PTY dimensions
+6. On disconnect, shell process receives SIGHUP
+
+**Platform Support:**
+- Unix/Linux: Full support using POSIX PTY APIs
+- Windows: Not yet supported (would require ConPTY)
+
+### SSH Handler Integration
+
+The `SshHandler` orchestrates shell sessions through several handler methods:
+
+```
+SSH Client Request Flow:
+┌───────────────┐     ┌─────────────────┐     ┌──────────────────┐
+│  pty_request  │ --> │ Store PtyConfig │ --> │ channel_success  │
+└───────────────┘     └─────────────────┘     └──────────────────┘
+        │
+        v
+┌───────────────┐     ┌─────────────────┐     ┌──────────────────┐
+│ shell_request │ --> │ Create Session  │ --> │ Start I/O Tasks  │
+└───────────────┘     └─────────────────┘     └──────────────────┘
+        │
+        v
+┌───────────────┐     ┌─────────────────┐     ┌──────────────────┐
+│     data      │ --> │ Forward to PTY  │ --> │  User Typing     │
+└───────────────┘     └─────────────────┘     └──────────────────┘
+        │
+        v
+┌───────────────────┐     ┌─────────────────┐     ┌──────────────┐
+│ window_change_req │ --> │ Resize PTY      │ --> │ TIOCSWINSZ   │
+└───────────────────┘     └─────────────────┘     └──────────────┘
+```
+
 ---
 
 **Related Documentation:**

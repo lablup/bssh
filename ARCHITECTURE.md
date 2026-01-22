@@ -289,6 +289,21 @@ SSH server implementation using the russh library for accepting incoming connect
   - PTY, exec, shell, and subsystem request handling
   - Command execution with stdout/stderr streaming
 
+- **PTY Module** (`src/server/pty.rs`): Pseudo-terminal management for interactive sessions
+  - PTY master/slave pair creation using POSIX APIs via nix crate
+  - Window size management with TIOCSWINSZ ioctl
+  - Async I/O for PTY master file descriptor using tokio's AsyncFd
+  - Configuration management (terminal type, dimensions, pixel sizes)
+  - Implements `AsyncRead` and `AsyncWrite` for PTY I/O
+
+- **Shell Session Module** (`src/server/shell.rs`): Interactive shell session handler
+  - Shell process spawning with login shell configuration (-l flag)
+  - Terminal environment setup (TERM, HOME, USER, SHELL, PATH)
+  - Bidirectional I/O forwarding between SSH channel and PTY master
+  - Window resize event handling forwarded to PTY
+  - Proper session cleanup on disconnect (SIGHUP to shell, process termination)
+  - Controlling terminal setup via TIOCSCTTY ioctl
+
 - **CommandExecutor**: Executes commands requested by SSH clients
   - Shell-based command execution with `-c` flag
   - Environment variable configuration (HOME, USER, SHELL, PATH)

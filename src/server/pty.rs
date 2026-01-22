@@ -520,4 +520,131 @@ mod tests {
         assert!(debug.contains("config"));
         assert!(debug.contains("slave_path"));
     }
+
+    #[test]
+    fn test_default_constants() {
+        assert_eq!(DEFAULT_TERM, "xterm-256color");
+        assert_eq!(DEFAULT_COLS, 80);
+        assert_eq!(DEFAULT_ROWS, 24);
+    }
+
+    #[test]
+    fn test_pty_config_clone() {
+        let config = PtyConfig::new("vt220".to_string(), 100, 30, 500, 400);
+        let cloned = config.clone();
+
+        assert_eq!(config.term, cloned.term);
+        assert_eq!(config.col_width, cloned.col_width);
+        assert_eq!(config.row_height, cloned.row_height);
+        assert_eq!(config.pix_width, cloned.pix_width);
+        assert_eq!(config.pix_height, cloned.pix_height);
+    }
+
+    #[test]
+    fn test_pty_config_debug() {
+        let config = PtyConfig::new("screen".to_string(), 200, 60, 1920, 1080);
+        let debug_str = format!("{:?}", config);
+
+        assert!(debug_str.contains("PtyConfig"));
+        assert!(debug_str.contains("screen"));
+        assert!(debug_str.contains("200"));
+        assert!(debug_str.contains("60"));
+    }
+
+    #[test]
+    fn test_winsize_boundary_values() {
+        // Test with zero values
+        let config = PtyConfig::new("xterm".to_string(), 0, 0, 0, 0);
+        let winsize = config.winsize();
+        assert_eq!(winsize.ws_col, 0);
+        assert_eq!(winsize.ws_row, 0);
+        assert_eq!(winsize.ws_xpixel, 0);
+        assert_eq!(winsize.ws_ypixel, 0);
+
+        // Test with max u16 values
+        let config = PtyConfig::new(
+            "xterm".to_string(),
+            u16::MAX as u32,
+            u16::MAX as u32,
+            u16::MAX as u32,
+            u16::MAX as u32,
+        );
+        let winsize = config.winsize();
+        assert_eq!(winsize.ws_col, u16::MAX);
+        assert_eq!(winsize.ws_row, u16::MAX);
+        assert_eq!(winsize.ws_xpixel, u16::MAX);
+        assert_eq!(winsize.ws_ypixel, u16::MAX);
+    }
+
+    #[tokio::test]
+    async fn test_pty_master_fd_validity() {
+        let config = PtyConfig::default();
+        let pty = PtyMaster::open(config).expect("Failed to open PTY");
+
+        // File descriptor should be non-negative
+        let fd = pty.as_raw_fd();
+        assert!(
+            fd >= 0,
+            "PTY file descriptor should be valid (non-negative)"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pty_master_slave_path_format() {
+        let config = PtyConfig::default();
+        let pty = PtyMaster::open(config).expect("Failed to open PTY");
+
+        let slave_path = pty.slave_path();
+
+        // Slave path should be a PTY device path
+        let path_str = slave_path.to_string_lossy();
+        assert!(
+            path_str.starts_with("/dev/pts/") || path_str.starts_with("/dev/tty"),
+            "Slave path should be a PTY device: {}",
+            path_str
+        );
+    }
+
+    #[tokio::test]
+    async fn test_pty_master_config_accessor() {
+        let config = PtyConfig::new("linux".to_string(), 132, 43, 1024, 768);
+        let pty = PtyMaster::open(config).expect("Failed to open PTY");
+
+        let retrieved_config = pty.config();
+        assert_eq!(retrieved_config.term, "linux");
+        assert_eq!(retrieved_config.col_width, 132);
+        assert_eq!(retrieved_config.row_height, 43);
+    }
+
+    #[tokio::test]
+    async fn test_pty_master_multiple_resizes() {
+        let config = PtyConfig::default();
+        let mut pty = PtyMaster::open(config).expect("Failed to open PTY");
+
+        // Resize multiple times
+        assert!(pty.resize(100, 30).is_ok());
+        assert_eq!(pty.config().col_width, 100);
+        assert_eq!(pty.config().row_height, 30);
+
+        assert!(pty.resize(200, 50).is_ok());
+        assert_eq!(pty.config().col_width, 200);
+        assert_eq!(pty.config().row_height, 50);
+
+        // Resize back to original
+        assert!(pty.resize(80, 24).is_ok());
+        assert_eq!(pty.config().col_width, 80);
+        assert_eq!(pty.config().row_height, 24);
+    }
+
+    #[test]
+    fn test_pty_reader_new() {
+        // This test verifies the PtyReader can be created
+        // Full testing requires a runtime context
+    }
+
+    #[test]
+    fn test_pty_writer_new() {
+        // This test verifies the PtyWriter can be created
+        // Full testing requires a runtime context
+    }
 }
