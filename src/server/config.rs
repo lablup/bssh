@@ -23,6 +23,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use super::auth::{AuthProvider, PublicKeyAuthConfig, PublicKeyVerifier};
+use super::exec::ExecConfig;
 
 /// Configuration for the SSH server.
 ///
@@ -72,6 +73,10 @@ pub struct ServerConfig {
     /// Configuration for public key authentication.
     #[serde(default)]
     pub publickey_auth: PublicKeyAuthConfigSerde,
+
+    /// Configuration for command execution.
+    #[serde(default)]
+    pub exec: ExecConfig,
 }
 
 /// Serializable configuration for public key authentication.
@@ -139,6 +144,7 @@ impl Default for ServerConfig {
             allow_keyboard_interactive: false,
             banner: None,
             publickey_auth: PublicKeyAuthConfigSerde::default(),
+            exec: ExecConfig::default(),
         }
     }
 }
@@ -282,6 +288,24 @@ impl ServerConfigBuilder {
         self
     }
 
+    /// Set the exec configuration.
+    pub fn exec(mut self, exec_config: ExecConfig) -> Self {
+        self.config.exec = exec_config;
+        self
+    }
+
+    /// Set the command execution timeout in seconds.
+    pub fn exec_timeout_secs(mut self, secs: u64) -> Self {
+        self.config.exec.timeout_secs = secs;
+        self
+    }
+
+    /// Set the default shell for command execution.
+    pub fn exec_shell(mut self, shell: impl Into<PathBuf>) -> Self {
+        self.config.exec.default_shell = shell.into();
+        self
+    }
+
     /// Build the ServerConfig.
     pub fn build(self) -> ServerConfig {
         self.config
@@ -412,5 +436,38 @@ mod tests {
 
         // Provider should be created successfully (verifies no panic)
         let _provider = config.create_auth_provider();
+    }
+
+    #[test]
+    fn test_exec_config_default() {
+        let config = ServerConfig::default();
+        assert_eq!(config.exec.default_shell, PathBuf::from("/bin/sh"));
+        assert_eq!(config.exec.timeout_secs, 3600);
+    }
+
+    #[test]
+    fn test_builder_exec_config() {
+        let exec_config = ExecConfig::new()
+            .with_shell("/bin/bash")
+            .with_timeout_secs(1800);
+
+        let config = ServerConfig::builder().exec(exec_config).build();
+
+        assert_eq!(config.exec.default_shell, PathBuf::from("/bin/bash"));
+        assert_eq!(config.exec.timeout_secs, 1800);
+    }
+
+    #[test]
+    fn test_builder_exec_timeout() {
+        let config = ServerConfig::builder().exec_timeout_secs(600).build();
+
+        assert_eq!(config.exec.timeout_secs, 600);
+    }
+
+    #[test]
+    fn test_builder_exec_shell() {
+        let config = ServerConfig::builder().exec_shell("/bin/zsh").build();
+
+        assert_eq!(config.exec.default_shell, PathBuf::from("/bin/zsh"));
     }
 }

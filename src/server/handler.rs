@@ -21,6 +21,7 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
+use futures::FutureExt;
 use russh::keys::ssh_key;
 use russh::server::{Auth, Msg, Session};
 use russh::{Channel, ChannelId, MethodKind, MethodSet, Pty};
@@ -28,6 +29,7 @@ use tokio::sync::RwLock;
 
 use super::auth::AuthProvider;
 use super::config::ServerConfig;
+use super::exec::CommandExecutor;
 use super::session::{ChannelState, PtyConfig, SessionId, SessionInfo, SessionManager};
 use crate::shared::rate_limit::RateLimiter;
 
@@ -475,27 +477,131 @@ impl russh::server::Handler for SshHandler {
 
     /// Handle exec request.
     ///
-    /// Placeholder implementation - will be implemented in a future issue.
+    /// Executes the requested command and streams output back to the client.
+    /// The command is executed via the configured shell with proper environment
+    /// setup based on the authenticated user.
     fn exec_request(
         &mut self,
         channel_id: ChannelId,
         data: &[u8],
         session: &mut Session,
     ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
-        let command = String::from_utf8_lossy(data);
+        // Parse command from data
+        let command = match std::str::from_utf8(data) {
+            Ok(cmd) => cmd.to_string(),
+            Err(e) => {
+                tracing::warn!(
+                    channel = ?channel_id,
+                    error = %e,
+                    "Invalid UTF-8 in exec command"
+                );
+                let _ = session.channel_failure(channel_id);
+                return async { Ok(()) }.boxed();
+            }
+        };
+
         tracing::debug!(
+            channel = ?channel_id,
             command = %command,
-            "Exec request"
+            "Exec request received"
         );
 
+        // Update channel state
         if let Some(channel_state) = self.channels.get_mut(&channel_id) {
-            channel_state.set_exec(command.to_string());
+            channel_state.set_exec(command.clone());
         }
 
-        // Placeholder - reject for now
-        // Will be implemented in #128
-        let _ = session.channel_failure(channel_id);
-        async { Ok(()) }
+        // Get authenticated user info
+        let username = match self.session_info.as_ref().and_then(|s| s.user.clone()) {
+            Some(user) => user,
+            None => {
+                tracing::warn!(
+                    channel = ?channel_id,
+                    "Exec request without authenticated user"
+                );
+                let _ = session.channel_failure(channel_id);
+                return async { Ok(()) }.boxed();
+            }
+        };
+
+        // Clone what we need for the async block
+        let auth_provider = Arc::clone(&self.auth_provider);
+        let exec_config = self.config.exec.clone();
+        let handle = session.handle();
+        let peer_addr = self.peer_addr;
+
+        // Signal channel success before executing
+        let _ = session.channel_success(channel_id);
+
+        async move {
+            // Get user info from auth provider
+            let user_info = match auth_provider.get_user_info(&username).await {
+                Ok(Some(info)) => info,
+                Ok(None) => {
+                    tracing::error!(
+                        user = %username,
+                        "User not found after authentication"
+                    );
+                    let _ = handle.exit_status_request(channel_id, 1).await;
+                    let _ = handle.eof(channel_id).await;
+                    let _ = handle.close(channel_id).await;
+                    return Ok(());
+                }
+                Err(e) => {
+                    tracing::error!(
+                        user = %username,
+                        error = %e,
+                        "Failed to get user info"
+                    );
+                    let _ = handle.exit_status_request(channel_id, 1).await;
+                    let _ = handle.eof(channel_id).await;
+                    let _ = handle.close(channel_id).await;
+                    return Ok(());
+                }
+            };
+
+            tracing::info!(
+                user = %username,
+                peer = ?peer_addr,
+                command = %command,
+                "Executing command"
+            );
+
+            // Create executor and run command
+            let executor = CommandExecutor::new(exec_config);
+            let exit_code = match executor
+                .execute(&command, &user_info, channel_id, handle.clone())
+                .await
+            {
+                Ok(code) => code,
+                Err(e) => {
+                    tracing::error!(
+                        user = %username,
+                        command = %command,
+                        error = %e,
+                        "Command execution failed"
+                    );
+                    1 // Default error exit code
+                }
+            };
+
+            tracing::debug!(
+                user = %username,
+                command = %command,
+                exit_code = %exit_code,
+                "Command completed"
+            );
+
+            // Send exit status, EOF, and close channel
+            let _ = handle
+                .exit_status_request(channel_id, exit_code as u32)
+                .await;
+            let _ = handle.eof(channel_id).await;
+            let _ = handle.close(channel_id).await;
+
+            Ok(())
+        }
+        .boxed()
     }
 
     /// Handle shell request.
@@ -677,6 +783,7 @@ mod tests {
     }
 
     /// Test auth provider that always rejects
+    #[allow(dead_code)] // May be used in future tests
     struct RejectAllAuthProvider;
 
     #[async_trait]

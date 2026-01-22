@@ -198,6 +198,7 @@ SSH server implementation using the russh library for accepting incoming connect
 - `config.rs` - `ServerConfig` with builder pattern for server settings
 - `handler.rs` - `SshHandler` implementing `russh::server::Handler` trait
 - `session.rs` - Session state management (`SessionManager`, `SessionInfo`, `ChannelState`)
+- `exec.rs` - Command execution for SSH exec requests
 - `auth/` - Authentication provider infrastructure
 
 **Key Components**:
@@ -213,12 +214,22 @@ SSH server implementation using the russh library for accepting incoming connect
   - Connection limits and timeouts
   - Authentication method toggles (password, publickey, keyboard-interactive)
   - Public key authentication configuration (authorized_keys location)
+  - Command execution configuration (shell, timeout, allowed/blocked commands)
 
 - **SshHandler**: Per-connection handler for SSH protocol events
   - Public key authentication via AuthProvider trait
   - Rate limiting for authentication attempts
   - Channel operations (open, close, EOF, data)
   - PTY, exec, shell, and subsystem request handling
+  - Command execution with stdout/stderr streaming
+
+- **CommandExecutor**: Executes commands requested by SSH clients
+  - Shell-based command execution with `-c` flag
+  - Environment variable configuration (HOME, USER, SHELL, PATH)
+  - Stdout/stderr streaming to SSH channel
+  - Command timeout with graceful process termination
+  - Command allow/block list validation for security
+  - Exit code propagation to client
 
 - **SessionManager**: Tracks active sessions with configurable capacity
   - Session creation and cleanup
