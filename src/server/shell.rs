@@ -145,6 +145,10 @@ impl ShellSession {
     /// - Reading from PTY master and sending to SSH channel
     /// - Receiving data from SSH (via mpsc channel) and writing to PTY
     /// - Detecting when the shell process exits
+    ///
+    /// Note: We don't use `biased` mode in select! because the child exit check
+    /// uses a synchronous try_wait() which would complete immediately every time,
+    /// starving the other branches. Fair polling ensures all branches get a chance.
     async fn run_io_loop(&mut self, handle: &Handle, data_rx: &mut mpsc::Receiver<Vec<u8>>) -> i32 {
         let channel_id = self.channel_id;
         let mut buf = vec![0u8; IO_BUFFER_SIZE];
@@ -152,46 +156,35 @@ impl ShellSession {
         tracing::debug!(channel = ?channel_id, "Starting shell I/O loop");
 
         loop {
-            // We need to poll multiple things:
-            // 1. PTY read (shell output)
-            // 2. SSH data receive (user input)
-            // 3. Child process exit
-
-            tokio::select! {
-                biased;
-
-                // Check if child process has exited
-                exit_result = async {
-                    if let Some(ref mut child) = self.child {
-                        child.try_wait()
-                    } else {
-                        Ok(None)
+            // Check if child process has exited (synchronous check)
+            // Do this at the start of each iteration, outside of select!
+            if let Some(ref mut child) = self.child {
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        tracing::debug!(
+                            channel = ?channel_id,
+                            exit_code = ?status.code(),
+                            "Shell process exited"
+                        );
+                        // Drain any remaining PTY output before exiting
+                        self.drain_pty_output(handle, &mut buf).await;
+                        return status.code().unwrap_or(1);
                     }
-                } => {
-                    match exit_result {
-                        Ok(Some(status)) => {
-                            tracing::debug!(
-                                channel = ?channel_id,
-                                exit_code = ?status.code(),
-                                "Shell process exited"
-                            );
-                            // Drain any remaining PTY output before exiting
-                            self.drain_pty_output(handle, &mut buf).await;
-                            return status.code().unwrap_or(1);
-                        }
-                        Ok(None) => {
-                            // Process still running, continue
-                        }
-                        Err(e) => {
-                            tracing::warn!(
-                                channel = ?channel_id,
-                                error = %e,
-                                "Error checking child process status"
-                            );
-                        }
+                    Ok(None) => {
+                        // Process still running, continue with I/O
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            channel = ?channel_id,
+                            error = %e,
+                            "Error checking child process status"
+                        );
                     }
                 }
+            }
 
+            // Now poll I/O operations - these are truly async
+            tokio::select! {
                 // Read from PTY and send to SSH
                 read_result = async {
                     let pty = self.pty.lock().await;

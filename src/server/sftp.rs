@@ -1549,7 +1549,7 @@ mod tests {
 
     #[test]
     fn test_sftp_error_from_io_other() {
-        let io_err = std::io::Error::new(std::io::ErrorKind::Other, "other error");
+        let io_err = std::io::Error::other("other error");
         let sftp_err: SftpError = io_err.into();
         assert_eq!(sftp_err.code, StatusCode::Failure);
     }
