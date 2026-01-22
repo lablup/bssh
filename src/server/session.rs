@@ -299,7 +299,7 @@ impl SessionManager {
 
     /// Get the number of authenticated sessions.
     pub fn authenticated_count(&self) -> usize {
-        self.sessions.values().filter(|s| s.authenticated).collect::<Vec<_>>().len()
+        self.sessions.values().filter(|s| s.authenticated).count()
     }
 
     /// Check if the session limit has been reached.

@@ -455,13 +455,33 @@ impl russh::server::Handler for SshHandler {
 impl Drop for SshHandler {
     fn drop(&mut self) {
         if let Some(ref info) = self.session_info {
+            let session_id = info.id;
+
             tracing::info!(
-                session_id = %info.id,
+                session_id = %session_id,
                 peer = ?self.peer_addr,
                 duration_secs = %info.duration_secs(),
                 authenticated = %info.authenticated,
                 "Session ended"
             );
+
+            // Remove session from manager
+            // Note: This uses try_write which is safe here because:
+            // 1. Drop is called outside of async context (during connection cleanup)
+            // 2. The lock is held only briefly to remove the session
+            // 3. This prevents resource leaks by ensuring cleanup always happens
+            if let Ok(mut sessions_guard) = self.sessions.try_write() {
+                sessions_guard.remove(session_id);
+                tracing::debug!(
+                    session_id = %session_id,
+                    "Session removed from manager"
+                );
+            } else {
+                tracing::warn!(
+                    session_id = %session_id,
+                    "Failed to acquire lock to remove session (lock contention)"
+                );
+            }
         }
     }
 }
