@@ -25,10 +25,19 @@
 //! * Connection reuse for multiple operations
 //! * Automatic retry with exponential backoff
 //! * Integration with existing host verification and authentication
+//!
+//! # Rate Limiter
+//!
+//! The rate limiter has been moved to `crate::shared::rate_limit` to enable
+//! code reuse between the bssh client and server implementations. This module
+//! continues to re-export it for backward compatibility.
 
 pub mod chain;
 pub mod connection;
 pub mod parser;
+
+// Keep the rate_limiter module for backward compatibility but it now re-exports
+// from shared
 pub mod rate_limiter;
 
 pub use chain::{JumpConnection, JumpHostChain};

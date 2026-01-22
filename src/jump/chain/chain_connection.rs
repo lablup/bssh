@@ -35,7 +35,7 @@ pub(super) async fn connect_direct(
 
     // Apply rate limiting to prevent DoS attacks
     rate_limiter
-        .try_acquire(host)
+        .try_acquire(&host.to_string())
         .await
         .with_context(|| format!("Rate limited for host {host}"))?;
 
