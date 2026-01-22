@@ -614,7 +614,10 @@ auth:
 
         let result = validate_config(&config);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Invalid bind_address"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid bind_address"));
     }
 
     #[test]
@@ -652,10 +655,7 @@ auth:
         config.auth.publickey.authorized_keys_pattern = Some("/home/../etc/passwd".to_string());
         let result = validate_config(&config);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("path traversal"));
+        assert!(result.unwrap_err().to_string().contains("path traversal"));
     }
 
     #[test]
@@ -671,10 +671,7 @@ auth:
         config.auth.publickey.authorized_keys_pattern = Some("relative/path".to_string());
         let result = validate_config(&config);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("absolute paths"));
+        assert!(result.unwrap_err().to_string().contains("absolute paths"));
     }
 
     #[test]

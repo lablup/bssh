@@ -190,12 +190,15 @@ Common utilities for code reuse between bssh client and server implementations:
 The `security` and `jump::rate_limiter` modules re-export from shared for backward compatibility.
 
 ### SSH Server Module
+**Documentation**: [docs/architecture/server-configuration.md](./docs/architecture/server-configuration.md)
 
 SSH server implementation using the russh library for accepting incoming connections:
 
 **Structure** (`src/server/`):
 - `mod.rs` - `BsshServer` struct and `russh::server::Server` trait implementation
-- `config.rs` - `ServerConfig` with builder pattern for server settings
+- `config/mod.rs` - Module exports and backward compatibility layer
+- `config/types.rs` - Comprehensive configuration types with serde
+- `config/loader.rs` - Config loader with validation and environment overrides
 - `handler.rs` - `SshHandler` implementing `russh::server::Handler` trait
 - `session.rs` - Session state management (`SessionManager`, `SessionInfo`, `ChannelState`)
 - `exec.rs` - Command execution for SSH exec requests
@@ -209,12 +212,28 @@ SSH server implementation using the russh library for accepting incoming connect
   - Configures russh with authentication settings
   - Creates shared rate limiter for authentication attempts
 
+- **Server Configuration System**: Dual configuration system for flexibility
+  - **Builder API** (`ServerConfig`): Programmatic configuration for embedded use
+  - **File-Based** (`ServerFileConfig`): YAML configuration with environment overrides
+  - Configuration precedence: CLI > Environment > File > Defaults
+  - Configuration validation at startup (host keys, CIDR ranges, paths)
+  - Support for BSSH_* environment variable overrides
+
 - **ServerConfig**: Configuration options with builder pattern
   - Host key paths and listen address
   - Connection limits and timeouts
   - Authentication method toggles (password, publickey, keyboard-interactive)
   - Public key authentication configuration (authorized_keys location)
   - Command execution configuration (shell, timeout, allowed/blocked commands)
+
+- **ServerFileConfig**: Comprehensive YAML file configuration
+  - Server settings (bind address, port, host keys, keepalive)
+  - Authentication (public key, password with inline or file-based users)
+  - Shell configuration (default shell, environment, command timeout)
+  - SFTP/SCP enablement with optional chroot
+  - File transfer filtering rules
+  - Audit logging (file, OpenTelemetry, Logstash exporters)
+  - Security settings (auth attempts, bans, session limits, IP allowlist/blocklist)
 
 - **SshHandler**: Per-connection handler for SSH protocol events
   - Public key authentication via AuthProvider trait

@@ -32,6 +32,7 @@ bssh is a high-performance parallel SSH command execution tool with SSH-compatib
 
 ### Server Components
 
+- **[Server Configuration](./server-configuration.md)** - YAML-based server configuration, environment overrides, validation
 - **SSH Server Module** - SSH server implementation using russh (see main ARCHITECTURE.md)
 - **Server Authentication** - Authentication providers including public key verification (see main ARCHITECTURE.md)
 
@@ -56,7 +57,8 @@ Each component document includes:
 ### Finding Information
 
 - **CLI options and modes** → [CLI Interface](./cli-interface.md)
-- **Configuration file format** → [Configuration Management](./configuration.md)
+- **Client configuration file format** → [Configuration Management](./configuration.md)
+- **Server configuration file format** → [Server Configuration](./server-configuration.md)
 - **Parallel execution behavior** → [Parallel Executor](./executor.md)
 - **SSH connection details** → [SSH Client](./ssh-client.md)
 - **Interactive terminal usage** → [TUI](./tui.md) or [Interactive Mode](./interactive-mode.md)
@@ -76,7 +78,7 @@ src/
 ├── interactive/ → Interactive Mode
 ├── jump/ → Jump Host Support
 ├── forward/ → Port Forwarding
-├── server/ → SSH Server (handler, session, config)
+├── server/ → SSH Server (handler, session, config/, auth/)
 ├── shared/ → Shared utilities (validation, rate limiting, auth types, errors)
 ├── security/ → Security utilities (re-exports from shared for compatibility)
 └── commands/ → Command Implementations
