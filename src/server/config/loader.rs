@@ -149,10 +149,41 @@ pub fn generate_config_template() -> String {
 
 /// Load configuration from a YAML file.
 fn load_config_file(path: &Path) -> Result<ServerFileConfig> {
+    // MEDIUM: Check config file permissions on Unix
+    #[cfg(unix)]
+    check_config_file_permissions(path)?;
+
     let content =
         std::fs::read_to_string(path).context(format!("Failed to read {}", path.display()))?;
 
     serde_yaml::from_str(&content).context(format!("Failed to parse {}", path.display()))
+}
+
+/// Check configuration file permissions on Unix systems.
+///
+/// Warns if the config file is readable by group or others, as configuration
+/// files may contain sensitive information.
+#[cfg(unix)]
+fn check_config_file_permissions(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let metadata = std::fs::metadata(path)
+        .context(format!("Failed to read metadata for {}", path.display()))?;
+    let permissions = metadata.permissions();
+    let mode = permissions.mode();
+
+    // Check if file is readable by group or others (mode & 0o077 != 0)
+    if mode & 0o077 != 0 {
+        tracing::warn!(
+            path = %path.display(),
+            mode = format!("{:o}", mode & 0o777),
+            "Configuration file is readable by group or others. \
+             Consider using 'chmod 600 {}' to restrict access.",
+            path.display()
+        );
+    }
+
+    Ok(())
 }
 
 /// Get default configuration file search paths.
@@ -296,6 +327,53 @@ fn validate_config(config: &ServerFileConfig) -> Result<()> {
     // Validate authentication configuration
     if config.auth.methods.is_empty() {
         anyhow::bail!("At least one authentication method must be enabled (auth.methods)");
+    }
+
+    // HIGH: Validate bind_address is a valid IP address
+    config
+        .server
+        .bind_address
+        .parse::<std::net::IpAddr>()
+        .context(format!(
+            "Invalid bind_address: {}",
+            config.server.bind_address
+        ))?;
+
+    // HIGH: Validate authorized_keys_pattern for path traversal
+    if let Some(ref pattern) = config.auth.publickey.authorized_keys_pattern {
+        // Ensure pattern doesn't contain ".." after substitution
+        if pattern.contains("..") {
+            anyhow::bail!(
+                "authorized_keys_pattern contains '..' which could lead to path traversal: {}",
+                pattern
+            );
+        }
+
+        // For patterns with {user} placeholder, validate structure
+        if pattern.contains("{user}") {
+            // After removing {user}, the pattern should start with absolute path
+            let without_placeholder = pattern.replace("{user}", "");
+            if !without_placeholder.starts_with('/') && !without_placeholder.starts_with("./") {
+                anyhow::bail!(
+                    "authorized_keys_pattern must use absolute paths: {}",
+                    pattern
+                );
+            }
+        } else if !pattern.starts_with('/') {
+            // If no placeholder, must be absolute path
+            anyhow::bail!(
+                "authorized_keys_pattern must use absolute paths: {}",
+                pattern
+            );
+        }
+    }
+
+    // MEDIUM: Validate shell path exists
+    if !config.shell.default.exists() {
+        anyhow::bail!(
+            "Default shell does not exist: {}",
+            config.shell.default.display()
+        );
     }
 
     // Validate IP ranges (CIDR notation)
@@ -522,5 +600,154 @@ auth:
             .unwrap_err()
             .to_string()
             .contains("max_connections must be greater than 0"));
+    }
+
+    #[test]
+    fn test_validate_config_invalid_bind_address() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(b"fake host key").unwrap();
+        temp_file.flush().unwrap();
+
+        let mut config = ServerFileConfig::default();
+        config.server.host_keys.push(temp_file.path().to_path_buf());
+        config.server.bind_address = "not-an-ip-address".to_string();
+
+        let result = validate_config(&config);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Invalid bind_address"));
+    }
+
+    #[test]
+    fn test_validate_config_valid_bind_address() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(b"fake host key").unwrap();
+        temp_file.flush().unwrap();
+
+        let mut config = ServerFileConfig::default();
+        config.server.host_keys.push(temp_file.path().to_path_buf());
+
+        // Test IPv4
+        config.server.bind_address = "127.0.0.1".to_string();
+        assert!(validate_config(&config).is_ok());
+
+        // Test IPv6
+        config.server.bind_address = "::1".to_string();
+        assert!(validate_config(&config).is_ok());
+
+        // Test wildcard
+        config.server.bind_address = "0.0.0.0".to_string();
+        assert!(validate_config(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_config_authorized_keys_pattern_path_traversal() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(b"fake host key").unwrap();
+        temp_file.flush().unwrap();
+
+        let mut config = ServerFileConfig::default();
+        config.server.host_keys.push(temp_file.path().to_path_buf());
+
+        // Test pattern with ".."
+        config.auth.publickey.authorized_keys_pattern = Some("/home/../etc/passwd".to_string());
+        let result = validate_config(&config);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("path traversal"));
+    }
+
+    #[test]
+    fn test_validate_config_authorized_keys_pattern_relative_path() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(b"fake host key").unwrap();
+        temp_file.flush().unwrap();
+
+        let mut config = ServerFileConfig::default();
+        config.server.host_keys.push(temp_file.path().to_path_buf());
+
+        // Test relative path without placeholder
+        config.auth.publickey.authorized_keys_pattern = Some("relative/path".to_string());
+        let result = validate_config(&config);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("absolute paths"));
+    }
+
+    #[test]
+    fn test_validate_config_authorized_keys_pattern_valid() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(b"fake host key").unwrap();
+        temp_file.flush().unwrap();
+
+        let mut config = ServerFileConfig::default();
+        config.server.host_keys.push(temp_file.path().to_path_buf());
+
+        // Test valid absolute path with placeholder
+        config.auth.publickey.authorized_keys_pattern =
+            Some("/home/{user}/.ssh/authorized_keys".to_string());
+        assert!(validate_config(&config).is_ok());
+
+        // Test valid absolute path without placeholder
+        config.auth.publickey.authorized_keys_pattern =
+            Some("/etc/bssh/authorized_keys".to_string());
+        assert!(validate_config(&config).is_ok());
+    }
+
+    #[test]
+    fn test_validate_config_shell_not_exists() {
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(b"fake host key").unwrap();
+        temp_file.flush().unwrap();
+
+        let mut config = ServerFileConfig::default();
+        config.server.host_keys.push(temp_file.path().to_path_buf());
+        config.shell.default = PathBuf::from("/nonexistent/shell");
+
+        let result = validate_config(&config);
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Default shell does not exist"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_config_file_permissions_warning() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let yaml_content = r#"
+server:
+  port: 2222
+  host_keys:
+    - /tmp/test_key
+"#;
+
+        // Create temp file with world-readable permissions
+        let mut temp_file = NamedTempFile::new().unwrap();
+        temp_file.write_all(yaml_content.as_bytes()).unwrap();
+        temp_file.flush().unwrap();
+
+        // Set permissions to 0644 (world-readable)
+        let mut permissions = temp_file.as_file().metadata().unwrap().permissions();
+        permissions.set_mode(0o644);
+        std::fs::set_permissions(temp_file.path(), permissions).unwrap();
+
+        // This should succeed but log a warning
+        let result = check_config_file_permissions(temp_file.path());
+        assert!(result.is_ok());
+
+        // Set permissions to 0600 (owner only)
+        let mut permissions = temp_file.as_file().metadata().unwrap().permissions();
+        permissions.set_mode(0o600);
+        std::fs::set_permissions(temp_file.path(), permissions).unwrap();
+
+        // This should succeed without warning
+        let result = check_config_file_permissions(temp_file.path());
+        assert!(result.is_ok());
     }
 }

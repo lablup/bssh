@@ -176,7 +176,7 @@ fn default_max_connections() -> usize {
 }
 
 fn default_max_auth_attempts() -> u32 {
-    6
+    5
 }
 
 fn default_auth_timeout_secs() -> u64 {
@@ -427,7 +427,7 @@ mod tests {
         assert!(config.host_keys.is_empty());
         assert_eq!(config.listen_address, "0.0.0.0:2222");
         assert_eq!(config.max_connections, 100);
-        assert_eq!(config.max_auth_attempts, 6);
+        assert_eq!(config.max_auth_attempts, 5);
         assert!(!config.allow_password_auth);
         assert!(config.allow_publickey_auth);
     }
