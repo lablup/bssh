@@ -33,6 +33,8 @@ use std::time::Instant;
 use russh::server::Msg;
 use russh::{Channel, ChannelId};
 
+use super::shell::ShellSession;
+
 /// Unique identifier for an SSH session.
 ///
 /// Each session is assigned a unique ID when created, which can be used
@@ -198,6 +200,9 @@ pub struct ChannelState {
     /// PTY configuration, if a PTY was requested.
     pub pty: Option<PtyConfig>,
 
+    /// Shell session, if shell mode is active.
+    pub shell_session: Option<ShellSession>,
+
     /// Whether EOF has been received from the client.
     pub eof_received: bool,
 }
@@ -209,6 +214,7 @@ impl std::fmt::Debug for ChannelState {
             .field("has_channel", &self.channel.is_some())
             .field("mode", &self.mode)
             .field("pty", &self.pty)
+            .field("has_shell_session", &self.shell_session.is_some())
             .field("eof_received", &self.eof_received)
             .finish()
     }
@@ -222,6 +228,7 @@ impl ChannelState {
             channel: None,
             mode: ChannelMode::Idle,
             pty: None,
+            shell_session: None,
             eof_received: false,
         }
     }
@@ -233,6 +240,7 @@ impl ChannelState {
             channel: Some(channel),
             mode: ChannelMode::Idle,
             pty: None,
+            shell_session: None,
             eof_received: false,
         }
     }
@@ -262,6 +270,22 @@ impl ChannelState {
     /// Set the channel mode to shell.
     pub fn set_shell(&mut self) {
         self.mode = ChannelMode::Shell;
+    }
+
+    /// Set the shell session.
+    pub fn set_shell_session(&mut self, session: ShellSession) {
+        self.shell_session = Some(session);
+        self.mode = ChannelMode::Shell;
+    }
+
+    /// Take the shell session (consumes it).
+    pub fn take_shell_session(&mut self) -> Option<ShellSession> {
+        self.shell_session.take()
+    }
+
+    /// Check if the channel has an active shell session.
+    pub fn has_shell_session(&self) -> bool {
+        self.shell_session.is_some()
     }
 
     /// Set the channel mode to SFTP.
