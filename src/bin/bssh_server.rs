@@ -222,8 +222,32 @@ fn gen_config(output: Option<PathBuf>) -> Result<()> {
     let template = generate_config_template();
 
     if let Some(path) = output {
-        fs::write(&path, &template).context("Failed to write configuration file")?;
+        #[cfg(unix)]
+        {
+            use std::fs::OpenOptions;
+            use std::os::unix::fs::OpenOptionsExt;
+
+            // Write config file with restrictive permissions (0600)
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&path)
+                .context("Failed to create configuration file")?;
+
+            file.write_all(template.as_bytes())
+                .context("Failed to write configuration file")?;
+        }
+
+        #[cfg(not(unix))]
+        {
+            fs::write(&path, &template).context("Failed to write configuration file")?;
+        }
+
         println!("Configuration template written to {}", path.display());
+        #[cfg(unix)]
+        println!("File permissions set to 0600 (owner read/write only)");
     } else {
         print!("{}", template);
     }
@@ -241,6 +265,13 @@ async fn hash_password() -> Result<()> {
 
     if password.is_empty() {
         anyhow::bail!("Password cannot be empty");
+    }
+
+    // Warn about weak passwords (but still allow them)
+    if password.len() < 8 {
+        println!("\n⚠ Warning: Password is shorter than 8 characters.");
+        println!("   This is considered weak and may be easily compromised.");
+        println!("   Consider using a longer password for better security.\n");
     }
 
     print!("Confirm password: ");
@@ -354,17 +385,31 @@ fn gen_host_key(key_type: &str, output: &PathBuf, _bits: u32) -> Result<()> {
         }
     };
 
-    // Save the key in OpenSSH format with Unix line endings
-    key.write_openssh_file(output, LineEnding::LF)
-        .context("Failed to write host key")?;
-
-    // Set restrictive permissions (0600)
+    // Write the key atomically with correct permissions from the start (prevents race condition)
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-        let permissions = fs::Permissions::from_mode(0o600);
-        fs::set_permissions(output, permissions)
-            .context("Failed to set key file permissions")?;
+        use std::fs::OpenOptions;
+        use std::os::unix::fs::OpenOptionsExt;
+
+        let key_data = key.to_openssh(LineEnding::LF)?;
+
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600) // Set permissions atomically
+            .open(output)
+            .context("Failed to create host key file")?;
+
+        file.write_all(key_data.as_bytes())
+            .context("Failed to write host key")?;
+    }
+
+    #[cfg(not(unix))]
+    {
+        // On non-Unix systems, fall back to default method
+        key.write_openssh_file(output, LineEnding::LF)
+            .context("Failed to write host key")?;
     }
 
     println!("✓ Host key generated: {}", output.display());
@@ -427,6 +472,40 @@ fn setup_signal_handlers() -> Result<impl std::future::Future<Output = ()>> {
 
 /// Write the current process ID to a PID file
 fn write_pid_file(path: &PathBuf) -> Result<()> {
+    // Check if PID file already exists and refers to a running process
+    if path.exists() {
+        if let Ok(existing_pid_str) = fs::read_to_string(path) {
+            if let Ok(existing_pid) = existing_pid_str.trim().parse::<i32>() {
+                // Check if process is still running
+                #[cfg(unix)]
+                {
+                    use nix::sys::signal::kill;
+                    use nix::unistd::Pid;
+
+                    let pid = Pid::from_raw(existing_pid);
+                    // Use signal 0 (None) to check if process exists without sending actual signal
+                    if kill(pid, None).is_ok() {
+                        anyhow::bail!(
+                            "Another instance is already running with PID {}. \
+                             If this is incorrect, remove {} and try again.",
+                            existing_pid,
+                            path.display()
+                        );
+                    }
+                }
+
+                #[cfg(not(unix))]
+                {
+                    // On non-Unix systems, warn but allow overwrite
+                    tracing::warn!(
+                        "PID file exists with PID {}. Overwriting (process check not available on this platform).",
+                        existing_pid
+                    );
+                }
+            }
+        }
+    }
+
     let pid = std::process::id();
     fs::write(path, pid.to_string()).context("Failed to write PID file")?;
     tracing::debug!(path = %path.display(), pid = pid, "PID file written");
