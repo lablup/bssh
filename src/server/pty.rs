@@ -52,6 +52,9 @@ pub const DEFAULT_COLS: u32 = 80;
 /// Default terminal rows.
 pub const DEFAULT_ROWS: u32 = 24;
 
+/// Maximum value for terminal dimensions (u16::MAX).
+const MAX_DIMENSION: u32 = u16::MAX as u32;
+
 /// PTY configuration from SSH pty_request.
 ///
 /// Contains terminal settings requested by the SSH client.
@@ -92,12 +95,14 @@ impl PtyConfig {
     }
 
     /// Create a Winsize struct from this configuration.
+    ///
+    /// Values exceeding u16::MAX are clamped to u16::MAX to prevent overflow.
     pub fn winsize(&self) -> Winsize {
         Winsize {
-            ws_row: self.row_height as u16,
-            ws_col: self.col_width as u16,
-            ws_xpixel: self.pix_width as u16,
-            ws_ypixel: self.pix_height as u16,
+            ws_row: self.row_height.min(MAX_DIMENSION) as u16,
+            ws_col: self.col_width.min(MAX_DIMENSION) as u16,
+            ws_xpixel: self.pix_width.min(MAX_DIMENSION) as u16,
+            ws_ypixel: self.pix_height.min(MAX_DIMENSION) as u16,
         }
     }
 }
@@ -220,7 +225,7 @@ impl PtyMaster {
         let result = unsafe { libc::ioctl(fd.as_raw_fd(), libc::TIOCSWINSZ, winsize) };
 
         if result < 0 {
-            Err(io::Error::last_os_error()).context("Failed to set window size")
+            Err(io::Error::last_os_error()).context("Failed to set window size (TIOCSWINSZ ioctl)")
         } else {
             Ok(())
         }
@@ -453,6 +458,18 @@ mod tests {
         assert_eq!(winsize.ws_row, 24);
         assert_eq!(winsize.ws_xpixel, 640);
         assert_eq!(winsize.ws_ypixel, 480);
+    }
+
+    #[test]
+    fn test_pty_config_winsize_overflow_clamping() {
+        // Test that values exceeding u16::MAX are clamped
+        let config = PtyConfig::new("xterm".to_string(), 100_000, 100_000, 100_000, 100_000);
+        let winsize = config.winsize();
+
+        assert_eq!(winsize.ws_col, u16::MAX);
+        assert_eq!(winsize.ws_row, u16::MAX);
+        assert_eq!(winsize.ws_xpixel, u16::MAX);
+        assert_eq!(winsize.ws_ypixel, u16::MAX);
     }
 
     #[tokio::test]

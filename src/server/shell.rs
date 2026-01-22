@@ -142,15 +142,45 @@ impl ShellSession {
         let home_dir = user_info.home_dir.clone();
         let username = user_info.username.clone();
 
-        // Open slave PTY
+        // Validate shell path exists
+        if !shell.exists() {
+            anyhow::bail!("Shell does not exist: {}", shell.display());
+        }
+
+        // Open slave PTY - we need to duplicate the fd for stdin/stdout/stderr
+        // since each Stdio::from_raw_fd takes ownership
         let slave_file = std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .open(&slave_path)
             .context("Failed to open slave PTY")?;
 
-        // Get raw fd for stdio setup
         let slave_fd = slave_file.as_raw_fd();
+
+        // Duplicate fd for stdin, stdout, stderr
+        // SAFETY: slave_fd is valid since slave_file is still in scope
+        let stdin_fd = unsafe { nix::libc::dup(slave_fd) };
+        let stdout_fd = unsafe { nix::libc::dup(slave_fd) };
+        let stderr_fd = unsafe { nix::libc::dup(slave_fd) };
+
+        if stdin_fd < 0 || stdout_fd < 0 || stderr_fd < 0 {
+            // Clean up any successful dups before returning error
+            unsafe {
+                if stdin_fd >= 0 {
+                    nix::libc::close(stdin_fd);
+                }
+                if stdout_fd >= 0 {
+                    nix::libc::close(stdout_fd);
+                }
+                if stderr_fd >= 0 {
+                    nix::libc::close(stderr_fd);
+                }
+            }
+            anyhow::bail!("Failed to duplicate slave PTY file descriptor");
+        }
+
+        // Now slave_file can be dropped safely, we have our own fds
+        drop(slave_file);
 
         let mut cmd = tokio::process::Command::new(&shell);
 
@@ -169,12 +199,12 @@ impl ShellSession {
         // Set working directory
         cmd.current_dir(&home_dir);
 
-        // Set up stdio to use PTY slave
-        // SAFETY: The file descriptor is valid and we own it via slave_file
+        // Set up stdio to use PTY slave fds
+        // SAFETY: Each fd was created via dup() and is uniquely owned
         unsafe {
-            cmd.stdin(Stdio::from_raw_fd(slave_fd));
-            cmd.stdout(Stdio::from_raw_fd(slave_fd));
-            cmd.stderr(Stdio::from_raw_fd(slave_fd));
+            cmd.stdin(Stdio::from_raw_fd(stdin_fd));
+            cmd.stdout(Stdio::from_raw_fd(stdout_fd));
+            cmd.stderr(Stdio::from_raw_fd(stderr_fd));
         }
 
         // Enable process group management
@@ -199,10 +229,6 @@ impl ShellSession {
 
         // Spawn the process
         let child = cmd.spawn().context("Failed to spawn shell process")?;
-
-        // Keep slave_file alive until here to prevent fd from being closed too early
-        // The fd is now owned by the child process, so we can safely forget the file
-        std::mem::forget(slave_file);
 
         tracing::info!(
             shell = %shell.display(),
@@ -420,8 +446,10 @@ mod tests {
 
     #[test]
     fn test_io_buffer_size() {
-        // Verify buffer size is reasonable
-        assert!(IO_BUFFER_SIZE >= 4096);
-        assert!(IO_BUFFER_SIZE <= 65536);
+        // Verify buffer size is reasonable using const assertions
+        const _: () = {
+            assert!(IO_BUFFER_SIZE >= 4096);
+            assert!(IO_BUFFER_SIZE <= 65536);
+        };
     }
 }
