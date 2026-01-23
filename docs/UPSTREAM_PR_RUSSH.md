@@ -48,20 +48,32 @@ When the socket read future is pending and no keepalive is due, the `select!` sh
 
 ## Proposed Fix
 
-Add a `try_recv()` loop before entering `select!` to drain any pending messages:
+Add a `try_recv()` loop before entering `select!` to drain pending messages, with a batch limit to ensure client input responsiveness:
 
 ```rust
+const MAX_MESSAGES_PER_BATCH: usize = 64;
+
 while !self.common.disconnected {
     // Process pending messages before entering select!
+    // Limit batch size to ensure client input (e.g., Ctrl+C) is handled promptly
+    let mut processed_count = 0usize;
     if !self.kex.active() {
         loop {
+            if processed_count >= MAX_MESSAGES_PER_BATCH {
+                break;  // Yield to select! to check for client input
+            }
             match self.receiver.try_recv() {
-                Ok(msg) => self.handle_msg(msg)?,
+                Ok(msg) => {
+                    self.handle_msg(msg)?;
+                    processed_count += 1;
+                }
                 Err(TryRecvError::Empty) => break,
                 Err(TryRecvError::Disconnected) => break,
             }
         }
-        self.flush()?;
+        if processed_count > 0 {
+            self.flush()?;
+        }
     }
 
     tokio::select! {
@@ -69,6 +81,10 @@ while !self.common.disconnected {
     }
 }
 ```
+
+### Why batch limiting?
+
+Without a limit, during high-throughput output (e.g., `yes` command), all pending messages would be processed before checking for client input. This could delay Ctrl+C handling significantly. The batch limit (64 messages) balances throughput with input responsiveness.
 
 ## Why This Fix is Safe
 
@@ -79,6 +95,8 @@ while !self.common.disconnected {
 3. **Maintains message ordering**: Messages are processed in FIFO order from the same channel.
 
 4. **No performance impact**: `try_recv()` is non-blocking and O(1).
+
+5. **Preserves input responsiveness**: The batch limit ensures client input (signals, keystrokes) is checked every 64 messages, preventing input starvation during high-throughput output.
 
 ## Use Case
 
