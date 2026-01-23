@@ -195,11 +195,6 @@ impl russh::server::Handler for SshHandler {
         );
 
         // Store the channel itself so we can use it for subsystems like SFTP
-        // Debug: print the channel's address before storing
-        eprintln!(
-            "[HANDLER] channel_open_session: storing channel {:?} at addr {:p}",
-            channel_id, &channel as *const _
-        );
         self.channels
             .insert(channel_id, ChannelState::with_channel(channel));
         async { Ok(true) }
@@ -724,9 +719,11 @@ impl russh::server::Handler for SshHandler {
     /// Handle shell request.
     ///
     /// Starts an interactive shell session for the authenticated user.
-    /// Uses ChannelStream for I/O (like SFTP) to avoid Handle::data() deadlock issues.
-    /// The session event loop doesn't need to process our data messages because
-    /// ChannelStream writes directly to the channel's internal sender.
+    /// Uses Handle-based I/O for PTY output to avoid notify_waiters() race conditions.
+    /// The key insight is that Handle::data() uses notify_one() which stores a permit
+    /// if no task is waiting, while ChannelTx uses notify_waiters() which only wakes
+    /// tasks that are currently waiting. This causes intermittent failures with rapid
+    /// connections when using ChannelStream-based I/O.
     fn shell_request(
         &mut self,
         channel_id: ChannelId,
@@ -747,8 +744,8 @@ impl russh::server::Handler for SshHandler {
             }
         };
 
-        // Get PTY configuration and take the channel for ChannelStream
-        let (pty_config, channel) = match self.channels.get_mut(&channel_id) {
+        // Get PTY configuration
+        let pty_config = match self.channels.get_mut(&channel_id) {
             Some(state) => {
                 let config = state
                     .pty
@@ -764,31 +761,12 @@ impl russh::server::Handler for SshHandler {
                     })
                     .unwrap_or_default();
                 state.set_shell();
-                // Take the channel to create ChannelStream (like SFTP does)
-                let channel = state.take_channel();
-                (config, channel)
+                config
             }
             None => {
                 tracing::warn!(
                     channel = ?channel_id,
                     "Shell request but channel state not found"
-                );
-                let _ = session.channel_failure(channel_id);
-                return async { Ok(()) }.boxed();
-            }
-        };
-
-        // We need the channel for ChannelStream
-        let channel = match channel {
-            Some(ch) => {
-                eprintln!("[HANDLER] shell_request: got channel {:?} at addr {:p} from state.take_channel()",
-                    ch.id(), &ch as *const _);
-                ch
-            }
-            None => {
-                tracing::warn!(
-                    channel = ?channel_id,
-                    "Shell request but channel already taken"
                 );
                 let _ = session.channel_failure(channel_id);
                 return async { Ok(()) }.boxed();
@@ -812,9 +790,12 @@ impl russh::server::Handler for SshHandler {
         // Get PTY reference for window_change_request
         let pty = Arc::clone(shell_session.pty());
 
-        // Store PTY in channel state for window_change callbacks
+        // Create channel for SSH -> PTY data (client input)
+        let (data_tx, data_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1024);
+
+        // Store handles in channel state for window_change callbacks and data forwarding
         if let Some(state) = self.channels.get_mut(&channel_id) {
-            state.shell_pty = Some(Arc::clone(&pty));
+            state.set_shell_handles(data_tx, Arc::clone(&pty));
         }
 
         // Clone what we need for the async block
@@ -825,16 +806,7 @@ impl russh::server::Handler for SshHandler {
         // Signal success before starting shell
         let _ = session.channel_success(channel_id);
 
-        eprintln!(
-            "[HANDLER] shell_request: BEFORE async move, channel addr {:p}",
-            &channel as *const _
-        );
-
         async move {
-            eprintln!(
-                "[HANDLER] shell_request: INSIDE async move, channel addr {:p}",
-                &channel as *const _
-            );
             // Get user info from auth provider
             let user_info = match auth_provider.get_user_info(&username).await {
                 Ok(Some(info)) => info,
@@ -879,25 +851,21 @@ impl russh::server::Handler for SshHandler {
 
             tracing::debug!(
                 channel = ?channel_id,
-                "Spawning shell I/O task with ChannelStream"
+                "Spawning shell I/O task with Handle-based approach"
             );
-
-            // Create ChannelStream for direct I/O (same pattern as SFTP)
-            // This bypasses Handle::data() and its potential deadlock issues
-            eprintln!(
-                "[HANDLER] shell_request: calling channel.into_stream() for {:?}",
-                channel_id
-            );
-            let channel_stream = channel.into_stream();
 
             // IMPORTANT: Spawn the I/O loop instead of awaiting it!
-            // If we await here, the session loop blocks and can't read network packets,
-            // so ChannelStream::read() would never receive data (deadlock).
-            // By spawning, the handler returns immediately and session loop continues.
+            // The session loop needs to keep running to flush Handle::data() messages
+            // to the network. If we await here, the session loop is blocked.
             tokio::spawn(async move {
-                let exit_code =
-                    crate::server::shell::run_shell_io_loop(channel_id, pty, child, channel_stream)
-                        .await;
+                let exit_code = crate::server::shell::run_shell_io_loop_with_handle(
+                    channel_id,
+                    pty,
+                    child,
+                    handle.clone(),
+                    data_rx,
+                )
+                .await;
 
                 tracing::info!(
                     channel = ?channel_id,
@@ -905,7 +873,8 @@ impl russh::server::Handler for SshHandler {
                     "Shell session completed"
                 );
 
-                // Send exit status, EOF, and close channel
+                // Send exit status, EOF, and close channel (same as exec_request)
+                // This is critical - without these, the SSH client waits indefinitely
                 let _ = handle
                     .exit_status_request(channel_id, exit_code as u32)
                     .await;
@@ -1046,10 +1015,10 @@ impl russh::server::Handler for SshHandler {
         data: &[u8],
         _session: &mut Session,
     ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
-        tracing::trace!(
+        tracing::debug!(
             channel = ?channel_id,
             bytes = %data.len(),
-            "Received data"
+            "Received data from client"
         );
 
         // Get the data sender if there's an active shell session
@@ -1059,6 +1028,11 @@ impl russh::server::Handler for SshHandler {
             .and_then(|state| state.shell_data_tx.clone());
 
         if let Some(tx) = data_sender {
+            tracing::debug!(
+                channel = ?channel_id,
+                bytes = %data.len(),
+                "Forwarding data to shell via mpsc"
+            );
             let data = data.to_vec();
             return async move {
                 if let Err(e) = tx.send(data).await {
@@ -1067,10 +1041,20 @@ impl russh::server::Handler for SshHandler {
                         error = %e,
                         "Error forwarding data to shell"
                     );
+                } else {
+                    tracing::debug!(
+                        channel = ?channel_id,
+                        "Data forwarded to shell successfully"
+                    );
                 }
                 Ok(())
             }
             .boxed();
+        } else {
+            tracing::debug!(
+                channel = ?channel_id,
+                "No shell_data_tx found for channel, dropping data"
+            );
         }
 
         async { Ok(()) }.boxed()
@@ -1114,7 +1098,7 @@ impl russh::server::Handler for SshHandler {
 
         if let Some(pty) = pty_mutex {
             return async move {
-                let mut pty_guard = pty.lock().await;
+                let mut pty_guard = pty.write().await;
                 if let Err(e) = pty_guard.resize(col_width, row_height) {
                     tracing::debug!(
                         channel = ?channel_id,

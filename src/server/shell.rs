@@ -41,7 +41,7 @@ use russh::server::{Handle, Msg};
 use russh::{ChannelId, ChannelStream, CryptoVec};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Child;
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, RwLock};
 
 use super::pty::{PtyConfig, PtyMaster};
 use crate::shared::auth_types::UserInfo;
@@ -62,7 +62,7 @@ pub struct ShellSession {
     channel_id: ChannelId,
 
     /// PTY master handle.
-    pty: Arc<Mutex<PtyMaster>>,
+    pty: Arc<RwLock<PtyMaster>>,
 
     /// Shell child process.
     child: Option<Child>,
@@ -84,14 +84,14 @@ impl ShellSession {
 
         Ok(Self {
             channel_id,
-            pty: Arc::new(Mutex::new(pty)),
+            pty: Arc::new(RwLock::new(pty)),
             child: None,
         })
     }
 
     /// Spawn the shell process.
     async fn spawn_shell(&self, user_info: &UserInfo) -> Result<Child> {
-        let pty = self.pty.lock().await;
+        let pty = self.pty.read().await;
         let slave_path = pty.slave_path().clone();
         let term = pty.config().term.clone();
         drop(pty);
@@ -206,7 +206,7 @@ impl ShellSession {
     }
 
     /// Get a reference to the PTY mutex for resize operations.
-    pub fn pty(&self) -> &Arc<Mutex<PtyMaster>> {
+    pub fn pty(&self) -> &Arc<RwLock<PtyMaster>> {
         &self.pty
     }
 
@@ -231,7 +231,7 @@ impl ShellSession {
     /// * `cols` - New window width in columns
     /// * `rows` - New window height in rows
     pub async fn resize(&self, cols: u32, rows: u32) -> Result<()> {
-        let mut pty = self.pty.lock().await;
+        let mut pty = self.pty.write().await;
         pty.resize(cols, rows)
     }
 }
@@ -255,7 +255,7 @@ impl ShellSession {
 /// Returns the exit code of the shell process.
 pub async fn run_shell_io_loop(
     channel_id: ChannelId,
-    pty: Arc<Mutex<PtyMaster>>,
+    pty: Arc<RwLock<PtyMaster>>,
     mut child: Option<Child>,
     mut channel_stream: ChannelStream<Msg>,
 ) -> i32 {
@@ -302,7 +302,7 @@ pub async fn run_shell_io_loop(
         tokio::select! {
             // Read from PTY and write to SSH channel stream
             read_result = async {
-                let pty_guard = pty.lock().await;
+                let pty_guard = pty.read().await;
                 pty_guard.read(&mut pty_buf).await
             } => {
                 tracing::debug!(channel = ?channel_id, iter = iteration, result = ?read_result.as_ref().map(|n| *n), "PTY read branch triggered");
@@ -312,10 +312,8 @@ pub async fn run_shell_io_loop(
                         return wait_for_child(&mut child).await;
                     }
                     Ok(n) => {
-                        eprintln!("[SHELL_IO] Read {} bytes from PTY, calling write_all", n);
                         tracing::debug!(channel = ?channel_id, bytes = n, "Read from PTY, writing to SSH");
                         if let Err(e) = channel_stream.write_all(&pty_buf[..n]).await {
-                            eprintln!("[SHELL_IO] write_all FAILED: {}", e);
                             tracing::debug!(
                                 channel = ?channel_id,
                                 error = %e,
@@ -323,17 +321,14 @@ pub async fn run_shell_io_loop(
                             );
                             return wait_for_child(&mut child).await;
                         }
-                        eprintln!("[SHELL_IO] write_all completed successfully");
                         // Flush to ensure data is sent immediately
                         if let Err(e) = channel_stream.flush().await {
-                            eprintln!("[SHELL_IO] flush FAILED: {}", e);
                             tracing::debug!(
                                 channel = ?channel_id,
                                 error = %e,
                                 "Failed to flush channel stream"
                             );
                         }
-                        eprintln!("[SHELL_IO] flush completed");
                     }
                     Err(e) => {
                         if e.kind() == std::io::ErrorKind::WouldBlock {
@@ -366,7 +361,7 @@ pub async fn run_shell_io_loop(
                     }
                     Ok(n) => {
                         tracing::debug!(channel = ?channel_id, bytes = n, "Read from SSH, writing to PTY");
-                        let pty_guard = pty.lock().await;
+                        let pty_guard = pty.read().await;
                         if let Err(e) = pty_guard.write_all(&ssh_buf[..n]).await {
                             tracing::debug!(
                                 channel = ?channel_id,
@@ -396,7 +391,7 @@ pub async fn run_shell_io_loop(
 /// Drain any remaining output from PTY before closing.
 async fn drain_pty_output_to_stream(
     channel_id: ChannelId,
-    pty: &Arc<Mutex<PtyMaster>>,
+    pty: &Arc<RwLock<PtyMaster>>,
     channel_stream: &mut ChannelStream<Msg>,
     buf: &mut [u8],
 ) {
@@ -406,7 +401,7 @@ async fn drain_pty_output_to_stream(
 
     let mut consecutive_timeouts = 0;
     for _ in 0..100 {
-        let pty_guard = pty.lock().await;
+        let pty_guard = pty.read().await;
         match tokio::time::timeout(std::time::Duration::from_millis(100), pty_guard.read(buf)).await
         {
             Ok(Ok(0)) => break,
@@ -464,7 +459,7 @@ async fn wait_for_child(child: &mut Option<Child>) -> i32 {
 /// Returns the exit code of the shell process.
 pub async fn run_shell_io_loop_with_handle(
     channel_id: ChannelId,
-    pty: Arc<Mutex<PtyMaster>>,
+    pty: Arc<RwLock<PtyMaster>>,
     mut child: Option<Child>,
     handle: Handle,
     mut data_rx: mpsc::Receiver<Vec<u8>>,
@@ -475,6 +470,17 @@ pub async fn run_shell_io_loop_with_handle(
     let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
 
     // Spawn task for PTY -> SSH (like exec does for stdout/stderr)
+    //
+    // IMPORTANT: We use a timeout on PTY reads to avoid deadlock.
+    // The deadlock scenario:
+    // 1. Output task acquires PTY lock, awaits pty.read() (waiting for shell output)
+    // 2. User types, SSH data arrives, main loop tries to acquire PTY lock to write
+    // 3. Main loop blocks on lock (held by output task)
+    // 4. Output task blocks on pty.read() (waiting for input that can't arrive)
+    // 5. Deadlock!
+    //
+    // By using a short timeout on reads, we periodically release the lock,
+    // allowing the main loop to write SSH input to PTY.
     let pty_clone = Arc::clone(&pty);
     let handle_clone = handle.clone();
     let output_task = tokio::spawn(async move {
@@ -490,22 +496,38 @@ pub async fn run_shell_io_loop_with_handle(
                     break;
                 }
 
-                // Read from PTY
+                // Read from PTY with timeout to prevent holding lock too long
                 read_result = async {
-                    let pty_guard = pty_clone.lock().await;
-                    pty_guard.read(&mut buf).await
+                    let pty_guard = pty_clone.read().await;
+                    // Use a short timeout so we release the lock periodically
+                    // This prevents deadlock with the main loop's write operations
+                    tokio::time::timeout(
+                        std::time::Duration::from_millis(50),
+                        pty_guard.read(&mut buf)
+                    ).await
                 } => {
                     match read_result {
-                        Ok(0) => {
+                        // Timeout - no data yet, loop back (releases lock)
+                        Err(_elapsed) => {
+                            // Sleep briefly to give main loop a chance to acquire lock
+                            // yield_now() alone is not enough because this task may be
+                            // rescheduled immediately before the main loop gets the lock
+                            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                            continue;
+                        }
+                        Ok(Ok(0)) => {
                             tracing::trace!(channel = ?channel_id, "PTY EOF in output task");
                             break;
                         }
-                        Ok(n) => {
+                        Ok(Ok(n)) => {
                             tracing::trace!(channel = ?channel_id, bytes = n, "Read from PTY, calling handle.data()");
                             let data = CryptoVec::from_slice(&buf[..n]);
                             match handle_clone.data(channel_id, data).await {
                                 Ok(_) => {
                                     tracing::trace!(channel = ?channel_id, "handle.data() returned successfully");
+                                    // Yield to allow russh session loop to flush the message
+                                    // This is critical for interactive PTY sessions
+                                    tokio::task::yield_now().await;
                                 }
                                 Err(e) => {
                                     tracing::debug!(
@@ -517,7 +539,7 @@ pub async fn run_shell_io_loop_with_handle(
                                 }
                             }
                         }
-                        Err(e) => {
+                        Ok(Err(e)) => {
                             if e.kind() != std::io::ErrorKind::WouldBlock {
                                 tracing::debug!(
                                     channel = ?channel_id,
@@ -562,17 +584,23 @@ pub async fn run_shell_io_loop_with_handle(
         // Wait for SSH input or a small timeout to check child status
         tokio::select! {
             Some(data) = data_rx.recv() => {
-                tracing::trace!(
+                tracing::debug!(
                     channel = ?channel_id,
                     bytes = data.len(),
-                    "Received data from SSH, writing to PTY"
+                    "Received data from SSH via mpsc, writing to PTY"
                 );
-                let pty_guard = pty.lock().await;
+                let pty_guard = pty.read().await;
                 if let Err(e) = pty_guard.write_all(&data).await {
                     tracing::debug!(
                         channel = ?channel_id,
                         error = %e,
                         "Failed to write to PTY"
+                    );
+                } else {
+                    tracing::debug!(
+                        channel = ?channel_id,
+                        bytes = data.len(),
+                        "Successfully wrote data to PTY"
                     );
                 }
             }

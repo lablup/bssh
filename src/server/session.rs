@@ -33,7 +33,7 @@ use std::time::Instant;
 
 use russh::server::Msg;
 use russh::{Channel, ChannelId};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, RwLock};
 
 use super::pty::PtyMaster;
 
@@ -206,7 +206,7 @@ pub struct ChannelState {
     pub shell_data_tx: Option<mpsc::Sender<Vec<u8>>>,
 
     /// PTY master handle for resize operations (active shell only).
-    pub shell_pty: Option<Arc<Mutex<PtyMaster>>>,
+    pub shell_pty: Option<Arc<RwLock<PtyMaster>>>,
 
     /// Whether EOF has been received from the client.
     pub eof_received: bool,
@@ -243,10 +243,6 @@ impl ChannelState {
     /// Create a new channel state with the underlying channel.
     pub fn with_channel(channel: Channel<Msg>) -> Self {
         let id = channel.id();
-        eprintln!(
-            "[ChannelState::with_channel] channel {:?} at addr {:p}",
-            id, &channel as *const _
-        );
         Self {
             channel_id: id,
             channel: Some(channel),
@@ -260,15 +256,7 @@ impl ChannelState {
 
     /// Take the underlying channel (consumes it for use with subsystems).
     pub fn take_channel(&mut self) -> Option<Channel<Msg>> {
-        let ch = self.channel.take();
-        if let Some(ref c) = ch {
-            eprintln!(
-                "[ChannelState::take_channel] returning channel {:?} at addr {:p}",
-                c.id(),
-                c as *const _
-            );
-        }
-        ch
+        self.channel.take()
     }
 
     /// Check if the channel has a PTY attached.
@@ -298,7 +286,7 @@ impl ChannelState {
     /// This is used by the window_change handler to handle terminal resizes.
     /// Note: With ChannelStream-based I/O, data flows directly through the
     /// stream, so no data sender is needed.
-    pub fn set_shell_pty(&mut self, pty: Arc<Mutex<PtyMaster>>) {
+    pub fn set_shell_pty(&mut self, pty: Arc<RwLock<PtyMaster>>) {
         self.shell_pty = Some(pty);
         self.mode = ChannelMode::Shell;
     }
@@ -313,7 +301,7 @@ impl ChannelState {
     pub fn set_shell_handles(
         &mut self,
         data_tx: mpsc::Sender<Vec<u8>>,
-        pty: Arc<Mutex<PtyMaster>>,
+        pty: Arc<RwLock<PtyMaster>>,
     ) {
         self.shell_data_tx = Some(data_tx);
         self.shell_pty = Some(pty);
