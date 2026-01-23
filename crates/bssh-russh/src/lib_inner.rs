@@ -5,7 +5,7 @@ use std::future::{Future, Pending};
 use futures::future::Either as EitherFuture;
 use log::{debug, warn};
 use parsing::ChannelOpenConfirmation;
-pub use bssh_cryptovec::CryptoVec;
+pub use russh_cryptovec::CryptoVec;
 use ssh_encoding::{Decode, Encode};
 use thiserror::Error;
 
@@ -212,7 +212,7 @@ pub enum Error {
     Decompress(#[from] flate2::DecompressError),
 
     #[error(transparent)]
-    Join(#[from] bssh_russh_util::runtime::JoinError),
+    Join(#[from] russh_util::runtime::JoinError),
 
     #[error(transparent)]
     Elapsed(#[from] tokio::time::error::Elapsed),

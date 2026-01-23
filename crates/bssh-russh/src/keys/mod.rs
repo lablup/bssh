@@ -45,7 +45,7 @@
 //!        client.add_identity(&key, &[agent::Constraint::KeyLifetime { seconds: 60 }]).await?;
 //!        client.request_identities().await?;
 //!        let buf = b"signed message";
-//!        let sig = client.sign_request(&public, None, bssh_cryptovec::CryptoVec::from_slice(&buf[..])).await.unwrap();
+//!        let sig = client.sign_request(&public, None, russh_cryptovec::CryptoVec::from_slice(&buf[..])).await.unwrap();
 //!        // Here, `sig` is encoded in a format usable internally by the SSH protocol.
 //!        Ok::<(), Error>(())
 //!    }).unwrap()
@@ -861,7 +861,7 @@ Cog3JMeTrb3LiPHgN6gU2P30MRp6L1j1J/MtlOAr5rux
         let mut client = agent::client::AgentClient::connect(stream);
         client.add_identity(&key, &[]).await?;
         client.request_identities().await?;
-        let buf = bssh_cryptovec::CryptoVec::from_slice(b"blabla");
+        let buf = russh_cryptovec::CryptoVec::from_slice(b"blabla");
         let len = buf.len();
         let buf = client
             .sign_request(public, Some(HashAlg::Sha256), buf)
@@ -954,7 +954,7 @@ Cog3JMeTrb3LiPHgN6gU2P30MRp6L1j1J/MtlOAr5rux
                 .await
                 .unwrap();
             client.request_identities().await.unwrap();
-            let buf = bssh_cryptovec::CryptoVec::from_slice(b"blabla");
+            let buf = russh_cryptovec::CryptoVec::from_slice(b"blabla");
             let len = buf.len();
             let buf = client.sign_request(public, None, buf).await.unwrap();
             let (a, b) = buf.split_at(len);

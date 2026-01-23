@@ -40,8 +40,8 @@ use client::GexParams;
 use futures::future::Future;
 use log::{debug, error, info, warn};
 use msg::{is_kex_msg, validate_client_msg_strict_kex};
-use bssh_russh_util::runtime::JoinHandle;
-use bssh_russh_util::time::Instant;
+use russh_util::runtime::JoinHandle;
+use russh_util::time::Instant;
 use ssh_key::{Certificate, PrivateKey};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpListener, ToSocketAddrs};
@@ -877,7 +877,7 @@ pub trait Server {
                                 let handler = self.new_client(Some(peer_addr));
                                 let error_tx = error_tx.clone();
 
-                                bssh_russh_util::runtime::spawn(async move {
+                                russh_util::runtime::spawn(async move {
                                     if config.nodelay {
                                         if let Err(e) = socket.set_nodelay(true) {
                                             warn!("set_nodelay() failed: {e:?}");
@@ -1036,7 +1036,7 @@ where
 
     session.begin_rekey()?;
 
-    let join = bssh_russh_util::runtime::spawn(session.run(stream, handler));
+    let join = russh_util::runtime::spawn(session.run(stream, handler));
 
     Ok(RunningSession { handle, join })
 }

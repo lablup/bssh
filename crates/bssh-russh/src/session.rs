@@ -47,7 +47,7 @@ pub(crate) struct Encrypted {
     pub last_channel_id: Wrapping<u32>,
     pub write: CryptoVec,
     pub write_cursor: usize,
-    pub last_rekey: bssh_russh_util::time::Instant,
+    pub last_rekey: russh_util::time::Instant,
     pub server_compression: crate::compression::Compression,
     pub client_compression: crate::compression::Compression,
     pub decompress: crate::compression::Decompress,
@@ -154,7 +154,7 @@ impl<C> CommonSession<C> {
             last_channel_id: Wrapping(1),
             write: CryptoVec::new(),
             write_cursor: 0,
-            last_rekey: bssh_russh_util::time::Instant::now(),
+            last_rekey: russh_util::time::Instant::now(),
             server_compression: newkeys.names.server_compression,
             client_compression: newkeys.names.client_compression,
             decompress: crate::compression::Decompress::None,
@@ -496,7 +496,7 @@ impl Encrypted {
             return Ok(false);
         }
 
-        let now = bssh_russh_util::time::Instant::now();
+        let now = russh_util::time::Instant::now();
         let dur = now.duration_since(self.last_rekey);
         Ok(replace(&mut self.rekey_wanted, false)
             || writer.buffer().bytes >= limits.rekey_write_limit

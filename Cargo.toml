@@ -2,8 +2,6 @@
 members = [
     ".",
     "crates/bssh-russh",
-    "crates/bssh-cryptovec",
-    "crates/bssh-russh-util",
 ]
 
 [package]

@@ -1,8 +1,0 @@
-[package]
-name = "bssh-russh-util"
-version = "0.1.0"
-edition = "2021"
-description = "Runtime abstraction utilities (internal bssh crate)"
-
-[dependencies]
-tokio = { version = "1.48.0", features = ["sync", "macros", "io-util", "rt-multi-thread", "rt"] }

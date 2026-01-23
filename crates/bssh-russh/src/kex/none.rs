@@ -29,7 +29,7 @@ impl KexAlgorithmImplementor for NoneKexAlgorithm {
 
     fn client_dh(
         &mut self,
-        _client_ephemeral: &mut bssh_cryptovec::CryptoVec,
+        _client_ephemeral: &mut russh_cryptovec::CryptoVec,
         _buf: &mut impl Writer,
     ) -> Result<(), crate::Error> {
         Ok(())
@@ -45,17 +45,17 @@ impl KexAlgorithmImplementor for NoneKexAlgorithm {
 
     fn compute_exchange_hash(
         &self,
-        _key: &bssh_cryptovec::CryptoVec,
+        _key: &russh_cryptovec::CryptoVec,
         _exchange: &crate::session::Exchange,
-        _buffer: &mut bssh_cryptovec::CryptoVec,
-    ) -> Result<bssh_cryptovec::CryptoVec, crate::Error> {
+        _buffer: &mut russh_cryptovec::CryptoVec,
+    ) -> Result<russh_cryptovec::CryptoVec, crate::Error> {
         Ok(CryptoVec::new())
     }
 
     fn compute_keys(
         &self,
-        session_id: &bssh_cryptovec::CryptoVec,
-        exchange_hash: &bssh_cryptovec::CryptoVec,
+        session_id: &russh_cryptovec::CryptoVec,
+        exchange_hash: &russh_cryptovec::CryptoVec,
         cipher: crate::cipher::Name,
         remote_to_local_mac: crate::mac::Name,
         local_to_remote_mac: crate::mac::Name,

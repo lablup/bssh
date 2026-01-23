@@ -440,17 +440,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "bssh-cryptovec"
-version = "0.1.0"
-dependencies = [
- "libc",
- "log",
- "nix 0.30.1",
- "ssh-encoding",
- "winapi",
-]
-
-[[package]]
 name = "bssh-russh"
 version = "0.1.0"
 dependencies = [
@@ -459,8 +448,6 @@ dependencies = [
  "aws-lc-rs",
  "bitflags 2.10.0",
  "block-padding",
- "bssh-cryptovec",
- "bssh-russh-util",
  "byteorder",
  "bytes",
  "cbc",
@@ -499,6 +486,8 @@ dependencies = [
  "rand_core 0.6.4",
  "ring",
  "rsa 0.10.0-rc.11",
+ "russh-cryptovec",
+ "russh-util",
  "sec1",
  "sha1 0.10.6",
  "sha2 0.10.9",
@@ -511,13 +500,6 @@ dependencies = [
  "typenum",
  "yasna",
  "zeroize",
-]
-
-[[package]]
-name = "bssh-russh-util"
-version = "0.1.0"
-dependencies = [
- "tokio",
 ]
 
 [[package]]
@@ -3366,6 +3348,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "russh-cryptovec"
+version = "0.52.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4fb0ed583ff0f6b4aa44c7867dd7108df01b30571ee9423e250b4cc939f8c6cf"
+dependencies = [
+ "libc",
+ "log",
+ "nix 0.29.0",
+ "ssh-encoding",
+ "winapi",
+]
+
+[[package]]
 name = "russh-sftp"
 version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3380,6 +3375,18 @@ dependencies = [
  "thiserror 2.0.17",
  "tokio",
  "tokio-util",
+]
+
+[[package]]
+name = "russh-util"
+version = "0.52.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "668424a5dde0bcb45b55ba7de8476b93831b4aa2fa6947e145f3b053e22c60b6"
+dependencies = [
+ "chrono",
+ "tokio",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]
@@ -4447,6 +4454,19 @@ dependencies = [
  "rustversion",
  "wasm-bindgen-macro",
  "wasm-bindgen-shared",
+]
+
+[[package]]
+name = "wasm-bindgen-futures"
+version = "0.4.56"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "836d9622d604feee9e5de25ac10e3ea5f2d65b41eac0d9ce72eb5deae707ce7c"
+dependencies = [
+ "cfg-if",
+ "js-sys",
+ "once_cell",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]

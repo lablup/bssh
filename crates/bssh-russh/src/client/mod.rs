@@ -46,7 +46,7 @@ use futures::Future;
 use futures::task::{Context, Poll};
 use kex::ClientKex;
 use log::{debug, error, trace, warn};
-use bssh_russh_util::time::Instant;
+use russh_util::time::Instant;
 use ssh_encoding::Decode;
 use ssh_key::{Algorithm, Certificate, HashAlg, PrivateKey, PublicKey};
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadHalf, WriteHalf};
@@ -256,7 +256,7 @@ pub enum DisconnectReason<E: From<crate::Error> + Send> {
 pub struct Handle<H: Handler> {
     sender: Sender<Msg>,
     receiver: UnboundedReceiver<Reply>,
-    join: bssh_russh_util::runtime::JoinHandle<Result<(), H::Error>>,
+    join: russh_util::runtime::JoinHandle<Result<(), H::Error>>,
     channel_buffer_size: usize,
 }
 
@@ -959,7 +959,7 @@ where
     );
     session.begin_rekey()?;
     let (kex_done_signal, kex_done_signal_rx) = oneshot::channel();
-    let join = bssh_russh_util::runtime::spawn(session.run(stream, handler, Some(kex_done_signal)));
+    let join = russh_util::runtime::spawn(session.run(stream, handler, Some(kex_done_signal)));
 
     if let Err(err) = kex_done_signal_rx.await {
         // kex_done_signal Sender is dropped when the session

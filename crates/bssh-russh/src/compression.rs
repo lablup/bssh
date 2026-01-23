@@ -115,7 +115,7 @@ impl Compress {
     pub fn compress<'a>(
         &mut self,
         input: &'a [u8],
-        _: &'a mut bssh_cryptovec::CryptoVec,
+        _: &'a mut russh_cryptovec::CryptoVec,
     ) -> Result<&'a [u8], crate::Error> {
         Ok(input)
     }
@@ -126,7 +126,7 @@ impl Decompress {
     pub fn decompress<'a>(
         &mut self,
         input: &'a [u8],
-        _: &'a mut bssh_cryptovec::CryptoVec,
+        _: &'a mut russh_cryptovec::CryptoVec,
     ) -> Result<&'a [u8], crate::Error> {
         Ok(input)
     }
@@ -137,7 +137,7 @@ impl Compress {
     pub fn compress<'a>(
         &mut self,
         input: &'a [u8],
-        output: &'a mut bssh_cryptovec::CryptoVec,
+        output: &'a mut russh_cryptovec::CryptoVec,
     ) -> Result<&'a [u8], crate::Error> {
         match *self {
             Compress::None => Ok(input),
@@ -172,7 +172,7 @@ impl Decompress {
     pub fn decompress<'a>(
         &mut self,
         input: &'a [u8],
-        output: &'a mut bssh_cryptovec::CryptoVec,
+        output: &'a mut russh_cryptovec::CryptoVec,
     ) -> Result<&'a [u8], crate::Error> {
         match *self {
             Decompress::None => Ok(input),
