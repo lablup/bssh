@@ -242,8 +242,13 @@ impl ChannelState {
 
     /// Create a new channel state with the underlying channel.
     pub fn with_channel(channel: Channel<Msg>) -> Self {
+        let id = channel.id();
+        eprintln!(
+            "[ChannelState::with_channel] channel {:?} at addr {:p}",
+            id, &channel as *const _
+        );
         Self {
-            channel_id: channel.id(),
+            channel_id: id,
             channel: Some(channel),
             mode: ChannelMode::Idle,
             pty: None,
@@ -255,7 +260,15 @@ impl ChannelState {
 
     /// Take the underlying channel (consumes it for use with subsystems).
     pub fn take_channel(&mut self) -> Option<Channel<Msg>> {
-        self.channel.take()
+        let ch = self.channel.take();
+        if let Some(ref c) = ch {
+            eprintln!(
+                "[ChannelState::take_channel] returning channel {:?} at addr {:p}",
+                c.id(),
+                c as *const _
+            );
+        }
+        ch
     }
 
     /// Check if the channel has a PTY attached.
@@ -280,10 +293,23 @@ impl ChannelState {
         self.mode = ChannelMode::Shell;
     }
 
+    /// Set the PTY handle for the active shell.
+    ///
+    /// This is used by the window_change handler to handle terminal resizes.
+    /// Note: With ChannelStream-based I/O, data flows directly through the
+    /// stream, so no data sender is needed.
+    pub fn set_shell_pty(&mut self, pty: Arc<Mutex<PtyMaster>>) {
+        self.shell_pty = Some(pty);
+        self.mode = ChannelMode::Shell;
+    }
+
     /// Set the shell data sender and PTY handle for the active shell.
     ///
     /// These are used by the data and window_change handlers to forward
     /// SSH input to the shell and handle terminal resizes.
+    /// Note: This is kept for backward compatibility but `set_shell_pty`
+    /// is preferred when using ChannelStream-based I/O.
+    #[allow(dead_code)]
     pub fn set_shell_handles(
         &mut self,
         data_tx: mpsc::Sender<Vec<u8>>,
@@ -302,7 +328,7 @@ impl ChannelState {
 
     /// Check if the channel has an active shell session.
     pub fn has_shell(&self) -> bool {
-        self.shell_data_tx.is_some()
+        self.shell_pty.is_some()
     }
 
     /// Set the channel mode to SFTP.

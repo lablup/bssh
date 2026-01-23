@@ -83,7 +83,7 @@ impl SshHandler {
             sessions,
             auth_provider,
             rate_limiter,
-            session_info: None,
+            session_info: Some(SessionInfo::new(peer_addr)),
             channels: HashMap::new(),
         }
     }
@@ -106,7 +106,7 @@ impl SshHandler {
             sessions,
             auth_provider,
             rate_limiter,
-            session_info: None,
+            session_info: Some(SessionInfo::new(peer_addr)),
             channels: HashMap::new(),
         }
     }
@@ -128,7 +128,7 @@ impl SshHandler {
             sessions,
             auth_provider,
             rate_limiter,
-            session_info: None,
+            session_info: Some(SessionInfo::new(peer_addr)),
             channels: HashMap::new(),
         }
     }
@@ -195,6 +195,11 @@ impl russh::server::Handler for SshHandler {
         );
 
         // Store the channel itself so we can use it for subsystems like SFTP
+        // Debug: print the channel's address before storing
+        eprintln!(
+            "[HANDLER] channel_open_session: storing channel {:?} at addr {:p}",
+            channel_id, &channel as *const _
+        );
         self.channels
             .insert(channel_id, ChannelState::with_channel(channel));
         async { Ok(true) }
@@ -719,6 +724,9 @@ impl russh::server::Handler for SshHandler {
     /// Handle shell request.
     ///
     /// Starts an interactive shell session for the authenticated user.
+    /// Uses ChannelStream for I/O (like SFTP) to avoid Handle::data() deadlock issues.
+    /// The session event loop doesn't need to process our data messages because
+    /// ChannelStream writes directly to the channel's internal sender.
     fn shell_request(
         &mut self,
         channel_id: ChannelId,
@@ -739,34 +747,94 @@ impl russh::server::Handler for SshHandler {
             }
         };
 
-        // Get PTY configuration (if set during pty_request)
-        let pty_config = self
-            .channels
-            .get(&channel_id)
-            .and_then(|state| state.pty.as_ref())
-            .map(|pty| {
-                PtyMasterConfig::new(
-                    pty.term.clone(),
-                    pty.col_width,
-                    pty.row_height,
-                    pty.pix_width,
-                    pty.pix_height,
-                )
-            })
-            .unwrap_or_default();
+        // Get PTY configuration and take the channel for ChannelStream
+        let (pty_config, channel) = match self.channels.get_mut(&channel_id) {
+            Some(state) => {
+                let config = state
+                    .pty
+                    .as_ref()
+                    .map(|pty| {
+                        PtyMasterConfig::new(
+                            pty.term.clone(),
+                            pty.col_width,
+                            pty.row_height,
+                            pty.pix_width,
+                            pty.pix_height,
+                        )
+                    })
+                    .unwrap_or_default();
+                state.set_shell();
+                // Take the channel to create ChannelStream (like SFTP does)
+                let channel = state.take_channel();
+                (config, channel)
+            }
+            None => {
+                tracing::warn!(
+                    channel = ?channel_id,
+                    "Shell request but channel state not found"
+                );
+                let _ = session.channel_failure(channel_id);
+                return async { Ok(()) }.boxed();
+            }
+        };
+
+        // We need the channel for ChannelStream
+        let channel = match channel {
+            Some(ch) => {
+                eprintln!("[HANDLER] shell_request: got channel {:?} at addr {:p} from state.take_channel()",
+                    ch.id(), &ch as *const _);
+                ch
+            }
+            None => {
+                tracing::warn!(
+                    channel = ?channel_id,
+                    "Shell request but channel already taken"
+                );
+                let _ = session.channel_failure(channel_id);
+                return async { Ok(()) }.boxed();
+            }
+        };
+
+        // Create shell session (sync) to get the PTY
+        let shell_session = match ShellSession::new(channel_id, pty_config.clone()) {
+            Ok(session) => session,
+            Err(e) => {
+                tracing::error!(
+                    channel = ?channel_id,
+                    error = %e,
+                    "Failed to create shell session"
+                );
+                let _ = session.channel_failure(channel_id);
+                return async { Ok(()) }.boxed();
+            }
+        };
+
+        // Get PTY reference for window_change_request
+        let pty = Arc::clone(shell_session.pty());
+
+        // Store PTY in channel state for window_change callbacks
+        if let Some(state) = self.channels.get_mut(&channel_id) {
+            state.shell_pty = Some(Arc::clone(&pty));
+        }
 
         // Clone what we need for the async block
         let auth_provider = Arc::clone(&self.auth_provider);
-        let handle = session.handle();
         let peer_addr = self.peer_addr;
-
-        // Get mutable reference to channel state
-        let channels = &mut self.channels;
+        let handle = session.handle();
 
         // Signal success before starting shell
         let _ = session.channel_success(channel_id);
 
+        eprintln!(
+            "[HANDLER] shell_request: BEFORE async move, channel addr {:p}",
+            &channel as *const _
+        );
+
         async move {
+            eprintln!(
+                "[HANDLER] shell_request: INSIDE async move, channel addr {:p}",
+                &channel as *const _
+            );
             // Get user info from auth provider
             let user_info = match auth_provider.get_user_info(&username).await {
                 Ok(Some(info)) => info,
@@ -775,7 +843,6 @@ impl russh::server::Handler for SshHandler {
                         user = %username,
                         "User not found after authentication for shell"
                     );
-                    let _ = handle.close(channel_id).await;
                     return Ok(());
                 }
                 Err(e) => {
@@ -784,7 +851,6 @@ impl russh::server::Handler for SshHandler {
                         error = %e,
                         "Failed to get user info for shell"
                     );
-                    let _ = handle.close(channel_id).await;
                     return Ok(());
                 }
             };
@@ -797,92 +863,60 @@ impl russh::server::Handler for SshHandler {
                 "Starting shell session"
             );
 
-            // Create shell session
-            let mut shell_session = match ShellSession::new(channel_id, pty_config) {
-                Ok(session) => session,
-                Err(e) => {
-                    tracing::error!(
-                        user = %username,
-                        error = %e,
-                        "Failed to create shell session"
-                    );
-                    let _ = handle.close(channel_id).await;
-                    return Ok(());
-                }
-            };
-
-            // Get data sender and PTY handle from shell session BEFORE running
-            // These are used by data and window_change handlers while the shell runs
-            let data_tx = shell_session.data_sender();
-            let pty = Arc::clone(shell_session.pty());
-
-            // Store shell handles in channel state for data/resize handlers
-            if let Some(channel_state) = channels.get_mut(&channel_id) {
-                if let Some(tx) = data_tx {
-                    channel_state.set_shell_handles(tx, pty);
-                }
-            }
-
-            tracing::info!(
-                user = %username,
-                peer = ?peer_addr,
-                "Starting shell session"
-            );
-
-            // Spawn shell process first
+            // Spawn shell process (async part)
+            let mut shell_session = shell_session;
             if let Err(e) = shell_session.spawn_shell_process(&user_info).await {
                 tracing::error!(
                     user = %username,
                     error = %e,
                     "Failed to spawn shell process"
                 );
-                let _ = handle.close(channel_id).await;
                 return Ok(());
             }
 
-            // Get resources for the I/O loop
-            let channel_id_for_task = shell_session.channel_id();
-            let pty = Arc::clone(shell_session.pty());
-            let data_rx = shell_session
-                .take_data_receiver()
-                .expect("data_rx should exist");
+            // Get child process for the I/O loop
             let child = shell_session.take_child();
-            let handle_for_task = handle.clone();
 
             tracing::debug!(
-                channel = ?channel_id_for_task,
-                "Spawning shell I/O task"
+                channel = ?channel_id,
+                "Spawning shell I/O task with ChannelStream"
             );
 
-            // Spawn the I/O loop as a separate task
+            // Create ChannelStream for direct I/O (same pattern as SFTP)
+            // This bypasses Handle::data() and its potential deadlock issues
+            eprintln!(
+                "[HANDLER] shell_request: calling channel.into_stream() for {:?}",
+                channel_id
+            );
+            let channel_stream = channel.into_stream();
+
+            // IMPORTANT: Spawn the I/O loop instead of awaiting it!
+            // If we await here, the session loop blocks and can't read network packets,
+            // so ChannelStream::read() would never receive data (deadlock).
+            // By spawning, the handler returns immediately and session loop continues.
             tokio::spawn(async move {
-                let exit_code = crate::server::shell::run_shell_io_loop(
-                    channel_id_for_task,
-                    pty,
-                    child,
-                    data_rx,
-                    &handle_for_task,
-                )
-                .await;
+                let exit_code =
+                    crate::server::shell::run_shell_io_loop(channel_id, pty, child, channel_stream)
+                        .await;
 
                 tracing::info!(
-                    channel = ?channel_id_for_task,
+                    channel = ?channel_id,
                     exit_code = exit_code,
-                    "Shell process exited, sending exit status"
+                    "Shell session completed"
                 );
 
-                let _ = handle_for_task
-                    .exit_status_request(channel_id_for_task, exit_code as u32)
+                // Send exit status, EOF, and close channel
+                let _ = handle
+                    .exit_status_request(channel_id, exit_code as u32)
                     .await;
-                let _ = handle_for_task.eof(channel_id_for_task).await;
-                let _ = handle_for_task.close(channel_id_for_task).await;
-
-                tracing::debug!(
-                    channel = ?channel_id_for_task,
-                    exit_code = exit_code,
-                    "Shell I/O task completed"
-                );
+                let _ = handle.eof(channel_id).await;
+                let _ = handle.close(channel_id).await;
             });
+
+            tracing::debug!(
+                channel = ?channel_id,
+                "Shell I/O task spawned, handler returning"
+            );
 
             Ok(())
         }
