@@ -32,7 +32,7 @@ use opentelemetry_sdk::{
     Resource,
 };
 use std::sync::Arc;
-use tokio::sync::Mutex;
+use tokio::sync::RwLock;
 
 /// OpenTelemetry audit exporter.
 ///
@@ -61,7 +61,7 @@ use tokio::sync::Mutex;
 /// # }
 /// ```
 pub struct OtelExporter {
-    logger_provider: Arc<Mutex<LoggerProvider>>,
+    logger_provider: Arc<RwLock<LoggerProvider>>,
     endpoint: String,
 }
 
@@ -70,12 +70,33 @@ impl OtelExporter {
     ///
     /// # Arguments
     ///
-    /// * `endpoint` - OTLP endpoint URL (e.g., "http://localhost:4317")
+    /// * `endpoint` - OTLP endpoint URL (e.g., "http://localhost:4317" for local development,
+    ///   "https://otel-collector.example.com:4317" for production)
+    ///
+    /// # TLS Requirements
+    ///
+    /// For production deployments, it is strongly recommended to use HTTPS endpoints to ensure
+    /// audit data is transmitted securely. HTTP endpoints should only be used for local testing
+    /// or when the OTLP collector is on the same trusted network.
     ///
     /// # Errors
     ///
-    /// Returns an error if the exporter cannot be initialized.
+    /// Returns an error if:
+    /// - The endpoint URL is invalid
+    /// - The exporter cannot be initialized
     pub fn new(endpoint: &str) -> Result<Self> {
+        // Validate endpoint URL
+        url::Url::parse(endpoint).context("invalid endpoint URL")?;
+
+        // Warn if not using HTTPS
+        if !endpoint.starts_with("https://") {
+            tracing::warn!(
+                endpoint = %endpoint,
+                "OpenTelemetry audit exporter is not using HTTPS. \
+                 Audit data will be transmitted unencrypted. \
+                 Use HTTPS for production deployments."
+            );
+        }
         let export_config = ExportConfig {
             endpoint: endpoint.to_string(),
             protocol: Protocol::Grpc,
@@ -99,7 +120,7 @@ impl OtelExporter {
             .build();
 
         Ok(Self {
-            logger_provider: Arc::new(Mutex::new(logger_provider)),
+            logger_provider: Arc::new(RwLock::new(logger_provider)),
             endpoint: endpoint.to_string(),
         })
     }
@@ -208,7 +229,7 @@ impl OtelExporter {
 impl AuditExporter for OtelExporter {
     async fn export(&self, event: AuditEvent) -> Result<()> {
         let log_record = self.event_to_log_record(&event);
-        let provider = self.logger_provider.lock().await;
+        let provider = self.logger_provider.read().await;
         let logger = provider.logger("bssh-audit");
 
         logger.emit(log_record);
@@ -217,7 +238,7 @@ impl AuditExporter for OtelExporter {
     }
 
     async fn export_batch(&self, events: &[AuditEvent]) -> Result<()> {
-        let provider = self.logger_provider.lock().await;
+        let provider = self.logger_provider.read().await;
         let logger = provider.logger("bssh-audit");
 
         for event in events {
@@ -229,7 +250,7 @@ impl AuditExporter for OtelExporter {
     }
 
     async fn flush(&self) -> Result<()> {
-        let provider = self.logger_provider.lock().await;
+        let provider = self.logger_provider.read().await;
         let results = provider.force_flush();
 
         // Check if any flush operation failed
@@ -241,7 +262,7 @@ impl AuditExporter for OtelExporter {
     }
 
     async fn close(&self) -> Result<()> {
-        let mut provider = self.logger_provider.lock().await;
+        let mut provider = self.logger_provider.write().await;
         let results = provider.shutdown();
 
         // Check if any shutdown operation failed
@@ -267,8 +288,8 @@ mod tests {
     use std::net::IpAddr;
     use std::path::PathBuf;
 
-    #[test]
-    fn test_event_to_severity_security_events() {
+    #[tokio::test]
+    async fn test_event_to_severity_security_events() {
         let exporter = OtelExporter::new("http://localhost:4317").unwrap();
 
         assert_eq!(
@@ -289,8 +310,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_event_to_severity_normal_operations() {
+    #[tokio::test]
+    async fn test_event_to_severity_normal_operations() {
         let exporter = OtelExporter::new("http://localhost:4317").unwrap();
 
         assert_eq!(
@@ -307,8 +328,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_event_to_log_record_basic() {
+    #[tokio::test]
+    async fn test_event_to_log_record_basic() {
         let exporter = OtelExporter::new("http://localhost:4317").unwrap();
         let event = AuditEvent::new(
             EventType::AuthSuccess,
@@ -324,14 +345,18 @@ mod tests {
         assert!(log_record.attributes.is_some());
 
         let attributes = log_record.attributes.unwrap();
-        assert!(attributes.iter().any(|kv| kv.key.as_str() == "event.id"));
-        assert!(attributes
-            .iter()
-            .any(|kv| kv.key.as_str() == "user.name" && kv.value.to_string() == "alice"));
+        assert!(attributes.iter().any(|kv| kv.0.as_str() == "event.id"));
+        assert!(attributes.iter().any(|kv| {
+            if kv.0.as_str() == "user.name" {
+                matches!(&kv.1, AnyValue::String(s) if s.as_ref() == "alice")
+            } else {
+                false
+            }
+        }));
     }
 
-    #[test]
-    fn test_event_to_log_record_with_all_fields() {
+    #[tokio::test]
+    async fn test_event_to_log_record_with_all_fields() {
         let exporter = OtelExporter::new("http://localhost:4317").unwrap();
         let ip: IpAddr = "192.168.1.100".parse().unwrap();
         let event = AuditEvent::new(
@@ -348,17 +373,29 @@ mod tests {
         let log_record = exporter.event_to_log_record(&event);
         let attributes = log_record.attributes.unwrap();
 
-        assert!(attributes.iter().any(|kv| kv.key.as_str() == "client.ip"));
-        assert!(attributes.iter().any(|kv| kv.key.as_str() == "file.path"));
-        assert!(attributes
-            .iter()
-            .any(|kv| kv.key.as_str() == "file.bytes" && kv.value.to_string() == "1024"));
-        assert!(attributes
-            .iter()
-            .any(|kv| kv.key.as_str() == "protocol" && kv.value.to_string() == "sftp"));
-        assert!(attributes
-            .iter()
-            .any(|kv| kv.key.as_str() == "details" && kv.value.to_string() == "Upload completed"));
+        assert!(attributes.iter().any(|kv| kv.0.as_str() == "client.ip"));
+        assert!(attributes.iter().any(|kv| kv.0.as_str() == "file.path"));
+        assert!(attributes.iter().any(|kv| {
+            if kv.0.as_str() == "file.bytes" {
+                matches!(&kv.1, AnyValue::Int(1024))
+            } else {
+                false
+            }
+        }));
+        assert!(attributes.iter().any(|kv| {
+            if kv.0.as_str() == "protocol" {
+                matches!(&kv.1, AnyValue::String(s) if s.as_ref() == "sftp")
+            } else {
+                false
+            }
+        }));
+        assert!(attributes.iter().any(|kv| {
+            if kv.0.as_str() == "details" {
+                matches!(&kv.1, AnyValue::String(s) if s.as_ref() == "Upload completed")
+            } else {
+                false
+            }
+        }));
     }
 
     #[tokio::test]
@@ -409,8 +446,8 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    #[test]
-    fn test_debug_impl() {
+    #[tokio::test]
+    async fn test_debug_impl() {
         let exporter = OtelExporter::new("http://localhost:4317").unwrap();
         let debug_str = format!("{:?}", exporter);
         assert!(debug_str.contains("OtelExporter"));
