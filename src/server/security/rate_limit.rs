@@ -51,7 +51,7 @@ impl Default for AuthRateLimitConfig {
     fn default() -> Self {
         Self {
             max_attempts: 5,
-            window: Duration::from_secs(300),      // 5 minutes
+            window: Duration::from_secs(300),       // 5 minutes
             ban_duration: Duration::from_secs(300), // 5 minutes
             whitelist: HashSet::new(),
             max_tracked_ips: 10000, // Limit memory usage
@@ -324,9 +324,8 @@ impl AuthRateLimiter {
         {
             let mut failures = self.failures.write().await;
             let before = failures.len();
-            failures.retain(|_, record| {
-                now.duration_since(record.last_failure) < self.config.window
-            });
+            failures
+                .retain(|_, record| now.duration_since(record.last_failure) < self.config.window);
             let after = failures.len();
             if before > after {
                 tracing::debug!(
@@ -458,8 +457,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_whitelist_ips() {
-        let config = AuthRateLimitConfig::new(1, 300, 300)
-            .with_whitelist(vec![localhost()]);
+        let config = AuthRateLimitConfig::new(1, 300, 300).with_whitelist(vec![localhost()]);
         let limiter = AuthRateLimiter::new(config);
 
         let whitelisted = localhost();
@@ -550,7 +548,7 @@ mod tests {
         limiter.record_failure(ip2).await; // This triggers ban
 
         assert_eq!(limiter.tracked_count().await, 1); // ip1 still tracked
-        assert_eq!(limiter.banned_count().await, 1);  // ip2 banned
+        assert_eq!(limiter.banned_count().await, 1); // ip2 banned
 
         // Wait for records to expire
         tokio::time::sleep(Duration::from_millis(20)).await;

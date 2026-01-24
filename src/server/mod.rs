@@ -234,7 +234,8 @@ impl BsshServer {
             self.config.max_auth_attempts,
             self.config.auth_window_secs,
             self.config.ban_time_secs,
-        ).with_whitelist(whitelist_ips);
+        )
+        .with_whitelist(whitelist_ips);
 
         let auth_rate_limiter = AuthRateLimiter::new(auth_config);
 
