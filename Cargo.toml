@@ -97,3 +97,7 @@ harness = false
 name = "bssh-server"
 path = "src/bin/bssh_server.rs"
 
+[[bin]]
+name = "bssh-keygen"
+path = "src/bin/bssh_keygen.rs"
+
