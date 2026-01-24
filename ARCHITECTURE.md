@@ -213,6 +213,107 @@ Security features for the SSH server (`src/server/security/`):
   - Thread-safe with fail-closed behavior on lock contention
   - Configuration via `allowed_ips` and `blocked_ips` in server config
 
+### File Transfer Filter Module
+
+Policy-based filtering infrastructure for SFTP and SCP file transfer operations (`src/server/filter/`):
+
+**Structure**:
+- `mod.rs` - `TransferFilter` trait, `Operation` enum, `FilterResult` enum, `NoOpFilter`
+- `policy.rs` - `FilterPolicy` engine, `FilterRule`, `Matcher` trait, `SharedFilterPolicy`
+- `path.rs` - Path-based matchers: `PrefixMatcher`, `ExactMatcher`, `ComponentMatcher`, `ExtensionMatcher`
+- `pattern.rs` - Pattern-based matchers: `GlobMatcher`, `RegexMatcher`, `CombinedMatcher`, `NotMatcher`
+
+**Key Components**:
+
+- **Operation**: Enum representing file operations
+  - `Upload`, `Download`, `Delete`, `Rename`
+  - `CreateDir`, `ListDir`, `Stat`, `SetStat`
+  - `Symlink`, `ReadLink`
+
+- **FilterResult**: Actions to take on matched operations
+  - `Allow` - Permit the operation (default)
+  - `Deny` - Block the operation
+  - `Log` - Allow but log for auditing
+
+- **TransferFilter Trait**: Interface for custom filter implementations
+  - `check(path, operation, user)` - Check single path operations
+  - `check_with_dest(src, dest, operation, user)` - Check two-path operations (rename, symlink)
+  - `is_enabled()` - Check if filtering is active
+
+- **FilterPolicy**: First-match-wins rule evaluation engine
+  - Ordered rule evaluation
+  - Configurable default action
+  - Enable/disable filtering
+  - Create from YAML configuration via `from_config()`
+
+- **FilterRule**: Combines matcher, action, and optional constraints
+  - Path pattern matcher
+  - Per-operation restrictions
+  - Per-user restrictions
+  - Named rules for debugging
+
+**Built-in Matchers**:
+
+| Matcher | Purpose | Example |
+|---------|---------|---------|
+| `GlobMatcher` | Wildcard patterns | `*.key`, `*.pem` |
+| `RegexMatcher` | Full regex support | `(?i)\.exe$` |
+| `PrefixMatcher` | Directory tree matching | `/etc/` |
+| `ExactMatcher` | Specific file matching | `/etc/shadow` |
+| `ComponentMatcher` | Path component matching | `.git`, `.ssh` |
+| `ExtensionMatcher` | File extension matching | `exe`, `key` |
+| `CombinedMatcher` | OR-combine matchers | Multiple patterns |
+| `NotMatcher` | Invert matcher results | Exclude patterns |
+
+**Security Features**:
+- `normalize_path()` function for path traversal prevention
+- ReDoS protection via regex size limits
+- Case-insensitive extension matching
+
+**Usage Example**:
+```rust
+use bssh::server::filter::{FilterPolicy, FilterResult, Operation};
+use bssh::server::filter::pattern::GlobMatcher;
+use bssh::server::filter::policy::FilterRule;
+use std::path::Path;
+
+// Create policy that blocks *.key files
+let policy = FilterPolicy::new()
+    .with_default(FilterResult::Allow)
+    .add_rule(FilterRule::new(
+        Box::new(GlobMatcher::new("*.key").unwrap()),
+        FilterResult::Deny,
+    ));
+
+// Check if operation is allowed
+let result = policy.check(
+    Path::new("/etc/secret.key"),
+    Operation::Download,
+    "alice"
+);
+assert_eq!(result, FilterResult::Deny);
+```
+
+**Configuration** (YAML):
+```yaml
+filter:
+  enabled: true
+  default_action: allow
+  rules:
+    - name: block-sensitive-keys
+      pattern: "*.{key,pem}"
+      action: deny
+      operations:
+        - download
+        - upload
+    - name: block-hidden-dirs
+      path_prefix: "/home"
+      pattern: ".*"
+      action: deny
+      users:
+        - guest
+```
+
 ### Audit Logging Module
 
 Comprehensive audit logging infrastructure for the SSH server (`src/server/audit/`):

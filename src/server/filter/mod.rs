@@ -161,7 +161,6 @@ pub enum FilterResult {
     Log,
 }
 
-
 impl fmt::Display for FilterResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -262,7 +261,10 @@ mod tests {
     #[test]
     fn test_operation_parse() {
         assert_eq!("upload".parse::<Operation>().unwrap(), Operation::Upload);
-        assert_eq!("DOWNLOAD".parse::<Operation>().unwrap(), Operation::Download);
+        assert_eq!(
+            "DOWNLOAD".parse::<Operation>().unwrap(),
+            Operation::Download
+        );
         assert_eq!("mkdir".parse::<Operation>().unwrap(), Operation::CreateDir);
         assert_eq!("readdir".parse::<Operation>().unwrap(), Operation::ListDir);
         assert!("invalid".parse::<Operation>().is_err());
@@ -375,5 +377,63 @@ mod tests {
             ),
             FilterResult::Log
         );
+    }
+
+    #[test]
+    fn test_operation_all() {
+        let all_ops = Operation::all();
+
+        // Should contain all 10 operations
+        assert_eq!(all_ops.len(), 10);
+
+        // Verify all operations are included
+        assert!(all_ops.contains(&Operation::Upload));
+        assert!(all_ops.contains(&Operation::Download));
+        assert!(all_ops.contains(&Operation::Delete));
+        assert!(all_ops.contains(&Operation::Rename));
+        assert!(all_ops.contains(&Operation::CreateDir));
+        assert!(all_ops.contains(&Operation::ListDir));
+        assert!(all_ops.contains(&Operation::Stat));
+        assert!(all_ops.contains(&Operation::SetStat));
+        assert!(all_ops.contains(&Operation::Symlink));
+        assert!(all_ops.contains(&Operation::ReadLink));
+    }
+
+    #[test]
+    fn test_operation_display_all() {
+        // Test all operations have a string representation
+        assert_eq!(Operation::Stat.to_string(), "stat");
+        assert_eq!(Operation::SetStat.to_string(), "setstat");
+        assert_eq!(Operation::Symlink.to_string(), "symlink");
+        assert_eq!(Operation::ReadLink.to_string(), "readlink");
+    }
+
+    #[test]
+    fn test_operation_parse_all_variants() {
+        // Test parsing all valid variants
+        assert_eq!("stat".parse::<Operation>().unwrap(), Operation::Stat);
+        assert_eq!("setstat".parse::<Operation>().unwrap(), Operation::SetStat);
+        assert_eq!("symlink".parse::<Operation>().unwrap(), Operation::Symlink);
+        assert_eq!(
+            "readlink".parse::<Operation>().unwrap(),
+            Operation::ReadLink
+        );
+
+        // Test case insensitivity
+        assert_eq!("STAT".parse::<Operation>().unwrap(), Operation::Stat);
+        assert_eq!("SetStat".parse::<Operation>().unwrap(), Operation::SetStat);
+    }
+
+    #[test]
+    fn test_noop_filter_default() {
+        let filter = NoOpFilter::default();
+        assert!(!filter.is_enabled());
+    }
+
+    #[test]
+    fn test_noop_filter_clone() {
+        let filter = NoOpFilter;
+        let cloned = filter.clone();
+        assert!(!cloned.is_enabled());
     }
 }

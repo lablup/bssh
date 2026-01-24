@@ -81,7 +81,7 @@ use super::policy::Matcher;
 /// ```
 pub fn normalize_path(path: &Path) -> PathBuf {
     let mut result = PathBuf::new();
-    
+
     for component in path.components() {
         match component {
             Component::Prefix(p) => result.push(p.as_os_str()),
@@ -99,7 +99,7 @@ pub fn normalize_path(path: &Path) -> PathBuf {
             Component::Normal(name) => result.push(name),
         }
     }
-    
+
     if result.as_os_str().is_empty() {
         PathBuf::from(".")
     } else {
@@ -495,25 +495,39 @@ mod tests {
         assert!(component.matches(test_path));
         assert!(extension.matches(test_path));
     }
-}
 
     #[test]
     fn test_normalize_path_removes_dot() {
-        assert_eq!(normalize_path(Path::new("/etc/./passwd")), Path::new("/etc/passwd"));
-        assert_eq!(normalize_path(Path::new("./foo/./bar")), Path::new("foo/bar"));
+        assert_eq!(
+            normalize_path(Path::new("/etc/./passwd")),
+            Path::new("/etc/passwd")
+        );
+        assert_eq!(
+            normalize_path(Path::new("./foo/./bar")),
+            Path::new("foo/bar")
+        );
     }
 
     #[test]
     fn test_normalize_path_resolves_parent() {
         assert_eq!(normalize_path(Path::new("/etc/../var")), Path::new("/var"));
-        assert_eq!(normalize_path(Path::new("/etc/ssh/../passwd")), Path::new("/etc/passwd"));
-        assert_eq!(normalize_path(Path::new("/a/b/c/../../d")), Path::new("/a/d"));
+        assert_eq!(
+            normalize_path(Path::new("/etc/ssh/../passwd")),
+            Path::new("/etc/passwd")
+        );
+        assert_eq!(
+            normalize_path(Path::new("/a/b/c/../../d")),
+            Path::new("/a/d")
+        );
     }
 
     #[test]
     fn test_normalize_path_traversal_at_root() {
         // At root, .. should be ignored
-        assert_eq!(normalize_path(Path::new("/../etc/passwd")), Path::new("/etc/passwd"));
+        assert_eq!(
+            normalize_path(Path::new("/../etc/passwd")),
+            Path::new("/etc/passwd")
+        );
         assert_eq!(normalize_path(Path::new("/../../etc")), Path::new("/etc"));
     }
 
@@ -533,13 +547,39 @@ mod tests {
     fn test_normalize_path_security() {
         // This is the key security test: path traversal should be normalized
         let matcher = PrefixMatcher::new("/etc");
-        
+
         // Without normalization, this would NOT match /etc (attack succeeds)
         let attack_path = Path::new("/var/../etc/passwd");
         assert!(!matcher.matches(attack_path)); // Raw path doesn't match
-        
+
         // With normalization, it correctly matches /etc (attack blocked)
         let normalized = normalize_path(attack_path);
         assert!(matcher.matches(&normalized)); // Normalized path matches
         assert_eq!(normalized, Path::new("/etc/passwd"));
     }
+
+    #[test]
+    fn test_prefix_matcher_accessor() {
+        let matcher = PrefixMatcher::new("/home/user");
+        assert_eq!(matcher.prefix(), Path::new("/home/user"));
+    }
+
+    #[test]
+    fn test_exact_matcher_accessor() {
+        let matcher = ExactMatcher::new("/etc/shadow");
+        assert_eq!(matcher.path(), Path::new("/etc/shadow"));
+    }
+
+    #[test]
+    fn test_component_matcher_accessor() {
+        let matcher = ComponentMatcher::new(".git");
+        assert_eq!(matcher.component(), ".git");
+    }
+
+    #[test]
+    fn test_extension_matcher_accessor() {
+        let matcher = ExtensionMatcher::new("PDF");
+        // Extension is stored in lowercase
+        assert_eq!(matcher.extension(), "pdf");
+    }
+}

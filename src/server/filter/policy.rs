@@ -247,18 +247,23 @@ impl FilterPolicy {
         };
 
         // Parse operations if specified
-        let operations: Option<Vec<Operation>> = config.operations.as_ref().map(|ops: &Vec<String>| {
-            ops.iter()
-                .filter_map(|op: &String| {
-                    op.parse::<Operation>()
-                        .map_err(|e| {
-                            tracing::warn!("Unknown operation '{}' in filter config: {}", op, e);
-                            e
-                        })
-                        .ok()
-                })
-                .collect()
-        });
+        let operations: Option<Vec<Operation>> =
+            config.operations.as_ref().map(|ops: &Vec<String>| {
+                ops.iter()
+                    .filter_map(|op: &String| {
+                        op.parse::<Operation>()
+                            .map_err(|e| {
+                                tracing::warn!(
+                                    "Unknown operation '{}' in filter config: {}",
+                                    op,
+                                    e
+                                );
+                                e
+                            })
+                            .ok()
+                    })
+                    .collect()
+            });
 
         Ok(FilterRule {
             name: config.name.clone(),
@@ -379,11 +384,8 @@ mod tests {
 
     #[test]
     fn test_rule_matches_operation() {
-        let rule = FilterRule::new(
-            Box::new(GlobMatcher::new("*").unwrap()),
-            FilterResult::Deny,
-        )
-        .with_operations(vec![Operation::Upload]);
+        let rule = FilterRule::new(Box::new(GlobMatcher::new("*").unwrap()), FilterResult::Deny)
+            .with_operations(vec![Operation::Upload]);
 
         assert!(rule.applies_to_operation(Operation::Upload));
         assert!(!rule.applies_to_operation(Operation::Download));
@@ -391,11 +393,8 @@ mod tests {
 
     #[test]
     fn test_rule_matches_user() {
-        let rule = FilterRule::new(
-            Box::new(GlobMatcher::new("*").unwrap()),
-            FilterResult::Deny,
-        )
-        .with_users(vec!["alice".to_string(), "bob".to_string()]);
+        let rule = FilterRule::new(Box::new(GlobMatcher::new("*").unwrap()), FilterResult::Deny)
+            .with_users(vec!["alice".to_string(), "bob".to_string()]);
 
         assert!(rule.applies_to_user("alice"));
         assert!(rule.applies_to_user("bob"));
@@ -443,7 +442,11 @@ mod tests {
             FilterResult::Log
         );
         assert_eq!(
-            policy.check(Path::new("/home/user/file.txt"), Operation::Download, "user"),
+            policy.check(
+                Path::new("/home/user/file.txt"),
+                Operation::Download,
+                "user"
+            ),
             FilterResult::Allow
         );
     }
@@ -471,11 +474,8 @@ mod tests {
     fn test_policy_with_user_restriction() {
         let policy = FilterPolicy::new()
             .add_rule(
-                FilterRule::new(
-                    Box::new(PrefixMatcher::new("/admin")),
-                    FilterResult::Deny,
-                )
-                .with_users(vec!["guest".to_string()]),
+                FilterRule::new(Box::new(PrefixMatcher::new("/admin")), FilterResult::Deny)
+                    .with_users(vec!["guest".to_string()]),
             )
             .with_default(FilterResult::Allow);
 
@@ -567,5 +567,310 @@ mod tests {
             policy.check(Path::new("/etc/passwd.bak"), Operation::Download, "user"),
             FilterResult::Allow
         );
+    }
+
+    #[test]
+    fn test_policy_rule_count_and_default_action() {
+        let policy = FilterPolicy::new()
+            .with_default(FilterResult::Deny)
+            .add_rule(FilterRule::new(
+                Box::new(GlobMatcher::new("*.txt").unwrap()),
+                FilterResult::Allow,
+            ))
+            .add_rule(FilterRule::new(
+                Box::new(GlobMatcher::new("*.log").unwrap()),
+                FilterResult::Log,
+            ));
+
+        assert_eq!(policy.rule_count(), 2);
+        assert_eq!(policy.default_action(), FilterResult::Deny);
+    }
+
+    #[test]
+    fn test_policy_add_rules() {
+        let rules = vec![
+            FilterRule::new(
+                Box::new(GlobMatcher::new("*.key").unwrap()),
+                FilterResult::Deny,
+            ),
+            FilterRule::new(
+                Box::new(GlobMatcher::new("*.pem").unwrap()),
+                FilterResult::Deny,
+            ),
+        ];
+
+        let policy = FilterPolicy::new().add_rules(rules);
+
+        assert_eq!(policy.rule_count(), 2);
+        assert_eq!(
+            policy.check(Path::new("/etc/secret.key"), Operation::Download, "user"),
+            FilterResult::Deny
+        );
+        assert_eq!(
+            policy.check(Path::new("/etc/cert.pem"), Operation::Download, "user"),
+            FilterResult::Deny
+        );
+    }
+
+    #[test]
+    fn test_from_config_with_glob_pattern() {
+        use crate::server::config::{FilterAction, FilterConfig, FilterRule as FilterRuleConfig};
+
+        let config = FilterConfig {
+            enabled: true,
+            default_action: Some(FilterAction::Allow),
+            rules: vec![FilterRuleConfig {
+                name: Some("block-keys".to_string()),
+                pattern: Some("*.key".to_string()),
+                path_prefix: None,
+                action: FilterAction::Deny,
+                operations: Some(vec!["download".to_string()]),
+                users: Some(vec!["alice".to_string()]),
+            }],
+        };
+
+        let policy = FilterPolicy::from_config(&config).unwrap();
+
+        assert!(policy.is_enabled());
+        assert_eq!(policy.rule_count(), 1);
+        assert_eq!(policy.default_action(), FilterResult::Allow);
+
+        // Test that the rule works correctly
+        assert_eq!(
+            policy.check(Path::new("/etc/secret.key"), Operation::Download, "alice"),
+            FilterResult::Deny
+        );
+        // Different user should be allowed
+        assert_eq!(
+            policy.check(Path::new("/etc/secret.key"), Operation::Download, "bob"),
+            FilterResult::Allow
+        );
+        // Different operation should be allowed
+        assert_eq!(
+            policy.check(Path::new("/etc/secret.key"), Operation::Upload, "alice"),
+            FilterResult::Allow
+        );
+    }
+
+    #[test]
+    fn test_from_config_with_prefix() {
+        use crate::server::config::{FilterAction, FilterConfig, FilterRule as FilterRuleConfig};
+
+        let config = FilterConfig {
+            enabled: true,
+            default_action: Some(FilterAction::Deny),
+            rules: vec![FilterRuleConfig {
+                name: Some("allow-home".to_string()),
+                pattern: None,
+                path_prefix: Some("/home".to_string()),
+                action: FilterAction::Allow,
+                operations: None,
+                users: None,
+            }],
+        };
+
+        let policy = FilterPolicy::from_config(&config).unwrap();
+
+        assert_eq!(policy.default_action(), FilterResult::Deny);
+
+        // Path under /home should be allowed
+        assert_eq!(
+            policy.check(Path::new("/home/user/file.txt"), Operation::Upload, "user"),
+            FilterResult::Allow
+        );
+        // Path outside /home should be denied (default action)
+        assert_eq!(
+            policy.check(Path::new("/etc/passwd"), Operation::Download, "user"),
+            FilterResult::Deny
+        );
+    }
+
+    #[test]
+    fn test_from_config_invalid_rule() {
+        use crate::server::config::{FilterAction, FilterConfig, FilterRule as FilterRuleConfig};
+
+        // Rule with neither pattern nor path_prefix should fail
+        let config = FilterConfig {
+            enabled: true,
+            default_action: None,
+            rules: vec![FilterRuleConfig {
+                name: Some("invalid".to_string()),
+                pattern: None,
+                path_prefix: None,
+                action: FilterAction::Deny,
+                operations: None,
+                users: None,
+            }],
+        };
+
+        let result = FilterPolicy::from_config(&config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_from_config_invalid_glob_pattern() {
+        use crate::server::config::{FilterAction, FilterConfig, FilterRule as FilterRuleConfig};
+
+        let config = FilterConfig {
+            enabled: true,
+            default_action: None,
+            rules: vec![FilterRuleConfig {
+                name: None,
+                pattern: Some("[".to_string()), // Invalid glob pattern
+                path_prefix: None,
+                action: FilterAction::Deny,
+                operations: None,
+                users: None,
+            }],
+        };
+
+        let result = FilterPolicy::from_config(&config);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_from_config_disabled() {
+        use crate::server::config::{FilterAction, FilterConfig, FilterRule as FilterRuleConfig};
+
+        let config = FilterConfig {
+            enabled: false,
+            default_action: Some(FilterAction::Deny),
+            rules: vec![FilterRuleConfig {
+                name: None,
+                pattern: Some("*".to_string()),
+                path_prefix: None,
+                action: FilterAction::Deny,
+                operations: None,
+                users: None,
+            }],
+        };
+
+        let policy = FilterPolicy::from_config(&config).unwrap();
+
+        assert!(!policy.is_enabled());
+        // When disabled, all operations should be allowed
+        assert_eq!(
+            policy.check(Path::new("/etc/shadow"), Operation::Download, "user"),
+            FilterResult::Allow
+        );
+    }
+
+    #[test]
+    fn test_shared_filter_policy_check_with_dest() {
+        let policy = FilterPolicy::new().add_rule(FilterRule::new(
+            Box::new(GlobMatcher::new("*.key").unwrap()),
+            FilterResult::Deny,
+        ));
+
+        let shared = SharedFilterPolicy::new(policy);
+
+        // Both paths safe
+        assert_eq!(
+            shared.check_with_dest(
+                Path::new("/home/src.txt"),
+                Path::new("/home/dest.txt"),
+                Operation::Rename,
+                "user"
+            ),
+            FilterResult::Allow
+        );
+
+        // Source is blocked
+        assert_eq!(
+            shared.check_with_dest(
+                Path::new("/home/secret.key"),
+                Path::new("/home/dest.txt"),
+                Operation::Rename,
+                "user"
+            ),
+            FilterResult::Deny
+        );
+
+        // Destination is blocked
+        assert_eq!(
+            shared.check_with_dest(
+                Path::new("/home/src.txt"),
+                Path::new("/home/secret.key"),
+                Operation::Rename,
+                "user"
+            ),
+            FilterResult::Deny
+        );
+    }
+
+    #[test]
+    fn test_shared_filter_policy_is_enabled() {
+        let policy = FilterPolicy::new().with_enabled(false);
+        let shared = SharedFilterPolicy::new(policy);
+
+        assert!(!shared.is_enabled());
+    }
+
+    #[test]
+    fn test_shared_filter_policy_policy_accessor() {
+        let policy = FilterPolicy::new()
+            .with_default(FilterResult::Deny)
+            .add_rule(FilterRule::new(
+                Box::new(GlobMatcher::new("*.txt").unwrap()),
+                FilterResult::Allow,
+            ));
+
+        let shared = SharedFilterPolicy::new(policy);
+        let inner = shared.policy();
+
+        assert_eq!(inner.rule_count(), 1);
+        assert_eq!(inner.default_action(), FilterResult::Deny);
+    }
+
+    #[test]
+    fn test_shared_filter_policy_from_impl() {
+        let policy = FilterPolicy::new().add_rule(FilterRule::new(
+            Box::new(GlobMatcher::new("*.key").unwrap()),
+            FilterResult::Deny,
+        ));
+
+        // Test From<FilterPolicy> for SharedFilterPolicy
+        let shared: SharedFilterPolicy = policy.into();
+
+        assert_eq!(
+            shared.check(Path::new("/etc/secret.key"), Operation::Download, "user"),
+            FilterResult::Deny
+        );
+    }
+
+    #[test]
+    fn test_filter_rule_matches_full() {
+        let rule = FilterRule::new(
+            Box::new(GlobMatcher::new("*.key").unwrap()),
+            FilterResult::Deny,
+        )
+        .with_name("block-keys")
+        .with_operations(vec![Operation::Download])
+        .with_users(vec!["alice".to_string()]);
+
+        // All conditions match
+        assert!(rule.matches(Path::new("/etc/secret.key"), Operation::Download, "alice"));
+
+        // Wrong operation
+        assert!(!rule.matches(Path::new("/etc/secret.key"), Operation::Upload, "alice"));
+
+        // Wrong user
+        assert!(!rule.matches(Path::new("/etc/secret.key"), Operation::Download, "bob"));
+
+        // Wrong path
+        assert!(!rule.matches(Path::new("/etc/secret.txt"), Operation::Download, "alice"));
+    }
+
+    #[test]
+    fn test_filter_rule_matches_no_restrictions() {
+        let rule = FilterRule::new(
+            Box::new(GlobMatcher::new("*.key").unwrap()),
+            FilterResult::Deny,
+        );
+
+        // No operation or user restrictions - should match all operations and users
+        assert!(rule.matches(Path::new("/etc/secret.key"), Operation::Download, "anyuser"));
+        assert!(rule.matches(Path::new("/etc/secret.key"), Operation::Upload, "anyuser"));
+        assert!(rule.matches(Path::new("/etc/secret.key"), Operation::Delete, "anyuser"));
     }
 }

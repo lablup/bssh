@@ -176,12 +176,8 @@ impl Matcher for GlobMatcher {
                 // Also try matching just the filename for patterns like "*.key"
                 self.matches_filename(path)
             }
-            GlobMatchMode::FullPathOnly => {
-                self.pattern.matches_path(path)
-            }
-            GlobMatchMode::FilenameOnly => {
-                self.matches_filename(path)
-            }
+            GlobMatchMode::FullPathOnly => self.pattern.matches_path(path),
+            GlobMatchMode::FilenameOnly => self.matches_filename(path),
         }
     }
 
@@ -363,7 +359,11 @@ impl Matcher for CombinedMatcher {
     }
 
     fn pattern_description(&self) -> String {
-        let descriptions: Vec<_> = self.matchers.iter().map(|m| m.pattern_description()).collect();
+        let descriptions: Vec<_> = self
+            .matchers
+            .iter()
+            .map(|m| m.pattern_description())
+            .collect();
         format!("any_of:[{}]", descriptions.join(", "))
     }
 }
@@ -630,7 +630,7 @@ mod tests {
         let matcher = GlobMatcher::with_mode("*.key", GlobMatchMode::FullPathOnly).unwrap();
 
         assert!(matcher.matches(Path::new("secret.key"))); // Direct match
-        // * in glob matches path separators too, so this actually matches
+                                                           // * in glob matches path separators too, so this actually matches
         assert!(matcher.matches(Path::new("/etc/secret.key")));
     }
 
@@ -652,5 +652,42 @@ mod tests {
         assert!(matcher.matches(Path::new("secret.key")));
         assert!(matcher.matches(Path::new("/etc/ssl/private.key"))); // Matches via filename
         assert_eq!(matcher.mode(), GlobMatchMode::PathOrFilename);
+    }
+
+    #[test]
+    fn test_glob_matcher_pattern_accessor() {
+        let matcher = GlobMatcher::new("*.{key,pem}").unwrap();
+        assert_eq!(matcher.pattern(), "*.{key,pem}");
+    }
+
+    #[test]
+    fn test_regex_matcher_pattern_accessor() {
+        let matcher = RegexMatcher::new(r"(?i)\.key$").unwrap();
+        assert_eq!(matcher.pattern(), r"(?i)\.key$");
+    }
+
+    #[test]
+    fn test_combined_matcher_len_and_is_empty() {
+        let empty = CombinedMatcher::new(vec![]);
+        assert!(empty.is_empty());
+        assert_eq!(empty.len(), 0);
+
+        let non_empty = CombinedMatcher::new(vec![
+            Box::new(GlobMatcher::new("*.key").unwrap()),
+            Box::new(GlobMatcher::new("*.pem").unwrap()),
+        ]);
+        assert!(!non_empty.is_empty());
+        assert_eq!(non_empty.len(), 2);
+    }
+
+    #[test]
+    fn test_glob_match_mode_enum() {
+        // Test that GlobMatchMode implements Default correctly
+        assert_eq!(GlobMatchMode::default(), GlobMatchMode::PathOrFilename);
+
+        // Test each mode
+        assert_ne!(GlobMatchMode::PathOrFilename, GlobMatchMode::FullPathOnly);
+        assert_ne!(GlobMatchMode::PathOrFilename, GlobMatchMode::FilenameOnly);
+        assert_ne!(GlobMatchMode::FullPathOnly, GlobMatchMode::FilenameOnly);
     }
 }
