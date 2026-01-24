@@ -307,6 +307,14 @@ let exporter = FileExporter::new(Path::new("/var/log/audit.log"))?
   - Graceful shutdown and flush methods
   - TLS support for secure audit data transmission
 
+- **LogstashExporter**: Logstash exporter for ELK stack integration
+  - TCP connection with JSON Lines protocol (newline-delimited JSON)
+  - Optional TLS encryption for secure transmission
+  - Automatic reconnection on connection failure
+  - Batch support for efficient event transmission
+  - Connection timeout handling (default: 10 seconds)
+  - Configurable host and port
+
 **OtelExporter Usage**:
 ```rust
 use bssh::server::audit::otel::OtelExporter;
@@ -328,8 +336,27 @@ exporter.export(event).await?;
 exporter.close().await?;
 ```
 
-**Future Exporters** (planned):
-- Logstash exporter for centralized logging
+**LogstashExporter Usage**:
+```rust
+use bssh::server::audit::logstash::LogstashExporter;
+use bssh::server::audit::exporter::AuditExporter;
+use bssh::server::audit::event::{AuditEvent, EventType};
+
+// Create exporter (unencrypted by default)
+let exporter = LogstashExporter::new("logstash.example.com", 5044)?
+    .with_tls(true);  // Enable TLS for production
+
+// Export an audit event
+let event = AuditEvent::new(
+    EventType::AuthSuccess,
+    "alice".to_string(),
+    "session-123".to_string(),
+);
+exporter.export(event).await?;
+
+// Graceful shutdown
+exporter.close().await?;
+```
 
 ### Server CLI Binary
 **Binary**: `bssh-server`

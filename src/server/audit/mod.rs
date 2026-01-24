@@ -49,6 +49,7 @@
 pub mod event;
 pub mod exporter;
 pub mod file;
+pub mod logstash;
 pub mod otel;
 
 use anyhow::Result;
@@ -60,6 +61,7 @@ use tokio::task::JoinHandle;
 pub use event::{AuditEvent, EventResult, EventType};
 pub use exporter::{AuditExporter, NullExporter};
 pub use file::{FileExporter, RotateConfig};
+pub use logstash::LogstashExporter;
 pub use otel::OtelExporter;
 
 /// Configuration for the audit system.
@@ -96,8 +98,7 @@ pub enum AuditExporterConfig {
         /// OTLP endpoint URL
         endpoint: String,
     },
-    /// Logstash exporter (future implementation)
-    #[allow(dead_code)]
+    /// Logstash exporter
     Logstash {
         /// Logstash host
         host: String,
@@ -218,10 +219,9 @@ impl AuditManager {
                     let otel_exporter = OtelExporter::new(endpoint)?;
                     Arc::new(otel_exporter)
                 }
-                AuditExporterConfig::Logstash { .. } => {
-                    // Future implementation
-                    tracing::warn!("Logstash exporter not yet implemented, using null exporter");
-                    Arc::new(NullExporter::new())
+                AuditExporterConfig::Logstash { host, port } => {
+                    let logstash_exporter = LogstashExporter::new(host, *port)?;
+                    Arc::new(logstash_exporter)
                 }
             };
             exporters.push(exporter);
