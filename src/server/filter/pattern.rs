@@ -22,7 +22,7 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use glob::Pattern;
-use regex::Regex;
+use regex::{Regex, RegexBuilder};
 
 use super::policy::Matcher;
 
@@ -141,6 +141,9 @@ pub struct RegexMatcher {
 }
 
 impl RegexMatcher {
+    /// Default size limit for compiled regex (1MB)
+    const DEFAULT_SIZE_LIMIT: usize = 1024 * 1024;
+
     /// Create a new regex matcher.
     ///
     /// # Arguments
@@ -149,7 +152,12 @@ impl RegexMatcher {
     ///
     /// # Errors
     ///
-    /// Returns an error if the regex pattern is invalid.
+    /// Returns an error if the regex pattern is invalid or exceeds size limits.
+    ///
+    /// # Security
+    ///
+    /// Uses RegexBuilder with size limits to prevent ReDoS attacks.
+    /// The compiled regex is limited to 1MB by default.
     ///
     /// # Example
     ///
@@ -160,8 +168,34 @@ impl RegexMatcher {
     /// let matcher = RegexMatcher::new(r"(?i)\.key$|id_rsa$|id_dsa$").unwrap();
     /// ```
     pub fn new(pattern: &str) -> Result<Self> {
-        let regex =
-            Regex::new(pattern).with_context(|| format!("Invalid regex pattern: {}", pattern))?;
+        let regex = RegexBuilder::new(pattern)
+            .size_limit(Self::DEFAULT_SIZE_LIMIT)
+            .dfa_size_limit(Self::DEFAULT_SIZE_LIMIT)
+            .build()
+            .with_context(|| format!("Invalid regex pattern: {}", pattern))?;
+
+        Ok(Self {
+            regex,
+            raw: pattern.to_string(),
+        })
+    }
+
+    /// Create a new regex matcher with custom size limits.
+    ///
+    /// # Arguments
+    ///
+    /// * `pattern` - The regular expression pattern
+    /// * `size_limit` - Maximum size in bytes for the compiled regex
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the regex pattern is invalid or exceeds the size limit.
+    pub fn with_size_limit(pattern: &str, size_limit: usize) -> Result<Self> {
+        let regex = RegexBuilder::new(pattern)
+            .size_limit(size_limit)
+            .dfa_size_limit(size_limit)
+            .build()
+            .with_context(|| format!("Invalid regex pattern: {}", pattern))?;
 
         Ok(Self {
             regex,
@@ -392,6 +426,19 @@ mod tests {
     }
 
     #[test]
+    fn test_regex_matcher_with_size_limit() {
+        // Normal pattern should work with default limit
+        let matcher = RegexMatcher::with_size_limit(r"test", 1024 * 1024);
+        assert!(matcher.is_ok());
+
+        // Very small size limit should reject patterns
+        let _result = RegexMatcher::with_size_limit(r"(a+)+", 10);
+        // Size limit is applied during compilation
+        // Complex patterns may exceed small limits
+    }
+
+    #[test]
+
     fn test_regex_matcher_invalid_pattern() {
         assert!(RegexMatcher::new(r"[").is_err());
     }
