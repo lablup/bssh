@@ -38,6 +38,7 @@ bssh is a high-performance parallel SSH command execution tool with SSH-compatib
 - **Server Authentication** - Authentication providers including public key verification (see main ARCHITECTURE.md)
 - **SFTP Handler** - SFTP subsystem with path traversal prevention and chroot-like isolation (see main ARCHITECTURE.md)
 - **SCP Handler** - SCP protocol with sink/source modes and security controls (see main ARCHITECTURE.md)
+- **Audit Logging** - Audit event types, exporters, and async event processing (see main ARCHITECTURE.md)
 
 ## Navigation
 
@@ -84,7 +85,7 @@ src/
 ├── interactive/ → Interactive Mode
 ├── jump/ → Jump Host Support
 ├── forward/ → Port Forwarding
-├── server/ → SSH Server (handler, session, config/, auth/)
+├── server/ → SSH Server (handler, session, config/, auth/, audit/)
 ├── shared/ → Shared utilities (validation, rate limiting, auth types, errors)
 ├── security/ → Security utilities (re-exports from shared for compatibility)
 └── commands/ → Command Implementations

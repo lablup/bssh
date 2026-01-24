@@ -189,6 +189,175 @@ Common utilities for code reuse between bssh client and server implementations:
 
 The `security` and `jump::rate_limiter` modules re-export from shared for backward compatibility.
 
+### Server Security Module
+
+Security features for the SSH server (`src/server/security/`):
+
+- **AuthRateLimiter**: Fail2ban-like authentication rate limiting
+  - Tracks failed authentication attempts per IP address
+  - Automatic banning after exceeding configurable threshold
+  - Time-windowed failure counting (failures outside window not counted)
+  - Configurable ban duration with automatic expiration
+  - IP whitelist for exempting trusted addresses from banning
+  - Memory-safe with configurable maximum tracked IPs
+  - Automatic cleanup of expired records via background task
+  - Thread-safe async implementation with `Arc<RwLock<>>`
+
+- **IpAccessControl**: IP-based connection filtering
+  - Whitelist mode: Only allow connections from specified CIDR ranges
+  - Blacklist mode: Block connections from specified CIDR ranges
+  - Blacklist takes priority over whitelist (blocked IPs are always denied)
+  - Support for both IPv4 and IPv6 addresses and CIDR notation
+  - Dynamic updates: Add/remove rules at runtime via `SharedIpAccessControl`
+  - Early rejection at connection level before handler creation
+  - Thread-safe with fail-closed behavior on lock contention
+  - Configuration via `allowed_ips` and `blocked_ips` in server config
+
+### Audit Logging Module
+
+Comprehensive audit logging infrastructure for the SSH server (`src/server/audit/`):
+
+**Structure**:
+- `mod.rs` - `AuditManager` for collecting and distributing audit events
+- `event.rs` - `AuditEvent` type definitions and builder pattern
+- `exporter.rs` - `AuditExporter` trait and `NullExporter` implementation
+- `file.rs` - `FileExporter` for JSON Lines output with rotation support
+
+**Key Components**:
+
+- **AuditEvent**: Represents discrete auditable actions with fields for:
+  - Unique event ID (UUID v4)
+  - Timestamp (UTC)
+  - Event type, session ID, username, client IP
+  - File paths, bytes transferred, operation result
+  - Protocol and additional details
+
+- **EventType**: Categorizes security and operational events:
+  - Authentication: `AuthSuccess`, `AuthFailure`, `AuthRateLimited`
+  - Sessions: `SessionStart`, `SessionEnd`
+  - Commands: `CommandExecuted`, `CommandBlocked`
+  - File operations: `FileOpenRead`, `FileOpenWrite`, `FileRead`, `FileWrite`, `FileClose`, `FileUploaded`, `FileDownloaded`, `FileDeleted`, `FileRenamed`
+  - Directory operations: `DirectoryCreated`, `DirectoryDeleted`, `DirectoryListed`
+  - Filters: `TransferDenied`, `TransferAllowed`
+  - Security: `IpBlocked`, `IpUnblocked`, `SuspiciousActivity`
+
+- **EventResult**: Operation outcomes (`Success`, `Failure`, `Denied`, `Error`)
+
+- **AuditExporter Trait**: Interface for audit event destinations
+  - `export()` - Export single event
+  - `export_batch()` - Export multiple events (optimizable)
+  - `flush()` - Ensure pending events are written
+  - `close()` - Clean up resources
+
+- **NullExporter**: No-op exporter for testing and disabled audit logging
+
+- **FileExporter**: File-based exporter writing events in JSON Lines format
+  - Append mode to preserve existing data
+  - Optional log rotation based on file size (`RotateConfig`)
+  - Optional gzip compression for rotated files
+  - Thread-safe using async Mutex
+  - Async I/O using tokio
+  - Automatic parent directory creation
+  - Restrictive file permissions (0o600 on Unix)
+
+- **AuditManager**: Central manager with async processing
+  - Background worker for non-blocking event processing
+  - Configurable buffering (buffer size, batch size)
+  - Periodic flush intervals
+  - Multiple exporter support
+  - Graceful shutdown with event flush
+
+**Configuration**:
+```rust
+let config = AuditConfig::new()
+    .with_enabled(true)
+    .with_buffer_size(1000)
+    .with_batch_size(100)
+    .with_flush_interval(5);
+```
+
+**File Exporter Usage**:
+```rust
+use bssh::server::audit::file::{FileExporter, RotateConfig};
+use std::path::Path;
+
+// Simple file exporter
+let exporter = FileExporter::new(Path::new("/var/log/audit.log"))?;
+
+// With rotation (50 MB, 10 backups, gzip compression)
+let rotate_config = RotateConfig::new()
+    .with_max_size(50 * 1024 * 1024)
+    .with_max_backups(10)
+    .with_compress(true);
+
+let exporter = FileExporter::new(Path::new("/var/log/audit.log"))?
+    .with_rotation(rotate_config);
+```
+
+**Output Format** (JSON Lines - one JSON object per line):
+```json
+{"id":"uuid","timestamp":"2024-01-15T10:30:00Z","event_type":"file_uploaded","session_id":"sess-001","user":"admin","client_ip":"192.168.1.100","path":"/data/report.pdf","bytes":1048576,"result":"success","protocol":"sftp"}
+```
+
+- **OtelExporter**: OpenTelemetry exporter for distributed tracing and observability
+  - OTLP/gRPC protocol support using tonic
+  - Event to LogRecord mapping with proper attribute conversion
+  - Severity level mapping based on event types and results
+  - Resource attributes including service.name and service.version
+  - Graceful shutdown and flush methods
+  - TLS support for secure audit data transmission
+
+- **LogstashExporter**: Logstash exporter for ELK stack integration
+  - TCP connection with JSON Lines protocol (newline-delimited JSON)
+  - Optional TLS encryption for secure transmission
+  - Automatic reconnection on connection failure
+  - Batch support for efficient event transmission
+  - Connection timeout handling (default: 10 seconds)
+  - Configurable host and port
+
+**OtelExporter Usage**:
+```rust
+use bssh::server::audit::otel::OtelExporter;
+use bssh::server::audit::exporter::AuditExporter;
+use bssh::server::audit::event::{AuditEvent, EventType};
+
+// Create exporter with OTLP endpoint
+let exporter = OtelExporter::new("http://localhost:4317")?;
+
+// Export an audit event
+let event = AuditEvent::new(
+    EventType::AuthSuccess,
+    "alice".to_string(),
+    "session-123".to_string(),
+);
+exporter.export(event).await?;
+
+// Graceful shutdown
+exporter.close().await?;
+```
+
+**LogstashExporter Usage**:
+```rust
+use bssh::server::audit::logstash::LogstashExporter;
+use bssh::server::audit::exporter::AuditExporter;
+use bssh::server::audit::event::{AuditEvent, EventType};
+
+// Create exporter (unencrypted by default)
+let exporter = LogstashExporter::new("logstash.example.com", 5044)?
+    .with_tls(true);  // Enable TLS for production
+
+// Export an audit event
+let event = AuditEvent::new(
+    EventType::AuthSuccess,
+    "alice".to_string(),
+    "session-123".to_string(),
+);
+exporter.export(event).await?;
+
+// Graceful shutdown
+exporter.close().await?;
+```
+
 ### Server CLI Binary
 **Binary**: `bssh-server`
 
@@ -251,6 +420,7 @@ SSH server implementation using the russh library for accepting incoming connect
 - `sftp.rs` - SFTP subsystem handler with path traversal prevention
 - `scp.rs` - SCP protocol handler with sink/source modes
 - `auth/` - Authentication provider infrastructure
+- `audit/` - Audit logging infrastructure (event types, exporters, manager)
 
 **Key Components**:
 
@@ -285,7 +455,8 @@ SSH server implementation using the russh library for accepting incoming connect
 
 - **SshHandler**: Per-connection handler for SSH protocol events
   - Public key authentication via AuthProvider trait
-  - Rate limiting for authentication attempts
+  - Rate limiting for authentication attempts (token bucket)
+  - Auth rate limiting with ban support (fail2ban-like)
   - Channel operations (open, close, EOF, data)
   - PTY, exec, shell, and subsystem request handling
   - Command execution with stdout/stderr streaming

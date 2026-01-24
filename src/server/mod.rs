@@ -44,12 +44,14 @@
 //! }
 //! ```
 
+pub mod audit;
 pub mod auth;
 pub mod config;
 pub mod exec;
 pub mod handler;
 pub mod pty;
 pub mod scp;
+pub mod security;
 pub mod session;
 pub mod sftp;
 pub mod shell;
@@ -70,6 +72,9 @@ pub use self::config::{ServerConfig, ServerConfigBuilder};
 pub use self::exec::{CommandExecutor, ExecConfig};
 pub use self::handler::SshHandler;
 pub use self::pty::{PtyConfig as PtyMasterConfig, PtyMaster};
+pub use self::security::{
+    AccessPolicy, AuthRateLimitConfig, AuthRateLimiter, IpAccessControl, SharedIpAccessControl,
+};
 pub use self::session::{
     ChannelMode, ChannelState, PtyConfig, SessionId, SessionInfo, SessionManager,
 };
@@ -215,10 +220,60 @@ impl BsshServer {
         // This allows rapid testing while still providing protection against brute force
         let rate_limiter = RateLimiter::with_simple_config(100, 10.0);
 
+        // Create auth rate limiter with configuration
+        // Parse whitelist IPs from config
+        let whitelist_ips: Vec<std::net::IpAddr> = self
+            .config
+            .whitelist_ips
+            .iter()
+            .filter_map(|s| {
+                s.parse().map_err(|e| {
+                    tracing::warn!(ip = %s, error = %e, "Invalid whitelist IP address in config, skipping");
+                    e
+                }).ok()
+            })
+            .collect();
+
+        let auth_config = AuthRateLimitConfig::new(
+            self.config.max_auth_attempts,
+            self.config.auth_window_secs,
+            self.config.ban_time_secs,
+        )
+        .with_whitelist(whitelist_ips);
+
+        let auth_rate_limiter = AuthRateLimiter::new(auth_config);
+
+        tracing::info!(
+            max_attempts = self.config.max_auth_attempts,
+            auth_window_secs = self.config.auth_window_secs,
+            ban_time_secs = self.config.ban_time_secs,
+            whitelist_count = self.config.whitelist_ips.len(),
+            "Auth rate limiter configured"
+        );
+
+        // Create IP access control from configuration
+        let ip_access_control =
+            IpAccessControl::from_config(&self.config.allowed_ips, &self.config.blocked_ips)
+                .context("Failed to configure IP access control")?;
+
+        let shared_ip_access = SharedIpAccessControl::new(ip_access_control);
+
+        // Start background cleanup task for auth rate limiter
+        let cleanup_limiter = auth_rate_limiter.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                cleanup_limiter.cleanup().await;
+            }
+        });
+
         let mut server = BsshServerRunner {
             config: Arc::clone(&self.config),
             sessions: Arc::clone(&self.sessions),
             rate_limiter,
+            auth_rate_limiter,
+            ip_access_control: shared_ip_access,
         };
 
         // Use run_on_socket which handles the server loop
@@ -249,22 +304,66 @@ struct BsshServerRunner {
     sessions: Arc<RwLock<SessionManager>>,
     /// Shared rate limiter for authentication attempts across all handlers
     rate_limiter: RateLimiter<String>,
+    /// Auth rate limiter with ban support (fail2ban-like)
+    auth_rate_limiter: AuthRateLimiter,
+    /// IP-based access control
+    ip_access_control: SharedIpAccessControl,
 }
 
 impl russh::server::Server for BsshServerRunner {
     type Handler = SshHandler;
 
     fn new_client(&mut self, peer_addr: Option<SocketAddr>) -> Self::Handler {
+        // Check IP access control before creating handler
+        if let Some(addr) = peer_addr {
+            let ip = addr.ip();
+
+            // Check IP access control (synchronous to avoid blocking)
+            if self.ip_access_control.check_sync(&ip) == AccessPolicy::Deny {
+                tracing::info!(
+                    ip = %ip,
+                    "Connection rejected by IP access control"
+                );
+                // Return a handler that will immediately reject
+                // We can't return None here due to trait constraints,
+                // so we'll mark it for rejection in the handler
+                return SshHandler::rejected(
+                    peer_addr,
+                    Arc::clone(&self.config),
+                    Arc::clone(&self.sessions),
+                );
+            }
+
+            // Check if banned by auth rate limiter
+            // Use try_read to avoid blocking in sync context
+            if let Ok(is_banned) = tokio::runtime::Handle::try_current()
+                .map(|h| h.block_on(self.auth_rate_limiter.is_banned(&ip)))
+            {
+                if is_banned {
+                    tracing::info!(
+                        ip = %ip,
+                        "Connection rejected from banned IP"
+                    );
+                    return SshHandler::rejected(
+                        peer_addr,
+                        Arc::clone(&self.config),
+                        Arc::clone(&self.sessions),
+                    );
+                }
+            }
+        }
+
         tracing::info!(
             peer = ?peer_addr,
             "New client connection"
         );
 
-        SshHandler::with_rate_limiter(
+        SshHandler::with_rate_limiters(
             peer_addr,
             Arc::clone(&self.config),
             Arc::clone(&self.sessions),
             self.rate_limiter.clone(),
+            self.auth_rate_limiter.clone(),
         )
     }
 

@@ -173,8 +173,18 @@ security:
   # Max auth attempts before banning IP
   max_auth_attempts: 5         # Default: 5
 
+  # Time window for counting auth attempts (seconds)
+  # Failed attempts outside this window are not counted
+  auth_window: 300             # Default: 300 (5 minutes)
+
   # Ban duration after exceeding max attempts (seconds)
   ban_time: 300                # Default: 300 (5 minutes)
+
+  # IPs that are never banned (whitelist)
+  # These IPs are exempt from rate limiting and banning
+  whitelist_ips:
+    - "127.0.0.1"
+    - "::1"
 
   # Max concurrent sessions per user
   max_sessions_per_user: 10    # Default: 10
@@ -183,14 +193,45 @@ security:
   idle_timeout: 3600           # Default: 3600 (1 hour)
 
   # IP allowlist (CIDR notation, empty = allow all)
+  # When configured, only connections from these ranges are allowed
   allowed_ips:
     - "192.168.1.0/24"
     - "10.0.0.0/8"
 
   # IP blocklist (CIDR notation)
+  # Connections from these ranges are always denied
+  # Blocked IPs take priority over allowed IPs
   blocked_ips:
     - "203.0.113.0/24"
 ```
+
+### IP Access Control
+
+The server supports IP-based connection filtering through `allowed_ips` and `blocked_ips` configuration options:
+
+**Modes of Operation:**
+
+1. **Default Mode** (no `allowed_ips` configured): All IPs are allowed unless explicitly blocked
+2. **Whitelist Mode** (`allowed_ips` configured): Only IPs matching allowed ranges can connect
+
+**Priority Rules:**
+- Blocked IPs always take priority over allowed IPs
+- If an IP matches both `allowed_ips` and `blocked_ips`, the connection is denied
+- Connections from blocked IPs are rejected before authentication
+
+**CIDR Notation Examples:**
+- `10.0.0.0/8` - All 10.x.x.x addresses (Class A private network)
+- `192.168.1.0/24` - All 192.168.1.x addresses
+- `192.168.100.50/32` - Single IP address (192.168.100.50)
+- `2001:db8::/32` - IPv6 prefix
+
+**Runtime Updates:**
+The IP access control supports dynamic updates at runtime through the `SharedIpAccessControl` API, allowing administrators to block or unblock IPs without restarting the server.
+
+**Security Behavior:**
+- Connections from blocked IPs are rejected at the connection level before any authentication attempt
+- On lock contention (rare), the system defaults to DENY for fail-closed security
+- All access control decisions are logged for auditing
 
 ## Environment Variable Overrides
 

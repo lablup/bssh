@@ -153,6 +153,36 @@ pub struct ServerConfig {
     /// Enable SCP protocol support.
     #[serde(default = "default_true")]
     pub scp_enabled: bool,
+
+    /// Time window for counting authentication attempts in seconds.
+    ///
+    /// Default: 300 (5 minutes)
+    #[serde(default = "default_auth_window_secs")]
+    pub auth_window_secs: u64,
+
+    /// Ban duration in seconds after exceeding max auth attempts.
+    ///
+    /// Default: 300 (5 minutes)
+    #[serde(default = "default_ban_time_secs")]
+    pub ban_time_secs: u64,
+
+    /// IP addresses that are never banned (whitelist).
+    #[serde(default)]
+    pub whitelist_ips: Vec<String>,
+
+    /// Allowed IP ranges in CIDR notation for connection filtering.
+    ///
+    /// If non-empty, only connections from these ranges are allowed.
+    /// Empty list means all IPs are allowed (subject to blocked_ips).
+    #[serde(default)]
+    pub allowed_ips: Vec<String>,
+
+    /// Blocked IP ranges in CIDR notation for connection filtering.
+    ///
+    /// Connections from these ranges are always denied.
+    /// Blocked IPs take priority over allowed IPs.
+    #[serde(default)]
+    pub blocked_ips: Vec<String>,
 }
 
 /// Serializable configuration for public key authentication.
@@ -217,6 +247,14 @@ fn default_idle_timeout_secs() -> u64 {
     0 // 0 means no timeout
 }
 
+fn default_auth_window_secs() -> u64 {
+    300 // 5 minutes
+}
+
+fn default_ban_time_secs() -> u64 {
+    300 // 5 minutes
+}
+
 fn default_true() -> bool {
     true
 }
@@ -238,6 +276,11 @@ impl Default for ServerConfig {
             password_auth: PasswordAuthConfigSerde::default(),
             exec: ExecConfig::default(),
             scp_enabled: true,
+            auth_window_secs: default_auth_window_secs(),
+            ban_time_secs: default_ban_time_secs(),
+            whitelist_ips: Vec::new(),
+            allowed_ips: Vec::new(),
+            blocked_ips: Vec::new(),
         }
     }
 }
@@ -533,6 +576,11 @@ impl ServerFileConfig {
                 blocked_commands: Vec::new(),
             },
             scp_enabled: self.scp.enabled,
+            auth_window_secs: self.security.auth_window,
+            ban_time_secs: self.security.ban_time,
+            whitelist_ips: self.security.whitelist_ips,
+            allowed_ips: self.security.allowed_ips,
+            blocked_ips: self.security.blocked_ips,
         }
     }
 }
