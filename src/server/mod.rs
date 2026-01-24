@@ -50,6 +50,7 @@ pub mod config;
 pub mod exec;
 pub mod handler;
 pub mod pty;
+pub mod scp;
 pub mod security;
 pub mod session;
 pub mod sftp;

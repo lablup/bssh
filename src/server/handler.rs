@@ -32,6 +32,7 @@ use super::auth::AuthProvider;
 use super::config::ServerConfig;
 use super::exec::CommandExecutor;
 use super::pty::PtyConfig as PtyMasterConfig;
+use super::scp::{ScpCommand, ScpHandler};
 use super::security::AuthRateLimiter;
 use super::session::{ChannelState, PtyConfig, SessionId, SessionInfo, SessionManager};
 use super::sftp::SftpHandler;
@@ -764,6 +765,9 @@ impl russh::server::Handler for SshHandler {
     /// Executes the requested command and streams output back to the client.
     /// The command is executed via the configured shell with proper environment
     /// setup based on the authenticated user.
+    ///
+    /// Special handling is provided for SCP commands, which require bidirectional
+    /// communication with the client.
     fn exec_request(
         &mut self,
         channel_id: ChannelId,
@@ -811,8 +815,28 @@ impl russh::server::Handler for SshHandler {
         // Clone what we need for the async block
         let auth_provider = Arc::clone(&self.auth_provider);
         let exec_config = self.config.exec.clone();
+        let scp_enabled = self.config.scp_enabled;
         let handle = session.handle();
         let peer_addr = self.peer_addr;
+
+        // Check if this is an SCP command
+        let scp_command = if scp_enabled && ScpCommand::is_scp_command(&command) {
+            ScpCommand::parse(&command).ok()
+        } else {
+            None
+        };
+
+        // If SCP, we need to set up data forwarding
+        let scp_data_rx = if scp_command.is_some() {
+            let (tx, rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1024);
+            // Store the sender in channel state for data forwarding
+            if let Some(state) = self.channels.get_mut(&channel_id) {
+                state.shell_data_tx = Some(tx);
+            }
+            Some(rx)
+        } else {
+            None
+        };
 
         // Signal channel success before executing
         let _ = session.channel_success(channel_id);
@@ -843,6 +867,57 @@ impl russh::server::Handler for SshHandler {
                     return Ok(());
                 }
             };
+
+            // Handle SCP commands specially
+            if let Some(scp_cmd) = scp_command {
+                tracing::info!(
+                    user = %username,
+                    peer = ?peer_addr,
+                    mode = %scp_cmd.mode,
+                    path = %scp_cmd.path.display(),
+                    recursive = %scp_cmd.recursive,
+                    "Executing SCP command"
+                );
+
+                // Get the receiver that was set up earlier
+                let data_rx = match scp_data_rx {
+                    Some(rx) => rx,
+                    None => {
+                        tracing::error!("SCP data receiver not set up");
+                        let _ = handle.exit_status_request(channel_id, 1).await;
+                        let _ = handle.eof(channel_id).await;
+                        let _ = handle.close(channel_id).await;
+                        return Ok(());
+                    }
+                };
+
+                let handle_clone = handle.clone();
+
+                // Create SCP handler with user's home directory as root
+                let scp_handler = ScpHandler::from_command(
+                    &scp_cmd,
+                    user_info.clone(),
+                    Some(user_info.home_dir.clone()),
+                );
+
+                // Run SCP in a spawned task so the session loop can process incoming data
+                // The data() handler will forward data to shell_data_tx which the SCP handler
+                // will receive via data_rx
+                tokio::spawn(async move {
+                    let exit_code = scp_handler
+                        .run(channel_id, handle_clone.clone(), data_rx)
+                        .await;
+
+                    // Send exit status, EOF, and close channel
+                    let _ = handle_clone
+                        .exit_status_request(channel_id, exit_code as u32)
+                        .await;
+                    let _ = handle_clone.eof(channel_id).await;
+                    let _ = handle_clone.close(channel_id).await;
+                });
+
+                return Ok(());
+            }
 
             tracing::info!(
                 user = %username,

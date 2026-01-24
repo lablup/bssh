@@ -418,6 +418,7 @@ SSH server implementation using the russh library for accepting incoming connect
 - `session.rs` - Session state management (`SessionManager`, `SessionInfo`, `ChannelState`)
 - `exec.rs` - Command execution for SSH exec requests
 - `sftp.rs` - SFTP subsystem handler with path traversal prevention
+- `scp.rs` - SCP protocol handler with sink/source modes
 - `auth/` - Authentication provider infrastructure
 - `audit/` - Audit logging infrastructure (event types, exporters, manager)
 
@@ -498,6 +499,22 @@ SSH server implementation using the russh library for accepting incoming connect
   - Symlink validation ensures targets remain within root directory
   - Handle limit enforcement to prevent resource exhaustion
   - Read size capping to prevent memory exhaustion
+
+- **ScpHandler**: SCP protocol handler (`src/server/scp.rs`)
+  - Implements SCP server protocol for file transfers via the `scp` command
+  - Sink mode (`-t` flag): receives files from client (upload)
+  - Source mode (`-f` flag): sends files to client (download)
+  - Recursive transfer support (`-r` flag) for directories
+  - Time preservation (`-p` flag) for file modification times
+  - Security features:
+    - Path traversal prevention with normalized path resolution
+    - Symlink escape prevention via canonicalization
+    - Filename validation (rejects `/`, `..`, `.`)
+    - File size limit (10 GB maximum)
+    - Mode permission masking (strips setuid/setgid/sticky bits)
+    - Line length limits to prevent DoS via buffer exhaustion
+  - Automatic SCP command detection in exec_request handler
+  - Configurable via `scp_enabled` setting
 
 ### Server Authentication Module
 
