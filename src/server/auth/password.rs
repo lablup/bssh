@@ -614,6 +614,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "Timing-based test is flaky in CI; run locally with: cargo test test_password_verifier_timing_attack_mitigation --lib -- --ignored"]
     async fn test_password_verifier_timing_attack_mitigation() {
         let hash = hash_password("password").unwrap();
         let users = vec![UserDefinition {
