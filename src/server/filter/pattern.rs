@@ -413,6 +413,176 @@ impl Matcher for NotMatcher {
     }
 }
 
+/// A matcher that combines multiple matchers with AND logic.
+///
+/// The combined matcher returns true only if ALL of its inner matchers match.
+///
+/// # Example
+///
+/// ```rust
+/// use bssh::server::filter::pattern::{GlobMatcher, AllMatcher};
+/// use bssh::server::filter::path::PrefixMatcher;
+/// use bssh::server::filter::policy::Matcher;
+/// use std::path::Path;
+///
+/// // Match .env files only in /home directory
+/// let matcher = AllMatcher::new(vec![
+///     Box::new(GlobMatcher::new("*.env").unwrap()),
+///     Box::new(PrefixMatcher::new("/home")),
+/// ]);
+///
+/// assert!(matcher.matches(Path::new("/home/user/.env")));
+/// assert!(!matcher.matches(Path::new("/etc/.env"))); // Not in /home
+/// assert!(!matcher.matches(Path::new("/home/user/config.txt"))); // Not .env
+/// ```
+#[derive(Debug, Clone)]
+pub struct AllMatcher {
+    matchers: Vec<Box<dyn Matcher>>,
+}
+
+impl AllMatcher {
+    /// Create a new AND matcher.
+    ///
+    /// # Arguments
+    ///
+    /// * `matchers` - The matchers to combine with AND logic
+    pub fn new(matchers: Vec<Box<dyn Matcher>>) -> Self {
+        Self { matchers }
+    }
+
+    /// Add a matcher to the combination.
+    pub fn with_matcher(mut self, matcher: Box<dyn Matcher>) -> Self {
+        self.matchers.push(matcher);
+        self
+    }
+
+    /// Get the number of matchers in this combination.
+    pub fn len(&self) -> usize {
+        self.matchers.len()
+    }
+
+    /// Check if the combination is empty.
+    pub fn is_empty(&self) -> bool {
+        self.matchers.is_empty()
+    }
+}
+
+impl Matcher for AllMatcher {
+    fn matches(&self, path: &Path) -> bool {
+        // Empty matcher matches nothing
+        if self.matchers.is_empty() {
+            return false;
+        }
+        self.matchers.iter().all(|m| m.matches(path))
+    }
+
+    fn clone_box(&self) -> Box<dyn Matcher> {
+        Box::new(self.clone())
+    }
+
+    fn pattern_description(&self) -> String {
+        let descriptions: Vec<_> = self
+            .matchers
+            .iter()
+            .map(|m| m.pattern_description())
+            .collect();
+        format!("all_of:[{}]", descriptions.join(", "))
+    }
+}
+
+/// Enum representing composite matcher logic.
+///
+/// This provides a unified interface for creating AND, OR, and NOT matchers.
+///
+/// # Example
+///
+/// ```rust
+/// use bssh::server::filter::pattern::{GlobMatcher, CompositeMatcher};
+/// use bssh::server::filter::path::PrefixMatcher;
+/// use bssh::server::filter::policy::Matcher;
+/// use std::path::Path;
+///
+/// // Create an AND matcher
+/// let and_matcher = CompositeMatcher::and(vec![
+///     Box::new(GlobMatcher::new("*.env").unwrap()),
+///     Box::new(PrefixMatcher::new("/home")),
+/// ]);
+///
+/// // Create an OR matcher
+/// let or_matcher = CompositeMatcher::or(vec![
+///     Box::new(GlobMatcher::new("*.key").unwrap()),
+///     Box::new(GlobMatcher::new("*.pem").unwrap()),
+/// ]);
+///
+/// // Create a NOT matcher
+/// let not_matcher = CompositeMatcher::not(
+///     Box::new(PrefixMatcher::new("/home")),
+/// );
+/// ```
+#[derive(Debug, Clone)]
+pub enum CompositeMatcher {
+    /// All matchers must match (AND logic)
+    And(Vec<Box<dyn Matcher>>),
+    /// Any matcher must match (OR logic)
+    Or(Vec<Box<dyn Matcher>>),
+    /// Invert the inner matcher (NOT logic)
+    Not(Box<dyn Matcher>),
+}
+
+impl CompositeMatcher {
+    /// Create an AND composite matcher.
+    pub fn and(matchers: Vec<Box<dyn Matcher>>) -> Self {
+        CompositeMatcher::And(matchers)
+    }
+
+    /// Create an OR composite matcher.
+    pub fn or(matchers: Vec<Box<dyn Matcher>>) -> Self {
+        CompositeMatcher::Or(matchers)
+    }
+
+    /// Create a NOT composite matcher.
+    pub fn not(matcher: Box<dyn Matcher>) -> Self {
+        CompositeMatcher::Not(matcher)
+    }
+}
+
+impl Matcher for CompositeMatcher {
+    fn matches(&self, path: &Path) -> bool {
+        match self {
+            CompositeMatcher::And(matchers) => {
+                if matchers.is_empty() {
+                    return false;
+                }
+                matchers.iter().all(|m| m.matches(path))
+            }
+            CompositeMatcher::Or(matchers) => matchers.iter().any(|m| m.matches(path)),
+            CompositeMatcher::Not(matcher) => !matcher.matches(path),
+        }
+    }
+
+    fn clone_box(&self) -> Box<dyn Matcher> {
+        Box::new(self.clone())
+    }
+
+    fn pattern_description(&self) -> String {
+        match self {
+            CompositeMatcher::And(matchers) => {
+                let descriptions: Vec<_> =
+                    matchers.iter().map(|m| m.pattern_description()).collect();
+                format!("and:[{}]", descriptions.join(", "))
+            }
+            CompositeMatcher::Or(matchers) => {
+                let descriptions: Vec<_> =
+                    matchers.iter().map(|m| m.pattern_description()).collect();
+                format!("or:[{}]", descriptions.join(", "))
+            }
+            CompositeMatcher::Not(matcher) => {
+                format!("not({})", matcher.pattern_description())
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -689,5 +859,151 @@ mod tests {
         assert_ne!(GlobMatchMode::PathOrFilename, GlobMatchMode::FullPathOnly);
         assert_ne!(GlobMatchMode::PathOrFilename, GlobMatchMode::FilenameOnly);
         assert_ne!(GlobMatchMode::FullPathOnly, GlobMatchMode::FilenameOnly);
+    }
+
+    // Tests for AllMatcher (AND logic)
+    #[test]
+    fn test_all_matcher_basic() {
+        use crate::server::filter::path::PrefixMatcher;
+
+        // Match .env files only in /home directory
+        let matcher = AllMatcher::new(vec![
+            Box::new(GlobMatcher::new("*.env").unwrap()),
+            Box::new(PrefixMatcher::new("/home")),
+        ]);
+
+        assert!(matcher.matches(Path::new("/home/user/.env")));
+        assert!(!matcher.matches(Path::new("/etc/.env"))); // Not in /home
+        assert!(!matcher.matches(Path::new("/home/user/config.txt"))); // Not .env
+    }
+
+    #[test]
+    fn test_all_matcher_empty() {
+        let matcher = AllMatcher::new(vec![]);
+
+        assert!(matcher.is_empty());
+        assert_eq!(matcher.len(), 0);
+        // Empty AllMatcher matches nothing
+        assert!(!matcher.matches(Path::new("/any/path")));
+    }
+
+    #[test]
+    fn test_all_matcher_single() {
+        let matcher = AllMatcher::new(vec![Box::new(GlobMatcher::new("*.key").unwrap())]);
+
+        assert_eq!(matcher.len(), 1);
+        assert!(matcher.matches(Path::new("secret.key")));
+        assert!(!matcher.matches(Path::new("secret.txt")));
+    }
+
+    #[test]
+    fn test_all_matcher_with_matcher() {
+        let matcher = AllMatcher::new(vec![Box::new(GlobMatcher::new("*.key").unwrap())])
+            .with_matcher(Box::new(GlobMatcher::new("secret*").unwrap()));
+
+        assert_eq!(matcher.len(), 2);
+        assert!(matcher.matches(Path::new("secret.key"))); // Both match
+        assert!(!matcher.matches(Path::new("public.key"))); // Only first matches
+        assert!(!matcher.matches(Path::new("secret.txt"))); // Only second matches
+    }
+
+    #[test]
+    fn test_all_matcher_clone() {
+        use crate::server::filter::path::PrefixMatcher;
+
+        let matcher = AllMatcher::new(vec![
+            Box::new(GlobMatcher::new("*.log").unwrap()),
+            Box::new(PrefixMatcher::new("/var/log")),
+        ]);
+        let cloned = matcher.clone_box();
+
+        assert!(cloned.matches(Path::new("/var/log/app.log")));
+        assert!(cloned.pattern_description().contains("all_of:"));
+    }
+
+    // Tests for CompositeMatcher (unified AND/OR/NOT)
+    #[test]
+    fn test_composite_matcher_and() {
+        use crate::server::filter::path::PrefixMatcher;
+
+        let matcher = CompositeMatcher::and(vec![
+            Box::new(GlobMatcher::new("*.env").unwrap()),
+            Box::new(PrefixMatcher::new("/home")),
+        ]);
+
+        assert!(matcher.matches(Path::new("/home/user/.env")));
+        assert!(!matcher.matches(Path::new("/etc/.env")));
+        assert!(matcher.pattern_description().contains("and:"));
+    }
+
+    #[test]
+    fn test_composite_matcher_or() {
+        let matcher = CompositeMatcher::or(vec![
+            Box::new(GlobMatcher::new("*.key").unwrap()),
+            Box::new(GlobMatcher::new("*.pem").unwrap()),
+        ]);
+
+        assert!(matcher.matches(Path::new("secret.key")));
+        assert!(matcher.matches(Path::new("cert.pem")));
+        assert!(!matcher.matches(Path::new("document.txt")));
+        assert!(matcher.pattern_description().contains("or:"));
+    }
+
+    #[test]
+    fn test_composite_matcher_not() {
+        use crate::server::filter::path::PrefixMatcher;
+
+        let matcher = CompositeMatcher::not(Box::new(PrefixMatcher::new("/home")));
+
+        assert!(!matcher.matches(Path::new("/home/user/file")));
+        assert!(matcher.matches(Path::new("/etc/passwd")));
+        assert!(matcher.pattern_description().contains("not("));
+    }
+
+    #[test]
+    fn test_composite_matcher_empty_and() {
+        let matcher = CompositeMatcher::And(vec![]);
+
+        // Empty AND should match nothing
+        assert!(!matcher.matches(Path::new("/any/path")));
+    }
+
+    #[test]
+    fn test_composite_matcher_empty_or() {
+        let matcher = CompositeMatcher::Or(vec![]);
+
+        // Empty OR should match nothing
+        assert!(!matcher.matches(Path::new("/any/path")));
+    }
+
+    #[test]
+    fn test_composite_matcher_complex() {
+        use crate::server::filter::path::PrefixMatcher;
+
+        // Complex rule: (.env files NOT in /home) OR (.key files)
+        let env_not_home = CompositeMatcher::and(vec![
+            Box::new(GlobMatcher::new("*.env").unwrap()),
+            Box::new(CompositeMatcher::not(Box::new(PrefixMatcher::new("/home")))),
+        ]);
+
+        let key_files = GlobMatcher::new("*.key").unwrap();
+
+        let matcher = CompositeMatcher::or(vec![Box::new(env_not_home), Box::new(key_files)]);
+
+        assert!(matcher.matches(Path::new("/etc/.env"))); // .env not in /home
+        assert!(!matcher.matches(Path::new("/home/user/.env"))); // .env in /home
+        assert!(matcher.matches(Path::new("/home/user/secret.key"))); // .key file
+    }
+
+    #[test]
+    fn test_composite_matcher_clone() {
+        let matcher = CompositeMatcher::and(vec![
+            Box::new(GlobMatcher::new("*.a").unwrap()),
+            Box::new(GlobMatcher::new("test*").unwrap()),
+        ]);
+        let cloned = matcher.clone_box();
+
+        assert!(cloned.matches(Path::new("test.a")));
+        assert!(!cloned.matches(Path::new("test.b")));
     }
 }

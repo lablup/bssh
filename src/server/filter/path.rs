@@ -352,6 +352,182 @@ impl Matcher for ExtensionMatcher {
     }
 }
 
+/// Matches paths based on multiple file extensions.
+///
+/// This matcher supports multiple extensions and optional case sensitivity,
+/// useful for blocking groups of file types like executables or archives.
+///
+/// # Example
+///
+/// ```rust
+/// use bssh::server::filter::path::MultiExtensionMatcher;
+/// use bssh::server::filter::policy::Matcher;
+/// use std::path::Path;
+///
+/// let matcher = MultiExtensionMatcher::new(vec!["exe", "bat", "ps1"], false);
+///
+/// assert!(matcher.matches(Path::new("/uploads/malware.exe")));
+/// assert!(matcher.matches(Path::new("/scripts/script.BAT"))); // Case insensitive
+/// assert!(matcher.matches(Path::new("/scripts/script.ps1")));
+/// assert!(!matcher.matches(Path::new("/home/user/document.pdf")));
+/// ```
+#[derive(Debug, Clone)]
+pub struct MultiExtensionMatcher {
+    extensions: Vec<String>,
+    case_sensitive: bool,
+}
+
+impl MultiExtensionMatcher {
+    /// Create a new multi-extension matcher.
+    ///
+    /// # Arguments
+    ///
+    /// * `extensions` - List of file extensions to match (without the dot)
+    /// * `case_sensitive` - Whether to match case-sensitively
+    pub fn new<S: Into<String>>(extensions: Vec<S>, case_sensitive: bool) -> Self {
+        let extensions: Vec<String> = if case_sensitive {
+            extensions.into_iter().map(|e| e.into()).collect()
+        } else {
+            extensions
+                .into_iter()
+                .map(|e| e.into().to_lowercase())
+                .collect()
+        };
+        Self {
+            extensions,
+            case_sensitive,
+        }
+    }
+
+    /// Create a case-insensitive multi-extension matcher.
+    pub fn case_insensitive<S: Into<String>>(extensions: Vec<S>) -> Self {
+        Self::new(extensions, false)
+    }
+
+    /// Get the extensions being matched.
+    pub fn extensions(&self) -> &[String] {
+        &self.extensions
+    }
+
+    /// Check if matching is case-sensitive.
+    pub fn is_case_sensitive(&self) -> bool {
+        self.case_sensitive
+    }
+}
+
+impl Matcher for MultiExtensionMatcher {
+    fn matches(&self, path: &Path) -> bool {
+        if let Some(ext) = path.extension() {
+            if let Some(ext_str) = ext.to_str() {
+                let ext_cmp = if self.case_sensitive {
+                    ext_str.to_string()
+                } else {
+                    ext_str.to_lowercase()
+                };
+                return self.extensions.contains(&ext_cmp);
+            }
+        }
+        false
+    }
+
+    fn clone_box(&self) -> Box<dyn Matcher> {
+        Box::new(self.clone())
+    }
+
+    fn pattern_description(&self) -> String {
+        format!(
+            "extensions:[{}]{}",
+            self.extensions.join(", "),
+            if self.case_sensitive {
+                " (case-sensitive)"
+            } else {
+                ""
+            }
+        )
+    }
+}
+
+/// Matches files based on size.
+///
+/// This matcher is used for size-based filtering rules. Unlike other matchers,
+/// it requires the file size to be provided separately since paths don't contain
+/// size information.
+///
+/// # Example
+///
+/// ```rust
+/// use bssh::server::filter::path::SizeMatcher;
+///
+/// // Match files larger than 100MB
+/// let large_file_matcher = SizeMatcher::min(100 * 1024 * 1024);
+///
+/// // Match files smaller than 1KB
+/// let small_file_matcher = SizeMatcher::max(1024);
+///
+/// // Match files between 1MB and 100MB
+/// let range_matcher = SizeMatcher::between(1024 * 1024, 100 * 1024 * 1024);
+/// ```
+#[derive(Debug, Clone)]
+pub struct SizeMatcher {
+    min_size: Option<u64>,
+    max_size: Option<u64>,
+}
+
+impl SizeMatcher {
+    /// Create a new size matcher with optional min and max bounds.
+    ///
+    /// # Arguments
+    ///
+    /// * `min` - Minimum file size in bytes (inclusive)
+    /// * `max` - Maximum file size in bytes (inclusive)
+    pub fn new(min: Option<u64>, max: Option<u64>) -> Self {
+        Self {
+            min_size: min,
+            max_size: max,
+        }
+    }
+
+    /// Create a matcher for files larger than or equal to the given size.
+    pub fn min(min_bytes: u64) -> Self {
+        Self::new(Some(min_bytes), None)
+    }
+
+    /// Create a matcher for files smaller than or equal to the given size.
+    pub fn max(max_bytes: u64) -> Self {
+        Self::new(None, Some(max_bytes))
+    }
+
+    /// Create a matcher for files within a size range.
+    pub fn between(min_bytes: u64, max_bytes: u64) -> Self {
+        Self::new(Some(min_bytes), Some(max_bytes))
+    }
+
+    /// Check if the given size matches.
+    pub fn matches_size(&self, size: u64) -> bool {
+        if let Some(min) = self.min_size {
+            if size < min {
+                return false;
+            }
+        }
+        if let Some(max) = self.max_size {
+            if size > max {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Get the minimum size bound.
+    pub fn min_size(&self) -> Option<u64> {
+        self.min_size
+    }
+
+    /// Get the maximum size bound.
+    pub fn max_size(&self) -> Option<u64> {
+        self.max_size
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -581,5 +757,117 @@ mod tests {
         let matcher = ExtensionMatcher::new("PDF");
         // Extension is stored in lowercase
         assert_eq!(matcher.extension(), "pdf");
+    }
+
+    // Tests for MultiExtensionMatcher
+    #[test]
+    fn test_multi_extension_matcher_basic() {
+        let matcher = MultiExtensionMatcher::new(vec!["exe", "bat", "ps1"], false);
+
+        assert!(matcher.matches(Path::new("/uploads/malware.exe")));
+        assert!(matcher.matches(Path::new("/scripts/script.bat")));
+        assert!(matcher.matches(Path::new("/scripts/script.ps1")));
+        assert!(!matcher.matches(Path::new("/home/user/document.pdf")));
+    }
+
+    #[test]
+    fn test_multi_extension_matcher_case_insensitive() {
+        let matcher = MultiExtensionMatcher::case_insensitive(vec!["exe", "bat"]);
+
+        assert!(matcher.matches(Path::new("/uploads/MALWARE.EXE")));
+        assert!(matcher.matches(Path::new("/scripts/Script.Bat")));
+        assert!(!matcher.is_case_sensitive());
+    }
+
+    #[test]
+    fn test_multi_extension_matcher_case_sensitive() {
+        let matcher = MultiExtensionMatcher::new(vec!["EXE", "BAT"], true);
+
+        assert!(matcher.matches(Path::new("/uploads/malware.EXE")));
+        assert!(!matcher.matches(Path::new("/uploads/malware.exe"))); // Case matters
+        assert!(matcher.is_case_sensitive());
+    }
+
+    #[test]
+    fn test_multi_extension_matcher_accessors() {
+        let matcher = MultiExtensionMatcher::new(vec!["exe", "bat"], false);
+
+        assert_eq!(matcher.extensions(), &["exe", "bat"]);
+        assert!(!matcher.is_case_sensitive());
+    }
+
+    #[test]
+    fn test_multi_extension_matcher_no_extension() {
+        let matcher = MultiExtensionMatcher::new(vec!["txt"], false);
+
+        assert!(!matcher.matches(Path::new("/bin/bash")));
+        assert!(!matcher.matches(Path::new("/etc/passwd")));
+    }
+
+    #[test]
+    fn test_multi_extension_matcher_pattern_description() {
+        let matcher = MultiExtensionMatcher::new(vec!["exe", "bat"], false);
+        assert!(matcher.pattern_description().contains("exe"));
+        assert!(matcher.pattern_description().contains("bat"));
+
+        let case_sensitive = MultiExtensionMatcher::new(vec!["EXE"], true);
+        assert!(case_sensitive
+            .pattern_description()
+            .contains("case-sensitive"));
+    }
+
+    // Tests for SizeMatcher
+    #[test]
+    fn test_size_matcher_min() {
+        let matcher = SizeMatcher::min(1024);
+
+        assert!(matcher.matches_size(1024)); // Equal to min
+        assert!(matcher.matches_size(2048)); // Greater than min
+        assert!(!matcher.matches_size(512)); // Less than min
+    }
+
+    #[test]
+    fn test_size_matcher_max() {
+        let matcher = SizeMatcher::max(1024);
+
+        assert!(matcher.matches_size(1024)); // Equal to max
+        assert!(matcher.matches_size(512)); // Less than max
+        assert!(!matcher.matches_size(2048)); // Greater than max
+    }
+
+    #[test]
+    fn test_size_matcher_between() {
+        let matcher = SizeMatcher::between(1024, 2048);
+
+        assert!(matcher.matches_size(1024)); // Equal to min
+        assert!(matcher.matches_size(1536)); // In range
+        assert!(matcher.matches_size(2048)); // Equal to max
+        assert!(!matcher.matches_size(512)); // Less than min
+        assert!(!matcher.matches_size(4096)); // Greater than max
+    }
+
+    #[test]
+    fn test_size_matcher_no_limits() {
+        let matcher = SizeMatcher::new(None, None);
+
+        // With no limits, everything matches
+        assert!(matcher.matches_size(0));
+        assert!(matcher.matches_size(u64::MAX));
+    }
+
+    #[test]
+    fn test_size_matcher_accessors() {
+        let matcher = SizeMatcher::between(100, 200);
+
+        assert_eq!(matcher.min_size(), Some(100));
+        assert_eq!(matcher.max_size(), Some(200));
+
+        let min_only = SizeMatcher::min(50);
+        assert_eq!(min_only.min_size(), Some(50));
+        assert_eq!(min_only.max_size(), None);
+
+        let max_only = SizeMatcher::max(150);
+        assert_eq!(max_only.min_size(), None);
+        assert_eq!(max_only.max_size(), Some(150));
     }
 }

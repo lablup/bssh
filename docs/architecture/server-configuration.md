@@ -150,11 +150,68 @@ scp:
 # File transfer filtering
 filter:
   enabled: false               # Default: false
+  default_action: allow        # Default action when no rules match: allow, deny, log
+
   rules:
-    - pattern: "*.exe"
+    # Match by glob pattern
+    - name: "block-exe"
+      pattern: "*.exe"
       action: deny
-    - path_prefix: "/tmp/"
+
+    # Match by path prefix (directory tree)
+    - name: "log-tmp"
+      path_prefix: "/tmp/"
       action: log
+
+    # Match by multiple file extensions
+    - name: "block-executables"
+      extensions: ["exe", "bat", "sh", "ps1"]
+      action: deny
+
+    # Match by directory component (anywhere in path)
+    - name: "block-git"
+      directory: ".git"
+      action: deny
+
+    # Composite rule with AND logic
+    - name: "protect-env-outside-home"
+      composite:
+        type: and
+        matchers:
+          - pattern: "*.env"
+          - not:
+              path_prefix: "/home"
+      action: deny
+
+    # Composite rule with OR logic
+    - name: "block-secrets"
+      composite:
+        type: or
+        matchers:
+          - pattern: "*.key"
+          - pattern: "*.pem"
+          - extensions: ["crt", "p12", "pfx"]
+      action: deny
+
+    # Composite rule with NOT logic (whitelist pattern)
+    - name: "whitelist-data"
+      composite:
+        type: not
+        matcher:
+          path_prefix: "/data"
+      action: deny
+
+    # Rule with operation restriction
+    - name: "readonly-logs"
+      pattern: "*.log"
+      action: deny
+      operations: ["upload", "delete"]
+
+    # Rule with user restriction
+    - name: "admin-only-config"
+      path_prefix: "/etc"
+      action: deny
+      users: ["guest", "readonly"]
 
 # Audit logging configuration
 audit:
@@ -643,6 +700,217 @@ scp -p important.doc user@bssh-server:/backup/
 
 # Recursive with timestamps
 scp -rp ./data/ user@bssh-server:/storage/backup/
+```
+
+---
+
+## File Transfer Filtering
+
+The bssh-server provides a comprehensive policy-based system for controlling file transfers in SFTP and SCP operations. The filter system allows administrators to allow, deny, or log file operations based on various criteria.
+
+### Filter Architecture
+
+```
+Filter Request Flow:
+┌─────────────────┐     ┌──────────────────┐     ┌────────────────┐
+│  File Operation │ --> │ Normalize Path   │ --> │ Match Rules    │
+│  (SFTP/SCP)     │     │ (prevent bypass) │     │ (in order)     │
+└─────────────────┘     └──────────────────┘     └────────────────┘
+        │
+        v
+┌─────────────────┐     ┌──────────────────┐     ┌────────────────┐
+│  First Match    │ --> │ Apply Action     │ --> │ Allow/Deny/Log │
+│  Wins           │     │ (or default)     │     │                │
+└─────────────────┘     └──────────────────┘     └────────────────┘
+```
+
+### Matcher Types
+
+The filter system supports multiple matcher types that can be combined for flexible rule definitions:
+
+| Matcher | Config Key | Description | Example |
+|---------|------------|-------------|---------|
+| **Glob** | `pattern` | Shell-style glob patterns | `*.exe`, `secret*` |
+| **Prefix** | `path_prefix` | Directory tree matching | `/etc`, `/home/user` |
+| **Extension** | `extensions` | Multiple file extensions | `["exe", "bat", "sh"]` |
+| **Directory** | `directory` | Component anywhere in path | `.git`, `.ssh` |
+| **Composite** | `composite` | AND/OR/NOT logic | See below |
+
+### Glob Pattern Matching
+
+Glob patterns support standard wildcards:
+- `*` - matches any sequence of characters
+- `?` - matches any single character
+- `[abc]` - matches any character in the set
+- `[!abc]` - matches any character not in the set
+
+```yaml
+rules:
+  - pattern: "*.key"        # All .key files
+  - pattern: "secret?.txt"  # secret1.txt, secretA.txt, etc.
+  - pattern: "[0-9]*.log"   # Log files starting with a digit
+```
+
+### Extension Matching
+
+Multi-extension matching is case-insensitive by default:
+
+```yaml
+rules:
+  - name: "block-executables"
+    extensions: ["exe", "bat", "sh", "ps1", "cmd"]
+    action: deny
+
+  - name: "block-archives"
+    extensions: ["zip", "tar", "gz", "rar", "7z"]
+    action: deny
+```
+
+### Composite Rules
+
+Composite rules allow combining multiple matchers with logical operators:
+
+**AND Logic** - All matchers must match:
+```yaml
+- name: "env-outside-home"
+  composite:
+    type: and
+    matchers:
+      - pattern: "*.env"
+      - not:
+          path_prefix: "/home"
+  action: deny
+```
+
+**OR Logic** - Any matcher must match:
+```yaml
+- name: "sensitive-files"
+  composite:
+    type: or
+    matchers:
+      - pattern: "*.key"
+      - pattern: "*.pem"
+      - pattern: "*.p12"
+  action: deny
+```
+
+**NOT Logic** - Invert the match (whitelist pattern):
+```yaml
+- name: "whitelist-data-only"
+  composite:
+    type: not
+    matcher:
+      path_prefix: "/data"
+  action: deny  # Deny everything NOT in /data
+```
+
+### Operation and User Restrictions
+
+Rules can be limited to specific operations or users:
+
+```yaml
+rules:
+  # Prevent deletion of log files
+  - name: "protect-logs"
+    pattern: "*.log"
+    action: deny
+    operations: ["delete"]
+
+  # Block uploads of executables for guest users
+  - name: "guest-no-executables"
+    extensions: ["exe", "sh", "bat"]
+    action: deny
+    operations: ["upload"]
+    users: ["guest", "anonymous"]
+```
+
+**Available Operations:**
+- `upload` - File uploads
+- `download` - File downloads
+- `delete` - File deletion
+- `rename` - File rename/move
+- `createdir` - Directory creation
+- `listdir` - Directory listing
+- `stat` - Reading file attributes
+- `setstat` - Modifying file attributes
+- `symlink` - Creating symbolic links
+- `readlink` - Reading symbolic link targets
+
+### Security Features
+
+**Path Traversal Protection:**
+All paths are normalized before matching to prevent bypass attempts:
+```
+/var/../etc/passwd  ->  /etc/passwd
+/home/user/../../etc  ->  /etc
+```
+
+**First Match Wins:**
+Rules are evaluated in order. The first matching rule determines the action. If no rules match, the default action (configurable, defaults to `allow`) is used.
+
+### SizeAwareFilter Trait
+
+For size-based filtering (e.g., blocking large uploads), the `SizeAwareFilter` trait provides:
+
+```rust
+use bssh::server::filter::{SizeAwareFilter, FilterResult, Operation};
+use bssh::server::filter::path::SizeMatcher;
+
+// Create a size matcher for files over 100MB
+let large_file_matcher = SizeMatcher::min(100 * 1024 * 1024);
+
+// Check if the given size matches
+assert!(large_file_matcher.matches_size(200 * 1024 * 1024));  // 200MB matches
+assert!(!large_file_matcher.matches_size(50 * 1024 * 1024)); // 50MB doesn't match
+```
+
+**Note:** Size-based filtering in configuration requires implementation integration with the actual file transfer handlers.
+
+### Complete Filter Configuration Example
+
+```yaml
+filter:
+  enabled: true
+  default_action: allow
+
+  rules:
+    # Block dangerous executables
+    - name: "block-executables"
+      extensions: ["exe", "bat", "sh", "ps1", "cmd", "com"]
+      action: deny
+
+    # Block private keys and certificates
+    - name: "block-secrets"
+      composite:
+        type: or
+        matchers:
+          - pattern: "*.key"
+          - pattern: "*.pem"
+          - pattern: "*.p12"
+          - pattern: "id_rsa*"
+          - pattern: "id_ed25519*"
+      action: deny
+
+    # Block hidden directories
+    - name: "block-hidden"
+      directory: ".git"
+      action: deny
+
+    - name: "block-ssh-config"
+      directory: ".ssh"
+      action: deny
+
+    # Log access to configuration files
+    - name: "log-config-access"
+      path_prefix: "/etc"
+      action: log
+
+    # Restrict guests to read-only access in /data
+    - name: "guest-read-only"
+      path_prefix: "/data"
+      operations: ["upload", "delete", "rename", "createdir", "setstat"]
+      users: ["guest"]
+      action: deny
 ```
 
 ---

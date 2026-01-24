@@ -24,9 +24,13 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 
 use super::{FilterResult, Operation, TransferFilter};
-use crate::server::config::{FilterAction, FilterConfig, FilterRule as FilterRuleConfig};
-use crate::server::filter::path::PrefixMatcher;
-use crate::server::filter::pattern::GlobMatcher;
+use crate::server::config::{
+    CompositeLogicType, FilterAction, FilterConfig, FilterRule as FilterRuleConfig, MatcherConfig,
+};
+use crate::server::filter::path::{
+    normalize_path, ComponentMatcher, MultiExtensionMatcher, PrefixMatcher,
+};
+use crate::server::filter::pattern::{AllMatcher, CombinedMatcher, GlobMatcher, NotMatcher};
 
 /// Trait for path matchers.
 ///
@@ -227,16 +231,24 @@ impl FilterPolicy {
 
     /// Create a rule from configuration.
     fn rule_from_config(config: &FilterRuleConfig) -> Result<FilterRule> {
-        // Create matcher based on config
-        let matcher: Box<dyn Matcher> = if let Some(pattern) = config.pattern.as_ref() {
+        // Create matcher based on config - try each type in order
+        let matcher: Box<dyn Matcher> = if let Some(ref composite) = config.composite {
+            Self::matcher_from_composite(composite)?
+        } else if let Some(pattern) = config.pattern.as_ref() {
             Box::new(
                 GlobMatcher::new(pattern)
                     .with_context(|| format!("Invalid glob pattern: {}", pattern))?,
             )
         } else if let Some(prefix) = config.path_prefix.as_ref() {
             Box::new(PrefixMatcher::new(prefix.as_str()))
+        } else if let Some(extensions) = config.extensions.as_ref() {
+            Box::new(MultiExtensionMatcher::case_insensitive(extensions.clone()))
+        } else if let Some(directory) = config.directory.as_ref() {
+            Box::new(ComponentMatcher::new(directory.as_str()))
         } else {
-            anyhow::bail!("Filter rule must have either 'pattern' or 'path_prefix'");
+            anyhow::bail!(
+                "Filter rule must have one of: 'pattern', 'path_prefix', 'extensions', 'directory', or 'composite'"
+            );
         };
 
         // Convert action
@@ -273,6 +285,67 @@ impl FilterPolicy {
             users: config.users.clone(),
         })
     }
+
+    /// Create a matcher from composite rule configuration.
+    fn matcher_from_composite(
+        config: &crate::server::config::CompositeRuleConfig,
+    ) -> Result<Box<dyn Matcher>> {
+        match config.logic_type {
+            CompositeLogicType::And => {
+                let matchers: Result<Vec<Box<dyn Matcher>>> = config
+                    .matchers
+                    .iter()
+                    .map(Self::matcher_from_config)
+                    .collect();
+                Ok(Box::new(AllMatcher::new(matchers?)))
+            }
+            CompositeLogicType::Or => {
+                let matchers: Result<Vec<Box<dyn Matcher>>> = config
+                    .matchers
+                    .iter()
+                    .map(Self::matcher_from_config)
+                    .collect();
+                Ok(Box::new(CombinedMatcher::new(matchers?)))
+            }
+            CompositeLogicType::Not => {
+                if let Some(ref matcher_config) = config.matcher {
+                    let inner = Self::matcher_from_config(matcher_config)?;
+                    Ok(Box::new(NotMatcher::new(inner)))
+                } else if let Some(first) = config.matchers.first() {
+                    let inner = Self::matcher_from_config(first)?;
+                    Ok(Box::new(NotMatcher::new(inner)))
+                } else {
+                    anyhow::bail!("NOT composite rule requires a matcher")
+                }
+            }
+        }
+    }
+
+    /// Create a matcher from a MatcherConfig.
+    fn matcher_from_config(config: &MatcherConfig) -> Result<Box<dyn Matcher>> {
+        // Handle nested NOT first
+        if let Some(ref not_config) = config.not {
+            let inner = Self::matcher_from_config(not_config)?;
+            return Ok(Box::new(NotMatcher::new(inner)));
+        }
+
+        // Try each matcher type
+        if let Some(ref pattern) = config.pattern {
+            Ok(Box::new(GlobMatcher::new(pattern).with_context(|| {
+                format!("Invalid glob pattern: {}", pattern)
+            })?))
+        } else if let Some(ref prefix) = config.path_prefix {
+            Ok(Box::new(PrefixMatcher::new(prefix.as_str())))
+        } else if let Some(ref extensions) = config.extensions {
+            Ok(Box::new(MultiExtensionMatcher::case_insensitive(
+                extensions.clone(),
+            )))
+        } else if let Some(ref directory) = config.directory {
+            Ok(Box::new(ComponentMatcher::new(directory.as_str())))
+        } else {
+            anyhow::bail!("Matcher config must have one of: 'pattern', 'path_prefix', 'extensions', 'directory', or 'not'")
+        }
+    }
 }
 
 impl TransferFilter for FilterPolicy {
@@ -281,11 +354,18 @@ impl TransferFilter for FilterPolicy {
             return FilterResult::Allow;
         }
 
+        // Normalize path to prevent path traversal attacks (e.g., /var/../etc/passwd -> /etc/passwd)
+        // This is a defense-in-depth measure - callers should also validate paths,
+        // but we normalize here to ensure consistent security behavior.
+        let normalized = normalize_path(path);
+        let check_path = normalized.as_path();
+
         for rule in &self.rules {
-            if rule.matches(path, operation, user) {
+            if rule.matches(check_path, operation, user) {
                 tracing::debug!(
                     rule_name = ?rule.name,
-                    path = %path.display(),
+                    path = %check_path.display(),
+                    original_path = %path.display(),
                     operation = %operation,
                     user = %user,
                     action = %rule.action,
@@ -297,7 +377,7 @@ impl TransferFilter for FilterPolicy {
         }
 
         tracing::trace!(
-            path = %path.display(),
+            path = %check_path.display(),
             operation = %operation,
             user = %user,
             action = %self.default_action,
@@ -622,10 +702,10 @@ mod tests {
             rules: vec![FilterRuleConfig {
                 name: Some("block-keys".to_string()),
                 pattern: Some("*.key".to_string()),
-                path_prefix: None,
                 action: FilterAction::Deny,
                 operations: Some(vec!["download".to_string()]),
                 users: Some(vec!["alice".to_string()]),
+                ..Default::default()
             }],
         };
 
@@ -661,11 +741,9 @@ mod tests {
             default_action: Some(FilterAction::Deny),
             rules: vec![FilterRuleConfig {
                 name: Some("allow-home".to_string()),
-                pattern: None,
                 path_prefix: Some("/home".to_string()),
                 action: FilterAction::Allow,
-                operations: None,
-                users: None,
+                ..Default::default()
             }],
         };
 
@@ -695,11 +773,8 @@ mod tests {
             default_action: None,
             rules: vec![FilterRuleConfig {
                 name: Some("invalid".to_string()),
-                pattern: None,
-                path_prefix: None,
                 action: FilterAction::Deny,
-                operations: None,
-                users: None,
+                ..Default::default()
             }],
         };
 
@@ -715,12 +790,9 @@ mod tests {
             enabled: true,
             default_action: None,
             rules: vec![FilterRuleConfig {
-                name: None,
                 pattern: Some("[".to_string()), // Invalid glob pattern
-                path_prefix: None,
                 action: FilterAction::Deny,
-                operations: None,
-                users: None,
+                ..Default::default()
             }],
         };
 
@@ -736,12 +808,9 @@ mod tests {
             enabled: false,
             default_action: Some(FilterAction::Deny),
             rules: vec![FilterRuleConfig {
-                name: None,
                 pattern: Some("*".to_string()),
-                path_prefix: None,
                 action: FilterAction::Deny,
-                operations: None,
-                users: None,
+                ..Default::default()
             }],
         };
 
@@ -872,5 +941,270 @@ mod tests {
         assert!(rule.matches(Path::new("/etc/secret.key"), Operation::Download, "anyuser"));
         assert!(rule.matches(Path::new("/etc/secret.key"), Operation::Upload, "anyuser"));
         assert!(rule.matches(Path::new("/etc/secret.key"), Operation::Delete, "anyuser"));
+    }
+
+    #[test]
+    fn test_from_config_with_extensions() {
+        use crate::server::config::{FilterAction, FilterConfig, FilterRule as FilterRuleConfig};
+
+        let config = FilterConfig {
+            enabled: true,
+            default_action: Some(FilterAction::Allow),
+            rules: vec![FilterRuleConfig {
+                name: Some("block-executables".to_string()),
+                extensions: Some(vec!["exe".to_string(), "bat".to_string(), "sh".to_string()]),
+                action: FilterAction::Deny,
+                ..Default::default()
+            }],
+        };
+
+        let policy = FilterPolicy::from_config(&config).unwrap();
+
+        assert_eq!(
+            policy.check(Path::new("/uploads/malware.exe"), Operation::Upload, "user"),
+            FilterResult::Deny
+        );
+        assert_eq!(
+            policy.check(Path::new("/scripts/script.bat"), Operation::Upload, "user"),
+            FilterResult::Deny
+        );
+        assert_eq!(
+            policy.check(Path::new("/scripts/script.sh"), Operation::Upload, "user"),
+            FilterResult::Deny
+        );
+        // Different extension should be allowed
+        assert_eq!(
+            policy.check(Path::new("/docs/document.pdf"), Operation::Upload, "user"),
+            FilterResult::Allow
+        );
+    }
+
+    #[test]
+    fn test_from_config_with_directory() {
+        use crate::server::config::{FilterAction, FilterConfig, FilterRule as FilterRuleConfig};
+
+        let config = FilterConfig {
+            enabled: true,
+            default_action: Some(FilterAction::Allow),
+            rules: vec![FilterRuleConfig {
+                name: Some("block-git".to_string()),
+                directory: Some(".git".to_string()),
+                action: FilterAction::Deny,
+                ..Default::default()
+            }],
+        };
+
+        let policy = FilterPolicy::from_config(&config).unwrap();
+
+        assert_eq!(
+            policy.check(
+                Path::new("/project/.git/config"),
+                Operation::Download,
+                "user"
+            ),
+            FilterResult::Deny
+        );
+        assert_eq!(
+            policy.check(
+                Path::new("/home/user/.git/HEAD"),
+                Operation::Download,
+                "user"
+            ),
+            FilterResult::Deny
+        );
+        // File without .git component should be allowed
+        assert_eq!(
+            policy.check(
+                Path::new("/project/src/main.rs"),
+                Operation::Download,
+                "user"
+            ),
+            FilterResult::Allow
+        );
+    }
+
+    #[test]
+    fn test_from_config_with_composite_and() {
+        use crate::server::config::{
+            CompositeLogicType, CompositeRuleConfig, FilterAction, FilterConfig,
+            FilterRule as FilterRuleConfig, MatcherConfig,
+        };
+
+        // Deny .env files that are NOT in /home
+        let config = FilterConfig {
+            enabled: true,
+            default_action: Some(FilterAction::Allow),
+            rules: vec![FilterRuleConfig {
+                name: Some("protect-env".to_string()),
+                composite: Some(CompositeRuleConfig {
+                    logic_type: CompositeLogicType::And,
+                    matchers: vec![
+                        MatcherConfig {
+                            pattern: Some("*.env".to_string()),
+                            ..Default::default()
+                        },
+                        MatcherConfig {
+                            not: Some(Box::new(MatcherConfig {
+                                path_prefix: Some("/home".to_string()),
+                                ..Default::default()
+                            })),
+                            ..Default::default()
+                        },
+                    ],
+                    matcher: None,
+                }),
+                action: FilterAction::Deny,
+                ..Default::default()
+            }],
+        };
+
+        let policy = FilterPolicy::from_config(&config).unwrap();
+
+        // .env outside /home should be denied
+        assert_eq!(
+            policy.check(Path::new("/etc/app/.env"), Operation::Download, "user"),
+            FilterResult::Deny
+        );
+        // .env inside /home should be allowed
+        assert_eq!(
+            policy.check(Path::new("/home/user/.env"), Operation::Download, "user"),
+            FilterResult::Allow
+        );
+        // Non-.env file outside /home should be allowed
+        assert_eq!(
+            policy.check(Path::new("/etc/passwd"), Operation::Download, "user"),
+            FilterResult::Allow
+        );
+    }
+
+    #[test]
+    fn test_from_config_with_composite_or() {
+        use crate::server::config::{
+            CompositeLogicType, CompositeRuleConfig, FilterAction, FilterConfig,
+            FilterRule as FilterRuleConfig, MatcherConfig,
+        };
+
+        // Block .key OR .pem files
+        let config = FilterConfig {
+            enabled: true,
+            default_action: Some(FilterAction::Allow),
+            rules: vec![FilterRuleConfig {
+                name: Some("block-secrets".to_string()),
+                composite: Some(CompositeRuleConfig {
+                    logic_type: CompositeLogicType::Or,
+                    matchers: vec![
+                        MatcherConfig {
+                            pattern: Some("*.key".to_string()),
+                            ..Default::default()
+                        },
+                        MatcherConfig {
+                            pattern: Some("*.pem".to_string()),
+                            ..Default::default()
+                        },
+                    ],
+                    matcher: None,
+                }),
+                action: FilterAction::Deny,
+                ..Default::default()
+            }],
+        };
+
+        let policy = FilterPolicy::from_config(&config).unwrap();
+
+        assert_eq!(
+            policy.check(Path::new("/etc/secret.key"), Operation::Download, "user"),
+            FilterResult::Deny
+        );
+        assert_eq!(
+            policy.check(Path::new("/etc/cert.pem"), Operation::Download, "user"),
+            FilterResult::Deny
+        );
+        assert_eq!(
+            policy.check(Path::new("/etc/file.txt"), Operation::Download, "user"),
+            FilterResult::Allow
+        );
+    }
+
+    #[test]
+    fn test_from_config_with_composite_not() {
+        use crate::server::config::{
+            CompositeLogicType, CompositeRuleConfig, FilterAction, FilterConfig,
+            FilterRule as FilterRuleConfig, MatcherConfig,
+        };
+
+        // Allow only files in /data (deny everything else)
+        let config = FilterConfig {
+            enabled: true,
+            default_action: Some(FilterAction::Allow),
+            rules: vec![FilterRuleConfig {
+                name: Some("whitelist-data".to_string()),
+                composite: Some(CompositeRuleConfig {
+                    logic_type: CompositeLogicType::Not,
+                    matchers: vec![],
+                    matcher: Some(Box::new(MatcherConfig {
+                        path_prefix: Some("/data".to_string()),
+                        ..Default::default()
+                    })),
+                }),
+                action: FilterAction::Deny,
+                ..Default::default()
+            }],
+        };
+
+        let policy = FilterPolicy::from_config(&config).unwrap();
+
+        // Files outside /data should be denied
+        assert_eq!(
+            policy.check(Path::new("/etc/passwd"), Operation::Download, "user"),
+            FilterResult::Deny
+        );
+        // Files inside /data should be allowed
+        assert_eq!(
+            policy.check(Path::new("/data/file.csv"), Operation::Download, "user"),
+            FilterResult::Allow
+        );
+    }
+
+    #[test]
+    fn test_policy_path_traversal_protection() {
+        // Test that path traversal attempts are properly normalized and matched
+        let policy = FilterPolicy::new()
+            .add_rule(FilterRule::new(
+                Box::new(PrefixMatcher::new("/etc")),
+                FilterResult::Deny,
+            ))
+            .with_default(FilterResult::Allow);
+
+        // Direct path should be denied
+        assert_eq!(
+            policy.check(Path::new("/etc/passwd"), Operation::Download, "user"),
+            FilterResult::Deny
+        );
+
+        // Path traversal attempt should also be denied (normalized to /etc/passwd)
+        assert_eq!(
+            policy.check(Path::new("/var/../etc/passwd"), Operation::Download, "user"),
+            FilterResult::Deny
+        );
+
+        // Another traversal pattern
+        assert_eq!(
+            policy.check(
+                Path::new("/home/user/../../etc/shadow"),
+                Operation::Download,
+                "user"
+            ),
+            FilterResult::Deny
+        );
+
+        // Path outside /etc should be allowed
+        assert_eq!(
+            policy.check(
+                Path::new("/home/user/file.txt"),
+                Operation::Download,
+                "user"
+            ),
+            FilterResult::Allow
+        );
     }
 }
