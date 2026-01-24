@@ -19,6 +19,7 @@ pub mod executor;
 pub mod forwarding;
 pub mod hostlist;
 pub mod jump;
+pub mod keygen;
 pub mod node;
 pub mod pty;
 pub mod security;
