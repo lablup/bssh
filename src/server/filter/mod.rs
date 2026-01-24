@@ -150,9 +150,10 @@ impl std::str::FromStr for Operation {
 /// Result of filter check.
 ///
 /// Determines what action should be taken for a file operation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FilterResult {
     /// Allow the operation to proceed
+    #[default]
     Allow,
     /// Deny the operation
     Deny,
@@ -160,11 +161,6 @@ pub enum FilterResult {
     Log,
 }
 
-impl Default for FilterResult {
-    fn default() -> Self {
-        FilterResult::Allow
-    }
-}
 
 impl fmt::Display for FilterResult {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

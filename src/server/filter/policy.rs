@@ -228,12 +228,12 @@ impl FilterPolicy {
     /// Create a rule from configuration.
     fn rule_from_config(config: &FilterRuleConfig) -> Result<FilterRule> {
         // Create matcher based on config
-        let matcher: Box<dyn Matcher> = if let Some(ref pattern) = config.pattern.as_ref() {
+        let matcher: Box<dyn Matcher> = if let Some(pattern) = config.pattern.as_ref() {
             Box::new(
                 GlobMatcher::new(pattern)
                     .with_context(|| format!("Invalid glob pattern: {}", pattern))?,
             )
-        } else if let Some(ref prefix) = config.path_prefix.as_ref() {
+        } else if let Some(prefix) = config.path_prefix.as_ref() {
             Box::new(PrefixMatcher::new(prefix.as_str()))
         } else {
             anyhow::bail!("Filter rule must have either 'pattern' or 'path_prefix'");

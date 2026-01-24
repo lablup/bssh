@@ -225,7 +225,7 @@ impl CombinedMatcher {
     }
 
     /// Add a matcher to the combination.
-    pub fn add(mut self, matcher: Box<dyn Matcher>) -> Self {
+    pub fn with_matcher(mut self, matcher: Box<dyn Matcher>) -> Self {
         self.matchers.push(matcher);
         self
     }
@@ -420,7 +420,7 @@ mod tests {
     #[test]
     fn test_combined_matcher_add() {
         let matcher = CombinedMatcher::new(vec![Box::new(GlobMatcher::new("*.key").unwrap())])
-            .add(Box::new(GlobMatcher::new("*.pem").unwrap()));
+            .with_matcher(Box::new(GlobMatcher::new("*.pem").unwrap()));
 
         assert_eq!(matcher.len(), 2);
         assert!(matcher.matches(Path::new("cert.pem")));
