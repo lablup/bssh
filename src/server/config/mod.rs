@@ -150,6 +150,10 @@ pub struct ServerConfig {
     #[serde(default)]
     pub exec: ExecConfig,
 
+    /// Enable SCP protocol support.
+    #[serde(default = "default_true")]
+    pub scp_enabled: bool,
+
     /// Time window for counting authentication attempts in seconds.
     ///
     /// Default: 300 (5 minutes)
@@ -288,6 +292,7 @@ impl Default for ServerConfig {
             publickey_auth: PublicKeyAuthConfigSerde::default(),
             password_auth: PasswordAuthConfigSerde::default(),
             exec: ExecConfig::default(),
+            scp_enabled: true,
             auth_window_secs: default_auth_window_secs(),
             ban_time_secs: default_ban_time_secs(),
             whitelist_ips: Vec::new(),
@@ -553,6 +558,12 @@ impl ServerConfigBuilder {
         self
     }
 
+    /// Enable or disable SCP protocol support.
+    pub fn scp_enabled(mut self, enabled: bool) -> Self {
+        self.config.scp_enabled = enabled;
+        self
+    }
+
     /// Set the maximum sessions per user.
     pub fn max_sessions_per_user(mut self, max: usize) -> Self {
         self.config.max_sessions_per_user = max;
@@ -623,6 +634,7 @@ impl ServerFileConfig {
                 allowed_commands: None,
                 blocked_commands: Vec::new(),
             },
+            scp_enabled: self.scp.enabled,
             auth_window_secs: self.security.auth_window,
             ban_time_secs: self.security.ban_time,
             whitelist_ips: self.security.whitelist_ips,
@@ -647,6 +659,7 @@ mod tests {
         assert_eq!(config.max_auth_attempts, 5);
         assert!(!config.allow_password_auth);
         assert!(config.allow_publickey_auth);
+        assert!(config.scp_enabled);
     }
 
     #[test]

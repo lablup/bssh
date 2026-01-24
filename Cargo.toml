@@ -36,7 +36,7 @@ indicatif = "0.18.3"
 rpassword = "7.4.0"
 directories = "6.0.0"
 dirs = "6.0"
-chrono = "0.4.42"
+chrono = { version = "0.4.42", features = ["serde"] }
 glob = "0.3.3"
 whoami = "2.0.1"
 owo-colors = "4.2.3"
@@ -67,6 +67,14 @@ bcrypt = "0.16"
 argon2 = "0.5"
 rand = "0.8"
 ssh-key = { version = "0.6", features = ["std"] }
+async-compression = { version = "0.4", features = ["tokio", "gzip"] }
+serde_json = "1.0"
+opentelemetry = "0.21"
+opentelemetry_sdk = { version = "0.21", features = ["rt-tokio", "logs"] }
+opentelemetry-otlp = { version = "0.14", features = ["grpc-tonic", "logs"] }
+url = "2.5"
+tokio-rustls = "0.26"
+rustls-native-certs = "0.8"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3.5.1"
