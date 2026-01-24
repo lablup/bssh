@@ -289,7 +289,7 @@ pub struct FilterConfig {
 }
 
 /// A single file transfer filter rule.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct FilterRule {
     /// Rule name (for logging and debugging).
     ///
@@ -309,6 +309,37 @@ pub struct FilterRule {
     #[serde(default)]
     pub path_prefix: Option<String>,
 
+    /// File extensions to match.
+    ///
+    /// Example: ["exe", "sh", "bat"] blocks executable files
+    #[serde(default)]
+    pub extensions: Option<Vec<String>>,
+
+    /// Directory component to match.
+    ///
+    /// Matches if any path component equals this value.
+    /// Example: ".git" matches /project/.git/config
+    #[serde(default)]
+    pub directory: Option<String>,
+
+    /// Minimum file size in bytes.
+    ///
+    /// Files smaller than this size will not match.
+    #[serde(default)]
+    pub min_size: Option<u64>,
+
+    /// Maximum file size in bytes.
+    ///
+    /// Files larger than this size will not match.
+    #[serde(default)]
+    pub max_size: Option<u64>,
+
+    /// Composite rule configuration.
+    ///
+    /// Allows combining multiple matchers with AND/OR/NOT logic.
+    #[serde(default)]
+    pub composite: Option<CompositeRuleConfig>,
+
     /// Action to take when rule matches.
     pub action: FilterAction,
 
@@ -324,6 +355,59 @@ pub struct FilterRule {
     /// If not specified, the rule applies to all users.
     #[serde(default)]
     pub users: Option<Vec<String>>,
+}
+
+/// Configuration for composite filter rules.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CompositeRuleConfig {
+    /// Type of composite logic: "and", "or", or "not"
+    #[serde(rename = "type")]
+    pub logic_type: CompositeLogicType,
+
+    /// List of matchers for AND/OR logic.
+    #[serde(default)]
+    pub matchers: Vec<MatcherConfig>,
+
+    /// Single matcher for NOT logic.
+    #[serde(default)]
+    pub matcher: Option<Box<MatcherConfig>>,
+}
+
+/// Type of composite logic.
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum CompositeLogicType {
+    /// All matchers must match
+    And,
+    /// Any matcher must match
+    Or,
+    /// Invert the matcher result
+    Not,
+}
+
+/// Configuration for a single matcher within a composite rule.
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+#[serde(default)]
+pub struct MatcherConfig {
+    /// Glob pattern
+    #[serde(default)]
+    pub pattern: Option<String>,
+
+    /// Path prefix
+    #[serde(default)]
+    pub path_prefix: Option<String>,
+
+    /// File extensions
+    #[serde(default)]
+    pub extensions: Option<Vec<String>>,
+
+    /// Directory component
+    #[serde(default)]
+    pub directory: Option<String>,
+
+    /// Nested NOT matcher
+    #[serde(default)]
+    pub not: Option<Box<MatcherConfig>>,
 }
 
 /// Action to take when a filter rule matches.

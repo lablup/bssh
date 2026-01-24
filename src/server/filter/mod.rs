@@ -60,9 +60,14 @@ pub mod policy;
 use std::fmt;
 use std::path::Path;
 
-pub use self::path::{ExactMatcher, PrefixMatcher};
-pub use self::pattern::{GlobMatcher, RegexMatcher};
-pub use self::policy::{FilterPolicy, FilterRule, Matcher};
+pub use self::path::{
+    normalize_path, ComponentMatcher, ExactMatcher, ExtensionMatcher, MultiExtensionMatcher,
+    PrefixMatcher, SizeMatcher,
+};
+pub use self::pattern::{
+    AllMatcher, CombinedMatcher, CompositeMatcher, GlobMatcher, NotMatcher, RegexMatcher,
+};
+pub use self::policy::{FilterPolicy, FilterRule, Matcher, SharedFilterPolicy};
 
 /// File transfer operation type.
 ///
@@ -241,6 +246,90 @@ impl TransferFilter for NoOpFilter {
 
     fn is_enabled(&self) -> bool {
         false
+    }
+}
+
+/// Trait for size-aware file transfer filters.
+///
+/// This extends the basic `TransferFilter` trait to include file size
+/// in the filtering decision. Use this when you need to filter based
+/// on file size (e.g., block uploads larger than 100MB).
+///
+/// # Example
+///
+/// ```rust
+/// use bssh::server::filter::{FilterResult, Operation, SizeAwareFilter, TransferFilter};
+/// use bssh::server::filter::path::SizeMatcher;
+/// use std::path::Path;
+///
+/// struct MaxUploadSizeFilter {
+///     max_bytes: u64,
+/// }
+///
+/// impl TransferFilter for MaxUploadSizeFilter {
+///     fn check(&self, _path: &Path, _operation: Operation, _user: &str) -> FilterResult {
+///         // Without size info, we allow by default
+///         FilterResult::Allow
+///     }
+/// }
+///
+/// impl SizeAwareFilter for MaxUploadSizeFilter {
+///     fn check_with_size(
+///         &self,
+///         _path: &Path,
+///         size: u64,
+///         operation: Operation,
+///         _user: &str,
+///     ) -> FilterResult {
+///         if operation == Operation::Upload && size > self.max_bytes {
+///             FilterResult::Deny
+///         } else {
+///             FilterResult::Allow
+///         }
+///     }
+/// }
+/// ```
+pub trait SizeAwareFilter: TransferFilter {
+    /// Check if an operation is allowed, taking file size into account.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` - The file path being operated on
+    /// * `size` - The file size in bytes
+    /// * `operation` - The type of operation
+    /// * `user` - The username performing the operation
+    ///
+    /// # Returns
+    ///
+    /// A `FilterResult` indicating whether to allow, deny, or log the operation.
+    fn check_with_size(
+        &self,
+        path: &Path,
+        size: u64,
+        operation: Operation,
+        user: &str,
+    ) -> FilterResult;
+
+    /// Check a two-path operation with size information.
+    ///
+    /// Used for rename/copy operations where both source and destination
+    /// are considered.
+    fn check_with_size_dest(
+        &self,
+        src: &Path,
+        src_size: u64,
+        dest: &Path,
+        operation: Operation,
+        user: &str,
+    ) -> FilterResult {
+        let src_result = self.check_with_size(src, src_size, operation, user);
+        let dest_result = self.check(dest, operation, user);
+
+        match (src_result, dest_result) {
+            (FilterResult::Deny, _) | (_, FilterResult::Deny) => FilterResult::Deny,
+            (FilterResult::Log, _) | (_, FilterResult::Log) => FilterResult::Log,
+            _ => FilterResult::Allow,
+        }
     }
 }
 
