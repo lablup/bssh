@@ -299,8 +299,36 @@ let exporter = FileExporter::new(Path::new("/var/log/audit.log"))?
 {"id":"uuid","timestamp":"2024-01-15T10:30:00Z","event_type":"file_uploaded","session_id":"sess-001","user":"admin","client_ip":"192.168.1.100","path":"/data/report.pdf","bytes":1048576,"result":"success","protocol":"sftp"}
 ```
 
+- **OtelExporter**: OpenTelemetry exporter for distributed tracing and observability
+  - OTLP/gRPC protocol support using tonic
+  - Event to LogRecord mapping with proper attribute conversion
+  - Severity level mapping based on event types and results
+  - Resource attributes including service.name and service.version
+  - Graceful shutdown and flush methods
+  - TLS support for secure audit data transmission
+
+**OtelExporter Usage**:
+```rust
+use bssh::server::audit::otel::OtelExporter;
+use bssh::server::audit::exporter::AuditExporter;
+use bssh::server::audit::event::{AuditEvent, EventType};
+
+// Create exporter with OTLP endpoint
+let exporter = OtelExporter::new("http://localhost:4317")?;
+
+// Export an audit event
+let event = AuditEvent::new(
+    EventType::AuthSuccess,
+    "alice".to_string(),
+    "session-123".to_string(),
+);
+exporter.export(event).await?;
+
+// Graceful shutdown
+exporter.close().await?;
+```
+
 **Future Exporters** (planned):
-- OpenTelemetry exporter for distributed tracing
 - Logstash exporter for centralized logging
 
 ### Server CLI Binary
