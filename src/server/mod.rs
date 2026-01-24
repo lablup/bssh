@@ -48,6 +48,7 @@ pub mod audit;
 pub mod auth;
 pub mod config;
 pub mod exec;
+pub mod filter;
 pub mod handler;
 pub mod pty;
 pub mod scp;
