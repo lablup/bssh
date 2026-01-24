@@ -46,14 +46,14 @@ pub trait AuditExporter: Send + Sync {
     ///
     /// # Arguments
     ///
-    /// * `events` - Vector of audit events to export
+    /// * `events` - Slice of audit events to export
     ///
     /// # Errors
     ///
     /// Returns an error if any event fails to export.
-    async fn export_batch(&self, events: Vec<AuditEvent>) -> Result<()> {
+    async fn export_batch(&self, events: &[AuditEvent]) -> Result<()> {
         for event in events {
-            self.export(event).await?;
+            self.export(event.clone()).await?;
         }
         Ok(())
     }
@@ -98,7 +98,7 @@ impl AuditExporter for NullExporter {
         Ok(())
     }
 
-    async fn export_batch(&self, _events: Vec<AuditEvent>) -> Result<()> {
+    async fn export_batch(&self, _events: &[AuditEvent]) -> Result<()> {
         // Discard all events
         Ok(())
     }
@@ -149,7 +149,7 @@ mod tests {
             .with_result(EventResult::Failure),
         ];
 
-        let result = exporter.export_batch(events).await;
+        let result = exporter.export_batch(&events).await;
         assert!(result.is_ok());
     }
 
@@ -185,7 +185,7 @@ mod tests {
             "bob".to_string(),
             "session-456".to_string(),
         )];
-        exporter.export_batch(events).await.unwrap();
+        exporter.export_batch(&events).await.unwrap();
 
         // Flush and close
         exporter.flush().await.unwrap();

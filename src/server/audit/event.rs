@@ -59,6 +59,19 @@ pub struct AuditEvent {
     pub result: EventResult,
 
     /// Additional details about the event
+    ///
+    /// # Security Warning
+    ///
+    /// This field may contain sensitive information such as:
+    /// - Error messages with file paths or system information
+    /// - Command arguments that may include passwords or tokens
+    /// - User-supplied data that hasn't been sanitized
+    ///
+    /// When implementing exporters, ensure this field is handled securely:
+    /// - Apply appropriate access controls to audit logs
+    /// - Consider redacting or filtering sensitive patterns
+    /// - Use encryption when transmitting over networks
+    /// - Comply with data retention and privacy policies
     pub details: Option<String>,
 
     /// Protocol used (ssh, sftp, scp)
@@ -217,6 +230,11 @@ impl AuditEvent {
     }
 
     /// Set additional details.
+    ///
+    /// # Security Warning
+    ///
+    /// Be cautious when including sensitive information in this field.
+    /// See the `details` field documentation for security considerations.
     pub fn with_details(mut self, details: String) -> Self {
         self.details = Some(details);
         self
@@ -229,11 +247,9 @@ impl AuditEvent {
     }
 }
 
-impl Default for AuditEvent {
-    fn default() -> Self {
-        Self::new(EventType::CommandExecuted, String::new(), String::new())
-    }
-}
+// Note: Default implementation removed as it creates sentinel values with empty
+// user and session_id fields, which are semantically invalid for audit events.
+// Use AuditEvent::new() to create audit events with meaningful values.
 
 #[cfg(test)]
 mod tests {
@@ -317,15 +333,6 @@ mod tests {
         assert_eq!(deserialized.session_id, event.session_id);
         assert_eq!(deserialized.client_ip, event.client_ip);
         assert_eq!(deserialized.protocol, event.protocol);
-    }
-
-    #[test]
-    fn test_default_event() {
-        let event = AuditEvent::default();
-        assert_eq!(event.event_type, EventType::CommandExecuted);
-        assert_eq!(event.result, EventResult::Success);
-        assert!(event.user.is_empty());
-        assert!(event.session_id.is_empty());
     }
 
     #[test]
