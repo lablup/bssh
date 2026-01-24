@@ -250,11 +250,9 @@ impl BsshServer {
         );
 
         // Create IP access control from configuration
-        let ip_access_control = IpAccessControl::from_config(
-            &self.config.allowed_ips,
-            &self.config.blocked_ips,
-        )
-        .context("Failed to configure IP access control")?;
+        let ip_access_control =
+            IpAccessControl::from_config(&self.config.allowed_ips, &self.config.blocked_ips)
+                .context("Failed to configure IP access control")?;
 
         let shared_ip_access = SharedIpAccessControl::new(ip_access_control);
 

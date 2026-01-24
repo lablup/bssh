@@ -203,6 +203,16 @@ Security features for the SSH server (`src/server/security/`):
   - Automatic cleanup of expired records via background task
   - Thread-safe async implementation with `Arc<RwLock<>>`
 
+- **IpAccessControl**: IP-based connection filtering
+  - Whitelist mode: Only allow connections from specified CIDR ranges
+  - Blacklist mode: Block connections from specified CIDR ranges
+  - Blacklist takes priority over whitelist (blocked IPs are always denied)
+  - Support for both IPv4 and IPv6 addresses and CIDR notation
+  - Dynamic updates: Add/remove rules at runtime via `SharedIpAccessControl`
+  - Early rejection at connection level before handler creation
+  - Thread-safe with fail-closed behavior on lock contention
+  - Configuration via `allowed_ips` and `blocked_ips` in server config
+
 ### Server CLI Binary
 **Binary**: `bssh-server`
 

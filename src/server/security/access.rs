@@ -528,9 +528,7 @@ mod tests {
         );
 
         // Reload with different config
-        access
-            .reload(&["192.168.0.0/16".to_string()], &[])
-            .unwrap();
+        access.reload(&["192.168.0.0/16".to_string()], &[]).unwrap();
 
         // Now 192.168.x.x allowed
         assert_eq!(
