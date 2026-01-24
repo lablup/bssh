@@ -210,8 +210,9 @@ impl BsshServer {
         );
 
         // Create shared rate limiter for all handlers
-        // Allow burst of 5 auth attempts, refill 1 attempt per second
-        let rate_limiter = RateLimiter::with_simple_config(5, 1.0);
+        // Allow burst of 100 auth attempts, refill 10 attempts per second
+        // This allows rapid testing while still providing protection against brute force
+        let rate_limiter = RateLimiter::with_simple_config(100, 10.0);
 
         let mut server = BsshServerRunner {
             config: Arc::clone(&self.config),

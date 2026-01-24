@@ -171,14 +171,30 @@ impl UserInfo {
     pub fn new(username: impl Into<String>) -> Self {
         let username = username.into();
 
-        #[cfg(unix)]
+        // Platform-specific default home directory and shell
+        #[cfg(target_os = "macos")]
+        let (home_dir, shell) = (
+            PathBuf::from(format!("/Users/{username}")),
+            PathBuf::from("/bin/zsh"),
+        );
+
+        #[cfg(target_os = "linux")]
         let (home_dir, shell) = (
             PathBuf::from(format!("/home/{username}")),
             PathBuf::from("/bin/sh"),
         );
 
-        #[cfg(not(unix))]
-        let (home_dir, shell) = (PathBuf::new(), PathBuf::new());
+        #[cfg(target_os = "windows")]
+        let (home_dir, shell) = (
+            PathBuf::from(format!("C:\\Users\\{username}")),
+            PathBuf::from("cmd.exe"),
+        );
+
+        #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
+        let (home_dir, shell) = (
+            PathBuf::from(format!("/home/{username}")),
+            PathBuf::from("/bin/sh"),
+        );
 
         Self {
             username,

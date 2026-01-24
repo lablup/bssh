@@ -494,7 +494,12 @@ impl ParallelExecutor {
                         let error_msg = format!("{e:#}");
                         let first_line = error_msg.lines().next().unwrap_or("Unknown error");
                         let short_error = if first_line.len() > 50 {
-                            format!("{}...", &first_line[..first_line.floor_char_boundary(47)])
+                            // Find a valid char boundary at or before position 47
+                            let mut end = 47.min(first_line.len());
+                            while end > 0 && !first_line.is_char_boundary(end) {
+                                end -= 1;
+                            }
+                            format!("{}...", &first_line[..end])
                         } else {
                             first_line.to_string()
                         };

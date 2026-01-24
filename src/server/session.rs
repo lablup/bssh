@@ -28,12 +28,14 @@
 use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 use russh::server::Msg;
 use russh::{Channel, ChannelId};
+use tokio::sync::{mpsc, RwLock};
 
-use super::shell::ShellSession;
+use super::pty::PtyMaster;
 
 /// Unique identifier for an SSH session.
 ///
@@ -200,8 +202,11 @@ pub struct ChannelState {
     /// PTY configuration, if a PTY was requested.
     pub pty: Option<PtyConfig>,
 
-    /// Shell session, if shell mode is active.
-    pub shell_session: Option<ShellSession>,
+    /// Data sender for forwarding SSH data to PTY (active shell only).
+    pub shell_data_tx: Option<mpsc::Sender<Vec<u8>>>,
+
+    /// PTY master handle for resize operations (active shell only).
+    pub shell_pty: Option<Arc<RwLock<PtyMaster>>>,
 
     /// Whether EOF has been received from the client.
     pub eof_received: bool,
@@ -214,7 +219,8 @@ impl std::fmt::Debug for ChannelState {
             .field("has_channel", &self.channel.is_some())
             .field("mode", &self.mode)
             .field("pty", &self.pty)
-            .field("has_shell_session", &self.shell_session.is_some())
+            .field("has_shell_data_tx", &self.shell_data_tx.is_some())
+            .field("has_shell_pty", &self.shell_pty.is_some())
             .field("eof_received", &self.eof_received)
             .finish()
     }
@@ -228,19 +234,22 @@ impl ChannelState {
             channel: None,
             mode: ChannelMode::Idle,
             pty: None,
-            shell_session: None,
+            shell_data_tx: None,
+            shell_pty: None,
             eof_received: false,
         }
     }
 
     /// Create a new channel state with the underlying channel.
     pub fn with_channel(channel: Channel<Msg>) -> Self {
+        let id = channel.id();
         Self {
-            channel_id: channel.id(),
+            channel_id: id,
             channel: Some(channel),
             mode: ChannelMode::Idle,
             pty: None,
-            shell_session: None,
+            shell_data_tx: None,
+            shell_pty: None,
             eof_received: false,
         }
     }
@@ -272,20 +281,42 @@ impl ChannelState {
         self.mode = ChannelMode::Shell;
     }
 
-    /// Set the shell session.
-    pub fn set_shell_session(&mut self, session: ShellSession) {
-        self.shell_session = Some(session);
+    /// Set the PTY handle for the active shell.
+    ///
+    /// This is used by the window_change handler to handle terminal resizes.
+    /// Note: With ChannelStream-based I/O, data flows directly through the
+    /// stream, so no data sender is needed.
+    pub fn set_shell_pty(&mut self, pty: Arc<RwLock<PtyMaster>>) {
+        self.shell_pty = Some(pty);
         self.mode = ChannelMode::Shell;
     }
 
-    /// Take the shell session (consumes it).
-    pub fn take_shell_session(&mut self) -> Option<ShellSession> {
-        self.shell_session.take()
+    /// Set the shell data sender and PTY handle for the active shell.
+    ///
+    /// These are used by the data and window_change handlers to forward
+    /// SSH input to the shell and handle terminal resizes.
+    /// Note: This is kept for backward compatibility but `set_shell_pty`
+    /// is preferred when using ChannelStream-based I/O.
+    #[allow(dead_code)]
+    pub fn set_shell_handles(
+        &mut self,
+        data_tx: mpsc::Sender<Vec<u8>>,
+        pty: Arc<RwLock<PtyMaster>>,
+    ) {
+        self.shell_data_tx = Some(data_tx);
+        self.shell_pty = Some(pty);
+        self.mode = ChannelMode::Shell;
+    }
+
+    /// Clear the shell handles when the shell session ends.
+    pub fn clear_shell_handles(&mut self) {
+        self.shell_data_tx = None;
+        self.shell_pty = None;
     }
 
     /// Check if the channel has an active shell session.
-    pub fn has_shell_session(&self) -> bool {
-        self.shell_session.is_some()
+    pub fn has_shell(&self) -> bool {
+        self.shell_pty.is_some()
     }
 
     /// Set the channel mode to SFTP.

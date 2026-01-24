@@ -83,7 +83,7 @@ impl SshHandler {
             sessions,
             auth_provider,
             rate_limiter,
-            session_info: None,
+            session_info: Some(SessionInfo::new(peer_addr)),
             channels: HashMap::new(),
         }
     }
@@ -106,7 +106,7 @@ impl SshHandler {
             sessions,
             auth_provider,
             rate_limiter,
-            session_info: None,
+            session_info: Some(SessionInfo::new(peer_addr)),
             channels: HashMap::new(),
         }
     }
@@ -128,7 +128,7 @@ impl SshHandler {
             sessions,
             auth_provider,
             rate_limiter,
-            session_info: None,
+            session_info: Some(SessionInfo::new(peer_addr)),
             channels: HashMap::new(),
         }
     }
@@ -719,6 +719,11 @@ impl russh::server::Handler for SshHandler {
     /// Handle shell request.
     ///
     /// Starts an interactive shell session for the authenticated user.
+    /// Uses Handle-based I/O for PTY output to avoid notify_waiters() race conditions.
+    /// The key insight is that Handle::data() uses notify_one() which stores a permit
+    /// if no task is waiting, while ChannelTx uses notify_waiters() which only wakes
+    /// tasks that are currently waiting. This causes intermittent failures with rapid
+    /// connections when using ChannelStream-based I/O.
     fn shell_request(
         &mut self,
         channel_id: ChannelId,
@@ -739,29 +744,64 @@ impl russh::server::Handler for SshHandler {
             }
         };
 
-        // Get PTY configuration (if set during pty_request)
-        let pty_config = self
-            .channels
-            .get(&channel_id)
-            .and_then(|state| state.pty.as_ref())
-            .map(|pty| {
-                PtyMasterConfig::new(
-                    pty.term.clone(),
-                    pty.col_width,
-                    pty.row_height,
-                    pty.pix_width,
-                    pty.pix_height,
-                )
-            })
-            .unwrap_or_default();
+        // Get PTY configuration
+        let pty_config = match self.channels.get_mut(&channel_id) {
+            Some(state) => {
+                let config = state
+                    .pty
+                    .as_ref()
+                    .map(|pty| {
+                        PtyMasterConfig::new(
+                            pty.term.clone(),
+                            pty.col_width,
+                            pty.row_height,
+                            pty.pix_width,
+                            pty.pix_height,
+                        )
+                    })
+                    .unwrap_or_default();
+                state.set_shell();
+                config
+            }
+            None => {
+                tracing::warn!(
+                    channel = ?channel_id,
+                    "Shell request but channel state not found"
+                );
+                let _ = session.channel_failure(channel_id);
+                return async { Ok(()) }.boxed();
+            }
+        };
+
+        // Create shell session (sync) to get the PTY
+        let shell_session = match ShellSession::new(channel_id, pty_config.clone()) {
+            Ok(session) => session,
+            Err(e) => {
+                tracing::error!(
+                    channel = ?channel_id,
+                    error = %e,
+                    "Failed to create shell session"
+                );
+                let _ = session.channel_failure(channel_id);
+                return async { Ok(()) }.boxed();
+            }
+        };
+
+        // Get PTY reference for window_change_request
+        let pty = Arc::clone(shell_session.pty());
+
+        // Create channel for SSH -> PTY data (client input)
+        let (data_tx, data_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(1024);
+
+        // Store handles in channel state for window_change callbacks and data forwarding
+        if let Some(state) = self.channels.get_mut(&channel_id) {
+            state.set_shell_handles(data_tx, Arc::clone(&pty));
+        }
 
         // Clone what we need for the async block
         let auth_provider = Arc::clone(&self.auth_provider);
-        let handle = session.handle();
         let peer_addr = self.peer_addr;
-
-        // Get mutable reference to channel state
-        let channels = &mut self.channels;
+        let handle = session.handle();
 
         // Signal success before starting shell
         let _ = session.channel_success(channel_id);
@@ -775,7 +815,6 @@ impl russh::server::Handler for SshHandler {
                         user = %username,
                         "User not found after authentication for shell"
                     );
-                    let _ = handle.close(channel_id).await;
                     return Ok(());
                 }
                 Err(e) => {
@@ -784,7 +823,6 @@ impl russh::server::Handler for SshHandler {
                         error = %e,
                         "Failed to get user info for shell"
                     );
-                    let _ = handle.close(channel_id).await;
                     return Ok(());
                 }
             };
@@ -797,40 +835,56 @@ impl russh::server::Handler for SshHandler {
                 "Starting shell session"
             );
 
-            // Create shell session
-            let mut shell_session = match ShellSession::new(channel_id, pty_config) {
-                Ok(session) => session,
-                Err(e) => {
-                    tracing::error!(
-                        user = %username,
-                        error = %e,
-                        "Failed to create shell session"
-                    );
-                    let _ = handle.close(channel_id).await;
-                    return Ok(());
-                }
-            };
-
-            // Start shell session
-            if let Err(e) = shell_session.start(&user_info, handle.clone()).await {
+            // Spawn shell process (async part)
+            let mut shell_session = shell_session;
+            if let Err(e) = shell_session.spawn_shell_process(&user_info).await {
                 tracing::error!(
                     user = %username,
                     error = %e,
-                    "Failed to start shell session"
+                    "Failed to spawn shell process"
                 );
-                let _ = handle.close(channel_id).await;
                 return Ok(());
             }
 
-            // Store shell session in channel state
-            if let Some(channel_state) = channels.get_mut(&channel_id) {
-                channel_state.set_shell_session(shell_session);
-            }
+            // Get child process for the I/O loop
+            let child = shell_session.take_child();
 
-            tracing::info!(
-                user = %username,
-                peer = ?peer_addr,
-                "Shell session started"
+            tracing::debug!(
+                channel = ?channel_id,
+                "Spawning shell I/O task with Handle-based approach"
+            );
+
+            // IMPORTANT: Spawn the I/O loop instead of awaiting it!
+            // The session loop needs to keep running to flush Handle::data() messages
+            // to the network. If we await here, the session loop is blocked.
+            tokio::spawn(async move {
+                let exit_code = crate::server::shell::run_shell_io_loop_with_handle(
+                    channel_id,
+                    pty,
+                    child,
+                    handle.clone(),
+                    data_rx,
+                )
+                .await;
+
+                tracing::info!(
+                    channel = ?channel_id,
+                    exit_code = exit_code,
+                    "Shell session completed"
+                );
+
+                // Send exit status, EOF, and close channel (same as exec_request)
+                // This is critical - without these, the SSH client waits indefinitely
+                let _ = handle
+                    .exit_status_request(channel_id, exit_code as u32)
+                    .await;
+                let _ = handle.eof(channel_id).await;
+                let _ = handle.close(channel_id).await;
+            });
+
+            tracing::debug!(
+                channel = ?channel_id,
+                "Shell I/O task spawned, handler returning"
             );
 
             Ok(())
@@ -961,20 +1015,24 @@ impl russh::server::Handler for SshHandler {
         data: &[u8],
         _session: &mut Session,
     ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
-        tracing::trace!(
+        tracing::debug!(
             channel = ?channel_id,
             bytes = %data.len(),
-            "Received data"
+            "Received data from client"
         );
 
         // Get the data sender if there's an active shell session
         let data_sender = self
             .channels
             .get(&channel_id)
-            .and_then(|state| state.shell_session.as_ref())
-            .and_then(|shell| shell.data_sender());
+            .and_then(|state| state.shell_data_tx.clone());
 
         if let Some(tx) = data_sender {
+            tracing::debug!(
+                channel = ?channel_id,
+                bytes = %data.len(),
+                "Forwarding data to shell via mpsc"
+            );
             let data = data.to_vec();
             return async move {
                 if let Err(e) = tx.send(data).await {
@@ -983,10 +1041,20 @@ impl russh::server::Handler for SshHandler {
                         error = %e,
                         "Error forwarding data to shell"
                     );
+                } else {
+                    tracing::debug!(
+                        channel = ?channel_id,
+                        "Data forwarded to shell successfully"
+                    );
                 }
                 Ok(())
             }
             .boxed();
+        } else {
+            tracing::debug!(
+                channel = ?channel_id,
+                "No shell_data_tx found for channel, dropping data"
+            );
         }
 
         async { Ok(()) }.boxed()
@@ -1026,12 +1094,11 @@ impl russh::server::Handler for SshHandler {
         let pty_mutex = self
             .channels
             .get(&channel_id)
-            .and_then(|state| state.shell_session.as_ref())
-            .map(|shell| Arc::clone(shell.pty()));
+            .and_then(|state| state.shell_pty.clone());
 
         if let Some(pty) = pty_mutex {
             return async move {
-                let mut pty_guard = pty.lock().await;
+                let mut pty_guard = pty.write().await;
                 if let Err(e) = pty_guard.resize(col_width, row_height) {
                     tracing::debug!(
                         channel = ?channel_id,
@@ -1199,7 +1266,8 @@ mod tests {
         let handler = SshHandler::new(Some(test_addr()), test_config(), test_sessions());
 
         assert_eq!(handler.peer_addr(), Some(test_addr()));
-        assert!(handler.session_id().is_none());
+        // Session ID is assigned at creation time
+        assert!(handler.session_id().is_some());
         assert!(!handler.is_authenticated());
         assert!(handler.username().is_none());
     }
@@ -1261,7 +1329,8 @@ mod tests {
         let handler = SshHandler::new(None, test_config(), test_sessions());
 
         assert!(handler.peer_addr().is_none());
-        assert!(handler.session_id().is_none());
+        // Session ID is assigned at creation time even without peer address
+        assert!(handler.session_id().is_some());
         assert!(!handler.is_authenticated());
     }
 

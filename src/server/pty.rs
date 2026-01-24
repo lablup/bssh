@@ -498,13 +498,28 @@ mod tests {
 
     #[tokio::test]
     async fn test_pty_master_read_write() {
+        use std::fs::OpenOptions;
+
         let config = PtyConfig::default();
         let pty = PtyMaster::open(config).expect("Failed to open PTY");
+
+        // Open the slave side to prevent EIO errors when writing to master
+        // Without a slave connection, writes to the master may fail
+        let slave_path = pty.slave_path();
+        let _slave = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(slave_path)
+            .expect("Failed to open PTY slave");
 
         // Write some data
         let test_data = b"hello\n";
         let write_result = pty.write(test_data).await;
-        assert!(write_result.is_ok());
+        assert!(
+            write_result.is_ok(),
+            "Write failed: {:?}",
+            write_result.err()
+        );
 
         // Note: Reading requires something on the other end (slave) to echo
         // This is tested more thoroughly in integration tests
