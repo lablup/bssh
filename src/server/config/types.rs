@@ -275,6 +275,12 @@ pub struct FilterConfig {
     #[serde(default)]
     pub enabled: bool,
 
+    /// Default action when no rules match.
+    ///
+    /// Default: allow
+    #[serde(default)]
+    pub default_action: Option<FilterAction>,
+
     /// Filter rules to apply.
     ///
     /// Rules are evaluated in order. First matching rule determines action.
@@ -285,25 +291,47 @@ pub struct FilterConfig {
 /// A single file transfer filter rule.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct FilterRule {
+    /// Rule name (for logging and debugging).
+    ///
+    /// Example: "block-keys"
+    #[serde(default)]
+    pub name: Option<String>,
+
     /// Glob pattern to match against file paths.
     ///
     /// Example: "*.exe" matches all executable files
+    #[serde(default)]
     pub pattern: Option<String>,
 
     /// Path prefix to match.
     ///
     /// Example: "/tmp/" matches all files in /tmp
+    #[serde(default)]
     pub path_prefix: Option<String>,
 
     /// Action to take when rule matches.
     pub action: FilterAction,
+
+    /// Operations this rule applies to.
+    ///
+    /// If not specified, the rule applies to all operations.
+    /// Valid values: upload, download, delete, rename, createdir, listdir
+    #[serde(default)]
+    pub operations: Option<Vec<String>>,
+
+    /// Users this rule applies to.
+    ///
+    /// If not specified, the rule applies to all users.
+    #[serde(default)]
+    pub users: Option<Vec<String>>,
 }
 
 /// Action to take when a filter rule matches.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum FilterAction {
     /// Allow the file transfer.
+    #[default]
     Allow,
 
     /// Deny the file transfer.
