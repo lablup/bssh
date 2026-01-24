@@ -49,6 +49,7 @@
 pub mod event;
 pub mod exporter;
 pub mod file;
+pub mod otel;
 
 use anyhow::Result;
 use std::sync::Arc;
@@ -59,6 +60,7 @@ use tokio::task::JoinHandle;
 pub use event::{AuditEvent, EventResult, EventType};
 pub use exporter::{AuditExporter, NullExporter};
 pub use file::{FileExporter, RotateConfig};
+pub use otel::OtelExporter;
 
 /// Configuration for the audit system.
 #[derive(Debug, Clone)]
@@ -89,8 +91,7 @@ pub enum AuditExporterConfig {
         /// Path to the audit log file
         path: String,
     },
-    /// OpenTelemetry exporter (future implementation)
-    #[allow(dead_code)]
+    /// OpenTelemetry exporter
     Otel {
         /// OTLP endpoint URL
         endpoint: String,
@@ -213,10 +214,9 @@ impl AuditManager {
                     let file_exporter = FileExporter::new(std::path::Path::new(path))?;
                     Arc::new(file_exporter)
                 }
-                AuditExporterConfig::Otel { .. } => {
-                    // Future implementation
-                    tracing::warn!("OTEL exporter not yet implemented, using null exporter");
-                    Arc::new(NullExporter::new())
+                AuditExporterConfig::Otel { endpoint } => {
+                    let otel_exporter = OtelExporter::new(endpoint)?;
+                    Arc::new(otel_exporter)
                 }
                 AuditExporterConfig::Logstash { .. } => {
                     // Future implementation
