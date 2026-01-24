@@ -149,6 +149,22 @@ pub struct ServerConfig {
     /// Configuration for command execution.
     #[serde(default)]
     pub exec: ExecConfig,
+
+    /// Time window for counting authentication attempts in seconds.
+    ///
+    /// Default: 300 (5 minutes)
+    #[serde(default = "default_auth_window_secs")]
+    pub auth_window_secs: u64,
+
+    /// Ban duration in seconds after exceeding max auth attempts.
+    ///
+    /// Default: 300 (5 minutes)
+    #[serde(default = "default_ban_time_secs")]
+    pub ban_time_secs: u64,
+
+    /// IP addresses that are never banned (whitelist).
+    #[serde(default)]
+    pub whitelist_ips: Vec<String>,
 }
 
 /// Serializable configuration for public key authentication.
@@ -213,6 +229,14 @@ fn default_idle_timeout_secs() -> u64 {
     0 // 0 means no timeout
 }
 
+fn default_auth_window_secs() -> u64 {
+    300 // 5 minutes
+}
+
+fn default_ban_time_secs() -> u64 {
+    300 // 5 minutes
+}
+
 fn default_true() -> bool {
     true
 }
@@ -233,6 +257,9 @@ impl Default for ServerConfig {
             publickey_auth: PublicKeyAuthConfigSerde::default(),
             password_auth: PasswordAuthConfigSerde::default(),
             exec: ExecConfig::default(),
+            auth_window_secs: default_auth_window_secs(),
+            ban_time_secs: default_ban_time_secs(),
+            whitelist_ips: Vec::new(),
         }
     }
 }
@@ -521,6 +548,9 @@ impl ServerFileConfig {
                 allowed_commands: None,
                 blocked_commands: Vec::new(),
             },
+            auth_window_secs: self.security.auth_window,
+            ban_time_secs: self.security.ban_time,
+            whitelist_ips: self.security.whitelist_ips,
         }
     }
 }

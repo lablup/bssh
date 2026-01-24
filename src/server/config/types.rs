@@ -368,11 +368,27 @@ pub struct SecurityConfig {
     #[serde(default = "default_max_auth_attempts")]
     pub max_auth_attempts: u32,
 
+    /// Time window in seconds for counting authentication attempts.
+    ///
+    /// Failed attempts outside this window are not counted toward the ban threshold.
+    ///
+    /// Default: 300 (5 minutes)
+    #[serde(default = "default_auth_window")]
+    pub auth_window: u64,
+
     /// Ban duration in seconds after exceeding max auth attempts.
     ///
     /// Default: 300 (5 minutes)
     #[serde(default = "default_ban_time")]
     pub ban_time: u64,
+
+    /// IP addresses that are never banned (whitelist).
+    ///
+    /// These IPs are exempt from rate limiting and banning.
+    ///
+    /// Example: ["127.0.0.1", "::1"]
+    #[serde(default)]
+    pub whitelist_ips: Vec<String>,
 
     /// Maximum number of concurrent sessions per user.
     ///
@@ -449,6 +465,10 @@ fn default_max_auth_attempts() -> u32 {
     5
 }
 
+fn default_auth_window() -> u64 {
+    300
+}
+
 fn default_ban_time() -> u64 {
     300
 }
@@ -517,7 +537,9 @@ impl Default for SecurityConfig {
     fn default() -> Self {
         Self {
             max_auth_attempts: default_max_auth_attempts(),
+            auth_window: default_auth_window(),
             ban_time: default_ban_time(),
+            whitelist_ips: Vec::new(),
             max_sessions_per_user: default_max_sessions(),
             idle_timeout: default_idle_timeout(),
             allowed_ips: Vec::new(),

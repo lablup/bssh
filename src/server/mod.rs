@@ -49,6 +49,7 @@ pub mod config;
 pub mod exec;
 pub mod handler;
 pub mod pty;
+pub mod security;
 pub mod session;
 pub mod sftp;
 pub mod shell;
@@ -69,6 +70,7 @@ pub use self::config::{ServerConfig, ServerConfigBuilder};
 pub use self::exec::{CommandExecutor, ExecConfig};
 pub use self::handler::SshHandler;
 pub use self::pty::{PtyConfig as PtyMasterConfig, PtyMaster};
+pub use self::security::{AuthRateLimitConfig, AuthRateLimiter};
 pub use self::session::{
     ChannelMode, ChannelState, PtyConfig, SessionId, SessionInfo, SessionManager,
 };
@@ -214,10 +216,52 @@ impl BsshServer {
         // This allows rapid testing while still providing protection against brute force
         let rate_limiter = RateLimiter::with_simple_config(100, 10.0);
 
+        // Create auth rate limiter with configuration
+        // Parse whitelist IPs from config
+        let whitelist_ips: Vec<std::net::IpAddr> = self
+            .config
+            .whitelist_ips
+            .iter()
+            .filter_map(|s| {
+                s.parse().map_err(|e| {
+                    tracing::warn!(ip = %s, error = %e, "Invalid whitelist IP address in config, skipping");
+                    e
+                }).ok()
+            })
+            .collect();
+
+        let auth_config = AuthRateLimitConfig::new(
+            self.config.max_auth_attempts,
+            self.config.auth_window_secs,
+            self.config.ban_time_secs,
+        )
+        .with_whitelist(whitelist_ips);
+
+        let auth_rate_limiter = AuthRateLimiter::new(auth_config);
+
+        tracing::info!(
+            max_attempts = self.config.max_auth_attempts,
+            auth_window_secs = self.config.auth_window_secs,
+            ban_time_secs = self.config.ban_time_secs,
+            whitelist_count = self.config.whitelist_ips.len(),
+            "Auth rate limiter configured"
+        );
+
+        // Start background cleanup task for auth rate limiter
+        let cleanup_limiter = auth_rate_limiter.clone();
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_secs(60));
+            loop {
+                interval.tick().await;
+                cleanup_limiter.cleanup().await;
+            }
+        });
+
         let mut server = BsshServerRunner {
             config: Arc::clone(&self.config),
             sessions: Arc::clone(&self.sessions),
             rate_limiter,
+            auth_rate_limiter,
         };
 
         // Use run_on_socket which handles the server loop
@@ -248,6 +292,8 @@ struct BsshServerRunner {
     sessions: Arc<RwLock<SessionManager>>,
     /// Shared rate limiter for authentication attempts across all handlers
     rate_limiter: RateLimiter<String>,
+    /// Auth rate limiter with ban support (fail2ban-like)
+    auth_rate_limiter: AuthRateLimiter,
 }
 
 impl russh::server::Server for BsshServerRunner {
@@ -259,11 +305,12 @@ impl russh::server::Server for BsshServerRunner {
             "New client connection"
         );
 
-        SshHandler::with_rate_limiter(
+        SshHandler::with_rate_limiters(
             peer_addr,
             Arc::clone(&self.config),
             Arc::clone(&self.sessions),
             self.rate_limiter.clone(),
+            self.auth_rate_limiter.clone(),
         )
     }
 

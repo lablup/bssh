@@ -32,6 +32,7 @@ use super::auth::AuthProvider;
 use super::config::ServerConfig;
 use super::exec::CommandExecutor;
 use super::pty::PtyConfig as PtyMasterConfig;
+use super::security::AuthRateLimiter;
 use super::session::{ChannelState, PtyConfig, SessionId, SessionInfo, SessionManager};
 use super::sftp::SftpHandler;
 use super::shell::ShellSession;
@@ -56,6 +57,9 @@ pub struct SshHandler {
 
     /// Rate limiter for authentication attempts.
     rate_limiter: RateLimiter<String>,
+
+    /// Auth rate limiter with ban support (fail2ban-like).
+    auth_rate_limiter: Option<AuthRateLimiter>,
 
     /// Session information for this connection.
     session_info: Option<SessionInfo>,
@@ -83,6 +87,7 @@ impl SshHandler {
             sessions,
             auth_provider,
             rate_limiter,
+            auth_rate_limiter: None,
             session_info: Some(SessionInfo::new(peer_addr)),
             channels: HashMap::new(),
         }
@@ -106,6 +111,33 @@ impl SshHandler {
             sessions,
             auth_provider,
             rate_limiter,
+            auth_rate_limiter: None,
+            session_info: Some(SessionInfo::new(peer_addr)),
+            channels: HashMap::new(),
+        }
+    }
+
+    /// Create a new SSH handler with shared rate limiters including auth ban support.
+    ///
+    /// This is the preferred constructor for production use as it shares
+    /// both rate limiters across all handlers, providing server-wide rate limiting
+    /// and fail2ban-like functionality.
+    pub fn with_rate_limiters(
+        peer_addr: Option<SocketAddr>,
+        config: Arc<ServerConfig>,
+        sessions: Arc<RwLock<SessionManager>>,
+        rate_limiter: RateLimiter<String>,
+        auth_rate_limiter: AuthRateLimiter,
+    ) -> Self {
+        let auth_provider = config.create_auth_provider();
+
+        Self {
+            peer_addr,
+            config,
+            sessions,
+            auth_provider,
+            rate_limiter,
+            auth_rate_limiter: Some(auth_rate_limiter),
             session_info: Some(SessionInfo::new(peer_addr)),
             channels: HashMap::new(),
         }
@@ -128,6 +160,7 @@ impl SshHandler {
             sessions,
             auth_provider,
             rate_limiter,
+            auth_rate_limiter: None,
             session_info: Some(SessionInfo::new(peer_addr)),
             channels: HashMap::new(),
         }
@@ -284,6 +317,7 @@ impl russh::server::Handler for SshHandler {
         // Clone what we need for the async block
         let auth_provider = Arc::clone(&self.auth_provider);
         let rate_limiter = self.rate_limiter.clone();
+        let auth_rate_limiter = self.auth_rate_limiter.clone();
         let peer_addr = self.peer_addr;
         let user = user.to_string();
         let public_key = public_key.clone();
@@ -292,6 +326,23 @@ impl russh::server::Handler for SshHandler {
         let session_info = &mut self.session_info;
 
         async move {
+            // Check if IP is banned (fail2ban-like check)
+            if let Some(ref limiter) = auth_rate_limiter {
+                if let Some(ip) = peer_addr.map(|a| a.ip()) {
+                    if limiter.is_banned(&ip).await {
+                        tracing::warn!(
+                            user = %user,
+                            peer = ?peer_addr,
+                            "Rejected auth from banned IP"
+                        );
+                        return Ok(Auth::Reject {
+                            proceed_with_methods: None,
+                            partial_success: false,
+                        });
+                    }
+                }
+            }
+
             if exceeded {
                 tracing::warn!(
                     user = %user,
@@ -349,6 +400,13 @@ impl russh::server::Handler for SshHandler {
                         info.authenticate(&user);
                     }
 
+                    // Record success to reset failure counter
+                    if let Some(ref limiter) = auth_rate_limiter {
+                        if let Some(ip) = peer_addr.map(|a| a.ip()) {
+                            limiter.record_success(&ip).await;
+                        }
+                    }
+
                     Ok(Auth::Accept)
                 }
                 Ok(_) => {
@@ -358,6 +416,20 @@ impl russh::server::Handler for SshHandler {
                         key_type = %public_key.algorithm(),
                         "Public key authentication rejected"
                     );
+
+                    // Record failure for ban tracking
+                    if let Some(ref limiter) = auth_rate_limiter {
+                        if let Some(ip) = peer_addr.map(|a| a.ip()) {
+                            let banned = limiter.record_failure(ip).await;
+                            if banned {
+                                tracing::warn!(
+                                    user = %user,
+                                    peer = ?peer_addr,
+                                    "IP banned due to too many failed auth attempts"
+                                );
+                            }
+                        }
+                    }
 
                     let proceed = if methods.is_empty() {
                         None
@@ -377,6 +449,13 @@ impl russh::server::Handler for SshHandler {
                         error = %e,
                         "Error during public key verification"
                     );
+
+                    // Record failure for ban tracking
+                    if let Some(ref limiter) = auth_rate_limiter {
+                        if let Some(ip) = peer_addr.map(|a| a.ip()) {
+                            limiter.record_failure(ip).await;
+                        }
+                    }
 
                     let proceed = if methods.is_empty() {
                         None
@@ -421,6 +500,7 @@ impl russh::server::Handler for SshHandler {
         // Clone what we need for the async block
         let auth_provider = Arc::clone(&self.auth_provider);
         let rate_limiter = self.rate_limiter.clone();
+        let auth_rate_limiter = self.auth_rate_limiter.clone();
         let peer_addr = self.peer_addr;
         let user = user.to_string();
         // Use Zeroizing to ensure password is securely cleared from memory when dropped
@@ -431,6 +511,23 @@ impl russh::server::Handler for SshHandler {
         let session_info = &mut self.session_info;
 
         async move {
+            // Check if IP is banned (fail2ban-like check)
+            if let Some(ref limiter) = auth_rate_limiter {
+                if let Some(ip) = peer_addr.map(|a| a.ip()) {
+                    if limiter.is_banned(&ip).await {
+                        tracing::warn!(
+                            user = %user,
+                            peer = ?peer_addr,
+                            "Rejected password auth from banned IP"
+                        );
+                        return Ok(Auth::Reject {
+                            proceed_with_methods: None,
+                            partial_success: false,
+                        });
+                    }
+                }
+            }
+
             // Check if password auth is enabled
             if !allow_password {
                 tracing::debug!(
@@ -504,6 +601,13 @@ impl russh::server::Handler for SshHandler {
                         info.authenticate(&user);
                     }
 
+                    // Record success to reset failure counter
+                    if let Some(ref limiter) = auth_rate_limiter {
+                        if let Some(ip) = peer_addr.map(|a| a.ip()) {
+                            limiter.record_success(&ip).await;
+                        }
+                    }
+
                     Ok(Auth::Accept)
                 }
                 Ok(_) => {
@@ -512,6 +616,20 @@ impl russh::server::Handler for SshHandler {
                         peer = ?peer_addr,
                         "Password authentication rejected"
                     );
+
+                    // Record failure for ban tracking
+                    if let Some(ref limiter) = auth_rate_limiter {
+                        if let Some(ip) = peer_addr.map(|a| a.ip()) {
+                            let banned = limiter.record_failure(ip).await;
+                            if banned {
+                                tracing::warn!(
+                                    user = %user,
+                                    peer = ?peer_addr,
+                                    "IP banned due to too many failed password auth attempts"
+                                );
+                            }
+                        }
+                    }
 
                     let proceed = if methods.is_empty() {
                         None
@@ -531,6 +649,13 @@ impl russh::server::Handler for SshHandler {
                         error = %e,
                         "Error during password verification"
                     );
+
+                    // Record failure for ban tracking
+                    if let Some(ref limiter) = auth_rate_limiter {
+                        if let Some(ip) = peer_addr.map(|a| a.ip()) {
+                            limiter.record_failure(ip).await;
+                        }
+                    }
 
                     let proceed = if methods.is_empty() {
                         None

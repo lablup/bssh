@@ -173,8 +173,18 @@ security:
   # Max auth attempts before banning IP
   max_auth_attempts: 5         # Default: 5
 
+  # Time window for counting auth attempts (seconds)
+  # Failed attempts outside this window are not counted
+  auth_window: 300             # Default: 300 (5 minutes)
+
   # Ban duration after exceeding max attempts (seconds)
   ban_time: 300                # Default: 300 (5 minutes)
+
+  # IPs that are never banned (whitelist)
+  # These IPs are exempt from rate limiting and banning
+  whitelist_ips:
+    - "127.0.0.1"
+    - "::1"
 
   # Max concurrent sessions per user
   max_sessions_per_user: 10    # Default: 10

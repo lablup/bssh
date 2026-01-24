@@ -189,6 +189,20 @@ Common utilities for code reuse between bssh client and server implementations:
 
 The `security` and `jump::rate_limiter` modules re-export from shared for backward compatibility.
 
+### Server Security Module
+
+Security features for the SSH server (`src/server/security/`):
+
+- **AuthRateLimiter**: Fail2ban-like authentication rate limiting
+  - Tracks failed authentication attempts per IP address
+  - Automatic banning after exceeding configurable threshold
+  - Time-windowed failure counting (failures outside window not counted)
+  - Configurable ban duration with automatic expiration
+  - IP whitelist for exempting trusted addresses from banning
+  - Memory-safe with configurable maximum tracked IPs
+  - Automatic cleanup of expired records via background task
+  - Thread-safe async implementation with `Arc<RwLock<>>`
+
 ### Server CLI Binary
 **Binary**: `bssh-server`
 
@@ -284,7 +298,8 @@ SSH server implementation using the russh library for accepting incoming connect
 
 - **SshHandler**: Per-connection handler for SSH protocol events
   - Public key authentication via AuthProvider trait
-  - Rate limiting for authentication attempts
+  - Rate limiting for authentication attempts (token bucket)
+  - Auth rate limiting with ban support (fail2ban-like)
   - Channel operations (open, close, EOF, data)
   - PTY, exec, shell, and subsystem request handling
   - Command execution with stdout/stderr streaming
