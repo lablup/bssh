@@ -441,7 +441,7 @@ dependencies = [
 
 [[package]]
 name = "bssh-russh"
-version = "0.1.0"
+version = "0.56.0"
 dependencies = [
  "aes",
  "async-trait",

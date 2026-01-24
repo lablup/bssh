@@ -1,8 +1,15 @@
 [package]
 name = "bssh-russh"
-version = "0.1.0"
+version = "0.56.0"
+authors = ["Jeongkyu Shin <inureyes@gmail.com>"]
+description = "Temporary fork of russh with high-frequency PTY output fix (Handle::data from spawned tasks)"
+documentation = "https://docs.rs/bssh-russh"
 edition = "2021"
-description = "SSH server implementation for bssh (based on russh)"
+homepage = "https://github.com/lablup/bssh"
+keywords = ["ssh"]
+license = "Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/lablup/bssh"
 
 [features]
 default = ["flate2", "aws-lc-rs", "rsa"]
