@@ -26,6 +26,9 @@ use tokio::fs::{File, OpenOptions};
 use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::sync::Mutex;
 
+#[cfg(unix)]
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+
 /// Configuration for file rotation.
 #[derive(Debug, Clone)]
 pub struct RotateConfig {
@@ -48,24 +51,46 @@ impl Default for RotateConfig {
 }
 
 impl RotateConfig {
+    /// Validate the configuration values.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - max_size is 0
+    /// - max_backups is 0
+    pub fn validate(&self) -> Result<()> {
+        if self.max_size == 0 {
+            anyhow::bail!("max_size must be greater than 0");
+        }
+        if self.max_backups == 0 {
+            anyhow::bail!("max_backups must be greater than 0");
+        }
+        Ok(())
+    }
+}
+
+impl RotateConfig {
     /// Create a new rotation configuration.
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Set the maximum file size before rotation.
+    #[must_use]
     pub fn with_max_size(mut self, max_size: u64) -> Self {
         self.max_size = max_size;
         self
     }
 
     /// Set the maximum number of backup files to keep.
+    #[must_use]
     pub fn with_max_backups(mut self, max_backups: usize) -> Self {
         self.max_backups = max_backups;
         self
     }
 
     /// Enable or disable gzip compression for rotated files.
+    #[must_use]
     pub fn with_compress(mut self, compress: bool) -> Self {
         self.compress = compress;
         self
@@ -115,6 +140,8 @@ impl FileExporter {
     /// Create a new file exporter.
     ///
     /// The file is opened in append mode and created if it doesn't exist.
+    /// On Unix systems, files are created with mode 0o600 (owner read/write only)
+    /// and directories with mode 0o700 (owner read/write/execute only).
     ///
     /// # Arguments
     ///
@@ -124,11 +151,30 @@ impl FileExporter {
     ///
     /// Returns an error if the file cannot be opened or created.
     pub fn new(path: &Path) -> Result<Self> {
-        // Create parent directory if it doesn't exist
+        // Create parent directory if it doesn't exist with restrictive permissions
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+            #[cfg(unix)]
+            {
+                std::fs::DirBuilder::new()
+                    .recursive(true)
+                    .mode(0o700)
+                    .create(parent)?;
+            }
+            #[cfg(not(unix))]
+            {
+                std::fs::create_dir_all(parent)?;
+            }
         }
 
+        // Create file with restrictive permissions (0o600 on Unix)
+        #[cfg(unix)]
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(path)?;
+
+        #[cfg(not(unix))]
         let file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -142,43 +188,56 @@ impl FileExporter {
     }
 
     /// Enable log rotation with the given configuration.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the configuration is invalid (e.g., max_size or max_backups is 0).
     pub fn with_rotation(mut self, config: RotateConfig) -> Self {
+        config.validate().expect("invalid rotation configuration");
         self.rotate_config = Some(config);
         self
     }
 
     /// Check if the file should be rotated and perform rotation if needed.
+    ///
+    /// This method holds the mutex lock during the entire size check and rotation
+    /// to prevent TOCTOU (time-of-check to time-of-use) race conditions.
     async fn check_rotation(&self) -> Result<()> {
         if let Some(ref config) = self.rotate_config {
-            // Flush to ensure accurate size check
-            {
-                let mut writer = self.writer.lock().await;
-                writer.flush().await?;
-            }
+            // Hold mutex lock during entire size check and rotation to prevent TOCTOU race
+            let mut writer = self.writer.lock().await;
+            writer.flush().await?;
 
             let metadata = tokio::fs::metadata(&self.path).await?;
             if metadata.len() >= config.max_size {
-                self.rotate(config).await?;
+                // Perform rotation while holding the lock
+                self.rotate_with_lock(config, &mut writer).await?;
             }
         }
         Ok(())
     }
 
-    /// Rotate the log file.
+    /// Rotate the log file while holding the writer lock.
     ///
     /// This method:
-    /// 1. Flushes and closes the current writer
+    /// 1. Flushes the current writer (caller should have already flushed)
     /// 2. Shifts existing backup files (file.log.N -> file.log.N+1)
     /// 3. Renames current file to file.log.1
     /// 4. Optionally compresses the renamed file
     /// 5. Deletes the oldest backup if exceeding max_backups
     /// 6. Reopens the file for writing
-    async fn rotate(&self, config: &RotateConfig) -> Result<()> {
-        // Flush and close current writer
-        {
-            let mut writer = self.writer.lock().await;
-            writer.flush().await?;
-        }
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - Rotation configuration
+    /// * `writer` - Mutable reference to the locked writer (ensures we hold the lock)
+    async fn rotate_with_lock(
+        &self,
+        config: &RotateConfig,
+        writer: &mut BufWriter<File>,
+    ) -> Result<()> {
+        // Flush current writer
+        writer.flush().await?;
 
         // Rotate existing backup files: file.log.N -> file.log.N+1
         for i in (1..config.max_backups).rev() {
@@ -216,29 +275,69 @@ impl FileExporter {
         };
         let _ = tokio::fs::remove_file(&oldest).await;
 
-        // Reopen file for writing
+        // Reopen file for writing with restrictive permissions
+        #[cfg(unix)]
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .mode(0o600)
+            .open(&self.path)
+            .await?;
+
+        #[cfg(not(unix))]
         let file = OpenOptions::new()
             .create(true)
             .append(true)
             .open(&self.path)
             .await?;
 
-        let mut writer = self.writer.lock().await;
         *writer = BufWriter::new(file);
 
         Ok(())
     }
 
     /// Compress a file using gzip and delete the original.
+    ///
+    /// Uses streaming compression to avoid loading the entire file into memory.
     async fn compress_file(&self, path: &str) -> Result<()> {
         use async_compression::tokio::write::GzipEncoder;
+        use tokio::io::AsyncReadExt;
 
-        let input = tokio::fs::read(path).await?;
         let compressed_path = format!("{}.gz", path);
 
-        let file = tokio::fs::File::create(&compressed_path).await?;
-        let mut encoder = GzipEncoder::new(file);
-        encoder.write_all(&input).await?;
+        // Open input file for streaming
+        let mut input_file = tokio::fs::File::open(path).await?;
+
+        // Create output file with restrictive permissions
+        #[cfg(unix)]
+        let output_file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&compressed_path)
+            .await?;
+
+        #[cfg(not(unix))]
+        let output_file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(&compressed_path)
+            .await?;
+
+        let mut encoder = GzipEncoder::new(output_file);
+
+        // Stream data through the encoder in chunks
+        let mut buffer = vec![0u8; 8192]; // 8KB buffer
+        loop {
+            let n = input_file.read(&mut buffer).await?;
+            if n == 0 {
+                break;
+            }
+            encoder.write_all(&buffer[..n]).await?;
+        }
+
         encoder.shutdown().await?;
 
         tokio::fs::remove_file(path).await?;
@@ -547,5 +646,86 @@ mod tests {
         let result = FileExporter::new(&log_path);
         assert!(result.is_ok());
         assert!(log_path.parent().unwrap().exists());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_file_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = TempDir::new().unwrap();
+        let log_path = temp_dir.path().join("audit.log");
+
+        let _exporter = FileExporter::new(&log_path).unwrap();
+
+        let metadata = std::fs::metadata(&log_path).unwrap();
+        let mode = metadata.permissions().mode();
+        // Check that only owner has read/write permissions (0o600)
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_directory_permissions() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = TempDir::new().unwrap();
+        let log_path = temp_dir.path().join("subdir").join("audit.log");
+
+        let _exporter = FileExporter::new(&log_path).unwrap();
+
+        let dir_metadata = std::fs::metadata(log_path.parent().unwrap()).unwrap();
+        let mode = dir_metadata.permissions().mode();
+        // Check that only owner has read/write/execute permissions (0o700)
+        assert_eq!(mode & 0o777, 0o700);
+    }
+
+    #[test]
+    fn test_rotate_config_validation() {
+        // Valid config
+        let config = RotateConfig::new();
+        assert!(config.validate().is_ok());
+
+        // Invalid max_size
+        let config = RotateConfig {
+            max_size: 0,
+            max_backups: 5,
+            compress: true,
+        };
+        assert!(config.validate().is_err());
+
+        // Invalid max_backups
+        let config = RotateConfig {
+            max_size: 1024,
+            max_backups: 0,
+            compress: true,
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    #[should_panic(expected = "invalid rotation configuration")]
+    fn test_with_rotation_panics_on_invalid_config() {
+        let temp_dir = TempDir::new().unwrap();
+        let log_path = temp_dir.path().join("audit.log");
+
+        let invalid_config = RotateConfig {
+            max_size: 0,
+            max_backups: 5,
+            compress: true,
+        };
+
+        let _exporter = FileExporter::new(&log_path)
+            .unwrap()
+            .with_rotation(invalid_config);
+    }
+
+    #[test]
+    fn test_rotate_config_must_use_attributes() {
+        let _config = RotateConfig::new()
+            .with_max_size(1024)
+            .with_max_backups(3)
+            .with_compress(false);
+        // If #[must_use] is not present, compiler won't warn about unused builder methods
     }
 }
