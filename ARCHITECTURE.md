@@ -221,6 +221,7 @@ Comprehensive audit logging infrastructure for the SSH server (`src/server/audit
 - `mod.rs` - `AuditManager` for collecting and distributing audit events
 - `event.rs` - `AuditEvent` type definitions and builder pattern
 - `exporter.rs` - `AuditExporter` trait and `NullExporter` implementation
+- `file.rs` - `FileExporter` for JSON Lines output with rotation support
 
 **Key Components**:
 
@@ -250,6 +251,15 @@ Comprehensive audit logging infrastructure for the SSH server (`src/server/audit
 
 - **NullExporter**: No-op exporter for testing and disabled audit logging
 
+- **FileExporter**: File-based exporter writing events in JSON Lines format
+  - Append mode to preserve existing data
+  - Optional log rotation based on file size (`RotateConfig`)
+  - Optional gzip compression for rotated files
+  - Thread-safe using async Mutex
+  - Async I/O using tokio
+  - Automatic parent directory creation
+  - Restrictive file permissions (0o600 on Unix)
+
 - **AuditManager**: Central manager with async processing
   - Background worker for non-blocking event processing
   - Configurable buffering (buffer size, batch size)
@@ -266,8 +276,30 @@ let config = AuditConfig::new()
     .with_flush_interval(5);
 ```
 
+**File Exporter Usage**:
+```rust
+use bssh::server::audit::file::{FileExporter, RotateConfig};
+use std::path::Path;
+
+// Simple file exporter
+let exporter = FileExporter::new(Path::new("/var/log/audit.log"))?;
+
+// With rotation (50 MB, 10 backups, gzip compression)
+let rotate_config = RotateConfig::new()
+    .with_max_size(50 * 1024 * 1024)
+    .with_max_backups(10)
+    .with_compress(true);
+
+let exporter = FileExporter::new(Path::new("/var/log/audit.log"))?
+    .with_rotation(rotate_config);
+```
+
+**Output Format** (JSON Lines - one JSON object per line):
+```json
+{"id":"uuid","timestamp":"2024-01-15T10:30:00Z","event_type":"file_uploaded","session_id":"sess-001","user":"admin","client_ip":"192.168.1.100","path":"/data/report.pdf","bytes":1048576,"result":"success","protocol":"sftp"}
+```
+
 **Future Exporters** (planned):
-- File exporter for local audit logs
 - OpenTelemetry exporter for distributed tracing
 - Logstash exporter for centralized logging
 

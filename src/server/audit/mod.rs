@@ -48,6 +48,7 @@
 
 pub mod event;
 pub mod exporter;
+pub mod file;
 
 use anyhow::Result;
 use std::sync::Arc;
@@ -57,6 +58,7 @@ use tokio::task::JoinHandle;
 
 pub use event::{AuditEvent, EventResult, EventType};
 pub use exporter::{AuditExporter, NullExporter};
+pub use file::{FileExporter, RotateConfig};
 
 /// Configuration for the audit system.
 #[derive(Debug, Clone)]
@@ -82,8 +84,7 @@ pub struct AuditConfig {
 pub enum AuditExporterConfig {
     /// Null exporter (discards events)
     Null,
-    /// File exporter (future implementation)
-    #[allow(dead_code)]
+    /// File exporter
     File {
         /// Path to the audit log file
         path: String,
@@ -208,10 +209,9 @@ impl AuditManager {
         for exporter_config in &config.exporters {
             let exporter: Arc<dyn AuditExporter> = match exporter_config {
                 AuditExporterConfig::Null => Arc::new(NullExporter::new()),
-                AuditExporterConfig::File { .. } => {
-                    // Future implementation
-                    tracing::warn!("File exporter not yet implemented, using null exporter");
-                    Arc::new(NullExporter::new())
+                AuditExporterConfig::File { path } => {
+                    let file_exporter = FileExporter::new(std::path::Path::new(path))?;
+                    Arc::new(file_exporter)
                 }
                 AuditExporterConfig::Otel { .. } => {
                     // Future implementation
