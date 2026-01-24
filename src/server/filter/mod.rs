@@ -515,7 +515,7 @@ mod tests {
 
     #[test]
     fn test_noop_filter_default() {
-        let filter = NoOpFilter::default();
+        let filter = NoOpFilter;
         assert!(!filter.is_enabled());
     }
 

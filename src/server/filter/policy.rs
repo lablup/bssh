@@ -27,7 +27,7 @@ use super::{FilterResult, Operation, TransferFilter};
 use crate::server::config::{
     CompositeLogicType, FilterAction, FilterConfig, FilterRule as FilterRuleConfig, MatcherConfig,
 };
-use crate::server::filter::path::{ComponentMatcher, MultiExtensionMatcher, PrefixMatcher};
+use crate::server::filter::path::{normalize_path, ComponentMatcher, MultiExtensionMatcher, PrefixMatcher};
 use crate::server::filter::pattern::{AllMatcher, CombinedMatcher, GlobMatcher, NotMatcher};
 
 /// Trait for path matchers.
@@ -353,11 +353,18 @@ impl TransferFilter for FilterPolicy {
             return FilterResult::Allow;
         }
 
+        // Normalize path to prevent path traversal attacks (e.g., /var/../etc/passwd -> /etc/passwd)
+        // This is a defense-in-depth measure - callers should also validate paths,
+        // but we normalize here to ensure consistent security behavior.
+        let normalized = normalize_path(path);
+        let check_path = normalized.as_path();
+
         for rule in &self.rules {
-            if rule.matches(path, operation, user) {
+            if rule.matches(check_path, operation, user) {
                 tracing::debug!(
                     rule_name = ?rule.name,
-                    path = %path.display(),
+                    path = %check_path.display(),
+                    original_path = %path.display(),
                     operation = %operation,
                     user = %user,
                     action = %rule.action,
@@ -369,7 +376,7 @@ impl TransferFilter for FilterPolicy {
         }
 
         tracing::trace!(
-            path = %path.display(),
+            path = %check_path.display(),
             operation = %operation,
             user = %user,
             action = %self.default_action,
@@ -1141,6 +1148,41 @@ mod tests {
         // Files inside /data should be allowed
         assert_eq!(
             policy.check(Path::new("/data/file.csv"), Operation::Download, "user"),
+            FilterResult::Allow
+        );
+    }
+
+    #[test]
+    fn test_policy_path_traversal_protection() {
+        // Test that path traversal attempts are properly normalized and matched
+        let policy = FilterPolicy::new()
+            .add_rule(FilterRule::new(
+                Box::new(PrefixMatcher::new("/etc")),
+                FilterResult::Deny,
+            ))
+            .with_default(FilterResult::Allow);
+
+        // Direct path should be denied
+        assert_eq!(
+            policy.check(Path::new("/etc/passwd"), Operation::Download, "user"),
+            FilterResult::Deny
+        );
+
+        // Path traversal attempt should also be denied (normalized to /etc/passwd)
+        assert_eq!(
+            policy.check(Path::new("/var/../etc/passwd"), Operation::Download, "user"),
+            FilterResult::Deny
+        );
+
+        // Another traversal pattern
+        assert_eq!(
+            policy.check(Path::new("/home/user/../../etc/shadow"), Operation::Download, "user"),
+            FilterResult::Deny
+        );
+
+        // Path outside /etc should be allowed
+        assert_eq!(
+            policy.check(Path::new("/home/user/file.txt"), Operation::Download, "user"),
             FilterResult::Allow
         );
     }
