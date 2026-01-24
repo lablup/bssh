@@ -1266,7 +1266,8 @@ mod tests {
         let handler = SshHandler::new(Some(test_addr()), test_config(), test_sessions());
 
         assert_eq!(handler.peer_addr(), Some(test_addr()));
-        assert!(handler.session_id().is_none());
+        // Session ID is assigned at creation time
+        assert!(handler.session_id().is_some());
         assert!(!handler.is_authenticated());
         assert!(handler.username().is_none());
     }
@@ -1328,7 +1329,8 @@ mod tests {
         let handler = SshHandler::new(None, test_config(), test_sessions());
 
         assert!(handler.peer_addr().is_none());
-        assert!(handler.session_id().is_none());
+        // Session ID is assigned at creation time even without peer address
+        assert!(handler.session_id().is_some());
         assert!(!handler.is_authenticated());
     }
 

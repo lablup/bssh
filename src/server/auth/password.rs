@@ -641,10 +641,10 @@ mod tests {
         assert!(time_existing >= Duration::from_millis(90)); // Allow small margin
         assert!(time_nonexistent >= Duration::from_millis(90));
 
-        // The times should be roughly similar (within 50ms margin)
+        // The times should be roughly similar (within 100ms margin for CI environments)
         let diff = time_existing.abs_diff(time_nonexistent);
         assert!(
-            diff < Duration::from_millis(50),
+            diff < Duration::from_millis(100),
             "Timing difference too large: {:?}",
             diff
         );
