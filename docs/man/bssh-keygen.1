@@ -1,0 +1,245 @@
+.\" Manpage for bssh-keygen
+.\" Contact the maintainers to correct errors or typos.
+.TH BSSH-KEYGEN 1 "January 2026" "v1.7.0" "User Commands"
+
+.SH NAME
+bssh-keygen \- SSH key pair generation tool
+
+.SH SYNOPSIS
+.B bssh-keygen
+[\fB\-t\fR \fItype\fR]
+[\fB\-b\fR \fIbits\fR]
+[\fB\-f\fR \fIfile\fR]
+[\fB\-C\fR \fIcomment\fR]
+[\fB\-y\fR]
+[\fB\-q\fR]
+
+.SH DESCRIPTION
+.B bssh-keygen
+generates SSH key pairs in OpenSSH format. It supports Ed25519 (recommended) and RSA algorithms.
+Generated keys are compatible with OpenSSH and can be used for SSH authentication.
+
+By default, bssh-keygen generates an Ed25519 key pair and saves it to
+\fI~/.ssh/id_ed25519\fR (private key) and \fI~/.ssh/id_ed25519.pub\fR (public key).
+
+.SH OPTIONS
+.TP
+.BR \-t ", " \-\-type " " \fITYPE\fR
+Specifies the type of key to generate. Supported types:
+.RS
+.IP \fBed25519\fR 10
+(default, recommended) Ed25519 elliptic curve key. Provides strong security with compact key size
+and fast operations.
+.IP \fBrsa\fR 10
+RSA key. Use \fB-b\fR to specify key size. Supported for compatibility with legacy systems.
+.RE
+
+.TP
+.BR \-f ", " \-\-file " " \fIFILE\fR
+Output file path for the private key. The public key is saved to \fIFILE.pub\fR.
+Default: \fI~/.ssh/id_<type>\fR (e.g., ~/.ssh/id_ed25519 for Ed25519 keys)
+
+.TP
+.BR \-b ", " \-\-bits " " \fIBITS\fR
+Number of bits for RSA key. Only applicable when \fB-t rsa\fR is specified.
+.RS
+.IP "Minimum:" 10
+2048 bits
+.IP "Maximum:" 10
+16384 bits
+.IP "Default:" 10
+4096 bits
+.IP "Recommended:" 10
+4096 bits for new deployments
+.RE
+
+.TP
+.BR \-C ", " \-\-comment " " \fICOMMENT\fR
+Comment to include in the public key. Typically used to identify the key owner.
+Default: "bssh-keygen"
+
+Example: \fB-C "user@hostname"\fR
+
+.TP
+.BR \-y ", " \-\-yes
+Overwrite existing key files without prompting for confirmation.
+
+.TP
+.BR \-q ", " \-\-quiet
+Quiet mode. Suppress all output except error messages.
+
+.TP
+.BR \-v ", " \-\-verbose
+Increase verbosity level. Can be specified multiple times (\fB-vvv\fR) for maximum verbosity.
+
+.TP
+.BR \-h ", " \-\-help
+Display help message and exit.
+
+.TP
+.BR \-V ", " \-\-version
+Display version information and exit.
+
+.SH KEY TYPES
+.SS Ed25519 (Recommended)
+Ed25519 is a modern elliptic curve signature algorithm that provides:
+.IP \(bu 2
+128-bit security level (equivalent to RSA-3072)
+.IP \(bu 2
+Fast key generation and signing operations
+.IP \(bu 2
+Compact key size (32 bytes public key, 64 bytes private key)
+.IP \(bu 2
+Deterministic signatures
+.IP \(bu 2
+Resistance to side-channel attacks
+.PP
+Ed25519 is recommended for all new key generation.
+
+.SS RSA
+RSA is a widely-used public key algorithm. While still secure with sufficient key sizes
+(2048+ bits), Ed25519 is preferred due to:
+.IP \(bu 2
+Faster key generation and operations
+.IP \(bu 2
+Smaller key sizes for equivalent security
+.IP \(bu 2
+Better resistance to implementation errors
+.PP
+RSA support is provided for compatibility with legacy systems.
+
+.SH OUTPUT
+.B bssh-keygen
+creates two files:
+
+.TP
+.I FILE
+Private key in OpenSSH format. This file has permissions 0600 (owner read/write only) and should
+be kept secret.
+
+.TP
+.I FILE.pub
+Public key in OpenSSH format. This file can be shared and added to remote servers'
+\fIauthorized_keys\fR files.
+
+.PP
+Unless \fB-q\fR is specified, bssh-keygen displays:
+.IP \(bu 2
+Path to the saved private key
+.IP \(bu 2
+Path to the saved public key
+.IP \(bu 2
+SHA256 fingerprint of the key
+.IP \(bu 2
+The public key content
+
+.SH EXAMPLES
+.SS Generate Ed25519 Key (Recommended)
+.nf
+$ bssh-keygen
+Your identification has been saved in /home/user/.ssh/id_ed25519
+Your public key has been saved in /home/user/.ssh/id_ed25519.pub
+The key fingerprint is:
+SHA256:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+
+Public key:
+ssh-ed25519 AAAA... bssh-keygen
+.fi
+
+.SS Generate Ed25519 Key with Custom Path
+.nf
+$ bssh-keygen -f ~/.ssh/my_server_key
+.fi
+
+.SS Generate Ed25519 Key with Custom Comment
+.nf
+$ bssh-keygen -C "john@workstation"
+.fi
+
+.SS Generate RSA Key with 4096 Bits
+.nf
+$ bssh-keygen -t rsa -b 4096
+.fi
+
+.SS Generate Key Non-Interactively
+.nf
+$ bssh-keygen -f /tmp/deploy_key -C "deploy@server" -y -q
+.fi
+
+.SS Generate Key for CI/CD Pipeline
+.nf
+#!/bin/bash
+# Generate a deployment key
+bssh-keygen -t ed25519 -f ./deploy_key -C "ci-deploy" -y -q
+
+# Display public key for adding to server
+cat ./deploy_key.pub
+.fi
+
+.SH FILES
+.TP
+.I ~/.ssh/id_ed25519
+Default Ed25519 private key.
+
+.TP
+.I ~/.ssh/id_ed25519.pub
+Default Ed25519 public key.
+
+.TP
+.I ~/.ssh/id_rsa
+Default RSA private key.
+
+.TP
+.I ~/.ssh/id_rsa.pub
+Default RSA public key.
+
+.TP
+.I ~/.ssh/
+Default directory for SSH keys. Created with permissions 0700 if it doesn't exist.
+
+.SH SECURITY CONSIDERATIONS
+.IP \(bu 2
+Private key files are created with permissions 0600 (owner read/write only).
+Never share or expose private key files.
+.IP \(bu 2
+The ~/.ssh directory is created with permissions 0700 (owner only) if it doesn't exist.
+.IP \(bu 2
+Ed25519 is recommended over RSA for new keys due to its stronger security properties
+and resistance to various attack classes.
+.IP \(bu 2
+For RSA keys, use at least 2048 bits. 4096 bits is recommended.
+.IP \(bu 2
+Store private keys securely. Consider using encrypted backup solutions.
+.IP \(bu 2
+Rotate keys periodically, especially for high-security environments.
+
+.SH EXIT STATUS
+.TP
+.B 0
+Successful key generation.
+.TP
+.B 1
+Error occurred (invalid options, write failure, etc.)
+
+.SH SEE ALSO
+.BR bssh (1),
+.BR bssh-server (8),
+.BR ssh-keygen (1),
+.BR ssh (1)
+
+.SH COMPATIBILITY
+Keys generated by bssh-keygen are fully compatible with OpenSSH and can be used with:
+.IP \(bu 2
+OpenSSH client and server
+.IP \(bu 2
+bssh client
+.IP \(bu 2
+bssh-server
+.IP \(bu 2
+Any SSH implementation supporting OpenSSH key formats
+
+.SH BUGS
+Report bugs at https://github.com/lablup/bssh/issues
+
+.SH AUTHORS
+Lablup Inc. <https://lablup.com>
