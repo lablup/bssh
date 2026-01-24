@@ -74,7 +74,8 @@ pub use self::security::{
     AccessPolicy, AuthRateLimitConfig, AuthRateLimiter, IpAccessControl, SharedIpAccessControl,
 };
 pub use self::session::{
-    ChannelMode, ChannelState, PtyConfig, SessionId, SessionInfo, SessionManager,
+    ChannelMode, ChannelState, PtyConfig, SessionConfig, SessionError, SessionId, SessionInfo,
+    SessionManager, SessionStats,
 };
 pub use self::shell::ShellSession;
 
@@ -108,7 +109,8 @@ impl BsshServer {
     /// let server = BsshServer::new(config);
     /// ```
     pub fn new(config: ServerConfig) -> Self {
-        let sessions = SessionManager::with_max_sessions(config.max_connections);
+        let session_config = config.session_config();
+        let sessions = SessionManager::with_config(session_config);
         Self {
             config: Arc::new(config),
             sessions: Arc::new(RwLock::new(sessions)),

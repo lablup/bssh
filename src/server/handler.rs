@@ -33,7 +33,7 @@ use super::config::ServerConfig;
 use super::exec::CommandExecutor;
 use super::pty::PtyConfig as PtyMasterConfig;
 use super::security::AuthRateLimiter;
-use super::session::{ChannelState, PtyConfig, SessionId, SessionInfo, SessionManager};
+use super::session::{ChannelState, PtyConfig, SessionError, SessionId, SessionInfo, SessionManager};
 use super::sftp::SftpHandler;
 use super::shell::ShellSession;
 use crate::shared::rate_limit::RateLimiter;
@@ -363,6 +363,7 @@ impl russh::server::Handler for SshHandler {
 
         // Clone what we need for the async block
         let auth_provider = Arc::clone(&self.auth_provider);
+        let sessions = Arc::clone(&self.sessions);
         let rate_limiter = self.rate_limiter.clone();
         let auth_rate_limiter = self.auth_rate_limiter.clone();
         let peer_addr = self.peer_addr;
@@ -442,9 +443,41 @@ impl russh::server::Handler for SshHandler {
                         "Public key authentication successful"
                     );
 
-                    // Mark session as authenticated
-                    if let Some(ref mut info) = session_info {
-                        info.authenticate(&user);
+                    // Try to authenticate session with per-user limits
+                    if let Some(ref info) = session_info {
+                        let mut sessions_guard = sessions.write().await;
+                        match sessions_guard.authenticate_session(info.id, &user) {
+                            Ok(()) => {
+                                // Also update local session info
+                                drop(sessions_guard);
+                                if let Some(ref mut local_info) = session_info {
+                                    local_info.authenticate(&user);
+                                }
+                            }
+                            Err(SessionError::TooManyUserSessions { user: u, limit }) => {
+                                tracing::warn!(
+                                    user = %u,
+                                    limit = limit,
+                                    peer = ?peer_addr,
+                                    "Per-user session limit reached, rejecting authentication"
+                                );
+                                return Ok(Auth::Reject {
+                                    proceed_with_methods: None,
+                                    partial_success: false,
+                                });
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    user = %user,
+                                    error = %e,
+                                    "Failed to authenticate session"
+                                );
+                                return Ok(Auth::Reject {
+                                    proceed_with_methods: None,
+                                    partial_success: false,
+                                });
+                            }
+                        }
                     }
 
                     // Record success to reset failure counter
@@ -546,6 +579,7 @@ impl russh::server::Handler for SshHandler {
 
         // Clone what we need for the async block
         let auth_provider = Arc::clone(&self.auth_provider);
+        let sessions = Arc::clone(&self.sessions);
         let rate_limiter = self.rate_limiter.clone();
         let auth_rate_limiter = self.auth_rate_limiter.clone();
         let peer_addr = self.peer_addr;
@@ -643,9 +677,41 @@ impl russh::server::Handler for SshHandler {
                         "Password authentication successful"
                     );
 
-                    // Mark session as authenticated
-                    if let Some(ref mut info) = session_info {
-                        info.authenticate(&user);
+                    // Try to authenticate session with per-user limits
+                    if let Some(ref info) = session_info {
+                        let mut sessions_guard = sessions.write().await;
+                        match sessions_guard.authenticate_session(info.id, &user) {
+                            Ok(()) => {
+                                // Also update local session info
+                                drop(sessions_guard);
+                                if let Some(ref mut local_info) = session_info {
+                                    local_info.authenticate(&user);
+                                }
+                            }
+                            Err(SessionError::TooManyUserSessions { user: u, limit }) => {
+                                tracing::warn!(
+                                    user = %u,
+                                    limit = limit,
+                                    peer = ?peer_addr,
+                                    "Per-user session limit reached, rejecting authentication"
+                                );
+                                return Ok(Auth::Reject {
+                                    proceed_with_methods: None,
+                                    partial_success: false,
+                                });
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    user = %user,
+                                    error = %e,
+                                    "Failed to authenticate session"
+                                );
+                                return Ok(Auth::Reject {
+                                    proceed_with_methods: None,
+                                    partial_success: false,
+                                });
+                            }
+                        }
                     }
 
                     // Record success to reset failure counter
