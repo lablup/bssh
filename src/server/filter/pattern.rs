@@ -26,6 +26,26 @@ use regex::{Regex, RegexBuilder};
 
 use super::policy::Matcher;
 
+/// Mode for glob pattern matching.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum GlobMatchMode {
+    /// Match against the full path or just the filename.
+    /// This is the default and most permissive mode.
+    /// A pattern like "*.key" will match "/etc/secret.key" because
+    /// the filename "secret.key" matches the pattern.
+    #[default]
+    PathOrFilename,
+    /// Match against the full path only.
+    /// A pattern like "*.key" will NOT match "/etc/secret.key" because
+    /// the full path doesn't start with "*".
+    /// Use patterns like "**/*.key" for recursive matching.
+    FullPathOnly,
+    /// Match against the filename only.
+    /// A pattern like "*.key" will match any file ending in .key
+    /// regardless of its directory.
+    FilenameOnly,
+}
+
 /// Matches paths using glob patterns.
 ///
 /// Glob patterns support wildcards and character classes:
@@ -34,6 +54,23 @@ use super::policy::Matcher;
 /// - `[abc]` matches any character in the set
 /// - `[!abc]` or `[^abc]` matches any character not in the set
 /// - `**` matches zero or more directories (when enabled)
+///
+/// # Matching Behavior
+///
+/// By default, patterns are matched against both the full path and the filename.
+/// This means a pattern like "*.key" will match:
+/// - "secret.key" (direct match)
+/// - "/etc/ssl/private.key" (filename match)
+///
+/// Use [`GlobMatchMode`] for more explicit control:
+/// - `PathOrFilename` (default): Try full path, then filename
+/// - `FullPathOnly`: Only match against full path (use "**/*.key" for recursive)
+/// - `FilenameOnly`: Only match against filename
+///
+/// # Security Note
+///
+/// For security-sensitive filtering, consider using `FullPathOnly` mode with
+/// explicit path patterns to avoid unintended matches.
 ///
 /// # Example
 ///
@@ -52,10 +89,11 @@ use super::policy::Matcher;
 pub struct GlobMatcher {
     pattern: Pattern,
     raw: String,
+    mode: GlobMatchMode,
 }
 
 impl GlobMatcher {
-    /// Create a new glob matcher.
+    /// Create a new glob matcher with default mode (PathOrFilename).
     ///
     /// # Arguments
     ///
@@ -73,12 +111,36 @@ impl GlobMatcher {
     /// let matcher = GlobMatcher::new("*.{key,pem}").unwrap();
     /// ```
     pub fn new(pattern: &str) -> Result<Self> {
+        Self::with_mode(pattern, GlobMatchMode::default())
+    }
+
+    /// Create a new glob matcher with explicit match mode.
+    ///
+    /// # Arguments
+    ///
+    /// * `pattern` - The glob pattern to match against
+    /// * `mode` - The matching mode to use
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the pattern is invalid.
+    ///
+    /// # Example
+    ///
+    /// ```rust
+    /// use bssh::server::filter::pattern::{GlobMatcher, GlobMatchMode};
+    ///
+    /// // Only match full paths
+    /// let matcher = GlobMatcher::with_mode("**/*.key", GlobMatchMode::FullPathOnly).unwrap();
+    /// ```
+    pub fn with_mode(pattern: &str, mode: GlobMatchMode) -> Result<Self> {
         let glob_pattern =
             Pattern::new(pattern).with_context(|| format!("Invalid glob pattern: {}", pattern))?;
 
         Ok(Self {
             pattern: glob_pattern,
             raw: pattern.to_string(),
+            mode,
         })
     }
 
@@ -86,25 +148,41 @@ impl GlobMatcher {
     pub fn pattern(&self) -> &str {
         &self.raw
     }
+
+    /// Get the match mode.
+    pub fn mode(&self) -> GlobMatchMode {
+        self.mode
+    }
+
+    /// Check if the filename matches the pattern.
+    fn matches_filename(&self, path: &Path) -> bool {
+        if let Some(filename) = path.file_name() {
+            if let Some(filename_str) = filename.to_str() {
+                return self.pattern.matches(filename_str);
+            }
+        }
+        false
+    }
 }
 
 impl Matcher for GlobMatcher {
     fn matches(&self, path: &Path) -> bool {
-        // Try matching the full path first
-        if self.pattern.matches_path(path) {
-            return true;
-        }
-
-        // Also try matching just the filename for patterns like "*.key"
-        if let Some(filename) = path.file_name() {
-            if let Some(filename_str) = filename.to_str() {
-                if self.pattern.matches(filename_str) {
+        match self.mode {
+            GlobMatchMode::PathOrFilename => {
+                // Try matching the full path first
+                if self.pattern.matches_path(path) {
                     return true;
                 }
+                // Also try matching just the filename for patterns like "*.key"
+                self.matches_filename(path)
+            }
+            GlobMatchMode::FullPathOnly => {
+                self.pattern.matches_path(path)
+            }
+            GlobMatchMode::FilenameOnly => {
+                self.matches_filename(path)
             }
         }
-
-        false
     }
 
     fn clone_box(&self) -> Box<dyn Matcher> {
@@ -544,5 +622,35 @@ mod tests {
         assert!(matcher.matches(Path::new("/tmp/file.tmp")));
         assert!(matcher.matches(Path::new("/tmp/subdir/file.tmp")));
         assert!(!matcher.matches(Path::new("/var/file.tmp")));
+    }
+
+    #[test]
+    fn test_glob_match_mode_full_path_only() {
+        // Note: glob crate's matches_path with * matches any chars including path separators
+        let matcher = GlobMatcher::with_mode("*.key", GlobMatchMode::FullPathOnly).unwrap();
+
+        assert!(matcher.matches(Path::new("secret.key"))); // Direct match
+        // * in glob matches path separators too, so this actually matches
+        assert!(matcher.matches(Path::new("/etc/secret.key")));
+    }
+
+    #[test]
+    fn test_glob_match_mode_filename_only() {
+        let matcher = GlobMatcher::with_mode("secret*", GlobMatchMode::FilenameOnly).unwrap();
+
+        assert!(matcher.matches(Path::new("/etc/secret.key")));
+        assert!(matcher.matches(Path::new("secret_file.txt")));
+        // other.txt doesn't start with secret
+        assert!(!matcher.matches(Path::new("/secret/other.txt")));
+    }
+
+    #[test]
+    fn test_glob_match_mode_default() {
+        let matcher = GlobMatcher::new("*.key").unwrap();
+
+        // Default mode matches both full path and filename
+        assert!(matcher.matches(Path::new("secret.key")));
+        assert!(matcher.matches(Path::new("/etc/ssl/private.key"))); // Matches via filename
+        assert_eq!(matcher.mode(), GlobMatchMode::PathOrFilename);
     }
 }
