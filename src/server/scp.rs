@@ -68,6 +68,10 @@ const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024 * 1024;
 /// Buffer size for file transfers (64 KB).
 const BUFFER_SIZE: usize = 64 * 1024;
 
+/// Maximum line length for SCP protocol headers (64 KB).
+/// This prevents DoS via unbounded buffer growth.
+const MAX_LINE_LENGTH: usize = 64 * 1024;
+
 /// SCP operation mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScpMode {
@@ -270,6 +274,7 @@ impl ScpHandler {
     /// 1. Joining the path with the root directory
     /// 2. Normalizing the path (resolving "." and ".." components)
     /// 3. Verifying the result is within the root directory
+    /// 4. If the path exists, canonicalizing to catch symlink attacks
     pub fn resolve_path(&self, path: &Path) -> Result<PathBuf> {
         let path_str = path.to_string_lossy();
 
@@ -306,12 +311,46 @@ impl ScpHandler {
         // Ensure the resolved path is within the root
         if !resolved.starts_with(&self.root_dir) {
             tracing::warn!(
+                event = "path_traversal_attempt",
+                user = %self.user_info.username,
                 requested = %path_str,
                 resolved = %resolved.display(),
                 root = %self.root_dir.display(),
-                "Path traversal attempt detected"
+                "Security: path traversal attempt blocked"
             );
             anyhow::bail!("Access denied: path outside root");
+        }
+
+        // If the path exists, canonicalize it to catch symlink attacks
+        // This prevents an attacker from creating symlinks that point outside the root
+        if resolved.exists() {
+            match std::fs::canonicalize(&resolved) {
+                Ok(canonical) => {
+                    if !canonical.starts_with(&self.root_dir) {
+                        tracing::warn!(
+                            event = "symlink_escape_attempt",
+                            user = %self.user_info.username,
+                            requested = %path_str,
+                            resolved = %resolved.display(),
+                            canonical = %canonical.display(),
+                            root = %self.root_dir.display(),
+                            "Security: symlink escape attempt blocked"
+                        );
+                        anyhow::bail!("Access denied: symlink target outside root");
+                    }
+                    // Use the canonical path for existing files
+                    return Ok(canonical);
+                }
+                Err(e) => {
+                    // If canonicalization fails, proceed with the resolved path
+                    // This handles broken symlinks and permission issues
+                    tracing::debug!(
+                        path = %resolved.display(),
+                        error = %e,
+                        "Canonicalization failed, using resolved path"
+                    );
+                }
+            }
         }
 
         tracing::trace!(
@@ -504,8 +543,12 @@ impl ScpHandler {
             anyhow::bail!("Invalid file header: {}", header);
         }
 
-        let mode = u32::from_str_radix(parts[0], 8)
+        let raw_mode = u32::from_str_radix(parts[0], 8)
             .with_context(|| format!("Invalid mode: {}", parts[0]))?;
+        // Security: mask mode to only allow standard permission bits
+        // Prevents setuid (04000), setgid (02000), and sticky (01000) bits
+        let mode = raw_mode & 0o777;
+
         let size: u64 = parts[1]
             .parse()
             .with_context(|| format!("Invalid size: {}", parts[1]))?;
@@ -513,12 +556,19 @@ impl ScpHandler {
 
         // Security: validate filename
         if filename.contains('/') || filename == ".." || filename == "." {
-            anyhow::bail!("Invalid filename: {}", filename);
+            anyhow::bail!("Invalid filename");
         }
 
         // Check file size limit
         if size > MAX_FILE_SIZE {
-            anyhow::bail!("File too large: {} bytes (max: {} bytes)", size, MAX_FILE_SIZE);
+            tracing::warn!(
+                event = "file_size_exceeded",
+                user = %self.user_info.username,
+                size = %size,
+                max_size = %MAX_FILE_SIZE,
+                "Security: file size limit exceeded"
+            );
+            anyhow::bail!("File too large");
         }
 
         let target_path = target_dir.join(filename);
@@ -550,7 +600,6 @@ impl ScpHandler {
 
         // Receive file data
         let mut remaining = size;
-        let mut _write_buffer: Vec<u8> = Vec::with_capacity(BUFFER_SIZE);
 
         // First, use any data already in buffer
         let buffered = buffer.len().min(remaining as usize);
@@ -663,20 +712,30 @@ impl ScpHandler {
             anyhow::bail!("Access denied: path outside root");
         }
 
+        // Mask mode to only allow standard permission bits (no setuid/setgid/sticky)
+        let safe_mode = mode & 0o777;
+
         tracing::debug!(
             user = %self.user_info.username,
             path = %new_dir.display(),
-            mode = format!("{:04o}", mode),
+            mode = format!("{:04o}", safe_mode),
             "Entering directory"
         );
 
-        // Create directory if it doesn't exist
-        if !new_dir.exists() {
-            fs::create_dir(&new_dir).await?;
-            #[cfg(unix)]
-            {
-                fs::set_permissions(&new_dir, std::fs::Permissions::from_mode(mode)).await?;
+        // Create directory atomically - handles race conditions safely
+        // If directory already exists, that's fine; we just continue
+        match fs::create_dir(&new_dir).await {
+            Ok(()) => {
+                #[cfg(unix)]
+                {
+                    fs::set_permissions(&new_dir, std::fs::Permissions::from_mode(safe_mode))
+                        .await?;
+                }
             }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+                // Directory already exists, which is acceptable
+            }
+            Err(e) => return Err(e.into()),
         }
 
         Ok(new_dir)
@@ -918,6 +977,14 @@ impl ScpHandler {
                 let line = String::from_utf8_lossy(&buffer[..newline_pos]).to_string();
                 buffer.drain(..=newline_pos);
                 return Ok(Some(line));
+            }
+
+            // Check for buffer size limit to prevent DoS via memory exhaustion
+            if buffer.len() > MAX_LINE_LENGTH {
+                anyhow::bail!(
+                    "Line too long (max {} bytes) - possible DoS attempt",
+                    MAX_LINE_LENGTH
+                );
             }
 
             // Read more data
