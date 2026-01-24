@@ -419,6 +419,7 @@ dependencies = [
  "secrecy",
  "security-framework",
  "serde",
+ "serde_json",
  "serde_yaml",
  "serial_test",
  "shell-words",
@@ -594,6 +595,7 @@ dependencies = [
  "iana-time-zone",
  "js-sys",
  "num-traits",
+ "serde",
  "wasm-bindgen",
  "windows-link",
 ]

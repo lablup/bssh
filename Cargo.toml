@@ -36,7 +36,7 @@ indicatif = "0.18.3"
 rpassword = "7.4.0"
 directories = "6.0.0"
 dirs = "6.0"
-chrono = "0.4.42"
+chrono = { version = "0.4.42", features = ["serde"] }
 glob = "0.3.3"
 whoami = "2.0.1"
 owo-colors = "4.2.3"
@@ -80,6 +80,7 @@ serial_test = "3.2"
 insta = "1.44"
 criterion = { version = "0.8", features = ["html_reports"] }
 mockall = "0.14"
+serde_json = "1.0"
 
 [[bench]]
 name = "large_output_benchmark"
