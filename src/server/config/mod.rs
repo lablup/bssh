@@ -149,6 +149,10 @@ pub struct ServerConfig {
     /// Configuration for command execution.
     #[serde(default)]
     pub exec: ExecConfig,
+
+    /// Enable SCP protocol support.
+    #[serde(default = "default_true")]
+    pub scp_enabled: bool,
 }
 
 /// Serializable configuration for public key authentication.
@@ -233,6 +237,7 @@ impl Default for ServerConfig {
             publickey_auth: PublicKeyAuthConfigSerde::default(),
             password_auth: PasswordAuthConfigSerde::default(),
             exec: ExecConfig::default(),
+            scp_enabled: true,
         }
     }
 }
@@ -463,6 +468,12 @@ impl ServerConfigBuilder {
         self
     }
 
+    /// Enable or disable SCP protocol support.
+    pub fn scp_enabled(mut self, enabled: bool) -> Self {
+        self.config.scp_enabled = enabled;
+        self
+    }
+
     /// Build the ServerConfig.
     pub fn build(self) -> ServerConfig {
         self.config
@@ -521,6 +532,7 @@ impl ServerFileConfig {
                 allowed_commands: None,
                 blocked_commands: Vec::new(),
             },
+            scp_enabled: self.scp.enabled,
         }
     }
 }
@@ -538,6 +550,7 @@ mod tests {
         assert_eq!(config.max_auth_attempts, 5);
         assert!(!config.allow_password_auth);
         assert!(config.allow_publickey_auth);
+        assert!(config.scp_enabled);
     }
 
     #[test]
