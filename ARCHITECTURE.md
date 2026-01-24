@@ -213,6 +213,64 @@ Security features for the SSH server (`src/server/security/`):
   - Thread-safe with fail-closed behavior on lock contention
   - Configuration via `allowed_ips` and `blocked_ips` in server config
 
+### Audit Logging Module
+
+Comprehensive audit logging infrastructure for the SSH server (`src/server/audit/`):
+
+**Structure**:
+- `mod.rs` - `AuditManager` for collecting and distributing audit events
+- `event.rs` - `AuditEvent` type definitions and builder pattern
+- `exporter.rs` - `AuditExporter` trait and `NullExporter` implementation
+
+**Key Components**:
+
+- **AuditEvent**: Represents discrete auditable actions with fields for:
+  - Unique event ID (UUID v4)
+  - Timestamp (UTC)
+  - Event type, session ID, username, client IP
+  - File paths, bytes transferred, operation result
+  - Protocol and additional details
+
+- **EventType**: Categorizes security and operational events:
+  - Authentication: `AuthSuccess`, `AuthFailure`, `AuthRateLimited`
+  - Sessions: `SessionStart`, `SessionEnd`
+  - Commands: `CommandExecuted`, `CommandBlocked`
+  - File operations: `FileOpenRead`, `FileOpenWrite`, `FileRead`, `FileWrite`, `FileClose`, `FileUploaded`, `FileDownloaded`, `FileDeleted`, `FileRenamed`
+  - Directory operations: `DirectoryCreated`, `DirectoryDeleted`, `DirectoryListed`
+  - Filters: `TransferDenied`, `TransferAllowed`
+  - Security: `IpBlocked`, `IpUnblocked`, `SuspiciousActivity`
+
+- **EventResult**: Operation outcomes (`Success`, `Failure`, `Denied`, `Error`)
+
+- **AuditExporter Trait**: Interface for audit event destinations
+  - `export()` - Export single event
+  - `export_batch()` - Export multiple events (optimizable)
+  - `flush()` - Ensure pending events are written
+  - `close()` - Clean up resources
+
+- **NullExporter**: No-op exporter for testing and disabled audit logging
+
+- **AuditManager**: Central manager with async processing
+  - Background worker for non-blocking event processing
+  - Configurable buffering (buffer size, batch size)
+  - Periodic flush intervals
+  - Multiple exporter support
+  - Graceful shutdown with event flush
+
+**Configuration**:
+```rust
+let config = AuditConfig::new()
+    .with_enabled(true)
+    .with_buffer_size(1000)
+    .with_batch_size(100)
+    .with_flush_interval(5);
+```
+
+**Future Exporters** (planned):
+- File exporter for local audit logs
+- OpenTelemetry exporter for distributed tracing
+- Logstash exporter for centralized logging
+
 ### Server CLI Binary
 **Binary**: `bssh-server`
 
@@ -274,6 +332,7 @@ SSH server implementation using the russh library for accepting incoming connect
 - `exec.rs` - Command execution for SSH exec requests
 - `sftp.rs` - SFTP subsystem handler with path traversal prevention
 - `auth/` - Authentication provider infrastructure
+- `audit/` - Audit logging infrastructure (event types, exporters, manager)
 
 **Key Components**:
 
