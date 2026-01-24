@@ -17,16 +17,117 @@
 //! This module provides matchers that work with file path structure:
 //! - [`PrefixMatcher`] - Matches paths that start with a given prefix
 //! - [`ExactMatcher`] - Matches paths that exactly equal a given path
+//! - [`ComponentMatcher`] - Matches paths containing a specific component
+//! - [`ExtensionMatcher`] - Matches paths by file extension
+//!
+//! # Security Considerations
+//!
+//! ## Path Traversal
+//!
+//! These matchers operate on the paths as provided. For security-sensitive
+//! filtering, callers should normalize paths before matching to prevent
+//! bypass via path traversal sequences like `..` or symlinks.
+//!
+//! Use [`normalize_path`] to remove `.` and `..` components logically, or
+//! use `std::fs::canonicalize` if the path exists on the filesystem and you
+//! need symlink resolution.
+//!
+//! ## Example: Secure Usage
+//!
+//! ```rust
+//! use std::path::Path;
+//! use bssh::server::filter::path::{normalize_path, PrefixMatcher};
+//! use bssh::server::filter::policy::Matcher;
+//!
+//! let matcher = PrefixMatcher::new("/etc");
+//! let user_path = Path::new("/var/../etc/passwd");
+//!
+//! // Without normalization - BYPASS!
+//! assert!(!matcher.matches(user_path)); // Does NOT match /etc
+//!
+//! // With normalization - SECURE
+//! let normalized = normalize_path(user_path);
+//! assert!(matcher.matches(&normalized)); // Correctly matches /etc
+//! ```
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use super::policy::Matcher;
+
+/// Normalizes a path by resolving `.` and `..` components logically.
+///
+/// This function does NOT access the filesystem, so:
+/// - It works on non-existent paths
+/// - It does NOT resolve symlinks
+/// - It normalizes paths purely based on their string representation
+///
+/// For paths where symlink resolution is needed, use `std::fs::canonicalize`
+/// instead (but note that it requires the path to exist).
+///
+/// # Security Note
+///
+/// This function should be called on user-provided paths BEFORE passing them
+/// to matchers, to prevent path traversal attacks.
+///
+/// # Examples
+///
+/// ```rust
+/// use std::path::Path;
+/// use bssh::server::filter::path::normalize_path;
+///
+/// assert_eq!(normalize_path(Path::new("/etc/../var")), Path::new("/var"));
+/// assert_eq!(normalize_path(Path::new("/etc/./passwd")), Path::new("/etc/passwd"));
+/// assert_eq!(normalize_path(Path::new("foo/../bar")), Path::new("bar"));
+/// ```
+pub fn normalize_path(path: &Path) -> PathBuf {
+    let mut result = PathBuf::new();
+    
+    for component in path.components() {
+        match component {
+            Component::Prefix(p) => result.push(p.as_os_str()),
+            Component::RootDir => result.push(Component::RootDir.as_os_str()),
+            Component::CurDir => {} // Skip "."
+            Component::ParentDir => {
+                // Pop if we can, otherwise keep ".." for relative paths
+                if result.parent().is_some() && result != Path::new("/") {
+                    result.pop();
+                } else if !result.is_absolute() {
+                    result.push("..");
+                }
+                // If at root, ignore ".."
+            }
+            Component::Normal(name) => result.push(name),
+        }
+    }
+    
+    if result.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        result
+    }
+}
 
 /// Matches paths that start with a given prefix.
 ///
 /// This matcher is useful for blocking or allowing entire directory trees.
-/// The match is performed on normalized paths to handle trailing slashes
-/// and other path variations.
+///
+/// # Security Warning
+///
+/// This matcher operates on paths as provided. To prevent path traversal
+/// attacks, normalize the input path using [`normalize_path`] before matching.
+///
+/// ```rust
+/// use std::path::Path;
+/// use bssh::server::filter::path::{normalize_path, PrefixMatcher};
+/// use bssh::server::filter::policy::Matcher;
+///
+/// let matcher = PrefixMatcher::new("/etc");
+/// let attack_path = Path::new("/var/../etc/shadow");
+///
+/// // Normalize to prevent bypass
+/// let safe_path = normalize_path(attack_path);
+/// assert!(matcher.matches(&safe_path)); // Now correctly blocked
+/// ```
 ///
 /// # Example
 ///
@@ -395,3 +496,50 @@ mod tests {
         assert!(extension.matches(test_path));
     }
 }
+
+    #[test]
+    fn test_normalize_path_removes_dot() {
+        assert_eq!(normalize_path(Path::new("/etc/./passwd")), Path::new("/etc/passwd"));
+        assert_eq!(normalize_path(Path::new("./foo/./bar")), Path::new("foo/bar"));
+    }
+
+    #[test]
+    fn test_normalize_path_resolves_parent() {
+        assert_eq!(normalize_path(Path::new("/etc/../var")), Path::new("/var"));
+        assert_eq!(normalize_path(Path::new("/etc/ssh/../passwd")), Path::new("/etc/passwd"));
+        assert_eq!(normalize_path(Path::new("/a/b/c/../../d")), Path::new("/a/d"));
+    }
+
+    #[test]
+    fn test_normalize_path_traversal_at_root() {
+        // At root, .. should be ignored
+        assert_eq!(normalize_path(Path::new("/../etc/passwd")), Path::new("/etc/passwd"));
+        assert_eq!(normalize_path(Path::new("/../../etc")), Path::new("/etc"));
+    }
+
+    #[test]
+    fn test_normalize_path_relative() {
+        assert_eq!(normalize_path(Path::new("foo/../bar")), Path::new("bar"));
+        assert_eq!(normalize_path(Path::new("../foo")), Path::new("../foo"));
+    }
+
+    #[test]
+    fn test_normalize_path_empty() {
+        assert_eq!(normalize_path(Path::new("")), Path::new("."));
+        assert_eq!(normalize_path(Path::new(".")), Path::new("."));
+    }
+
+    #[test]
+    fn test_normalize_path_security() {
+        // This is the key security test: path traversal should be normalized
+        let matcher = PrefixMatcher::new("/etc");
+        
+        // Without normalization, this would NOT match /etc (attack succeeds)
+        let attack_path = Path::new("/var/../etc/passwd");
+        assert!(!matcher.matches(attack_path)); // Raw path doesn't match
+        
+        // With normalization, it correctly matches /etc (attack blocked)
+        let normalized = normalize_path(attack_path);
+        assert!(matcher.matches(&normalized)); // Normalized path matches
+        assert_eq!(normalized, Path::new("/etc/passwd"));
+    }
