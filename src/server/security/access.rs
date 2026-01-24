@@ -336,14 +336,18 @@ impl SharedIpAccessControl {
     /// Check if an IP address is allowed (blocking version).
     ///
     /// This is useful when you need to check access in a synchronous context.
+    /// On lock contention, defaults to DENY for security (fail-closed).
     pub fn check_sync(&self, ip: &IpAddr) -> AccessPolicy {
         // Try to acquire read lock without blocking
         if let Ok(guard) = self.inner.try_read() {
             return guard.check(ip);
         }
-        // If lock is contended, default to allow to avoid blocking
-        tracing::warn!("Access control lock contended, defaulting to allow");
-        AccessPolicy::Allow
+        // Fail-closed: deny on lock contention to prevent security bypass
+        tracing::warn!(
+            ip = %ip,
+            "Access control lock contended, denying for security"
+        );
+        AccessPolicy::Deny
     }
 
     /// Block an IP address at runtime.
