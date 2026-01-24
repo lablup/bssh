@@ -34,7 +34,9 @@ use super::exec::CommandExecutor;
 use super::pty::PtyConfig as PtyMasterConfig;
 use super::scp::{ScpCommand, ScpHandler};
 use super::security::AuthRateLimiter;
-use super::session::{ChannelState, PtyConfig, SessionId, SessionInfo, SessionManager};
+use super::session::{
+    ChannelState, PtyConfig, SessionError, SessionId, SessionInfo, SessionManager,
+};
 use super::sftp::SftpHandler;
 use super::shell::ShellSession;
 use crate::shared::rate_limit::RateLimiter;
@@ -364,6 +366,7 @@ impl russh::server::Handler for SshHandler {
 
         // Clone what we need for the async block
         let auth_provider = Arc::clone(&self.auth_provider);
+        let sessions = Arc::clone(&self.sessions);
         let rate_limiter = self.rate_limiter.clone();
         let auth_rate_limiter = self.auth_rate_limiter.clone();
         let peer_addr = self.peer_addr;
@@ -443,9 +446,41 @@ impl russh::server::Handler for SshHandler {
                         "Public key authentication successful"
                     );
 
-                    // Mark session as authenticated
-                    if let Some(ref mut info) = session_info {
-                        info.authenticate(&user);
+                    // Try to authenticate session with per-user limits
+                    if let Some(ref info) = session_info {
+                        let mut sessions_guard = sessions.write().await;
+                        match sessions_guard.authenticate_session(info.id, &user) {
+                            Ok(()) => {
+                                // Also update local session info
+                                drop(sessions_guard);
+                                if let Some(ref mut local_info) = session_info {
+                                    local_info.authenticate(&user);
+                                }
+                            }
+                            Err(SessionError::TooManyUserSessions { user: u, limit }) => {
+                                tracing::warn!(
+                                    user = %u,
+                                    limit = limit,
+                                    peer = ?peer_addr,
+                                    "Per-user session limit reached, rejecting authentication"
+                                );
+                                return Ok(Auth::Reject {
+                                    proceed_with_methods: None,
+                                    partial_success: false,
+                                });
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    user = %user,
+                                    error = %e,
+                                    "Failed to authenticate session"
+                                );
+                                return Ok(Auth::Reject {
+                                    proceed_with_methods: None,
+                                    partial_success: false,
+                                });
+                            }
+                        }
                     }
 
                     // Record success to reset failure counter
@@ -547,6 +582,7 @@ impl russh::server::Handler for SshHandler {
 
         // Clone what we need for the async block
         let auth_provider = Arc::clone(&self.auth_provider);
+        let sessions = Arc::clone(&self.sessions);
         let rate_limiter = self.rate_limiter.clone();
         let auth_rate_limiter = self.auth_rate_limiter.clone();
         let peer_addr = self.peer_addr;
@@ -644,9 +680,41 @@ impl russh::server::Handler for SshHandler {
                         "Password authentication successful"
                     );
 
-                    // Mark session as authenticated
-                    if let Some(ref mut info) = session_info {
-                        info.authenticate(&user);
+                    // Try to authenticate session with per-user limits
+                    if let Some(ref info) = session_info {
+                        let mut sessions_guard = sessions.write().await;
+                        match sessions_guard.authenticate_session(info.id, &user) {
+                            Ok(()) => {
+                                // Also update local session info
+                                drop(sessions_guard);
+                                if let Some(ref mut local_info) = session_info {
+                                    local_info.authenticate(&user);
+                                }
+                            }
+                            Err(SessionError::TooManyUserSessions { user: u, limit }) => {
+                                tracing::warn!(
+                                    user = %u,
+                                    limit = limit,
+                                    peer = ?peer_addr,
+                                    "Per-user session limit reached, rejecting authentication"
+                                );
+                                return Ok(Auth::Reject {
+                                    proceed_with_methods: None,
+                                    partial_success: false,
+                                });
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    user = %user,
+                                    error = %e,
+                                    "Failed to authenticate session"
+                                );
+                                return Ok(Auth::Reject {
+                                    proceed_with_methods: None,
+                                    partial_success: false,
+                                });
+                            }
+                        }
                     }
 
                     // Record success to reset failure counter
@@ -1402,22 +1470,36 @@ impl Drop for SshHandler {
                 "Session ended"
             );
 
-            // Remove session from manager
-            // Note: This uses try_write which is safe here because:
-            // 1. Drop is called outside of async context (during connection cleanup)
-            // 2. The lock is held only briefly to remove the session
-            // 3. This prevents resource leaks by ensuring cleanup always happens
-            if let Ok(mut sessions_guard) = self.sessions.try_write() {
-                sessions_guard.remove(session_id);
-                tracing::debug!(
-                    session_id = %session_id,
-                    "Session removed from manager"
-                );
-            } else {
-                tracing::warn!(
-                    session_id = %session_id,
-                    "Failed to acquire lock to remove session (lock contention)"
-                );
+            // Remove session from manager with retry mechanism
+            // We use try_write with retries to ensure cleanup even under contention.
+            // This is important to prevent session leaks that could exhaust limits.
+            let mut retries = 0;
+            const MAX_RETRIES: u32 = 5;
+
+            loop {
+                if let Ok(mut sessions_guard) = self.sessions.try_write() {
+                    sessions_guard.remove(session_id);
+                    tracing::debug!(
+                        session_id = %session_id,
+                        retries = retries,
+                        "Session removed from manager"
+                    );
+                    break;
+                }
+
+                retries += 1;
+                if retries >= MAX_RETRIES {
+                    tracing::error!(
+                        session_id = %session_id,
+                        retries = retries,
+                        "Failed to remove session after max retries - session may leak"
+                    );
+                    break;
+                }
+
+                // Brief delay before retry (exponential backoff in microseconds)
+                // This is safe in Drop as we're in a sync context
+                std::thread::sleep(std::time::Duration::from_micros(100 * (1 << retries)));
             }
         }
     }

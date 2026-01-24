@@ -183,6 +183,23 @@ pub struct ServerConfig {
     /// Blocked IPs take priority over allowed IPs.
     #[serde(default)]
     pub blocked_ips: Vec<String>,
+
+    /// Maximum number of concurrent sessions per user.
+    ///
+    /// Default: 10
+    #[serde(default = "default_max_sessions_per_user")]
+    pub max_sessions_per_user: usize,
+
+    /// Maximum session duration in seconds (optional).
+    ///
+    /// If set to 0, sessions have no maximum duration.
+    /// Default: 0 (disabled)
+    #[serde(default)]
+    pub session_timeout_secs: u64,
+}
+
+fn default_max_sessions_per_user() -> usize {
+    10
 }
 
 /// Serializable configuration for public key authentication.
@@ -281,6 +298,8 @@ impl Default for ServerConfig {
             whitelist_ips: Vec::new(),
             allowed_ips: Vec::new(),
             blocked_ips: Vec::new(),
+            max_sessions_per_user: default_max_sessions_per_user(),
+            session_timeout_secs: 0,
         }
     }
 }
@@ -310,6 +329,34 @@ impl ServerConfig {
         } else {
             Some(Duration::from_secs(self.idle_timeout_secs))
         }
+    }
+
+    /// Get the session timeout as a Duration.
+    ///
+    /// Returns `None` if session timeout is disabled (set to 0).
+    pub fn session_timeout(&self) -> Option<Duration> {
+        if self.session_timeout_secs == 0 {
+            None
+        } else {
+            Some(Duration::from_secs(self.session_timeout_secs))
+        }
+    }
+
+    /// Create a SessionConfig from the server configuration.
+    pub fn session_config(&self) -> super::session::SessionConfig {
+        let mut config = super::session::SessionConfig::new()
+            .with_max_sessions_per_user(self.max_sessions_per_user)
+            .with_max_total_sessions(self.max_connections);
+
+        if self.idle_timeout_secs > 0 {
+            config = config.with_idle_timeout(Duration::from_secs(self.idle_timeout_secs));
+        }
+
+        if self.session_timeout_secs > 0 {
+            config = config.with_session_timeout(Duration::from_secs(self.session_timeout_secs));
+        }
+
+        config
     }
 
     /// Check if any host keys are configured.
@@ -517,6 +564,18 @@ impl ServerConfigBuilder {
         self
     }
 
+    /// Set the maximum sessions per user.
+    pub fn max_sessions_per_user(mut self, max: usize) -> Self {
+        self.config.max_sessions_per_user = max;
+        self
+    }
+
+    /// Set the session timeout in seconds.
+    pub fn session_timeout_secs(mut self, secs: u64) -> Self {
+        self.config.session_timeout_secs = secs;
+        self
+    }
+
     /// Build the ServerConfig.
     pub fn build(self) -> ServerConfig {
         self.config
@@ -581,6 +640,8 @@ impl ServerFileConfig {
             whitelist_ips: self.security.whitelist_ips,
             allowed_ips: self.security.allowed_ips,
             blocked_ips: self.security.blocked_ips,
+            max_sessions_per_user: self.security.max_sessions_per_user,
+            session_timeout_secs: self.security.session_timeout,
         }
     }
 }

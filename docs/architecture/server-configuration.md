@@ -192,6 +192,10 @@ security:
   # Idle session timeout (seconds, 0 to disable)
   idle_timeout: 3600           # Default: 3600 (1 hour)
 
+  # Maximum session duration (seconds, 0 to disable)
+  # Sessions are terminated after this duration regardless of activity
+  session_timeout: 0           # Default: 0 (disabled)
+
   # IP allowlist (CIDR notation, empty = allow all)
   # When configured, only connections from these ranges are allowed
   allowed_ips:
@@ -640,6 +644,100 @@ scp -p important.doc user@bssh-server:/backup/
 # Recursive with timestamps
 scp -rp ./data/ user@bssh-server:/storage/backup/
 ```
+
+---
+
+## Session Management
+
+The server implements comprehensive session management with per-user limits, idle timeout detection, and session tracking.
+
+### Session Configuration
+
+Session management is configured through the `SessionConfig` structure:
+
+```rust
+use bssh::server::session::SessionConfig;
+use std::time::Duration;
+
+let config = SessionConfig::new()
+    .with_max_sessions_per_user(10)      // Max sessions per authenticated user
+    .with_max_total_sessions(1000)       // Max total concurrent sessions
+    .with_idle_timeout(Duration::from_secs(3600))    // 1 hour idle timeout
+    .with_session_timeout(Duration::from_secs(86400)); // 24 hour max duration
+```
+
+### Session Limits
+
+**Per-User Session Limits:**
+- Each authenticated user has a configurable maximum number of concurrent sessions
+- When a user exceeds their limit, authentication is rejected with an error
+- Default: 10 sessions per user
+
+**Total Session Limits:**
+- The server enforces a global maximum number of concurrent sessions
+- New connections are rejected when the limit is reached
+- Default: 1000 total sessions (matches `max_connections`)
+
+### Session Timeouts
+
+**Idle Timeout:**
+- Sessions with no activity for the configured duration are marked as idle
+- The `cleanup_idle_sessions()` method removes idle unauthenticated sessions
+- Default: 1 hour (3600 seconds)
+
+**Session Timeout:**
+- Optional maximum session duration regardless of activity
+- Sessions exceeding this duration are eligible for termination
+- Default: disabled (0)
+
+### Session Activity Tracking
+
+Each session tracks:
+- **Session ID**: Unique identifier for the session
+- **User**: Authenticated username (if authenticated)
+- **Peer Address**: Remote client IP and port
+- **Started At**: Timestamp of session creation
+- **Last Activity**: Timestamp of last activity (updated via `touch()`)
+- **Authentication State**: Whether the session is authenticated
+- **Auth Attempts**: Number of authentication attempts
+
+### Session Statistics
+
+The `SessionManager` provides session statistics:
+
+```rust
+let stats = manager.get_stats();
+println!("Total sessions: {}", stats.total_sessions);
+println!("Authenticated: {}", stats.authenticated_sessions);
+println!("Unique users: {}", stats.unique_users);
+println!("Idle sessions: {}", stats.idle_sessions);
+```
+
+### Admin Operations
+
+The session manager supports administrative operations:
+
+```rust
+// List all sessions
+let sessions = manager.list_sessions();
+
+// List sessions for a specific user
+let user_sessions = manager.list_user_sessions("username");
+
+// Force disconnect a session
+manager.kill_session(session_id);
+
+// Force disconnect all sessions for a user
+let count = manager.kill_user_sessions("username");
+```
+
+### Configuration Validation
+
+The `SessionConfig::validate()` method checks for potentially problematic settings and returns warnings:
+
+- Warning if `max_sessions_per_user` > `max_total_sessions` (per-user limit will never be reached)
+- Warning if `idle_timeout` is 0 (sessions immediately considered idle)
+- Warning if `session_timeout` < `idle_timeout` (sessions may be terminated before idle check)
 
 ---
 

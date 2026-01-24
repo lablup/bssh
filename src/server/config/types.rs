@@ -393,7 +393,7 @@ pub struct SecurityConfig {
     /// Maximum number of concurrent sessions per user.
     ///
     /// Default: 10
-    #[serde(default = "default_max_sessions")]
+    #[serde(default = "default_max_sessions_per_user")]
     pub max_sessions_per_user: usize,
 
     /// Idle session timeout in seconds.
@@ -404,6 +404,15 @@ pub struct SecurityConfig {
     /// Default: 3600 (1 hour)
     #[serde(default = "default_idle_timeout")]
     pub idle_timeout: u64,
+
+    /// Maximum session duration in seconds (optional).
+    ///
+    /// If set, sessions are terminated after this duration regardless of activity.
+    /// Set to 0 to disable.
+    ///
+    /// Default: 0 (disabled)
+    #[serde(default)]
+    pub session_timeout: u64,
 
     /// Allowed IP ranges in CIDR notation.
     ///
@@ -473,7 +482,7 @@ fn default_ban_time() -> u64 {
     300
 }
 
-fn default_max_sessions() -> usize {
+fn default_max_sessions_per_user() -> usize {
     10
 }
 
@@ -540,8 +549,9 @@ impl Default for SecurityConfig {
             auth_window: default_auth_window(),
             ban_time: default_ban_time(),
             whitelist_ips: Vec::new(),
-            max_sessions_per_user: default_max_sessions(),
+            max_sessions_per_user: default_max_sessions_per_user(),
             idle_timeout: default_idle_timeout(),
+            session_timeout: 0,
             allowed_ips: Vec::new(),
             blocked_ips: Vec::new(),
         }
