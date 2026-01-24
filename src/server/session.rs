@@ -110,20 +110,32 @@ impl Default for SessionConfig {
 }
 
 impl SessionConfig {
+    /// Minimum allowed value for max_sessions_per_user.
+    pub const MIN_SESSIONS_PER_USER: usize = 1;
+
+    /// Minimum allowed value for max_total_sessions.
+    pub const MIN_TOTAL_SESSIONS: usize = 1;
+
     /// Create a new session configuration with default values.
     pub fn new() -> Self {
         Self::default()
     }
 
     /// Set the maximum sessions per user.
+    ///
+    /// The value is clamped to a minimum of 1 to prevent misconfiguration
+    /// that would deny all users from authenticating.
     pub fn with_max_sessions_per_user(mut self, max: usize) -> Self {
-        self.max_sessions_per_user = max;
+        self.max_sessions_per_user = max.max(Self::MIN_SESSIONS_PER_USER);
         self
     }
 
     /// Set the maximum total sessions.
+    ///
+    /// The value is clamped to a minimum of 1 to prevent misconfiguration
+    /// that would deny all connections.
     pub fn with_max_total_sessions(mut self, max: usize) -> Self {
-        self.max_total_sessions = max;
+        self.max_total_sessions = max.max(Self::MIN_TOTAL_SESSIONS);
         self
     }
 
@@ -137,6 +149,35 @@ impl SessionConfig {
     pub fn with_session_timeout(mut self, timeout: Duration) -> Self {
         self.session_timeout = Some(timeout);
         self
+    }
+
+    /// Validate the configuration and return any warnings.
+    ///
+    /// Returns a list of warning messages for potentially problematic settings.
+    pub fn validate(&self) -> Vec<String> {
+        let mut warnings = Vec::new();
+
+        if self.max_sessions_per_user > self.max_total_sessions {
+            warnings.push(format!(
+                "max_sessions_per_user ({}) > max_total_sessions ({}) - per-user limit will never be reached",
+                self.max_sessions_per_user, self.max_total_sessions
+            ));
+        }
+
+        if self.idle_timeout.as_secs() == 0 {
+            warnings.push("idle_timeout is 0 - sessions will be immediately considered idle".to_string());
+        }
+
+        if let Some(session_timeout) = self.session_timeout {
+            if session_timeout < self.idle_timeout {
+                warnings.push(format!(
+                    "session_timeout ({:?}) < idle_timeout ({:?}) - sessions may be terminated before idle check",
+                    session_timeout, self.idle_timeout
+                ));
+            }
+        }
+
+        warnings
     }
 }
 
@@ -181,9 +222,13 @@ pub struct SessionId(u64);
 
 impl SessionId {
     /// Create a new unique session ID.
+    ///
+    /// Uses `Ordering::SeqCst` to ensure session IDs are strictly ordered
+    /// across all threads, preventing potential confusion in logging and
+    /// debugging when sessions appear out of order.
     pub fn new() -> Self {
         static COUNTER: AtomicU64 = AtomicU64::new(1);
-        Self(COUNTER.fetch_add(1, Ordering::Relaxed))
+        Self(COUNTER.fetch_add(1, Ordering::SeqCst))
     }
 
     /// Get the raw numeric value of the session ID.
@@ -966,6 +1011,41 @@ mod tests {
         assert_eq!(config.max_total_sessions, 500);
         assert_eq!(config.idle_timeout, Duration::from_secs(1800));
         assert_eq!(config.session_timeout, Some(Duration::from_secs(86400)));
+    }
+
+    #[test]
+    fn test_session_config_validation_clamping() {
+        // Setting max_sessions_per_user to 0 should clamp to 1
+        let config = SessionConfig::new().with_max_sessions_per_user(0);
+        assert_eq!(config.max_sessions_per_user, 1);
+
+        // Setting max_total_sessions to 0 should clamp to 1
+        let config = SessionConfig::new().with_max_total_sessions(0);
+        assert_eq!(config.max_total_sessions, 1);
+    }
+
+    #[test]
+    fn test_session_config_validate() {
+        // Valid config should have no warnings
+        let config = SessionConfig::new();
+        let warnings = config.validate();
+        assert!(warnings.is_empty());
+
+        // Per-user > total should warn
+        let config = SessionConfig::new()
+            .with_max_sessions_per_user(100)
+            .with_max_total_sessions(10);
+        let warnings = config.validate();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("per-user limit"));
+
+        // Session timeout < idle timeout should warn
+        let config = SessionConfig::new()
+            .with_idle_timeout(Duration::from_secs(3600))
+            .with_session_timeout(Duration::from_secs(1800));
+        let warnings = config.validate();
+        assert_eq!(warnings.len(), 1);
+        assert!(warnings[0].contains("session_timeout"));
     }
 
     #[test]

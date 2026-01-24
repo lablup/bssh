@@ -1393,22 +1393,36 @@ impl Drop for SshHandler {
                 "Session ended"
             );
 
-            // Remove session from manager
-            // Note: This uses try_write which is safe here because:
-            // 1. Drop is called outside of async context (during connection cleanup)
-            // 2. The lock is held only briefly to remove the session
-            // 3. This prevents resource leaks by ensuring cleanup always happens
-            if let Ok(mut sessions_guard) = self.sessions.try_write() {
-                sessions_guard.remove(session_id);
-                tracing::debug!(
-                    session_id = %session_id,
-                    "Session removed from manager"
-                );
-            } else {
-                tracing::warn!(
-                    session_id = %session_id,
-                    "Failed to acquire lock to remove session (lock contention)"
-                );
+            // Remove session from manager with retry mechanism
+            // We use try_write with retries to ensure cleanup even under contention.
+            // This is important to prevent session leaks that could exhaust limits.
+            let mut retries = 0;
+            const MAX_RETRIES: u32 = 5;
+
+            loop {
+                if let Ok(mut sessions_guard) = self.sessions.try_write() {
+                    sessions_guard.remove(session_id);
+                    tracing::debug!(
+                        session_id = %session_id,
+                        retries = retries,
+                        "Session removed from manager"
+                    );
+                    break;
+                }
+
+                retries += 1;
+                if retries >= MAX_RETRIES {
+                    tracing::error!(
+                        session_id = %session_id,
+                        retries = retries,
+                        "Failed to remove session after max retries - session may leak"
+                    );
+                    break;
+                }
+
+                // Brief delay before retry (exponential backoff in microseconds)
+                // This is safe in Drop as we're in a sync context
+                std::thread::sleep(std::time::Duration::from_micros(100 * (1 << retries)));
             }
         }
     }
