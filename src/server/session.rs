@@ -165,7 +165,9 @@ impl SessionConfig {
         }
 
         if self.idle_timeout.as_secs() == 0 {
-            warnings.push("idle_timeout is 0 - sessions will be immediately considered idle".to_string());
+            warnings.push(
+                "idle_timeout is 0 - sessions will be immediately considered idle".to_string(),
+            );
         }
 
         if let Some(session_timeout) = self.session_timeout {
@@ -1230,7 +1232,7 @@ mod tests {
         let mut manager = SessionManager::with_config(config);
 
         let s1 = manager.create_session(Some(test_addr())).unwrap();
-        let s2 = manager.create_session(Some(test_addr())).unwrap();
+        let _s2 = manager.create_session(Some(test_addr())).unwrap();
 
         manager.authenticate_session(s1.id, "user1").unwrap();
 

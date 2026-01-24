@@ -33,7 +33,9 @@ use super::config::ServerConfig;
 use super::exec::CommandExecutor;
 use super::pty::PtyConfig as PtyMasterConfig;
 use super::security::AuthRateLimiter;
-use super::session::{ChannelState, PtyConfig, SessionError, SessionId, SessionInfo, SessionManager};
+use super::session::{
+    ChannelState, PtyConfig, SessionError, SessionId, SessionInfo, SessionManager,
+};
 use super::sftp::SftpHandler;
 use super::shell::ShellSession;
 use crate::shared::rate_limit::RateLimiter;
