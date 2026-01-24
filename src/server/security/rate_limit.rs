@@ -18,7 +18,7 @@
 //! against brute-force attacks. It tracks failed authentication attempts per IP
 //! and automatically bans IPs that exceed the configured threshold.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -31,6 +31,7 @@ use tokio::sync::RwLock;
 /// - `window`: Time window for counting attempts
 /// - `ban_duration`: How long to ban an IP
 /// - `whitelist`: IPs that are never banned
+/// - `max_tracked_ips`: Maximum IPs to track (prevents memory exhaustion)
 #[derive(Debug, Clone)]
 pub struct AuthRateLimitConfig {
     /// Maximum failed attempts before ban.
@@ -39,8 +40,11 @@ pub struct AuthRateLimitConfig {
     pub window: Duration,
     /// Ban duration after exceeding max attempts.
     pub ban_duration: Duration,
-    /// Whitelist IPs (never banned).
-    pub whitelist: Vec<IpAddr>,
+    /// Whitelist IPs (never banned). Uses HashSet for O(1) lookups.
+    pub whitelist: HashSet<IpAddr>,
+    /// Maximum number of IPs to track (prevents memory exhaustion).
+    /// When exceeded, oldest entries are removed.
+    pub max_tracked_ips: usize,
 }
 
 impl Default for AuthRateLimitConfig {
@@ -49,7 +53,8 @@ impl Default for AuthRateLimitConfig {
             max_attempts: 5,
             window: Duration::from_secs(300),      // 5 minutes
             ban_duration: Duration::from_secs(300), // 5 minutes
-            whitelist: vec![],
+            whitelist: HashSet::new(),
+            max_tracked_ips: 10000, // Limit memory usage
         }
     }
 }
@@ -67,20 +72,25 @@ impl AuthRateLimitConfig {
             max_attempts,
             window: Duration::from_secs(window_secs),
             ban_duration: Duration::from_secs(ban_duration_secs),
-            whitelist: vec![],
+            whitelist: HashSet::new(),
+            max_tracked_ips: 10000,
         }
     }
 
     /// Add an IP to the whitelist.
     pub fn add_whitelist(&mut self, ip: IpAddr) {
-        if !self.whitelist.contains(&ip) {
-            self.whitelist.push(ip);
-        }
+        self.whitelist.insert(ip);
     }
 
     /// Set the whitelist from a list of IPs.
     pub fn with_whitelist(mut self, whitelist: Vec<IpAddr>) -> Self {
-        self.whitelist = whitelist;
+        self.whitelist = whitelist.into_iter().collect();
+        self
+    }
+
+    /// Set the maximum number of IPs to track.
+    pub fn with_max_tracked_ips(mut self, max: usize) -> Self {
+        self.max_tracked_ips = max;
         self
     }
 }
@@ -168,28 +178,57 @@ impl AuthRateLimiter {
             return false;
         }
 
-        let mut failures = self.failures.write().await;
-        let now = Instant::now();
+        let should_ban;
+        {
+            let mut failures = self.failures.write().await;
+            let now = Instant::now();
 
-        let record = failures.entry(ip).or_insert_with(|| FailureRecord {
-            count: 0,
-            first_failure: now,
-            last_failure: now,
-        });
+            // Enforce capacity limit to prevent memory exhaustion
+            // If at capacity and this is a new IP, remove oldest entry
+            if failures.len() >= self.config.max_tracked_ips && !failures.contains_key(&ip) {
+                // Find and remove the oldest entry by last_failure time
+                if let Some(oldest_ip) = failures
+                    .iter()
+                    .min_by_key(|(_, record)| record.last_failure)
+                    .map(|(ip, _)| *ip)
+                {
+                    failures.remove(&oldest_ip);
+                    tracing::debug!(
+                        removed_ip = %oldest_ip,
+                        capacity = self.config.max_tracked_ips,
+                        "Removed oldest failure record due to capacity limit"
+                    );
+                }
+            }
 
-        // Reset if window expired
-        if now.duration_since(record.first_failure) > self.config.window {
-            record.count = 1;
-            record.first_failure = now;
-        } else {
-            record.count += 1;
-        }
-        record.last_failure = now;
+            let record = failures.entry(ip).or_insert_with(|| FailureRecord {
+                count: 0,
+                first_failure: now,
+                last_failure: now,
+            });
 
-        // Check if should ban
-        if record.count >= self.config.max_attempts {
-            drop(failures); // Release lock before acquiring ban lock
-            self.ban(ip).await;
+            // Reset if window expired
+            if now.duration_since(record.first_failure) > self.config.window {
+                record.count = 1;
+                record.first_failure = now;
+            } else {
+                record.count += 1;
+            }
+            record.last_failure = now;
+
+            // Check if should ban - record the decision while holding the lock
+            should_ban = record.count >= self.config.max_attempts;
+
+            // If banning, remove from failures while we still hold the lock
+            // This prevents race conditions with concurrent record_failure calls
+            if should_ban {
+                failures.remove(&ip);
+            }
+        } // failures lock released here
+
+        // Now apply the ban if needed
+        if should_ban {
+            self.ban_internal(ip).await;
             return true;
         }
 
@@ -209,6 +248,18 @@ impl AuthRateLimiter {
     /// The IP will be banned for the configured ban duration.
     /// Also clears the failure record for the IP.
     pub async fn ban(&self, ip: IpAddr) {
+        // Clean up failure record first
+        {
+            let mut failures = self.failures.write().await;
+            failures.remove(&ip);
+        }
+
+        self.ban_internal(ip).await;
+    }
+
+    /// Internal method to apply a ban without modifying failure records.
+    /// Used by record_failure which has already cleaned up the failure record.
+    async fn ban_internal(&self, ip: IpAddr) {
         tracing::warn!(
             ip = %ip,
             duration_secs = self.config.ban_duration.as_secs(),
@@ -218,11 +269,6 @@ impl AuthRateLimiter {
         let mut bans = self.bans.write().await;
         let expiry = Instant::now() + self.config.ban_duration;
         bans.insert(ip, expiry);
-
-        // Clean up failure record
-        drop(bans);
-        let mut failures = self.failures.write().await;
-        failures.remove(&ip);
     }
 
     /// Manually unban an IP address.
@@ -462,7 +508,8 @@ mod tests {
             max_attempts: 3,
             window: Duration::from_millis(50),
             ban_duration: Duration::from_secs(300),
-            whitelist: vec![],
+            whitelist: HashSet::new(),
+            max_tracked_ips: 10000,
         };
         let limiter = AuthRateLimiter::new(config);
 
@@ -489,7 +536,8 @@ mod tests {
             max_attempts: 2,
             window: Duration::from_millis(10),
             ban_duration: Duration::from_millis(10),
-            whitelist: vec![],
+            whitelist: HashSet::new(),
+            max_tracked_ips: 10000,
         };
         let limiter = AuthRateLimiter::new(config);
 
@@ -609,5 +657,30 @@ mod tests {
         assert_eq!(limiter.config().max_attempts, 10);
         assert_eq!(limiter.config().window.as_secs(), 600);
         assert_eq!(limiter.config().ban_duration.as_secs(), 1800);
+    }
+
+    #[tokio::test]
+    async fn test_capacity_limit() {
+        // Test that capacity limit prevents unbounded memory growth
+        let config = AuthRateLimitConfig::new(5, 300, 300).with_max_tracked_ips(3);
+        let limiter = AuthRateLimiter::new(config);
+
+        let ip1: IpAddr = "192.168.1.1".parse().unwrap();
+        let ip2: IpAddr = "192.168.1.2".parse().unwrap();
+        let ip3: IpAddr = "192.168.1.3".parse().unwrap();
+        let ip4: IpAddr = "192.168.1.4".parse().unwrap();
+
+        // Record failures for first 3 IPs
+        limiter.record_failure(ip1).await;
+        limiter.record_failure(ip2).await;
+        limiter.record_failure(ip3).await;
+        assert_eq!(limiter.tracked_count().await, 3);
+
+        // Recording for 4th IP should evict the oldest
+        limiter.record_failure(ip4).await;
+        assert_eq!(limiter.tracked_count().await, 3);
+
+        // ip4 should be tracked, ip1 should be evicted (it was oldest)
+        assert_eq!(limiter.remaining_attempts(&ip4).await, 4);
     }
 }

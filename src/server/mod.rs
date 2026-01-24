@@ -217,11 +217,34 @@ impl BsshServer {
         let rate_limiter = RateLimiter::with_simple_config(100, 10.0);
 
         // Create auth rate limiter with configuration
-        let auth_rate_limiter = AuthRateLimiter::new(AuthRateLimitConfig::new(
+        // Parse whitelist IPs from config
+        let whitelist_ips: Vec<std::net::IpAddr> = self
+            .config
+            .whitelist_ips
+            .iter()
+            .filter_map(|s| {
+                s.parse().map_err(|e| {
+                    tracing::warn!(ip = %s, error = %e, "Invalid whitelist IP address in config, skipping");
+                    e
+                }).ok()
+            })
+            .collect();
+
+        let auth_config = AuthRateLimitConfig::new(
             self.config.max_auth_attempts,
-            300, // Default 5 minute window
-            300, // Default 5 minute ban
-        ));
+            self.config.auth_window_secs,
+            self.config.ban_time_secs,
+        ).with_whitelist(whitelist_ips);
+
+        let auth_rate_limiter = AuthRateLimiter::new(auth_config);
+
+        tracing::info!(
+            max_attempts = self.config.max_auth_attempts,
+            auth_window_secs = self.config.auth_window_secs,
+            ban_time_secs = self.config.ban_time_secs,
+            whitelist_count = self.config.whitelist_ips.len(),
+            "Auth rate limiter configured"
+        );
 
         // Start background cleanup task for auth rate limiter
         let cleanup_limiter = auth_rate_limiter.clone();
