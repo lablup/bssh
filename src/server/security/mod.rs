@@ -17,6 +17,7 @@
 //! This module provides security features including:
 //!
 //! - [`AuthRateLimiter`]: Authentication rate limiting with ban support (fail2ban-like)
+//! - [`IpAccessControl`]: IP-based access control (whitelist/blacklist)
 //!
 //! # Authentication Rate Limiting
 //!
@@ -51,7 +52,32 @@
 //!     limiter.record_success(&ip).await;
 //! }
 //! ```
+//!
+//! # IP-based Access Control
+//!
+//! The `IpAccessControl` provides whitelist and blacklist functionality
+//! for controlling which IP addresses can connect to the server.
+//!
+//! ## Example
+//!
+//! ```
+//! use bssh::server::security::{IpAccessControl, AccessPolicy};
+//!
+//! let mut access = IpAccessControl::new();
+//!
+//! // Allow only private networks
+//! access.allow_cidr("10.0.0.0/8").unwrap();
+//! access.allow_cidr("192.168.0.0/16").unwrap();
+//!
+//! // Block a specific subnet
+//! access.block_cidr("192.168.100.0/24").unwrap();
+//!
+//! let ip: std::net::IpAddr = "192.168.1.100".parse().unwrap();
+//! assert_eq!(access.check(&ip), AccessPolicy::Allow);
+//! ```
 
+mod access;
 mod rate_limit;
 
+pub use access::{AccessPolicy, IpAccessControl, SharedIpAccessControl};
 pub use rate_limit::{AuthRateLimitConfig, AuthRateLimiter};

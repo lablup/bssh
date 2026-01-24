@@ -70,7 +70,9 @@ pub use self::config::{ServerConfig, ServerConfigBuilder};
 pub use self::exec::{CommandExecutor, ExecConfig};
 pub use self::handler::SshHandler;
 pub use self::pty::{PtyConfig as PtyMasterConfig, PtyMaster};
-pub use self::security::{AuthRateLimitConfig, AuthRateLimiter};
+pub use self::security::{
+    AccessPolicy, AuthRateLimitConfig, AuthRateLimiter, IpAccessControl, SharedIpAccessControl,
+};
 pub use self::session::{
     ChannelMode, ChannelState, PtyConfig, SessionId, SessionInfo, SessionManager,
 };
@@ -247,6 +249,13 @@ impl BsshServer {
             "Auth rate limiter configured"
         );
 
+        // Create IP access control from configuration
+        let ip_access_control =
+            IpAccessControl::from_config(&self.config.allowed_ips, &self.config.blocked_ips)
+                .context("Failed to configure IP access control")?;
+
+        let shared_ip_access = SharedIpAccessControl::new(ip_access_control);
+
         // Start background cleanup task for auth rate limiter
         let cleanup_limiter = auth_rate_limiter.clone();
         tokio::spawn(async move {
@@ -262,6 +271,7 @@ impl BsshServer {
             sessions: Arc::clone(&self.sessions),
             rate_limiter,
             auth_rate_limiter,
+            ip_access_control: shared_ip_access,
         };
 
         // Use run_on_socket which handles the server loop
@@ -294,12 +304,53 @@ struct BsshServerRunner {
     rate_limiter: RateLimiter<String>,
     /// Auth rate limiter with ban support (fail2ban-like)
     auth_rate_limiter: AuthRateLimiter,
+    /// IP-based access control
+    ip_access_control: SharedIpAccessControl,
 }
 
 impl russh::server::Server for BsshServerRunner {
     type Handler = SshHandler;
 
     fn new_client(&mut self, peer_addr: Option<SocketAddr>) -> Self::Handler {
+        // Check IP access control before creating handler
+        if let Some(addr) = peer_addr {
+            let ip = addr.ip();
+
+            // Check IP access control (synchronous to avoid blocking)
+            if self.ip_access_control.check_sync(&ip) == AccessPolicy::Deny {
+                tracing::info!(
+                    ip = %ip,
+                    "Connection rejected by IP access control"
+                );
+                // Return a handler that will immediately reject
+                // We can't return None here due to trait constraints,
+                // so we'll mark it for rejection in the handler
+                return SshHandler::rejected(
+                    peer_addr,
+                    Arc::clone(&self.config),
+                    Arc::clone(&self.sessions),
+                );
+            }
+
+            // Check if banned by auth rate limiter
+            // Use try_read to avoid blocking in sync context
+            if let Ok(is_banned) = tokio::runtime::Handle::try_current()
+                .map(|h| h.block_on(self.auth_rate_limiter.is_banned(&ip)))
+            {
+                if is_banned {
+                    tracing::info!(
+                        ip = %ip,
+                        "Connection rejected from banned IP"
+                    );
+                    return SshHandler::rejected(
+                        peer_addr,
+                        Arc::clone(&self.config),
+                        Arc::clone(&self.sessions),
+                    );
+                }
+            }
+        }
+
         tracing::info!(
             peer = ?peer_addr,
             "New client connection"
