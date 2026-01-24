@@ -257,11 +257,7 @@ impl ScpHandler {
     }
 
     /// Create a handler from a parsed SCP command.
-    pub fn from_command(
-        cmd: &ScpCommand,
-        user_info: UserInfo,
-        root_dir: Option<PathBuf>,
-    ) -> Self {
+    pub fn from_command(cmd: &ScpCommand, user_info: UserInfo, root_dir: Option<PathBuf>) -> Self {
         let mut handler = Self::new(cmd.mode, cmd.path.clone(), user_info, root_dir);
         handler.recursive = cmd.recursive;
         handler.preserve_times = cmd.preserve_times;
@@ -463,7 +459,14 @@ impl ScpHandler {
                 b'C' => {
                     // File: C<mode> <size> <filename>
                     if let Err(e) = self
-                        .receive_file(&line, &current_dir, channel_id, &handle, &mut buffer, data_rx)
+                        .receive_file(
+                            &line,
+                            &current_dir,
+                            channel_id,
+                            &handle,
+                            &mut buffer,
+                            data_rx,
+                        )
                         .await
                     {
                         tracing::error!("Error receiving file: {}", e);
@@ -653,24 +656,19 @@ impl ScpHandler {
             buffer.remove(0);
         } else {
             // Wait for the null byte
-            loop {
-                match data_rx.recv().await {
-                    Some(data) => {
-                        if !data.is_empty() {
-                            if data[0] == 0 {
-                                // Store any remaining data
-                                if data.len() > 1 {
-                                    buffer.extend_from_slice(&data[1..]);
-                                }
-                                break;
-                            } else {
-                                // Unexpected data
-                                buffer.extend_from_slice(&data);
-                            }
-                        }
-                    }
-                    None => break,
+            while let Some(data) = data_rx.recv().await {
+                if data.is_empty() {
+                    continue;
                 }
+                if data[0] == 0 {
+                    // Store any remaining data
+                    if data.len() > 1 {
+                        buffer.extend_from_slice(&data[1..]);
+                    }
+                    break;
+                }
+                // Unexpected data
+                buffer.extend_from_slice(&data);
             }
         }
 
@@ -782,7 +780,8 @@ impl ScpHandler {
                 anyhow::bail!("Source is a directory but recursive mode not enabled");
             }
         } else if metadata.is_file() {
-            self.send_file(channel_id, &handle, &source, data_rx).await?;
+            self.send_file(channel_id, &handle, &source, data_rx)
+                .await?;
         } else {
             self.send_error(channel_id, &handle, "Not a regular file")
                 .await?;
@@ -1138,7 +1137,9 @@ mod tests {
             Some(PathBuf::from("/home/testuser")),
         );
 
-        let result = handler.resolve_path(Path::new("documents/file.txt")).unwrap();
+        let result = handler
+            .resolve_path(Path::new("documents/file.txt"))
+            .unwrap();
         assert_eq!(result, PathBuf::from("/home/testuser/documents/file.txt"));
     }
 
@@ -1152,7 +1153,9 @@ mod tests {
             Some(PathBuf::from("/home/testuser")),
         );
 
-        let result = handler.resolve_path(Path::new("/documents/file.txt")).unwrap();
+        let result = handler
+            .resolve_path(Path::new("/documents/file.txt"))
+            .unwrap();
         assert_eq!(result, PathBuf::from("/home/testuser/documents/file.txt"));
     }
 

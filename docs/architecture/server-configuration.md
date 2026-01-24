@@ -486,6 +486,120 @@ SSH Client Request Flow:
 └───────────────────┘     └─────────────────┘     └──────────────┘
 ```
 
+## SCP Protocol Handler
+
+The bssh-server supports file transfers via the SCP (Secure Copy Protocol) command. Unlike SFTP which uses a dedicated subsystem, SCP operates through SSH exec requests.
+
+### Protocol Overview
+
+SCP is not a standalone protocol but a command-line tool that communicates over SSH. When a client runs `scp file user@host:path`:
+1. The SSH client establishes a connection to the server
+2. The server receives an exec request for `scp -t path` (upload) or `scp -f path` (download)
+3. The server spawns the SCP handler to manage the file transfer
+
+### Operation Modes
+
+**Sink Mode (`-t` flag)**: Server receives files from client (upload)
+```bash
+# Client uploads file.txt to server's /tmp directory
+scp file.txt user@server:/tmp/
+```
+
+**Source Mode (`-f` flag)**: Server sends files to client (download)
+```bash
+# Client downloads file.txt from server
+scp user@server:/home/user/file.txt ./
+```
+
+### SCP Command Flags
+
+| Flag | Description |
+|------|-------------|
+| `-t` | Sink mode (target/upload) |
+| `-f` | Source mode (from/download) |
+| `-r` | Recursive transfer for directories |
+| `-p` | Preserve file modification times |
+| `-d` | Target is expected to be a directory |
+| `-v` | Verbose mode |
+
+### Security Features
+
+The SCP handler implements multiple security measures:
+
+**Path Traversal Prevention:**
+- All paths are normalized before processing
+- `..` components are resolved without escaping the root directory
+- Absolute paths are stripped and joined with the user's root directory
+
+**Symlink Escape Prevention:**
+- Existing paths are canonicalized to resolve symlinks
+- If the canonical path is outside the root directory, access is denied
+- Symlinks in recursive transfers are skipped for security
+
+**Input Validation:**
+- Filenames cannot contain `/`, `..`, or `.`
+- File size is limited to 10 GB maximum
+- Permission mode bits are masked to strip setuid/setgid/sticky bits (only 0o777 allowed)
+- Protocol line length is limited to prevent DoS via buffer exhaustion
+
+### Configuration
+
+SCP is enabled by default. To disable it:
+
+**YAML Configuration:**
+```yaml
+scp:
+  enabled: false
+```
+
+**Builder API:**
+```rust
+let config = ServerConfig::builder()
+    .scp_enabled(false)
+    .build();
+```
+
+### Handler Architecture
+
+```
+SCP Request Flow:
+┌───────────────┐     ┌──────────────────┐     ┌────────────────┐
+│  exec_request │ --> │ Parse SCP cmd    │ --> │ Create Handler │
+│  "scp -t /tmp"│     │ mode, path, flags│     │ with root_dir  │
+└───────────────┘     └──────────────────┘     └────────────────┘
+        │
+        v
+┌───────────────┐     ┌──────────────────┐     ┌────────────────┐
+│  Spawn task   │ --> │ SCP I/O loop     │ --> │ File transfer  │
+│  (async)      │     │ protocol messages│     │ operations     │
+└───────────────┘     └──────────────────┘     └────────────────┘
+        │
+        v
+┌───────────────┐     ┌──────────────────┐     ┌────────────────┐
+│  Send status  │ --> │ EOF & close      │ --> │ Channel done   │
+│  exit code    │     │ channel          │     │                │
+└───────────────┘     └──────────────────┘     └────────────────┘
+```
+
+### Usage Examples
+
+```bash
+# Upload a single file
+scp local_file.txt user@bssh-server:/home/user/
+
+# Download a file
+scp user@bssh-server:/home/user/file.txt ./
+
+# Recursive directory upload
+scp -r ./project/ user@bssh-server:/home/user/projects/
+
+# Preserve timestamps
+scp -p important.doc user@bssh-server:/backup/
+
+# Recursive with timestamps
+scp -rp ./data/ user@bssh-server:/storage/backup/
+```
+
 ---
 
 **Related Documentation:**

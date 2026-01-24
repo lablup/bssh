@@ -732,7 +732,9 @@ impl russh::server::Handler for SshHandler {
                 // The data() handler will forward data to shell_data_tx which the SCP handler
                 // will receive via data_rx
                 tokio::spawn(async move {
-                    let exit_code = scp_handler.run(channel_id, handle_clone.clone(), data_rx).await;
+                    let exit_code = scp_handler
+                        .run(channel_id, handle_clone.clone(), data_rx)
+                        .await;
 
                     // Send exit status, EOF, and close channel
                     let _ = handle_clone
