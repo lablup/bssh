@@ -66,6 +66,10 @@ pub struct SshHandler {
 
     /// Active channels for this connection.
     channels: HashMap<ChannelId, ChannelState>,
+
+    /// Whether this connection should be immediately rejected.
+    /// Set when IP access control denies the connection.
+    rejected: bool,
 }
 
 impl SshHandler {
@@ -90,6 +94,7 @@ impl SshHandler {
             auth_rate_limiter: None,
             session_info: Some(SessionInfo::new(peer_addr)),
             channels: HashMap::new(),
+            rejected: false,
         }
     }
 
@@ -114,6 +119,7 @@ impl SshHandler {
             auth_rate_limiter: None,
             session_info: Some(SessionInfo::new(peer_addr)),
             channels: HashMap::new(),
+            rejected: false,
         }
     }
 
@@ -140,6 +146,7 @@ impl SshHandler {
             auth_rate_limiter: Some(auth_rate_limiter),
             session_info: Some(SessionInfo::new(peer_addr)),
             channels: HashMap::new(),
+            rejected: false,
         }
     }
 
@@ -163,6 +170,32 @@ impl SshHandler {
             auth_rate_limiter: None,
             session_info: Some(SessionInfo::new(peer_addr)),
             channels: HashMap::new(),
+            rejected: false,
+        }
+    }
+
+    /// Create a handler for a rejected connection.
+    ///
+    /// This handler will immediately reject all authentication attempts.
+    /// Used when IP access control denies a connection.
+    pub fn rejected(
+        peer_addr: Option<SocketAddr>,
+        config: Arc<ServerConfig>,
+        sessions: Arc<RwLock<SessionManager>>,
+    ) -> Self {
+        let auth_provider = config.create_auth_provider();
+        let rate_limiter = RateLimiter::with_simple_config(1, 0.1);
+
+        Self {
+            peer_addr,
+            config,
+            sessions,
+            auth_provider,
+            rate_limiter,
+            auth_rate_limiter: None,
+            session_info: None, // No session for rejected connections
+            channels: HashMap::new(),
+            rejected: true,
         }
     }
 
@@ -246,6 +279,19 @@ impl russh::server::Handler for SshHandler {
             "Auth none attempt"
         );
 
+        // If connection was rejected by IP access control, immediately reject
+        if self.rejected {
+            tracing::debug!(
+                peer = ?self.peer_addr,
+                "Rejecting auth for IP-blocked connection"
+            );
+            return std::future::ready(Ok(Auth::Reject {
+                proceed_with_methods: None,
+                partial_success: false,
+            }))
+            .left_future();
+        }
+
         // Create session info if not already created
         let peer_addr = self.peer_addr;
         let sessions = Arc::clone(&self.sessions);
@@ -287,6 +333,7 @@ impl russh::server::Handler for SshHandler {
                 partial_success: false,
             })
         }
+        .right_future()
     }
 
     /// Handle public key authentication.

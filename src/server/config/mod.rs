@@ -165,6 +165,20 @@ pub struct ServerConfig {
     /// IP addresses that are never banned (whitelist).
     #[serde(default)]
     pub whitelist_ips: Vec<String>,
+
+    /// Allowed IP ranges in CIDR notation for connection filtering.
+    ///
+    /// If non-empty, only connections from these ranges are allowed.
+    /// Empty list means all IPs are allowed (subject to blocked_ips).
+    #[serde(default)]
+    pub allowed_ips: Vec<String>,
+
+    /// Blocked IP ranges in CIDR notation for connection filtering.
+    ///
+    /// Connections from these ranges are always denied.
+    /// Blocked IPs take priority over allowed IPs.
+    #[serde(default)]
+    pub blocked_ips: Vec<String>,
 }
 
 /// Serializable configuration for public key authentication.
@@ -260,6 +274,8 @@ impl Default for ServerConfig {
             auth_window_secs: default_auth_window_secs(),
             ban_time_secs: default_ban_time_secs(),
             whitelist_ips: Vec::new(),
+            allowed_ips: Vec::new(),
+            blocked_ips: Vec::new(),
         }
     }
 }
@@ -551,6 +567,8 @@ impl ServerFileConfig {
             auth_window_secs: self.security.auth_window,
             ban_time_secs: self.security.ban_time,
             whitelist_ips: self.security.whitelist_ips,
+            allowed_ips: self.security.allowed_ips,
+            blocked_ips: self.security.blocked_ips,
         }
     }
 }
