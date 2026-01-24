@@ -811,7 +811,9 @@ mod tests {
         assert!(matcher.pattern_description().contains("bat"));
 
         let case_sensitive = MultiExtensionMatcher::new(vec!["EXE"], true);
-        assert!(case_sensitive.pattern_description().contains("case-sensitive"));
+        assert!(case_sensitive
+            .pattern_description()
+            .contains("case-sensitive"));
     }
 
     // Tests for SizeMatcher

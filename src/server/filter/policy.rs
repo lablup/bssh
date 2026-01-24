@@ -27,7 +27,9 @@ use super::{FilterResult, Operation, TransferFilter};
 use crate::server::config::{
     CompositeLogicType, FilterAction, FilterConfig, FilterRule as FilterRuleConfig, MatcherConfig,
 };
-use crate::server::filter::path::{normalize_path, ComponentMatcher, MultiExtensionMatcher, PrefixMatcher};
+use crate::server::filter::path::{
+    normalize_path, ComponentMatcher, MultiExtensionMatcher, PrefixMatcher,
+};
 use crate::server::filter::pattern::{AllMatcher, CombinedMatcher, GlobMatcher, NotMatcher};
 
 /// Trait for path matchers.
@@ -329,10 +331,9 @@ impl FilterPolicy {
 
         // Try each matcher type
         if let Some(ref pattern) = config.pattern {
-            Ok(Box::new(
-                GlobMatcher::new(pattern)
-                    .with_context(|| format!("Invalid glob pattern: {}", pattern))?,
-            ))
+            Ok(Box::new(GlobMatcher::new(pattern).with_context(|| {
+                format!("Invalid glob pattern: {}", pattern)
+            })?))
         } else if let Some(ref prefix) = config.path_prefix {
             Ok(Box::new(PrefixMatcher::new(prefix.as_str())))
         } else if let Some(ref extensions) = config.extensions {
@@ -996,16 +997,28 @@ mod tests {
         let policy = FilterPolicy::from_config(&config).unwrap();
 
         assert_eq!(
-            policy.check(Path::new("/project/.git/config"), Operation::Download, "user"),
+            policy.check(
+                Path::new("/project/.git/config"),
+                Operation::Download,
+                "user"
+            ),
             FilterResult::Deny
         );
         assert_eq!(
-            policy.check(Path::new("/home/user/.git/HEAD"), Operation::Download, "user"),
+            policy.check(
+                Path::new("/home/user/.git/HEAD"),
+                Operation::Download,
+                "user"
+            ),
             FilterResult::Deny
         );
         // File without .git component should be allowed
         assert_eq!(
-            policy.check(Path::new("/project/src/main.rs"), Operation::Download, "user"),
+            policy.check(
+                Path::new("/project/src/main.rs"),
+                Operation::Download,
+                "user"
+            ),
             FilterResult::Allow
         );
     }
@@ -1176,13 +1189,21 @@ mod tests {
 
         // Another traversal pattern
         assert_eq!(
-            policy.check(Path::new("/home/user/../../etc/shadow"), Operation::Download, "user"),
+            policy.check(
+                Path::new("/home/user/../../etc/shadow"),
+                Operation::Download,
+                "user"
+            ),
             FilterResult::Deny
         );
 
         // Path outside /etc should be allowed
         assert_eq!(
-            policy.check(Path::new("/home/user/file.txt"), Operation::Download, "user"),
+            policy.check(
+                Path::new("/home/user/file.txt"),
+                Operation::Download,
+                "user"
+            ),
             FilterResult::Allow
         );
     }
