@@ -683,8 +683,7 @@ fn test_interactive_mode_ssh_connection_config_default() {
         "InteractiveCommand should have default keepalive interval"
     );
     assert_eq!(
-        cmd.ssh_connection_config.keepalive_max,
-        DEFAULT_KEEPALIVE_MAX,
+        cmd.ssh_connection_config.keepalive_max, DEFAULT_KEEPALIVE_MAX,
         "InteractiveCommand should have default keepalive max"
     );
 }
@@ -806,8 +805,7 @@ fn test_jump_host_chain_with_ssh_connection_config() {
         .with_keepalive_max(5);
 
     // JumpHostChain should accept the config via builder pattern
-    let _chain = JumpHostChain::direct()
-        .with_ssh_connection_config(ssh_config);
+    let _chain = JumpHostChain::direct().with_ssh_connection_config(ssh_config);
 
     // If we got here without panicking, the config was accepted correctly
 }
@@ -815,8 +813,8 @@ fn test_jump_host_chain_with_ssh_connection_config() {
 #[test]
 fn test_jump_host_chain_with_custom_keepalive_for_long_running_sessions() {
     // Test real-world use case: long-running sessions need longer keepalive
-    use bssh::jump::JumpHostChain;
     use bssh::jump::parser::JumpHost;
+    use bssh::jump::JumpHostChain;
     use std::time::Duration;
 
     // For long-running interactive sessions, use longer keepalive intervals

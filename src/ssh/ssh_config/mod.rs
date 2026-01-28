@@ -212,11 +212,10 @@ impl SshConfig {
         {
             // Check if there's at least a matching host pattern
             // If not, this alias doesn't exist in SSH config
-            let has_matching_pattern = self.hosts.iter().any(|h| {
-                h.host_patterns
-                    .iter()
-                    .any(|p| p == host_alias || p == "*")
-            });
+            let has_matching_pattern = self
+                .hosts
+                .iter()
+                .any(|h| h.host_patterns.iter().any(|p| p == host_alias || p == "*"));
 
             if !has_matching_pattern {
                 return None;

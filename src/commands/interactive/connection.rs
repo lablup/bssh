@@ -39,6 +39,7 @@ impl InteractiveCommand {
     /// and retry with password authentication (matching OpenSSH behavior).
     ///
     /// The `ssh_config` parameter allows configuring SSH connection settings like keepalive intervals.
+    #[allow(clippy::too_many_arguments)]
     async fn establish_connection(
         addr: (&str, u16),
         username: &str,

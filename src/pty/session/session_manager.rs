@@ -301,8 +301,7 @@ impl PtySession {
 
         // Track last activity time for connection health monitoring
         let mut last_activity = std::time::Instant::now();
-        let health_check_interval =
-            Duration::from_secs(CONNECTION_HEALTH_CHECK_INTERVAL_SECS);
+        let health_check_interval = Duration::from_secs(CONNECTION_HEALTH_CHECK_INTERVAL_SECS);
         let max_idle_time = Duration::from_secs(MAX_IDLE_TIME_BEFORE_WARNING_SECS);
         let mut idle_warning_shown = false;
 
