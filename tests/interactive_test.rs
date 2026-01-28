@@ -17,6 +17,7 @@ use bssh::config::{Config, InteractiveConfig};
 use bssh::node::Node;
 use bssh::pty::PtyConfig;
 use bssh::ssh::known_hosts::StrictHostKeyChecking;
+use bssh::ssh::tokio_client::SshConnectionConfig;
 use std::path::PathBuf;
 
 #[tokio::test]
@@ -40,6 +41,7 @@ async fn test_interactive_command_creation() {
         pty_config: PtyConfig::default(),
         use_pty: None,
         jump_hosts: None,
+        ssh_connection_config: SshConnectionConfig::default(),
     };
 
     assert!(!cmd.single_node);
@@ -68,6 +70,7 @@ async fn test_interactive_with_no_nodes() {
         pty_config: PtyConfig::default(),
         use_pty: None,
         jump_hosts: None,
+        ssh_connection_config: SshConnectionConfig::default(),
     };
 
     let result = cmd.execute().await;
