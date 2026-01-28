@@ -85,3 +85,38 @@ clusters:
     nodes:
       - host: target.secure.internal
     jump_host: ${FIRST_HOP},${SECOND_HOP}  # Comma-separated for multi-hop
+
+  # Example: Using SSH config Host alias as jump host
+  # This references a Host defined in ~/.ssh/config, inheriting its settings:
+  # - HostName, User, Port, and IdentityFile are all read from SSH config
+  #
+  # ~/.ssh/config example:
+  #   Host my-bastion
+  #       HostName bastion.example.com
+  #       User jumpuser
+  #       Port 2222
+  #       IdentityFile ~/.ssh/bastion_key
+  #
+  ssh_config_ref:
+    nodes:
+      - host: target.internal
+    # Simple format with @ prefix references SSH config Host alias
+    jump_host: "@my-bastion"
+
+  # Alternative structured format for SSH config reference
+  ssh_config_ref_structured:
+    nodes:
+      - host: target2.internal
+    jump_host:
+      ssh_config_host: my-bastion  # References SSH config Host alias
+
+  # Example: Per-node SSH config references
+  mixed_ssh_config:
+    nodes:
+      - host: node1.internal
+        jump_host: "@bastion-zone-a"  # Different SSH config entry per node
+      - host: node2.internal
+        jump_host: "@bastion-zone-b"
+      - host: node3.internal
+        # Direct connection, no jump host
+        jump_host: ""
