@@ -28,12 +28,34 @@ pub struct JumpHost {
     pub host: String,
     /// SSH port (None means use default port 22 or config default)
     pub port: Option<u16>,
+    /// SSH private key path for this jump host (None means use cluster/default key)
+    pub ssh_key: Option<String>,
 }
 
 impl JumpHost {
     /// Create a new jump host specification
     pub fn new(host: String, user: Option<String>, port: Option<u16>) -> Self {
-        Self { user, host, port }
+        Self {
+            user,
+            host,
+            port,
+            ssh_key: None,
+        }
+    }
+
+    /// Create a new jump host specification with optional SSH key
+    pub fn with_ssh_key(
+        host: String,
+        user: Option<String>,
+        port: Option<u16>,
+        ssh_key: Option<String>,
+    ) -> Self {
+        Self {
+            user,
+            host,
+            port,
+            ssh_key,
+        }
     }
 
     /// Get the effective username (provided or current user)

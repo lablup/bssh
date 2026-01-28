@@ -25,6 +25,6 @@ mod utils;
 // Re-export public types
 pub use types::{
     Cluster, ClusterDefaults, Config, Defaults, InteractiveConfig, InteractiveConfigUpdate,
-    InteractiveMode, KeyBindings, NodeConfig,
+    InteractiveMode, JumpHostConfig, KeyBindings, NodeConfig,
 };
-pub use utils::expand_tilde;
+pub use utils::{expand_env_vars, expand_tilde};

@@ -440,6 +440,99 @@ clusters:
 2. SSH config `ProxyJump` directive
 3. YAML config (node → cluster → global)
 
+### Per-Jump-Host SSH Key Configuration (Issue #167 - Implemented)
+
+**Implementation:** `src/config/types.rs`, `src/jump/chain/auth.rs`, `src/jump/parser/host.rs`
+
+Jump hosts can now specify their own SSH private keys, separate from the destination node keys.
+
+**Configuration Format:**
+
+Supports both legacy string format and new structured format:
+
+```yaml
+clusters:
+  internal:
+    nodes:
+      - host: internal1.private
+      - host: internal2.private
+    user: admin
+    ssh_key: ~/.ssh/destination_key  # For destination nodes
+
+    # Legacy string format (uses cluster ssh_key for jump host)
+    jump_host: jumpuser@bastion.example.com
+
+    # OR new structured format with dedicated jump host key:
+    jump_host:
+      host: bastion.example.com
+      user: jumpuser
+      port: 22  # optional
+      ssh_key: ~/.ssh/jump_host_key  # Jump host's own key
+```
+
+**Per-Node Jump Host Override:**
+
+```yaml
+clusters:
+  hybrid:
+    nodes:
+      - host: behind-firewall.internal
+        jump_host:
+          host: gateway.example.com
+          user: gw_user
+          ssh_key: ~/.ssh/gateway_key  # Specific key for this gateway
+      - host: direct-access.example.com
+        jump_host: ""  # Direct connection
+    jump_host: default-bastion.example.com
+```
+
+**SSH Key Priority Order:**
+
+When authenticating to jump hosts, the following priority is used:
+
+1. **Jump host's own `ssh_key`** (from structured config)
+2. **Cluster/defaults `ssh_key`** (fallback)
+3. **SSH agent** (if use_agent=true and agent has keys)
+4. **Default key files** (~/.ssh/id_*)
+
+**Implementation Details:**
+
+- `JumpHost` struct now has `ssh_key: Option<String>` field
+- `JumpHostConfig` enum supports both `Simple(String)` and `Detailed { host, user, port, ssh_key }`
+- `#[serde(untagged)]` enables seamless deserialization of both formats
+- Environment variable expansion works in `ssh_key` paths (e.g., `$HOME/.ssh/key`)
+- Path expansion supports `~` tilde notation
+
+**Example Use Case:**
+
+```yaml
+clusters:
+  secure:
+    nodes:
+      - host: db.internal
+    user: dbadmin
+    ssh_key: ~/.ssh/db_admin_key  # For database access
+    jump_host:
+      host: bastion.example.com
+      user: bastion_user
+      ssh_key: ~/.ssh/bastion_key  # Separate key for bastion
+```
+
+**Backward Compatibility:**
+
+- All existing configurations continue to work without changes
+- String format `jump_host: "user@host:port"` still supported
+- When no `ssh_key` is specified in jump_host config, falls back to cluster `ssh_key`
+- Multi-hop chains work with mixed formats
+
+**Tests:**
+
+- Unit tests in `tests/jump_host_config_test.rs`
+- Auth priority tests in `src/jump/chain/auth.rs::tests`
+- Validates both simple and structured format deserialization
+- Verifies environment variable expansion
+- Confirms backward compatibility
+
 ### Future Enhancements
 
 1. **Jump Host Connection Pooling:**

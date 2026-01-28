@@ -133,6 +133,24 @@ impl Config {
     ///
     /// Empty string (`""`) explicitly disables jump host inheritance.
     pub fn get_jump_host(&self, cluster_name: &str, node_index: usize) -> Option<String> {
+        self.get_jump_host_with_key(cluster_name, node_index)
+            .map(|(conn_str, _)| conn_str)
+    }
+
+    /// Get jump host with SSH key for a specific node in a cluster.
+    ///
+    /// Resolution priority (highest to lowest):
+    /// 1. Node-level `jump_host` (in `NodeConfig::Detailed`)
+    /// 2. Cluster-level `jump_host` (in `ClusterDefaults`)
+    /// 3. Global default `jump_host` (in `Defaults`)
+    ///
+    /// Empty string (`""`) explicitly disables jump host inheritance.
+    /// Returns tuple of (connection_string, optional_ssh_key_path)
+    pub fn get_jump_host_with_key(
+        &self,
+        cluster_name: &str,
+        node_index: usize,
+    ) -> Option<(String, Option<String>)> {
         if let Some(cluster) = self.get_cluster(cluster_name) {
             // Check node-level first
             if let Some(NodeConfig::Detailed {
@@ -140,25 +158,55 @@ impl Config {
                 ..
             }) = cluster.nodes.get(node_index)
             {
-                if jh.is_empty() {
-                    return None; // Explicitly disabled
-                }
-                return Some(expand_env_vars(jh));
+                return self.process_jump_host_config(jh);
             }
             // Check cluster-level
             if let Some(jh) = &cluster.defaults.jump_host {
-                if jh.is_empty() {
-                    return None; // Explicitly disabled
-                }
-                return Some(expand_env_vars(jh));
+                return self.process_jump_host_config(jh);
             }
         }
         // Fall back to global default
         self.defaults
             .jump_host
             .as_ref()
-            .filter(|s| !s.is_empty())
-            .map(|s| expand_env_vars(s))
+            .and_then(|jh| self.process_jump_host_config(jh))
+    }
+
+    /// Process a JumpHostConfig and return (connection_string, optional_ssh_key_path)
+    fn process_jump_host_config(
+        &self,
+        config: &super::types::JumpHostConfig,
+    ) -> Option<(String, Option<String>)> {
+        use super::types::JumpHostConfig;
+
+        match config {
+            JumpHostConfig::Simple(s) => {
+                if s.is_empty() {
+                    None // Explicitly disabled
+                } else {
+                    Some((expand_env_vars(s), None))
+                }
+            }
+            JumpHostConfig::Detailed {
+                host,
+                user,
+                port,
+                ssh_key,
+            } => {
+                let mut conn_str = String::new();
+                if let Some(u) = user {
+                    conn_str.push_str(&expand_env_vars(u));
+                    conn_str.push('@');
+                }
+                conn_str.push_str(&expand_env_vars(host));
+                if let Some(p) = port {
+                    conn_str.push(':');
+                    conn_str.push_str(&p.to_string());
+                }
+                let key = ssh_key.as_ref().map(|k| expand_env_vars(k));
+                Some((conn_str, key))
+            }
+        }
     }
 
     /// Get jump host for a cluster (cluster-level default).
@@ -169,13 +217,26 @@ impl Config {
     ///
     /// Empty string (`""`) explicitly disables jump host inheritance.
     pub fn get_cluster_jump_host(&self, cluster_name: Option<&str>) -> Option<String> {
+        self.get_cluster_jump_host_with_key(cluster_name)
+            .map(|(conn_str, _)| conn_str)
+    }
+
+    /// Get jump host with SSH key for a cluster (cluster-level default).
+    ///
+    /// Resolution priority (highest to lowest):
+    /// 1. Cluster-level `jump_host` (in `ClusterDefaults`)
+    /// 2. Global default `jump_host` (in `Defaults`)
+    ///
+    /// Empty string (`""`) explicitly disables jump host inheritance.
+    /// Returns tuple of (connection_string, optional_ssh_key_path)
+    pub fn get_cluster_jump_host_with_key(
+        &self,
+        cluster_name: Option<&str>,
+    ) -> Option<(String, Option<String>)> {
         if let Some(cluster_name) = cluster_name {
             if let Some(cluster) = self.get_cluster(cluster_name) {
                 if let Some(jh) = &cluster.defaults.jump_host {
-                    if jh.is_empty() {
-                        return None; // Explicitly disabled
-                    }
-                    return Some(expand_env_vars(jh));
+                    return self.process_jump_host_config(jh);
                 }
             }
         }
@@ -183,8 +244,7 @@ impl Config {
         self.defaults
             .jump_host
             .as_ref()
-            .filter(|s| !s.is_empty())
-            .map(|s| expand_env_vars(s))
+            .and_then(|jh| self.process_jump_host_config(jh))
     }
 
     /// Get SSH keepalive interval for a cluster.

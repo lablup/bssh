@@ -23,6 +23,26 @@ pub use config::{get_max_jump_hosts, ABSOLUTE_MAX_JUMP_HOSTS, DEFAULT_MAX_JUMP_H
 pub use host::JumpHost;
 pub use main_parser::parse_jump_hosts;
 
+/// Parse jump hosts and set SSH key for all hosts in the chain
+///
+/// This is a convenience function for when you have a jump host specification
+/// from config with an associated SSH key path.
+pub fn parse_jump_hosts_with_key(
+    jump_spec: &str,
+    ssh_key: Option<String>,
+) -> anyhow::Result<Vec<JumpHost>> {
+    let mut jump_hosts = parse_jump_hosts(jump_spec)?;
+
+    // Set the SSH key for all jump hosts in the chain
+    if let Some(key) = ssh_key {
+        for jump_host in &mut jump_hosts {
+            jump_host.ssh_key = Some(key.clone());
+        }
+    }
+
+    Ok(jump_hosts)
+}
+
 // Internal use
 
 #[cfg(test)]
