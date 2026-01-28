@@ -26,7 +26,7 @@ use crate::jump::{parse_jump_hosts, JumpHostChain};
 use crate::node::Node;
 use crate::ssh::{
     known_hosts::get_check_method,
-    tokio_client::{AuthMethod, Client, Error as SshError, ServerCheckMethod},
+    tokio_client::{AuthMethod, Client, Error as SshError, ServerCheckMethod, SshConnectionConfig},
 };
 
 use super::types::{InteractiveCommand, NodeSession};
@@ -37,6 +37,9 @@ impl InteractiveCommand {
     ///
     /// If `allow_password_fallback` is true and key authentication fails, it will prompt for password
     /// and retry with password authentication (matching OpenSSH behavior).
+    ///
+    /// The `ssh_config` parameter allows configuring SSH connection settings like keepalive intervals.
+    #[allow(clippy::too_many_arguments)]
     async fn establish_connection(
         addr: (&str, u16),
         username: &str,
@@ -45,6 +48,7 @@ impl InteractiveCommand {
         host: &str,
         port: u16,
         allow_password_fallback: bool,
+        ssh_config: &SshConnectionConfig,
     ) -> Result<Client> {
         const SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
         let connect_timeout = Duration::from_secs(SSH_CONNECT_TIMEOUT_SECS);
@@ -59,9 +63,10 @@ impl InteractiveCommand {
         // SECURITY: Capture start time for timing attack mitigation
         let start_time = std::time::Instant::now();
 
+        // Use connect_with_ssh_config to properly apply keepalive settings
         let result = timeout(
             connect_timeout,
-            Client::connect(addr, username, auth_method, check_method.clone()),
+            Client::connect_with_ssh_config(addr, username, auth_method, check_method.clone(), ssh_config),
         )
         .await
         .with_context(|| {
@@ -93,9 +98,10 @@ impl InteractiveCommand {
                 // Small delay before retry to prevent rapid attempts
                 tokio::time::sleep(Duration::from_millis(500)).await;
 
+                // Use connect_with_ssh_config for password retry as well
                 timeout(
                     connect_timeout,
-                    Client::connect(addr, username, password_auth, check_method),
+                    Client::connect_with_ssh_config(addr, username, password_auth, check_method, ssh_config),
                 )
                 .await
                 .with_context(|| {
@@ -231,6 +237,7 @@ impl InteractiveCommand {
                     &node.host,
                     node.port,
                     !self.use_password, // Allow fallback unless explicit password mode
+                    &self.ssh_connection_config,
                 )
                 .await?
             } else {
@@ -255,9 +262,11 @@ impl InteractiveCommand {
                         .min(MAX_TIMEOUT_SECS),
                 );
 
+                // Pass SSH connection config to jump host chain for keepalive settings
                 let chain = JumpHostChain::new(jump_hosts)
                     .with_connect_timeout(adjusted_timeout)
-                    .with_command_timeout(Duration::from_secs(300));
+                    .with_command_timeout(Duration::from_secs(300))
+                    .with_ssh_connection_config(self.ssh_connection_config.clone());
 
                 // Connect through the chain
                 let connection = timeout(
@@ -308,6 +317,7 @@ impl InteractiveCommand {
                 &node.host,
                 node.port,
                 !self.use_password, // Allow fallback unless explicit password mode
+                &self.ssh_connection_config,
             )
             .await?
         };
@@ -371,6 +381,7 @@ impl InteractiveCommand {
                     &node.host,
                     node.port,
                     !self.use_password, // Allow fallback unless explicit password mode
+                    &self.ssh_connection_config,
                 )
                 .await?
             } else {
@@ -395,9 +406,11 @@ impl InteractiveCommand {
                         .min(MAX_TIMEOUT_SECS),
                 );
 
+                // Pass SSH connection config to jump host chain for keepalive settings
                 let chain = JumpHostChain::new(jump_hosts)
                     .with_connect_timeout(adjusted_timeout)
-                    .with_command_timeout(Duration::from_secs(300));
+                    .with_command_timeout(Duration::from_secs(300))
+                    .with_ssh_connection_config(self.ssh_connection_config.clone());
 
                 // Connect through the chain
                 let connection = timeout(
@@ -448,6 +461,7 @@ impl InteractiveCommand {
                 &node.host,
                 node.port,
                 !self.use_password, // Allow fallback unless explicit password mode
+                &self.ssh_connection_config,
             )
             .await?
         };

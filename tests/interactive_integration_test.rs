@@ -19,6 +19,7 @@ use bssh::config::{Config, InteractiveConfig};
 use bssh::node::Node;
 use bssh::pty::PtyConfig;
 use bssh::ssh::known_hosts::StrictHostKeyChecking;
+use bssh::ssh::tokio_client::SshConnectionConfig;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -52,6 +53,7 @@ fn test_interactive_command_builder() {
         pty_config: PtyConfig::default(),
         use_pty: None,
         jump_hosts: None,
+        ssh_connection_config: SshConnectionConfig::default(),
     };
 
     assert!(!cmd.single_node);
@@ -86,6 +88,7 @@ fn test_history_file_handling() {
         pty_config: PtyConfig::default(),
         use_pty: None,
         jump_hosts: None,
+        ssh_connection_config: SshConnectionConfig::default(),
     };
 
     assert_eq!(cmd.history_file, history_path);
@@ -183,6 +186,7 @@ async fn test_interactive_with_unreachable_nodes() {
         pty_config: PtyConfig::default(),
         use_pty: None,
         jump_hosts: None,
+        ssh_connection_config: SshConnectionConfig::default(),
     };
 
     // This should fail to connect
@@ -217,6 +221,7 @@ async fn test_interactive_with_no_nodes() {
         pty_config: PtyConfig::default(),
         use_pty: None,
         jump_hosts: None,
+        ssh_connection_config: SshConnectionConfig::default(),
     };
 
     let result = cmd.execute().await;
@@ -261,6 +266,7 @@ fn test_mode_configuration() {
         pty_config: PtyConfig::default(),
         use_pty: None,
         jump_hosts: None,
+        ssh_connection_config: SshConnectionConfig::default(),
     };
 
     assert!(single_cmd.single_node);
@@ -286,6 +292,7 @@ fn test_mode_configuration() {
         pty_config: PtyConfig::default(),
         use_pty: None,
         jump_hosts: None,
+        ssh_connection_config: SshConnectionConfig::default(),
     };
 
     assert!(!multi_cmd.single_node);
@@ -314,6 +321,7 @@ fn test_working_directory_config() {
         pty_config: PtyConfig::default(),
         use_pty: None,
         jump_hosts: None,
+        ssh_connection_config: SshConnectionConfig::default(),
     };
 
     assert_eq!(cmd_with_dir.work_dir, Some("/var/www".to_string()));
@@ -337,6 +345,7 @@ fn test_working_directory_config() {
         pty_config: PtyConfig::default(),
         use_pty: None,
         jump_hosts: None,
+        ssh_connection_config: SshConnectionConfig::default(),
     };
 
     assert_eq!(cmd_without_dir.work_dir, None);
@@ -372,6 +381,7 @@ fn test_prompt_format() {
             pty_config: PtyConfig::default(),
             use_pty: None,
             jump_hosts: None,
+            ssh_connection_config: SshConnectionConfig::default(),
         };
 
         assert_eq!(cmd.prompt_format, format);

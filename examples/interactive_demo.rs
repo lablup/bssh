@@ -19,6 +19,7 @@ use bssh::config::{Config, InteractiveConfig};
 use bssh::node::Node;
 use bssh::pty::PtyConfig;
 use bssh::ssh::known_hosts::StrictHostKeyChecking;
+use bssh::ssh::tokio_client::SshConnectionConfig;
 use std::path::PathBuf;
 
 #[tokio::main]
@@ -59,6 +60,7 @@ async fn main() -> anyhow::Result<()> {
         jump_hosts: None,
         pty_config: PtyConfig::default(),
         use_pty: None,
+        ssh_connection_config: SshConnectionConfig::default(),
     };
 
     println!("Starting interactive session...");

@@ -639,3 +639,200 @@ fn test_parallel_executor_chain_multiple_configs() {
 
     // If we got here without panicking, all configs were set correctly
 }
+
+// =============================================================================
+// Interactive Mode Keepalive Tests
+// =============================================================================
+
+#[test]
+fn test_interactive_mode_ssh_connection_config_default() {
+    // Test that InteractiveCommand can be created with default SshConnectionConfig
+    // This verifies the field was added correctly
+    use bssh::commands::interactive::InteractiveCommand;
+    use bssh::config::{Config, InteractiveConfig};
+    use bssh::pty::PtyConfig;
+    use bssh::ssh::known_hosts::StrictHostKeyChecking;
+    use std::path::PathBuf;
+
+    let cmd = InteractiveCommand {
+        single_node: true,
+        multiplex: false,
+        prompt_format: "[{user}@{host}]$ ".to_string(),
+        history_file: PathBuf::from("~/.bssh_history"),
+        work_dir: None,
+        nodes: vec![],
+        config: Config::default(),
+        interactive_config: InteractiveConfig::default(),
+        cluster_name: None,
+        key_path: None,
+        use_agent: false,
+        use_password: false,
+        #[cfg(target_os = "macos")]
+        use_keychain: false,
+        strict_mode: StrictHostKeyChecking::AcceptNew,
+        jump_hosts: None,
+        pty_config: PtyConfig::default(),
+        use_pty: None,
+        ssh_connection_config: SshConnectionConfig::default(),
+    };
+
+    // Verify default values are applied
+    assert_eq!(
+        cmd.ssh_connection_config.keepalive_interval,
+        Some(DEFAULT_KEEPALIVE_INTERVAL),
+        "InteractiveCommand should have default keepalive interval"
+    );
+    assert_eq!(
+        cmd.ssh_connection_config.keepalive_max, DEFAULT_KEEPALIVE_MAX,
+        "InteractiveCommand should have default keepalive max"
+    );
+}
+
+#[test]
+fn test_interactive_mode_ssh_connection_config_custom() {
+    // Test that InteractiveCommand can be created with custom SshConnectionConfig
+    use bssh::commands::interactive::InteractiveCommand;
+    use bssh::config::{Config, InteractiveConfig};
+    use bssh::pty::PtyConfig;
+    use bssh::ssh::known_hosts::StrictHostKeyChecking;
+    use std::path::PathBuf;
+
+    let custom_config = SshConnectionConfig::new()
+        .with_keepalive_interval(Some(120))
+        .with_keepalive_max(10);
+
+    let cmd = InteractiveCommand {
+        single_node: true,
+        multiplex: false,
+        prompt_format: "[{user}@{host}]$ ".to_string(),
+        history_file: PathBuf::from("~/.bssh_history"),
+        work_dir: None,
+        nodes: vec![],
+        config: Config::default(),
+        interactive_config: InteractiveConfig::default(),
+        cluster_name: None,
+        key_path: None,
+        use_agent: false,
+        use_password: false,
+        #[cfg(target_os = "macos")]
+        use_keychain: false,
+        strict_mode: StrictHostKeyChecking::AcceptNew,
+        jump_hosts: None,
+        pty_config: PtyConfig::default(),
+        use_pty: None,
+        ssh_connection_config: custom_config,
+    };
+
+    // Verify custom values are applied
+    assert_eq!(
+        cmd.ssh_connection_config.keepalive_interval,
+        Some(120),
+        "InteractiveCommand should have custom keepalive interval"
+    );
+    assert_eq!(
+        cmd.ssh_connection_config.keepalive_max, 10,
+        "InteractiveCommand should have custom keepalive max"
+    );
+}
+
+#[test]
+fn test_interactive_mode_ssh_connection_config_disabled_keepalive() {
+    // Test that InteractiveCommand can be created with disabled keepalive
+    use bssh::commands::interactive::InteractiveCommand;
+    use bssh::config::{Config, InteractiveConfig};
+    use bssh::pty::PtyConfig;
+    use bssh::ssh::known_hosts::StrictHostKeyChecking;
+    use std::path::PathBuf;
+
+    let disabled_config = SshConnectionConfig::new().with_keepalive_interval(None);
+
+    let cmd = InteractiveCommand {
+        single_node: true,
+        multiplex: false,
+        prompt_format: "[{user}@{host}]$ ".to_string(),
+        history_file: PathBuf::from("~/.bssh_history"),
+        work_dir: None,
+        nodes: vec![],
+        config: Config::default(),
+        interactive_config: InteractiveConfig::default(),
+        cluster_name: None,
+        key_path: None,
+        use_agent: false,
+        use_password: false,
+        #[cfg(target_os = "macos")]
+        use_keychain: false,
+        strict_mode: StrictHostKeyChecking::AcceptNew,
+        jump_hosts: None,
+        pty_config: PtyConfig::default(),
+        use_pty: None,
+        ssh_connection_config: disabled_config,
+    };
+
+    // Verify keepalive is disabled
+    assert_eq!(
+        cmd.ssh_connection_config.keepalive_interval, None,
+        "InteractiveCommand should have disabled keepalive"
+    );
+}
+
+#[test]
+fn test_ssh_connection_config_clone() {
+    // Test that SshConnectionConfig implements Clone correctly
+    // This is important for passing config to JumpHostChain
+    let original = SshConnectionConfig::new()
+        .with_keepalive_interval(Some(90))
+        .with_keepalive_max(6);
+
+    let cloned = original.clone();
+
+    assert_eq!(
+        original.keepalive_interval, cloned.keepalive_interval,
+        "Cloned config should have same keepalive_interval"
+    );
+    assert_eq!(
+        original.keepalive_max, cloned.keepalive_max,
+        "Cloned config should have same keepalive_max"
+    );
+}
+
+#[test]
+fn test_jump_host_chain_with_ssh_connection_config() {
+    // Test that JumpHostChain accepts and stores SshConnectionConfig
+    use bssh::jump::JumpHostChain;
+
+    let ssh_config = SshConnectionConfig::new()
+        .with_keepalive_interval(Some(45))
+        .with_keepalive_max(5);
+
+    // JumpHostChain should accept the config via builder pattern
+    let _chain = JumpHostChain::direct().with_ssh_connection_config(ssh_config);
+
+    // If we got here without panicking, the config was accepted correctly
+}
+
+#[test]
+fn test_jump_host_chain_with_custom_keepalive_for_long_running_sessions() {
+    // Test real-world use case: long-running sessions need longer keepalive
+    use bssh::jump::parser::JumpHost;
+    use bssh::jump::JumpHostChain;
+    use std::time::Duration;
+
+    // For long-running interactive sessions, use longer keepalive intervals
+    // to reduce network traffic while still detecting dead connections
+    let long_session_config = SshConnectionConfig::new()
+        .with_keepalive_interval(Some(120)) // 2 minutes
+        .with_keepalive_max(5); // 5 attempts = 10 minutes to detect dead connection
+
+    let jump_hosts = vec![JumpHost::new(
+        "bastion.example.com".to_string(),
+        Some("admin".to_string()),
+        Some(22),
+    )];
+
+    let _chain = JumpHostChain::new(jump_hosts)
+        .with_connect_timeout(Duration::from_secs(60))
+        .with_command_timeout(Duration::from_secs(600))
+        .with_ssh_connection_config(long_session_config);
+
+    // This verifies the chain can be configured for long-running interactive sessions
+}

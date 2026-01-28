@@ -71,6 +71,7 @@ mod tests {
     use crate::config::{Config, InteractiveConfig};
     use crate::pty::PtyConfig;
     use crate::ssh::known_hosts::StrictHostKeyChecking;
+    use crate::ssh::tokio_client::SshConnectionConfig;
 
     #[test]
     fn test_expand_path_with_tilde() {
@@ -93,6 +94,7 @@ mod tests {
             jump_hosts: None,
             pty_config: PtyConfig::default(),
             use_pty: None,
+            ssh_connection_config: SshConnectionConfig::default(),
         };
 
         let path = PathBuf::from("~/test/file.txt");
@@ -126,6 +128,7 @@ mod tests {
             jump_hosts: None,
             pty_config: PtyConfig::default(),
             use_pty: None,
+            ssh_connection_config: SshConnectionConfig::default(),
         };
 
         let node = Node::new(String::from("example.com"), 22, String::from("alice"));

@@ -1241,6 +1241,9 @@ bssh -H server1,server2 interactive --prompt-format "{user}@{host}> "
 
 # Set initial working directory
 bssh -C staging interactive --work-dir /var/www
+
+# Interactive mode with keepalive for long-running sessions (e.g., tmux)
+bssh -C production --server-alive-interval 30 --server-alive-count-max 5 interactive
 ```
 
 #### Interactive Mode Configuration

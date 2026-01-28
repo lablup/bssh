@@ -1581,6 +1581,14 @@ Interactive mode with initial working directory:
 Sets initial working directory to /var/www on all nodes
 .RE
 
+.TP
+Interactive mode with keepalive for long-running sessions:
+.B bssh -C production --server-alive-interval 30 --server-alive-count-max 5 interactive
+.RS
+Configure SSH keepalive settings to prevent idle disconnection in long-running sessions (e.g., tmux).
+The keepalive settings apply to both the destination host and any jump hosts in the connection chain.
+.RE
+
 .SS Exit Code Handling Examples (v1.2.0+)
 
 .TP

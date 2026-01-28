@@ -24,7 +24,7 @@ use crate::config::{Config, InteractiveConfig};
 use crate::node::Node;
 use crate::pty::PtyConfig;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
-use crate::ssh::tokio_client::Client;
+use crate::ssh::tokio_client::{Client, SshConnectionConfig};
 
 /// SSH output polling interval for responsive display
 /// - 10ms provides very responsive output display
@@ -61,6 +61,8 @@ pub struct InteractiveCommand {
     // PTY configuration
     pub pty_config: PtyConfig,
     pub use_pty: Option<bool>, // None = auto-detect, Some(true) = force, Some(false) = disable
+    // SSH connection configuration (keepalive settings)
+    pub ssh_connection_config: SshConnectionConfig,
 }
 
 /// Result of an interactive session

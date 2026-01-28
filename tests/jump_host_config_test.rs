@@ -690,7 +690,12 @@ clusters:
                 .unwrap()
                 .is_ssh_config_ref());
             assert_eq!(
-                cluster.defaults.jump_host.as_ref().unwrap().ssh_config_host(),
+                cluster
+                    .defaults
+                    .jump_host
+                    .as_ref()
+                    .unwrap()
+                    .ssh_config_host(),
                 Some("bastion")
             );
         }
