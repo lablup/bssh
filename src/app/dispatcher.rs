@@ -38,6 +38,51 @@ use super::initialization::determine_use_keychain;
 use super::initialization::{determine_ssh_key_path, AppContext};
 use super::utils::format_duration;
 
+/// Build SSH connection config with keepalive settings.
+/// Precedence: CLI > SSH config > YAML config > defaults
+fn build_ssh_connection_config(
+    cli: &Cli,
+    ctx: &AppContext,
+    hostname: Option<&str>,
+    cluster_name: Option<&str>,
+) -> SshConnectionConfig {
+    let keepalive_interval = cli
+        .server_alive_interval
+        .or_else(|| {
+            ctx.ssh_config
+                .get_int_option(hostname, "serveraliveinterval")
+                .map(|v| v as u64)
+        })
+        .or_else(|| ctx.config.get_server_alive_interval(cluster_name))
+        .unwrap_or(DEFAULT_KEEPALIVE_INTERVAL);
+
+    let keepalive_max = cli
+        .server_alive_count_max
+        .or_else(|| {
+            ctx.ssh_config
+                .get_int_option(hostname, "serveralivecountmax")
+                .map(|v| v as usize)
+        })
+        .or_else(|| ctx.config.get_server_alive_count_max(cluster_name))
+        .unwrap_or(DEFAULT_KEEPALIVE_MAX);
+
+    let ssh_connection_config = SshConnectionConfig::new()
+        .with_keepalive_interval(if keepalive_interval == 0 {
+            None
+        } else {
+            Some(keepalive_interval)
+        })
+        .with_keepalive_max(keepalive_max);
+
+    tracing::debug!(
+        "SSH keepalive config: interval={:?}s, max={}",
+        ssh_connection_config.keepalive_interval,
+        ssh_connection_config.keepalive_max
+    );
+
+    ssh_connection_config
+}
+
 /// Dispatch commands to their appropriate handlers
 pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
     // Get command to execute
@@ -277,6 +322,11 @@ async fn handle_interactive_command(
             .get_cluster_jump_host(ctx.cluster_name.as_deref().or(cli.cluster.as_deref()))
     });
 
+    // Build SSH connection config with keepalive settings for interactive mode
+    let effective_cluster_name = ctx.cluster_name.as_deref().or(cli.cluster.as_deref());
+    let ssh_connection_config =
+        build_ssh_connection_config(cli, ctx, hostname.as_deref(), effective_cluster_name);
+
     let interactive_cmd = InteractiveCommand {
         single_node: merged_mode.0,
         multiplex: merged_mode.1,
@@ -296,6 +346,7 @@ async fn handle_interactive_command(
         jump_hosts,
         pty_config,
         use_pty,
+        ssh_connection_config,
     };
 
     let result = interactive_cmd.execute().await?;
@@ -345,6 +396,11 @@ async fn handle_exec_command(cli: &Cli, ctx: &AppContext, command: &str) -> Resu
                 .get_cluster_jump_host(ctx.cluster_name.as_deref().or(cli.cluster.as_deref()))
         });
 
+        // Build SSH connection config with keepalive settings for SSH mode interactive session
+        let effective_cluster_name = ctx.cluster_name.as_deref().or(cli.cluster.as_deref());
+        let ssh_connection_config =
+            build_ssh_connection_config(cli, ctx, hostname.as_deref(), effective_cluster_name);
+
         let interactive_cmd = InteractiveCommand {
             single_node: true,
             multiplex: false,
@@ -364,6 +420,7 @@ async fn handle_exec_command(cli: &Cli, ctx: &AppContext, command: &str) -> Resu
             jump_hosts,
             pty_config,
             use_pty,
+            ssh_connection_config,
         };
 
         let result = interactive_cmd.execute().await?;
@@ -434,43 +491,9 @@ async fn handle_exec_command(cli: &Cli, ctx: &AppContext, command: &str) -> Resu
             tracing::info!("Using jump host: {}", jh);
         }
 
-        // Build SSH connection config with precedence: CLI > SSH config > YAML config > defaults
-        let keepalive_interval = cli
-            .server_alive_interval
-            .or_else(|| {
-                ctx.ssh_config
-                    .get_int_option(hostname.as_deref(), "serveraliveinterval")
-                    .map(|v| v as u64)
-            })
-            .or_else(|| ctx.config.get_server_alive_interval(effective_cluster_name))
-            .unwrap_or(DEFAULT_KEEPALIVE_INTERVAL);
-
-        let keepalive_max = cli
-            .server_alive_count_max
-            .or_else(|| {
-                ctx.ssh_config
-                    .get_int_option(hostname.as_deref(), "serveralivecountmax")
-                    .map(|v| v as usize)
-            })
-            .or_else(|| {
-                ctx.config
-                    .get_server_alive_count_max(effective_cluster_name)
-            })
-            .unwrap_or(DEFAULT_KEEPALIVE_MAX);
-
-        let ssh_connection_config = SshConnectionConfig::new()
-            .with_keepalive_interval(if keepalive_interval == 0 {
-                None
-            } else {
-                Some(keepalive_interval)
-            })
-            .with_keepalive_max(keepalive_max);
-
-        tracing::debug!(
-            "SSH keepalive config: interval={:?}s, max={}",
-            ssh_connection_config.keepalive_interval,
-            ssh_connection_config.keepalive_max
-        );
+        // Build SSH connection config with keepalive settings for exec mode
+        let ssh_connection_config =
+            build_ssh_connection_config(cli, ctx, hostname.as_deref(), effective_cluster_name);
 
         let params = ExecuteCommandParams {
             nodes: ctx.nodes.clone(),

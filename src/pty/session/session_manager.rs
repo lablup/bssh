@@ -299,10 +299,21 @@ impl PtySession {
         let mut should_terminate = false;
         let mut cancel_rx = self.cancel_rx.clone();
 
+        // Track last activity time for connection health monitoring
+        let mut last_activity = std::time::Instant::now();
+        let health_check_interval =
+            Duration::from_secs(CONNECTION_HEALTH_CHECK_INTERVAL_SECS);
+        let max_idle_time = Duration::from_secs(MAX_IDLE_TIME_BEFORE_WARNING_SECS);
+        let mut idle_warning_shown = false;
+
         while !should_terminate {
             tokio::select! {
                 // Handle SSH channel messages
                 msg = self.channel.wait() => {
+                    // Reset activity timer on any channel activity
+                    last_activity = std::time::Instant::now();
+                    idle_warning_shown = false;
+
                     match msg {
                         Some(ChannelMsg::Data { ref data }) => {
                             // Filter terminal escape sequence responses before display
@@ -342,7 +353,10 @@ impl PtySession {
                             // Handle other channel messages if needed
                         }
                         None => {
-                            // Channel ended
+                            // Channel ended - connection is dead
+                            tracing::warn!(
+                                "SSH channel returned None - connection may have dropped"
+                            );
                             should_terminate = true;
                         }
                     }
@@ -350,10 +364,18 @@ impl PtySession {
 
                 // Handle local messages (input, resize, etc.)
                 message = msg_rx.recv() => {
+                    // Reset activity timer for local input (user is active)
+                    if matches!(message, Some(PtyMessage::LocalInput(_))) {
+                        last_activity = std::time::Instant::now();
+                        idle_warning_shown = false;
+                    }
+
                     match message {
                         Some(PtyMessage::LocalInput(data)) => {
                             if let Err(e) = self.channel.data(data.as_slice()).await {
                                 tracing::error!("Failed to send data to SSH channel: {e}");
+                                // Connection likely dead - terminate gracefully
+                                eprintln!("\r\n[bssh] Connection lost: failed to send data to remote host\r");
                                 should_terminate = true;
                             }
                         }
@@ -399,6 +421,30 @@ impl PtySession {
                         tracing::debug!("PTY session {} received cancellation signal", self.session_id);
                         should_terminate = true;
                     }
+                }
+
+                // Periodic health check to detect dead connections
+                _ = tokio::time::sleep(health_check_interval) => {
+                    let idle_duration = last_activity.elapsed();
+
+                    // Check if the session has been idle for too long
+                    if idle_duration > max_idle_time && !idle_warning_shown {
+                        tracing::debug!(
+                            "PTY session {} idle for {:?}, connection may be stale",
+                            self.session_id,
+                            idle_duration
+                        );
+                        // Don't terminate, but log for debugging
+                        // SSH keepalive should handle actual connection detection
+                        idle_warning_shown = true;
+                    }
+
+                    // Periodic trace logging for debugging long sessions
+                    tracing::trace!(
+                        "PTY session {} health check: idle for {:?}",
+                        self.session_id,
+                        idle_duration
+                    );
                 }
             }
         }

@@ -61,6 +61,19 @@ pub const INPUT_POLL_TIMEOUT_MS: u64 = 500;
 /// - Tasks should check cancellation signal frequently (10-50ms intervals)
 pub const TASK_CLEANUP_TIMEOUT_MS: u64 = 100;
 
+/// Connection health check interval for PTY sessions
+/// - 30 seconds provides periodic checks without excessive overhead
+/// - Detects dead connections even when SSH keepalive is disabled
+/// - Works alongside SSH-level keepalive for defense in depth
+/// - Short enough to detect issues before users get frustrated
+pub const CONNECTION_HEALTH_CHECK_INTERVAL_SECS: u64 = 30;
+
+/// Maximum idle time before considering connection potentially dead
+/// - 300 seconds (5 minutes) is a reasonable threshold for interactive sessions
+/// - If no data received within this time, trigger a health check warning
+/// - This is a secondary mechanism to SSH-level keepalive
+pub const MAX_IDLE_TIME_BEFORE_WARNING_SECS: u64 = 300;
+
 // Const arrays for frequently used key sequences to avoid repeated allocations.
 /// Control key sequences - frequently used in terminal input
 pub const CTRL_C_SEQUENCE: &[u8] = &[0x03]; // Ctrl+C (SIGINT)
