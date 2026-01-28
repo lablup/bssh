@@ -165,6 +165,104 @@ impl SshConfig {
     pub fn get_all_configs(&self) -> &[SshHostConfig] {
         &self.hosts
     }
+
+    /// Resolve jump host parameters from an SSH config Host alias.
+    ///
+    /// This method looks up a Host alias in the SSH config and extracts
+    /// the connection parameters needed for a jump host connection.
+    ///
+    /// # Arguments
+    /// * `host_alias` - The Host alias to look up (e.g., "bastion" from `Host bastion`)
+    ///
+    /// # Returns
+    /// A tuple of (hostname, user, port, identity_file) if the alias is found,
+    /// or None if the alias doesn't exist or has no configuration.
+    ///
+    /// # Example
+    /// For SSH config:
+    /// ```text
+    /// Host bastion
+    ///     HostName bastion.example.com
+    ///     User jumpuser
+    ///     Port 2222
+    ///     IdentityFile ~/.ssh/bastion_key
+    /// ```
+    ///
+    /// `resolve_jump_host("bastion")` returns:
+    /// `Some(("bastion.example.com", Some("jumpuser"), Some(2222), Some("~/.ssh/bastion_key")))`
+    #[allow(clippy::type_complexity)]
+    pub fn resolve_jump_host(
+        &self,
+        host_alias: &str,
+    ) -> Option<(String, Option<String>, Option<u16>, Option<String>)> {
+        let config = self.find_host_config(host_alias);
+
+        // Get the effective hostname (HostName directive or the alias itself)
+        let hostname = config
+            .hostname
+            .clone()
+            .unwrap_or_else(|| host_alias.to_string());
+
+        // If no configuration was found (empty config), return None
+        // This happens when the alias doesn't match any Host pattern
+        if config.hostname.is_none()
+            && config.user.is_none()
+            && config.port.is_none()
+            && config.identity_files.is_empty()
+        {
+            // Check if there's at least a matching host pattern
+            // If not, this alias doesn't exist in SSH config
+            let has_matching_pattern = self.hosts.iter().any(|h| {
+                h.host_patterns
+                    .iter()
+                    .any(|p| p == host_alias || p == "*")
+            });
+
+            if !has_matching_pattern {
+                return None;
+            }
+        }
+
+        // Get the first identity file if available
+        let identity_file = config
+            .identity_files
+            .first()
+            .map(|p| p.to_string_lossy().to_string());
+
+        Some((hostname, config.user, config.port, identity_file))
+    }
+
+    /// Resolve jump host to a connection string with SSH key.
+    ///
+    /// This is a convenience method that resolves an SSH config Host alias
+    /// and returns the information in a format suitable for jump host connection.
+    ///
+    /// # Arguments
+    /// * `host_alias` - The Host alias to look up
+    ///
+    /// # Returns
+    /// A tuple of (connection_string, optional_ssh_key_path) where:
+    /// - `connection_string` is in format `[user@]hostname[:port]`
+    /// - `optional_ssh_key_path` is the first IdentityFile if specified
+    pub fn resolve_jump_host_connection(
+        &self,
+        host_alias: &str,
+    ) -> Option<(String, Option<String>)> {
+        let (hostname, user, port, identity_file) = self.resolve_jump_host(host_alias)?;
+
+        let mut conn_str = String::new();
+        if let Some(u) = user {
+            conn_str.push_str(&u);
+            conn_str.push('@');
+        }
+        conn_str.push_str(&hostname);
+        if let Some(p) = port {
+            conn_str.push(':');
+            conn_str.push_str(&p.to_string());
+        }
+
+        Some((conn_str, identity_file))
+    }
 }
 
 #[cfg(test)]

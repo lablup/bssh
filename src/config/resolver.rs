@@ -17,8 +17,9 @@
 use anyhow::Result;
 
 use crate::node::Node;
+use crate::ssh::ssh_config::SshConfig;
 
-use super::types::{Cluster, Config, NodeConfig};
+use super::types::{Cluster, Config, JumpHostConfig, NodeConfig};
 use super::utils::{expand_env_vars, get_current_username};
 
 impl Config {
@@ -132,6 +133,9 @@ impl Config {
     /// 3. Global default `jump_host` (in `Defaults`)
     ///
     /// Empty string (`""`) explicitly disables jump host inheritance.
+    ///
+    /// Note: This method does not resolve SSH config references (`@alias`).
+    /// Use `get_jump_host_with_key_and_ssh_config` for full resolution.
     pub fn get_jump_host(&self, cluster_name: &str, node_index: usize) -> Option<String> {
         self.get_jump_host_with_key(cluster_name, node_index)
             .map(|(conn_str, _)| conn_str)
@@ -146,10 +150,34 @@ impl Config {
     ///
     /// Empty string (`""`) explicitly disables jump host inheritance.
     /// Returns tuple of (connection_string, optional_ssh_key_path)
+    ///
+    /// Note: This method does not resolve SSH config references (`@alias`).
+    /// Use `get_jump_host_with_key_and_ssh_config` for full resolution.
     pub fn get_jump_host_with_key(
         &self,
         cluster_name: &str,
         node_index: usize,
+    ) -> Option<(String, Option<String>)> {
+        self.get_jump_host_with_key_and_ssh_config(cluster_name, node_index, None)
+    }
+
+    /// Get jump host with SSH key for a specific node, with SSH config reference resolution.
+    ///
+    /// This is the full-featured version that can resolve SSH config Host alias references
+    /// (`@alias` or `ssh_config_host` field) using the provided SSH config.
+    ///
+    /// Resolution priority (highest to lowest):
+    /// 1. Node-level `jump_host` (in `NodeConfig::Detailed`)
+    /// 2. Cluster-level `jump_host` (in `ClusterDefaults`)
+    /// 3. Global default `jump_host` (in `Defaults`)
+    ///
+    /// Empty string (`""`) explicitly disables jump host inheritance.
+    /// Returns tuple of (connection_string, optional_ssh_key_path)
+    pub fn get_jump_host_with_key_and_ssh_config(
+        &self,
+        cluster_name: &str,
+        node_index: usize,
+        ssh_config: Option<&SshConfig>,
     ) -> Option<(String, Option<String>)> {
         if let Some(cluster) = self.get_cluster(cluster_name) {
             // Check node-level first
@@ -158,31 +186,36 @@ impl Config {
                 ..
             }) = cluster.nodes.get(node_index)
             {
-                return self.process_jump_host_config(jh);
+                return self.process_jump_host_config(jh, ssh_config);
             }
             // Check cluster-level
             if let Some(jh) = &cluster.defaults.jump_host {
-                return self.process_jump_host_config(jh);
+                return self.process_jump_host_config(jh, ssh_config);
             }
         }
         // Fall back to global default
         self.defaults
             .jump_host
             .as_ref()
-            .and_then(|jh| self.process_jump_host_config(jh))
+            .and_then(|jh| self.process_jump_host_config(jh, ssh_config))
     }
 
     /// Process a JumpHostConfig and return (connection_string, optional_ssh_key_path)
+    ///
+    /// If `ssh_config` is provided, SSH config references (`@alias` or `ssh_config_host`)
+    /// will be resolved using the SSH config. Otherwise, the reference string is returned as-is.
     fn process_jump_host_config(
         &self,
-        config: &super::types::JumpHostConfig,
+        config: &JumpHostConfig,
+        ssh_config: Option<&SshConfig>,
     ) -> Option<(String, Option<String>)> {
-        use super::types::JumpHostConfig;
-
         match config {
             JumpHostConfig::Simple(s) => {
                 if s.is_empty() {
                     None // Explicitly disabled
+                } else if let Some(alias) = s.strip_prefix('@') {
+                    // SSH config reference with @ prefix
+                    self.resolve_ssh_config_jump_host(alias, ssh_config)
                 } else {
                     Some((expand_env_vars(s), None))
                 }
@@ -206,7 +239,40 @@ impl Config {
                 let key = ssh_key.as_ref().map(|k| expand_env_vars(k));
                 Some((conn_str, key))
             }
+            JumpHostConfig::SshConfigHostRef { ssh_config_host } => {
+                self.resolve_ssh_config_jump_host(ssh_config_host, ssh_config)
+            }
         }
+    }
+
+    /// Resolve an SSH config Host alias to connection string and SSH key.
+    ///
+    /// If `ssh_config` is provided, looks up the alias and extracts:
+    /// - HostName (or uses the alias as hostname)
+    /// - User
+    /// - Port
+    /// - IdentityFile (first one, used as SSH key)
+    ///
+    /// If `ssh_config` is None, returns the alias as the hostname with no SSH key.
+    fn resolve_ssh_config_jump_host(
+        &self,
+        alias: &str,
+        ssh_config: Option<&SshConfig>,
+    ) -> Option<(String, Option<String>)> {
+        if let Some(ssh_cfg) = ssh_config {
+            // Try to resolve from SSH config
+            if let Some((conn_str, identity_file)) = ssh_cfg.resolve_jump_host_connection(alias) {
+                return Some((conn_str, identity_file));
+            }
+        }
+
+        // Fallback: use the alias as the hostname (SSH will resolve it)
+        // This allows the connection to proceed even without explicit SSH config resolution
+        tracing::debug!(
+            "SSH config reference '{}' could not be resolved, using as hostname",
+            alias
+        );
+        Some((alias.to_string(), None))
     }
 
     /// Get jump host for a cluster (cluster-level default).
@@ -233,10 +299,26 @@ impl Config {
         &self,
         cluster_name: Option<&str>,
     ) -> Option<(String, Option<String>)> {
+        self.get_cluster_jump_host_with_key_and_ssh_config(cluster_name, None)
+    }
+
+    /// Get jump host with SSH key for a cluster, with SSH config reference resolution.
+    ///
+    /// Resolution priority (highest to lowest):
+    /// 1. Cluster-level `jump_host` (in `ClusterDefaults`)
+    /// 2. Global default `jump_host` (in `Defaults`)
+    ///
+    /// Empty string (`""`) explicitly disables jump host inheritance.
+    /// Returns tuple of (connection_string, optional_ssh_key_path)
+    pub fn get_cluster_jump_host_with_key_and_ssh_config(
+        &self,
+        cluster_name: Option<&str>,
+        ssh_config: Option<&SshConfig>,
+    ) -> Option<(String, Option<String>)> {
         if let Some(cluster_name) = cluster_name {
             if let Some(cluster) = self.get_cluster(cluster_name) {
                 if let Some(jh) = &cluster.defaults.jump_host {
-                    return self.process_jump_host_config(jh);
+                    return self.process_jump_host_config(jh, ssh_config);
                 }
             }
         }
@@ -244,7 +326,7 @@ impl Config {
         self.defaults
             .jump_host
             .as_ref()
-            .and_then(|jh| self.process_jump_host_config(jh))
+            .and_then(|jh| self.process_jump_host_config(jh, ssh_config))
     }
 
     /// Get SSH keepalive interval for a cluster.

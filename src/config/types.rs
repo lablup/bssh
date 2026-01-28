@@ -32,13 +32,23 @@ pub struct Config {
 
 /// Jump host configuration format.
 ///
-/// Supports both legacy string format and structured format with optional SSH key.
-/// Uses `#[serde(untagged)]` to allow seamless deserialization of both formats.
+/// Supports multiple formats:
+/// - Legacy string format: `"[user@]hostname[:port]"`
+/// - SSH config reference: `"@alias"` (references ~/.ssh/config Host alias)
+/// - Structured format with optional ssh_key
+/// - Structured SSH config reference with ssh_config_host field
+///
+/// Uses `#[serde(untagged)]` to allow seamless deserialization of all formats.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(untagged)]
 pub enum JumpHostConfig {
-    /// Structured format with optional ssh_key field
+    /// Structured SSH config reference format with ssh_config_host field
     /// Must be listed first for serde to try matching object format before string
+    SshConfigHostRef {
+        /// SSH config Host alias to reference (from ~/.ssh/config)
+        ssh_config_host: String,
+    },
+    /// Structured format with optional ssh_key field
     Detailed {
         host: String,
         #[serde(default)]
@@ -49,6 +59,7 @@ pub enum JumpHostConfig {
         ssh_key: Option<String>,
     },
     /// Legacy string format: "[user@]hostname[:port]"
+    /// Also supports SSH config reference with "@" prefix: "@alias"
     Simple(String),
 }
 
@@ -215,7 +226,11 @@ pub(super) fn default_quit() -> String {
 }
 
 impl JumpHostConfig {
-    /// Convert to a connection string for resolution
+    /// Convert to a connection string for resolution.
+    ///
+    /// Note: For SSH config references (`@alias` or `ssh_config_host`), this returns
+    /// the alias name with "@" prefix. The actual resolution to hostname/user/port
+    /// must be done by the caller using SSH config parsing.
     pub fn to_connection_string(&self) -> String {
         match self {
             JumpHostConfig::Simple(s) => s.clone(),
@@ -237,6 +252,9 @@ impl JumpHostConfig {
                 }
                 result
             }
+            JumpHostConfig::SshConfigHostRef { ssh_config_host } => {
+                format!("@{}", ssh_config_host)
+            }
         }
     }
 
@@ -245,6 +263,30 @@ impl JumpHostConfig {
         match self {
             JumpHostConfig::Simple(_) => None,
             JumpHostConfig::Detailed { ssh_key, .. } => ssh_key.as_deref(),
+            JumpHostConfig::SshConfigHostRef { .. } => None,
+        }
+    }
+
+    /// Check if this is an SSH config reference (either `@alias` string or `ssh_config_host` field)
+    pub fn is_ssh_config_ref(&self) -> bool {
+        match self {
+            JumpHostConfig::Simple(s) => s.starts_with('@'),
+            JumpHostConfig::SshConfigHostRef { .. } => true,
+            JumpHostConfig::Detailed { .. } => false,
+        }
+    }
+
+    /// Get the SSH config host alias if this is an SSH config reference.
+    ///
+    /// Returns the alias name (without "@" prefix) for:
+    /// - `JumpHostConfig::Simple("@alias")` -> Some("alias")
+    /// - `JumpHostConfig::SshConfigHostRef { ssh_config_host: "alias" }` -> Some("alias")
+    /// - Other variants -> None
+    pub fn ssh_config_host(&self) -> Option<&str> {
+        match self {
+            JumpHostConfig::Simple(s) if s.starts_with('@') => Some(&s[1..]),
+            JumpHostConfig::SshConfigHostRef { ssh_config_host } => Some(ssh_config_host),
+            _ => None,
         }
     }
 }
