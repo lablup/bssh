@@ -30,6 +30,28 @@ pub struct Config {
     pub interactive: InteractiveConfig,
 }
 
+/// Jump host configuration format.
+///
+/// Supports both legacy string format and structured format with optional SSH key.
+/// Uses `#[serde(untagged)]` to allow seamless deserialization of both formats.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(untagged)]
+pub enum JumpHostConfig {
+    /// Structured format with optional ssh_key field
+    /// Must be listed first for serde to try matching object format before string
+    Detailed {
+        host: String,
+        #[serde(default)]
+        user: Option<String>,
+        #[serde(default)]
+        port: Option<u16>,
+        #[serde(default)]
+        ssh_key: Option<String>,
+    },
+    /// Legacy string format: "[user@]hostname[:port]"
+    Simple(String),
+}
+
 /// Global default settings.
 #[derive(Debug, Serialize, Deserialize, Default, Clone)]
 pub struct Defaults {
@@ -39,8 +61,9 @@ pub struct Defaults {
     pub parallel: Option<usize>,
     pub timeout: Option<u64>,
     /// Jump host specification for all connections.
+    /// Supports both string format and structured format with optional ssh_key.
     /// Empty string explicitly disables jump host inheritance.
-    pub jump_host: Option<String>,
+    pub jump_host: Option<JumpHostConfig>,
     /// SSH keepalive interval in seconds.
     /// Sends keepalive packets to prevent idle connection timeouts.
     /// Default: 60 seconds. Set to 0 to disable.
@@ -128,8 +151,9 @@ pub struct ClusterDefaults {
     pub parallel: Option<usize>,
     pub timeout: Option<u64>,
     /// Jump host specification for this cluster.
+    /// Supports both string format and structured format with optional ssh_key.
     /// Empty string explicitly disables jump host inheritance.
-    pub jump_host: Option<String>,
+    pub jump_host: Option<JumpHostConfig>,
     /// SSH keepalive interval in seconds.
     /// Sends keepalive packets to prevent idle connection timeouts.
     /// Default: 60 seconds. Set to 0 to disable.
@@ -151,9 +175,10 @@ pub enum NodeConfig {
         #[serde(default)]
         user: Option<String>,
         /// Jump host specification for this node.
+        /// Supports both string format and structured format with optional ssh_key.
         /// Empty string explicitly disables jump host inheritance.
         #[serde(default)]
-        jump_host: Option<String>,
+        jump_host: Option<JumpHostConfig>,
     },
 }
 
@@ -187,4 +212,39 @@ pub(super) fn default_broadcast_toggle() -> String {
 
 pub(super) fn default_quit() -> String {
     "Ctrl+Q".to_string()
+}
+
+impl JumpHostConfig {
+    /// Convert to a connection string for resolution
+    pub fn to_connection_string(&self) -> String {
+        match self {
+            JumpHostConfig::Simple(s) => s.clone(),
+            JumpHostConfig::Detailed {
+                host,
+                user,
+                port,
+                ssh_key: _,
+            } => {
+                let mut result = String::new();
+                if let Some(u) = user {
+                    result.push_str(u);
+                    result.push('@');
+                }
+                result.push_str(host);
+                if let Some(p) = port {
+                    result.push(':');
+                    result.push_str(&p.to_string());
+                }
+                result
+            }
+        }
+    }
+
+    /// Get the SSH key path if specified
+    pub fn ssh_key(&self) -> Option<&str> {
+        match self {
+            JumpHostConfig::Simple(_) => None,
+            JumpHostConfig::Detailed { ssh_key, .. } => ssh_key.as_deref(),
+        }
+    }
 }

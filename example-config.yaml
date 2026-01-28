@@ -57,17 +57,28 @@ clusters:
       - host: internal2.private
       - host: internal3.private
     user: admin  # User for internal*.private (destination nodes)
-    jump_host: jumpuser@bastion.example.com  # User 'jumpuser' for bastion (jump host)
-    # Alternative: jump_host: bastion.example.com  # Uses your local username for bastion
+    ssh_key: ~/.ssh/destination_key  # Key for destination nodes
+    # Legacy string format (uses cluster ssh_key for both jump host and destinations)
+    jump_host: jumpuser@bastion.example.com
+    # Alternative structured format with dedicated jump host key:
+    # jump_host:
+    #   host: bastion.example.com
+    #   user: jumpuser
+    #   port: 22  # optional
+    #   ssh_key: ~/.ssh/jump_host_key  # Uses this key for bastion only
 
-  # Example: Mixed direct and jump host access
+  # Example: Mixed direct and jump host access with per-node jump host override
   hybrid:
     nodes:
       - host: behind-firewall.internal
-        jump_host: gateway.example.com  # Needs jump host
+        # Per-node jump host with dedicated key
+        jump_host:
+          host: gateway.example.com
+          user: gw_user
+          ssh_key: ~/.ssh/gateway_key
       - host: direct-access.example.com
         jump_host: ""  # Empty string disables jump host (direct connection)
-    jump_host: default-bastion.example.com  # Default for cluster
+    jump_host: default-bastion.example.com  # Default for cluster (string format)
 
   # Example: Multi-hop jump chain with environment variables
   secure:

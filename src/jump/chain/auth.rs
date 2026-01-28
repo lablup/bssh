@@ -67,8 +67,11 @@ async fn agent_has_identities() -> bool {
 
 /// Determine authentication method for a jump host
 ///
-/// For now, uses the same authentication method as the destination.
-/// In the future, this could be enhanced to support per-host authentication.
+/// Priority order for SSH key selection:
+/// 1. Jump host's own `ssh_key` field (from structured config)
+/// 2. Cluster/defaults `key_path` (fallback, passed as parameter)
+/// 3. SSH agent (if use_agent=true and agent has keys)
+/// 4. Default key files (~/.ssh/id_*)
 pub(super) async fn determine_auth_method(
     jump_host: &JumpHost,
     key_path: Option<&Path>,
@@ -76,8 +79,21 @@ pub(super) async fn determine_auth_method(
     use_password: bool,
     auth_mutex: &Mutex<()>,
 ) -> Result<AuthMethod> {
-    // For now, use the same auth method determination logic as the main SSH client
-    // This could be enhanced to support per-jump-host authentication in the future
+    // Priority 1: Use jump host's own ssh_key if provided
+    let effective_key_path = if let Some(ref jump_key) = jump_host.ssh_key {
+        use crate::config::{expand_env_vars, expand_tilde};
+        let expanded_path = expand_env_vars(jump_key);
+        let path = Path::new(&expanded_path);
+        let expanded_tilde = if expanded_path.starts_with('~') {
+            expand_tilde(path)
+        } else {
+            path.to_path_buf()
+        };
+        Some(expanded_tilde)
+    } else {
+        // Priority 2: Fall back to cluster/defaults key_path
+        key_path.map(|p| p.to_path_buf())
+    };
 
     // Cache agent availability check to avoid querying the agent multiple times
     // (each query involves socket connection and protocol handshake)
@@ -131,7 +147,7 @@ pub(super) async fn determine_auth_method(
         // If agent is running but has no identities, fall through to try key files
     }
 
-    if let Some(key_path) = key_path {
+    if let Some(key_path) = effective_key_path.as_deref() {
         // SECURITY: Use Zeroizing to ensure key contents are cleared from memory
         let key_contents = Zeroizing::new(
             std::fs::read_to_string(key_path)
@@ -794,5 +810,119 @@ dGVzdHMgLSBub3QgcmVhbAECAwQ=
             std::time::Duration::from_secs(5),
             "Timeout should be 5 seconds"
         );
+    }
+
+    /// Test: Jump host's own ssh_key takes priority over cluster key_path
+    #[tokio::test]
+    async fn test_jump_host_ssh_key_priority() {
+        // Save and clear SSH_AUTH_SOCK
+        let original_sock = env::var("SSH_AUTH_SOCK").ok();
+        env::remove_var("SSH_AUTH_SOCK");
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+
+        // Create jump host's own key
+        let jump_key_path = create_test_ssh_key(&temp_dir, "jump_host_key");
+        let jump_key_str = jump_key_path.to_string_lossy().to_string();
+
+        // Create cluster's key
+        let cluster_key_path = create_test_ssh_key(&temp_dir, "cluster_key");
+
+        // Create jump host with its own ssh_key
+        let jump_host = JumpHost::with_ssh_key(
+            "test.example.com".to_string(),
+            Some("testuser".to_string()),
+            Some(22),
+            Some(jump_key_str.clone()),
+        );
+
+        let auth_mutex = Mutex::new(());
+
+        // Call determine_auth_method with both jump host key and cluster key
+        let result = determine_auth_method(
+            &jump_host,
+            Some(cluster_key_path.as_path()), // Cluster key
+            false,                            // use_agent
+            false,                            // use_password
+            &auth_mutex,
+        )
+        .await;
+
+        assert!(result.is_ok(), "Should succeed with jump host's key");
+        let auth_method = result.unwrap();
+
+        // Verify it used the jump host's key, not the cluster key
+        match auth_method {
+            AuthMethod::PrivateKeyFile { key_file_path, .. } => {
+                let path_str = key_file_path.to_string_lossy();
+                assert!(
+                    path_str.contains("jump_host_key"),
+                    "Should use jump host's key (jump_host_key), got: {path_str}"
+                );
+                assert!(
+                    !path_str.contains("cluster_key"),
+                    "Should NOT use cluster key, got: {path_str}"
+                );
+            }
+            other => {
+                panic!("Expected PrivateKeyFile, got {:?}", other);
+            }
+        }
+
+        // Restore SSH_AUTH_SOCK
+        if let Some(val) = original_sock {
+            env::set_var("SSH_AUTH_SOCK", val);
+        }
+    }
+
+    /// Test: Falls back to cluster key when jump host has no ssh_key
+    #[tokio::test]
+    async fn test_fallback_to_cluster_key() {
+        // Save and clear SSH_AUTH_SOCK
+        let original_sock = env::var("SSH_AUTH_SOCK").ok();
+        env::remove_var("SSH_AUTH_SOCK");
+
+        let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let cluster_key_path = create_test_ssh_key(&temp_dir, "cluster_key");
+
+        // Create jump host WITHOUT its own ssh_key
+        let jump_host = JumpHost::new(
+            "test.example.com".to_string(),
+            Some("testuser".to_string()),
+            Some(22),
+        );
+
+        let auth_mutex = Mutex::new(());
+
+        let result = determine_auth_method(
+            &jump_host,
+            Some(cluster_key_path.as_path()),
+            false,
+            false,
+            &auth_mutex,
+        )
+        .await;
+
+        assert!(result.is_ok(), "Should succeed with cluster key");
+        let auth_method = result.unwrap();
+
+        // Verify it used the cluster key
+        match auth_method {
+            AuthMethod::PrivateKeyFile { key_file_path, .. } => {
+                let path_str = key_file_path.to_string_lossy();
+                assert!(
+                    path_str.contains("cluster_key"),
+                    "Should use cluster key, got: {path_str}"
+                );
+            }
+            other => {
+                panic!("Expected PrivateKeyFile, got {:?}", other);
+            }
+        }
+
+        // Restore SSH_AUTH_SOCK
+        if let Some(val) = original_sock {
+            env::set_var("SSH_AUTH_SOCK", val);
+        }
     }
 }
