@@ -40,7 +40,7 @@ jobs:
       fail-fast: false
       matrix:
         package: [bssh, bssh-server]
-        distro: [jammy, noble, plucky]
+        distro: [jammy, noble, questing]
         arch: [amd64, arm64]
         include:
           # OS runner mappings
@@ -61,13 +61,13 @@ jobs:
             os: ubuntu-24.04-arm
             version: "24.04"
           - arch: amd64
-            distro: plucky
+            distro: questing
             os: ubuntu-24.04
-            version: "25.04"
+            version: "25.10"
           - arch: arm64
-            distro: plucky
+            distro: questing
             os: ubuntu-24.04-arm
-            version: "25.04"
+            version: "25.10"
           # Binary asset mappings
           - arch: amd64
             package: bssh
