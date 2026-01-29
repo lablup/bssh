@@ -30,57 +30,57 @@ jobs:
   # Creates .deb packages using pre-built binaries from releases
   # ───────────────────────────────────────────────────────────────
   build-deb:
-    name: Build Debian Package (${{ matrix.distro }}, ${{ matrix.arch }})
+    name: Build ${{ matrix.package }} (${{ matrix.distro }}, ${{ matrix.arch }})
     runs-on: ${{ matrix.os }}
-    
+
     # Only run if the release workflow succeeded or manual trigger
     if: ${{ github.event.workflow_run.conclusion == 'success' || github.event_name == 'workflow_dispatch' }}
-    
+
     strategy:
       fail-fast: false
       matrix:
+        package: [bssh, bssh-server]
+        distro: [jammy, noble, plucky]
+        arch: [amd64, arm64]
         include:
-          # Ubuntu 22.04 LTS (Jammy) - AMD64
-          - distro: jammy
-            version: "22.04"
-            arch: amd64
+          # OS runner mappings
+          - arch: amd64
+            distro: jammy
             os: ubuntu-22.04
-            binary_asset: bssh-linux-x86_64.tar.gz
-
-          # Ubuntu 22.04 LTS (Jammy) - ARM64
-          - distro: jammy
             version: "22.04"
-            arch: arm64
+          - arch: arm64
+            distro: jammy
             os: ubuntu-22.04-arm
-            binary_asset: bssh-linux-aarch64.tar.gz
-          
-          # Ubuntu 24.04 LTS (Noble) - AMD64
-          - distro: noble
-            version: "24.04"
-            arch: amd64
+            version: "22.04"
+          - arch: amd64
+            distro: noble
             os: ubuntu-24.04
-            binary_asset: bssh-linux-x86_64.tar.gz
-          
-          # Ubuntu 24.04 LTS (Noble) - ARM64
-          - distro: noble
             version: "24.04"
-            arch: arm64
+          - arch: arm64
+            distro: noble
             os: ubuntu-24.04-arm
-            binary_asset: bssh-linux-aarch64.tar.gz
-          
-          # Ubuntu 25.04 (Plucky) - AMD64
-          - distro: plucky
-            version: "25.04"
-            arch: amd64
+            version: "24.04"
+          - arch: amd64
+            distro: plucky
             os: ubuntu-24.04
-            binary_asset: bssh-linux-x86_64.tar.gz
-          
-          # Ubuntu 25.04 (Plucky) - ARM64  
-          - distro: plucky
             version: "25.04"
-            arch: arm64
+          - arch: arm64
+            distro: plucky
             os: ubuntu-24.04-arm
+            version: "25.04"
+          # Binary asset mappings
+          - arch: amd64
+            package: bssh
+            binary_asset: bssh-linux-x86_64.tar.gz
+          - arch: arm64
+            package: bssh
             binary_asset: bssh-linux-aarch64.tar.gz
+          - arch: amd64
+            package: bssh-server
+            binary_asset: bssh-server-linux-x86_64.tar.gz
+          - arch: arm64
+            package: bssh-server
+            binary_asset: bssh-server-linux-aarch64.tar.gz
     
     steps:
     # ───────────────────────────────────────────────────────────────
@@ -124,18 +124,18 @@ jobs:
         gh release download "${{ steps.get_tag.outputs.tag }}" \
           --pattern "${{ matrix.binary_asset }}" \
           --output "${{ matrix.binary_asset }}"
-        
+
         # Extract the binary
         tar -xzf "${{ matrix.binary_asset }}"
-        
+
         # Verify the binary exists
-        if [ ! -f "bssh" ]; then
-          echo "Error: Binary not found after extraction"
+        if [ ! -f "${{ matrix.package }}" ]; then
+          echo "Error: ${{ matrix.package }} binary not found after extraction"
           exit 1
         fi
-        
+
         # Make it executable
-        chmod +x bssh
+        chmod +x "${{ matrix.package }}"
       env:
         GH_TOKEN: ${{ github.token }}
     
@@ -176,15 +176,24 @@ jobs:
     # ───────────────────────────────────────────────────────────────
     - name: Setup for binary build
       run: |
-        # Use binary-specific packaging files
-        if [ -f debian/control.binary ]; then
+        PKG="${{ matrix.package }}"
+
+        # Use package-specific control file
+        if [ -f "debian/control.${PKG}.binary" ]; then
+          cp "debian/control.${PKG}.binary" debian/control
+        elif [ -f debian/control.binary ] && [ "$PKG" = "bssh" ]; then
           cp debian/control.binary debian/control
         fi
-        if [ -f debian/rules.binary ]; then
+
+        # Use package-specific rules file
+        if [ -f "debian/rules.${PKG}.binary" ]; then
+          cp "debian/rules.${PKG}.binary" debian/rules
+          chmod +x debian/rules
+        elif [ -f debian/rules.binary ] && [ "$PKG" = "bssh" ]; then
           cp debian/rules.binary debian/rules
           chmod +x debian/rules
         fi
-        
+
         # Set target architecture in control file
         sed -i '/^Architecture:/c\Architecture: '${{ matrix.arch }} debian/control
     
@@ -209,6 +218,7 @@ jobs:
     - name: Prepare artifacts
       run: |
         set -e
+        PKG="${{ matrix.package }}"
         VER="${{ env.PACKAGE_VERSION }}"
         DIST="${{ matrix.distro }}"
         SERIES="${{ matrix.version }}"
@@ -217,11 +227,11 @@ jobs:
         mkdir -p artifacts
 
         for f in ../*_${ARCH}.deb; do
-          mv "$f" "artifacts/bssh_${VER}_ubuntu${SERIES}.${DIST}_${ARCH}.deb"
+          mv "$f" "artifacts/${PKG}_${VER}_ubuntu${SERIES}.${DIST}_${ARCH}.deb"
         done
 
         for f in ../*_${ARCH}.buildinfo; do
-          mv "$f" "artifacts/bssh_${VER}_ubuntu${SERIES}.${DIST}_${ARCH}.buildinfo"
+          mv "$f" "artifacts/${PKG}_${VER}_ubuntu${SERIES}.${DIST}_${ARCH}.buildinfo"
         done
 
     # ───────────────────────────────────────────────────────────────
@@ -230,7 +240,7 @@ jobs:
     - name: Upload build artifacts
       uses: actions/upload-artifact@v4
       with:
-        name: bssh_${{ env.PACKAGE_VERSION }}_ubuntu${{ matrix.version }}.${{ matrix.distro }}_${{ matrix.arch }}
+        name: ${{ matrix.package }}_${{ env.PACKAGE_VERSION }}_ubuntu${{ matrix.version }}.${{ matrix.distro }}_${{ matrix.arch }}
         path: artifacts/
         retention-days: 7
 
@@ -242,12 +252,13 @@ jobs:
       run: |
         # Get list of assets to delete
         TAG="${{ steps.get_tag.outputs.tag }}"
+        PKG="${{ matrix.package }}"
         DIST="${{ matrix.distro }}"
         ARCH="${{ matrix.arch }}"
-        
-        # Delete existing .deb files for this specific distribution/architecture
+
+        # Delete existing .deb files for this specific package/distribution/architecture
         gh release view "$TAG" --json assets -q '.assets[].name' | while read -r asset; do
-          if [[ "$asset" == *"ubuntu"*"$DIST"*"$ARCH"*".deb" ]]; then
+          if [[ "$asset" == "${PKG}_"*"ubuntu"*"$DIST"*"$ARCH"*".deb" ]]; then
             echo "Deleting existing asset: $asset"
             gh release delete-asset "$TAG" "$asset" -y || true
           fi

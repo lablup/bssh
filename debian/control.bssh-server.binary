@@ -1,0 +1,28 @@
+Source: bssh-server
+Section: utils
+Priority: optional
+Maintainer: Jeongkyu Shin <inureyes@gmail.com>
+Build-Depends: debhelper-compat (= 13), build-essential
+Standards-Version: 4.6.2
+Homepage: https://github.com/lablup/bssh
+Vcs-Browser: https://github.com/lablup/bssh
+Vcs-Git: https://github.com/lablup/bssh.git
+Rules-Requires-Root: no
+
+Package: bssh-server
+Architecture: amd64 arm64
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Backend.AI SSH Server - Lightweight SSH server for containers
+ bssh-server is a lightweight SSH server designed for container environments,
+ built with Rust as part of the bssh project. It provides:
+ .
+  * Lightweight SSH server optimized for containers
+  * Minimal resource footprint
+  * Easy configuration via CLI or config files
+  * Integration with Backend.AI container sessions
+  * Support for key-based authentication
+ .
+ This package is intended to be installed inside containers to enable
+ SSH access for the bssh parallel command execution client.
+ .
+ Developed and maintained as part of the Backend.AI project.

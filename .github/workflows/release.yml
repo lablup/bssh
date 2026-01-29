@@ -98,9 +98,9 @@ jobs:
           sudo apt update
           sudo apt install -y musl-tools
 
-      # 5) Build the release binary
-      - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }} --locked
+      # 5) Build release binaries (bssh and bssh-server)
+      - name: Build release binaries
+        run: cargo build --release --target ${{ matrix.target }} --locked --bin bssh --bin bssh-server
 
       # 6) macOS code signing
       - name: Import Distribution certificate
@@ -110,49 +110,81 @@ jobs:
           p12-file-base64: ${{ secrets.DEV_ID_CERT_P12 }}
           p12-password: ${{ secrets.DEV_ID_CERT_PASSWORD }}
 
-      - name: Code sign macOS binary
+      - name: Code sign macOS binaries
         if: runner.os == 'macOS'
         run: |
-          BIN=target/${{ matrix.target }}/release/${{ matrix.artifact_name }}
-          codesign --force --timestamp --options runtime \
-                   --sign "Distribution" "$BIN"
+          BIN_DIR=target/${{ matrix.target }}/release
+          for bin in bssh bssh-server; do
+            codesign --force --timestamp --options runtime \
+                     --sign "Distribution" "$BIN_DIR/$bin"
+          done
 
-      # 7) Package binaries
-      - name: Package Linux binary (tar.gz)
+      # 7) Package binaries (separate packages for bssh and bssh-server)
+      - name: Package Linux binaries (tar.gz)
         if: runner.os == 'Linux'
         run: |
           BIN_DIR=target/${{ matrix.target }}/release
-          mkdir -p package
-          cp "$BIN_DIR/${{ matrix.artifact_name }}" package/
-          cp docs/man/bssh.1 package/
-          tar -C package -czf ${{ matrix.asset_name }}.tar.gz .
+          ASSET_BASE="${{ matrix.asset_name }}"
+          SERVER_ASSET_BASE="${ASSET_BASE/bssh/bssh-server}"
 
-      - name: Package macOS binary (zip)
+          # Package bssh
+          mkdir -p package-bssh
+          cp "$BIN_DIR/bssh" package-bssh/
+          cp docs/man/bssh.1 package-bssh/
+          tar -C package-bssh -czf "${ASSET_BASE}.tar.gz" .
+
+          # Package bssh-server
+          mkdir -p package-bssh-server
+          cp "$BIN_DIR/bssh-server" package-bssh-server/
+          tar -C package-bssh-server -czf "${SERVER_ASSET_BASE}.tar.gz" .
+
+      - name: Package macOS binaries (zip)
         if: runner.os == 'macOS'
         run: |
-          BIN="target/${{ matrix.target }}/release/${{ matrix.artifact_name }}"
-          ASSET="${{ matrix.asset_name }}.zip"
-          mkdir -p package
-          cp "$BIN" package/
-          cp docs/man/bssh.1 package/
-          ditto -c -k --sequesterRsrc package "$ASSET"
+          BIN_DIR="target/${{ matrix.target }}/release"
+          ASSET_BASE="${{ matrix.asset_name }}"
+          SERVER_ASSET_BASE="${ASSET_BASE/bssh/bssh-server}"
 
-      # 8) Generate checksum
-      - name: Generate checksum
+          # Package bssh
+          mkdir -p package-bssh
+          cp "$BIN_DIR/bssh" package-bssh/
+          cp docs/man/bssh.1 package-bssh/
+          ditto -c -k --sequesterRsrc package-bssh "${ASSET_BASE}.zip"
+
+          # Package bssh-server
+          mkdir -p package-bssh-server
+          cp "$BIN_DIR/bssh-server" package-bssh-server/
+          ditto -c -k --sequesterRsrc package-bssh-server "${SERVER_ASSET_BASE}.zip"
+
+      # 8) Generate checksums
+      - name: Generate checksums
         run: |
-          FILE="${{ matrix.asset_name }}${{ matrix.archive_ext }}"
-          if [[ "$RUNNER_OS" == "Linux" ]]; then
-            sha256sum "$FILE" > "$FILE.sha256"
-          else
-            shasum -a 256 "$FILE" > "$FILE.sha256"
-          fi
+          ASSET_BASE="${{ matrix.asset_name }}"
+          SERVER_ASSET_BASE="${ASSET_BASE/bssh/bssh-server}"
+          EXT="${{ matrix.archive_ext }}"
 
-      # 9) Upload release artifacts and checksum
+          for file in "${ASSET_BASE}${EXT}" "${SERVER_ASSET_BASE}${EXT}"; do
+            if [[ "$RUNNER_OS" == "Linux" ]]; then
+              sha256sum "$file" > "$file.sha256"
+            else
+              shasum -a 256 "$file" > "$file.sha256"
+            fi
+          done
+
+      # 9) Upload release artifacts and checksums
       - name: Upload release artifacts
         if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.event.release.tag_name || github.event.inputs.release_tag }}
-          files: |
-            ${{ matrix.asset_name }}${{ matrix.archive_ext }}
-            ${{ matrix.asset_name }}${{ matrix.archive_ext }}.sha256
+        run: |
+          ASSET_BASE="${{ matrix.asset_name }}"
+          SERVER_ASSET_BASE="${ASSET_BASE/bssh/bssh-server}"
+          EXT="${{ matrix.archive_ext }}"
+          TAG="${{ github.event.release.tag_name || github.event.inputs.release_tag }}"
+
+          gh release upload "$TAG" \
+            "${ASSET_BASE}${EXT}" \
+            "${ASSET_BASE}${EXT}.sha256" \
+            "${SERVER_ASSET_BASE}${EXT}" \
+            "${SERVER_ASSET_BASE}${EXT}.sha256" \
+            --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}

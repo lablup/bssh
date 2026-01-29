@@ -56,24 +56,45 @@ jobs:
           VERSION="${RAW_VERSION#v}"  # Remove leading 'v'
           echo "VERSION_NO_V=$VERSION" >> $GITHUB_ENV  # Export version without 'v' to GitHub env
 
+          # bssh URLs
           MAC_URL="https://github.com/lablup/bssh/releases/download/v${VERSION}/bssh-macos-aarch64.zip"
           LINUX_ARM_URL="https://github.com/lablup/bssh/releases/download/v${VERSION}/bssh-linux-aarch64.tar.gz"
           LINUX_X86_URL="https://github.com/lablup/bssh/releases/download/v${VERSION}/bssh-linux-x86_64.tar.gz"
 
+          # bssh-server URLs
+          SERVER_MAC_URL="https://github.com/lablup/bssh/releases/download/v${VERSION}/bssh-server-macos-aarch64.zip"
+          SERVER_LINUX_ARM_URL="https://github.com/lablup/bssh/releases/download/v${VERSION}/bssh-server-linux-aarch64.tar.gz"
+          SERVER_LINUX_X86_URL="https://github.com/lablup/bssh/releases/download/v${VERSION}/bssh-server-linux-x86_64.tar.gz"
+
           mkdir -p tmp
+
+          # Download bssh artifacts
           curl -Ls "$MAC_URL" -o tmp/mac.zip
           curl -Ls "$LINUX_ARM_URL" -o tmp/linux-arm.tar.gz
           curl -Ls "$LINUX_X86_URL" -o tmp/linux-x86.tar.gz
 
+          # Download bssh-server artifacts
+          curl -Ls "$SERVER_MAC_URL" -o tmp/server-mac.zip
+          curl -Ls "$SERVER_LINUX_ARM_URL" -o tmp/server-linux-arm.tar.gz
+          curl -Ls "$SERVER_LINUX_X86_URL" -o tmp/server-linux-x86.tar.gz
+
+          # Export bssh URLs and checksums
           echo "mac_url=$MAC_URL" >> $GITHUB_ENV
           echo "linux_arm_url=$LINUX_ARM_URL" >> $GITHUB_ENV
           echo "linux_x86_url=$LINUX_X86_URL" >> $GITHUB_ENV
-
           echo "mac_sha=$(shasum -a 256 tmp/mac.zip | awk '{print $1}')" >> $GITHUB_ENV
           echo "linux_arm_sha=$(shasum -a 256 tmp/linux-arm.tar.gz | awk '{print $1}')" >> $GITHUB_ENV
           echo "linux_x86_sha=$(shasum -a 256 tmp/linux-x86.tar.gz | awk '{print $1}')" >> $GITHUB_ENV
 
-      - name: Update formula
+          # Export bssh-server URLs and checksums
+          echo "server_mac_url=$SERVER_MAC_URL" >> $GITHUB_ENV
+          echo "server_linux_arm_url=$SERVER_LINUX_ARM_URL" >> $GITHUB_ENV
+          echo "server_linux_x86_url=$SERVER_LINUX_X86_URL" >> $GITHUB_ENV
+          echo "server_mac_sha=$(shasum -a 256 tmp/server-mac.zip | awk '{print $1}')" >> $GITHUB_ENV
+          echo "server_linux_arm_sha=$(shasum -a 256 tmp/server-linux-arm.tar.gz | awk '{print $1}')" >> $GITHUB_ENV
+          echo "server_linux_x86_sha=$(shasum -a 256 tmp/server-linux-x86.tar.gz | awk '{print $1}')" >> $GITHUB_ENV
+
+      - name: Update bssh formula
         run: |
           cd homebrew-tap
           VERSION="${{ env.VERSION_NO_V }}"  # Use version without 'v'
@@ -89,9 +110,33 @@ jobs:
           gsed -i "s|https://github.com/.*/bssh-linux-x86_64.tar.gz|${linux_x86_url}|" Formula/bssh.rb
           gsed -i "/linux-x86_64.tar.gz\"/!b;n;c\      sha256 \"${linux_x86_sha}\"" Formula/bssh.rb
 
+      - name: Update bssh-server formula
+        run: |
+          cd homebrew-tap
+          VERSION="${{ env.VERSION_NO_V }}"
+
+          # Check if bssh-server formula exists
+          if [ -f "Formula/bssh-server.rb" ]; then
+            gsed -i "s/^  version .*/  version \"${VERSION}\"/" Formula/bssh-server.rb
+
+            gsed -i "s|https://github.com/.*/bssh-server-macos-aarch64.zip|${server_mac_url}|" Formula/bssh-server.rb
+            gsed -i "/bssh-server-macos-aarch64.zip\"/!b;n;c\      sha256 \"${server_mac_sha}\"" Formula/bssh-server.rb
+
+            gsed -i "s|https://github.com/.*/bssh-server-linux-aarch64.tar.gz|${server_linux_arm_url}|" Formula/bssh-server.rb
+            gsed -i "/bssh-server-linux-aarch64.tar.gz\"/!b;n;c\      sha256 \"${server_linux_arm_sha}\"" Formula/bssh-server.rb
+
+            gsed -i "s|https://github.com/.*/bssh-server-linux-x86_64.tar.gz|${server_linux_x86_url}|" Formula/bssh-server.rb
+            gsed -i "/bssh-server-linux-x86_64.tar.gz\"/!b;n;c\      sha256 \"${server_linux_x86_sha}\"" Formula/bssh-server.rb
+          else
+            echo "Warning: Formula/bssh-server.rb not found, skipping server formula update"
+          fi
+
       - name: Commit and push changes to tap
         run: |
           cd homebrew-tap
           git add Formula/bssh.rb
-          git commit -m "bump: bssh to v${{ env.VERSION_NO_V }}"
+          if [ -f "Formula/bssh-server.rb" ]; then
+            git add Formula/bssh-server.rb
+          fi
+          git commit -m "bump: bssh and bssh-server to v${{ env.VERSION_NO_V }}"
           git push origin main
