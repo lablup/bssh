@@ -1445,6 +1445,7 @@ See the [LICENSE](./LICENSE) file for details.
 ## Changelog
 
 ### Recent Updates
+- **v2.0.0-beta.1 (2026/01/29):** Add bssh-server SSH server for containers with SFTP/SCP support, audit logging (file/OpenTelemetry/Logstash), IP access control, rate limiting, session management, file transfer filtering, and bssh-keygen tool; separate packaging for bssh and bssh-server
 - **v1.7.0 (2026/01/09):** Add SSH keepalive support with --server-alive-interval and --server-alive-count-max options to prevent idle connection timeouts (#122), update dependencies (russh 0.56, ratatui 0.30, whoami 2.0)
 - **v1.6.0 (2025/12/19):** Add jump_host field support in config.yaml (issue #115), fix SSH config ProxyJump directive application, fix jump host authentication with empty SSH agent (issues #116, #117)
 - **v1.5.1 (2025/12/18):** Fix SSH disconnect error handling during authentication for password fallback (issue #113)

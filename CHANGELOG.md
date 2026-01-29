@@ -5,6 +5,57 @@ All notable changes to bssh will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0-beta.1] - 2026-01-29
+
+### Added
+- **bssh-server SSH Server** - A lightweight SSH server designed for container environments
+  - Full SSH, SFTP, and SCP protocol support
+  - PTY/shell session support with terminal handling
+  - Password and public key authentication
+  - YAML-based comprehensive configuration system
+  - Command execution handler with security controls
+
+- **Audit Logging Infrastructure**
+  - File-based audit exporter (JSON Lines format)
+  - OpenTelemetry audit exporter for observability platforms
+  - Logstash audit exporter for ELK stack integration
+  - Configurable audit event types and logging levels
+
+- **Security Features**
+  - IP-based access control (allow/deny lists)
+  - Authentication rate limiting (fail2ban-like protection)
+  - Session management and connection limits
+  - Path traversal prevention in SFTP handler
+
+- **File Transfer Filtering**
+  - Path-based filter rules for upload/download control
+  - Pattern-based filtering with glob support
+  - Configurable filter actions (allow/deny)
+
+- **bssh-keygen Tool**
+  - SSH key pair generation utility
+  - Support for RSA, Ed25519, and ECDSA key types
+  - Configurable key sizes and comments
+
+- **Server Configuration**
+  - Per-jump-host SSH private key configuration
+  - SSH config Host alias reference in jump_host configuration
+  - SSH keepalive settings in interactive mode
+
+- **Separate Packaging**
+  - bssh and bssh-server now distributed as separate packages
+  - Independent Debian packages for client and server
+  - Separate Homebrew formulas for each component
+
+### Changed
+- **Documentation**: Added comprehensive server configuration manual and manpages
+- **CI/CD**: Updated release workflow for dual-package distribution
+
+### Technical Details
+- Shared module structure for client/server code reuse
+- russh-based SSH server handler implementation
+- Modular audit exporter architecture with trait-based design
+
 ## [1.7.0] - 2026-01-09
 
 ### Added
@@ -670,6 +721,7 @@ None
 - russh library for native SSH implementation
 - Cross-platform support (Linux and macOS)
 
+[2.0.0-beta.1]: https://github.com/lablup/bssh/compare/v1.7.0...v2.0.0-beta.1
 [1.7.0]: https://github.com/lablup/bssh/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/lablup/bssh/compare/v1.5.1...v1.6.0
 [1.5.1]: https://github.com/lablup/bssh/compare/v1.5.0...v1.5.1

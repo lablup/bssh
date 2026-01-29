@@ -1,3 +1,59 @@
+bssh (2.0.0~beta.1-1~jammy1) jammy; urgency=medium
+
+  * v2.0.0-beta.1
+  ### New Features
+  - **bssh-server SSH Server**: A lightweight SSH server designed for container environments
+    - Full SSH, SFTP, and SCP protocol support
+    - PTY/shell session support with terminal handling
+    - Password and public key authentication
+    - YAML-based comprehensive configuration system
+    - Command execution handler with security controls
+  - **Audit Logging Infrastructure**: Comprehensive audit logging system
+    - File-based audit exporter (JSON Lines format)
+    - OpenTelemetry audit exporter for observability platforms
+    - Logstash audit exporter for ELK stack integration
+  - **Security Features**: Enhanced security controls
+    - IP-based access control (allow/deny lists)
+    - Authentication rate limiting (fail2ban-like protection)
+    - Session management and connection limits
+    - Path traversal prevention in SFTP handler
+  - **File Transfer Filtering**: Control file transfers
+    - Path-based and pattern-based filter rules
+    - Configurable filter actions (allow/deny)
+  - **bssh-keygen Tool**: SSH key pair generation utility
+  - **Server Configuration Enhancements**
+    - Per-jump-host SSH private key configuration
+    - SSH config Host alias reference in jump_host configuration
+    - SSH keepalive settings in interactive mode
+  - **Separate Packaging**: bssh and bssh-server distributed as separate packages
+
+  ### Improvements
+  - Added comprehensive server configuration manual and manpages
+  - Shared module structure for client/server code reuse
+
+  ### Bug Fixes
+  None
+
+  ### CI/CD Improvements
+  - Updated release workflow for dual-package distribution
+  - Separate Debian packages for client and server
+  - Separate Homebrew formulas for each component
+
+  ### Technical Details
+  - russh-based SSH server handler implementation
+  - Modular audit exporter architecture with trait-based design
+
+  ### Dependencies
+  None
+
+  ### Breaking Changes
+  - Package split: bssh-server now requires separate installation
+
+  ### Known Issues
+  None
+
+ -- Jeongkyu Shin <inureyes@gmail.com>  Wed, 29 Jan 2026 12:56:00 +0900
+
 bssh (1.7.0-1~jammy1) jammy; urgency=medium
 
   * v1.7.0
