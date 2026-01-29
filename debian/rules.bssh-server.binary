@@ -14,6 +14,10 @@ override_dh_auto_install:
 	# Install the pre-built bssh-server binary
 	# The binary should be extracted to the project root before building the package
 	install -D -m 0755 bssh-server debian/bssh-server/usr/bin/bssh-server
+	# Install man page if present
+	if [ -f bssh-server.8 ]; then \
+		install -D -m 0644 bssh-server.8 debian/bssh-server/usr/share/man/man8/bssh-server.8; \
+	fi
 
 override_dh_auto_test:
 	# Skip tests for pre-built binary

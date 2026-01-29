@@ -136,6 +136,7 @@ jobs:
           # Package bssh-server
           mkdir -p package-bssh-server
           cp "$BIN_DIR/bssh-server" package-bssh-server/
+          cp docs/man/bssh-server.8 package-bssh-server/
           tar -C package-bssh-server -czf "${SERVER_ASSET_BASE}.tar.gz" .
 
       - name: Package macOS binaries (zip)
@@ -154,6 +155,7 @@ jobs:
           # Package bssh-server
           mkdir -p package-bssh-server
           cp "$BIN_DIR/bssh-server" package-bssh-server/
+          cp docs/man/bssh-server.8 package-bssh-server/
           ditto -c -k --sequesterRsrc package-bssh-server "${SERVER_ASSET_BASE}.zip"
 
       # 8) Generate checksums
