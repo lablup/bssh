@@ -343,7 +343,7 @@ impl Default for MultiNodeStreamManager {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use russh::CryptoVec;
+    use bytes::Bytes;
 
     #[test]
     fn test_node_stream_creation() {
@@ -364,7 +364,7 @@ mod tests {
         let mut stream = NodeStream::new(node, rx);
 
         // Send some output
-        let data = CryptoVec::from(b"test output".to_vec());
+        let data = Bytes::from(b"test output".to_vec());
         tx.send(CommandOutput::StdOut(data)).await.unwrap();
 
         // Poll should receive data
@@ -380,7 +380,7 @@ mod tests {
         let mut stream = NodeStream::new(node, rx);
 
         // Send output
-        let data = CryptoVec::from(b"test".to_vec());
+        let data = Bytes::from(b"test".to_vec());
         tx.send(CommandOutput::StdOut(data)).await.unwrap();
 
         stream.poll();
@@ -431,7 +431,7 @@ mod tests {
         manager.add_stream(node1, rx1);
 
         // Send data
-        let data = CryptoVec::from(b"output1".to_vec());
+        let data = Bytes::from(b"output1".to_vec());
         tx1.send(CommandOutput::StdOut(data)).await.unwrap();
 
         // Poll all should receive data

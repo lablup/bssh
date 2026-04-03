@@ -274,19 +274,19 @@ pub(super) async fn authenticate<H: Handler>(
             let mut agent = russh::keys::agent::client::AgentClient::connect_env()
                 .await
                 .unwrap();
-            let mut auth_identity: Option<russh::keys::PublicKey> = None;
+            let mut auth_identity_found = false;
             for identity in agent
                 .request_identities()
                 .await
                 .map_err(super::Error::KeyInvalid)?
             {
-                if identity == cpubk {
-                    auth_identity = Some(identity.clone());
+                if *identity.public_key() == cpubk {
+                    auth_identity_found = true;
                     break;
                 }
             }
 
-            if auth_identity.is_none() {
+            if !auth_identity_found {
                 return Err(super::Error::KeyAuthFailed);
             }
 
@@ -322,7 +322,7 @@ pub(super) async fn authenticate<H: Handler>(
                 let result = handle
                     .authenticate_publickey_with(
                         username,
-                        identity.clone(),
+                        identity.public_key().into_owned(),
                         handle.best_supported_rsa_hash().await?.flatten(),
                         &mut agent,
                     )

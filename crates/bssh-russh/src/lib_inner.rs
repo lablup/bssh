@@ -470,7 +470,7 @@ pub(crate) struct ChannelParams {
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
     wants_reply: bool,
     /// (buffer, extended stream #, data offset in buffer)
-    pending_data: std::collections::VecDeque<(CryptoVec, Option<u32>, usize)>,
+    pending_data: std::collections::VecDeque<(bytes::Bytes, Option<u32>, usize)>,
     pending_eof: bool,
     pending_close: bool,
 }
@@ -481,6 +481,13 @@ impl ChannelParams {
         self.recipient_window_size = c.initial_window_size;
         self.recipient_maximum_packet_size = c.maximum_packet_size;
         self.confirmed = true;
+    }
+
+    pub(crate) fn take_pending_controls(&mut self) -> (bool, bool) {
+        (
+            std::mem::take(&mut self.pending_eof),
+            std::mem::take(&mut self.pending_close),
+        )
     }
 }
 

@@ -1,5 +1,5 @@
---- a/src/server/session.rs	2026-01-23 18:47:48
-+++ b/src/server/session.rs	2026-01-24 03:08:34
+--- /tmp/russh-upstream-compare/russh/src/server/session.rs	2026-04-03 13:17:42
++++ /Users/inureyes/Development/backend.ai/bssh/crates/bssh-russh/src/server/session.rs	2026-04-03 13:20:54
 @@ -7,7 +7,7 @@
  use log::debug;
  use negotiation::parse_kex_algo_list;
@@ -9,12 +9,7 @@
  use tokio::sync::oneshot;
  
  use super::*;
-@@ -502,10 +502,141 @@
-         pin!(reading);
-         let mut is_reading = None;
- 
-+
-         #[allow(clippy::panic)] // false positive in macro
+@@ -513,6 +513,136 @@
          while !self.common.disconnected {
              self.common.received_data = false;
              let mut sent_keepalive = false;

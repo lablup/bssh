@@ -8,9 +8,9 @@ mod compress {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
 
+    use crate::keys::ssh_key::rand_core::OsRng;
     use keys::PrivateKeyWithHashAlg;
     use log::debug;
-    use rand_core::OsRng;
     use ssh_key::PrivateKey;
 
     use super::server::{Server as _, Session};
@@ -118,7 +118,7 @@ mod compress {
             session: &mut Session,
         ) -> Result<(), Self::Error> {
             debug!("server data = {:?}", std::str::from_utf8(data));
-            session.data(channel, CryptoVec::from_slice(data))?;
+            session.data(channel, data.to_vec())?;
             Ok(())
         }
     }
@@ -139,14 +139,13 @@ mod compress {
 }
 
 mod channels {
+    use elliptic_curve::rand_core::OsRng;
     use keys::PrivateKeyWithHashAlg;
-    use rand_core::OsRng;
     use server::Session;
     use ssh_key::PrivateKey;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::*;
-    use crate::CryptoVec;
 
     async fn test_session<RC, RS, CH, SH, F1, F2>(
         client_handler: CH,
@@ -237,7 +236,7 @@ mod channels {
                 session: &mut client::Session,
             ) -> Result<(), Self::Error> {
                 assert_eq!(data, &b"hello world!"[..]);
-                session.data(channel, CryptoVec::from_slice(&b"hey there!"[..]))?;
+                session.data(channel, b"hey there!".to_vec())?;
                 Ok(())
             }
         }
@@ -285,7 +284,7 @@ mod channels {
 
                 let msg = ch.wait().await.unwrap();
                 if let ChannelMsg::Data { data } = msg {
-                    assert_eq!(data.as_ref(), &b"hey there!"[..]);
+                    assert_eq!(&data[..], &b"hey there!"[..]);
                 } else {
                     panic!("Unexpected message {msg:?}");
                 }
@@ -451,15 +450,94 @@ mod channels {
 
                 let msg = ch.wait().await.unwrap();
                 if let ChannelMsg::Data { data } = msg {
-                    assert_eq!(data.as_ref(), &b"hello world!"[..]);
+                    assert_eq!(&data[..], &b"hello world!"[..]);
                 } else {
                     panic!("Unexpected message {msg:?}");
                 }
 
+                // After the server closes the channel, we should receive an
+                // explicit Close message before the channel stream ends.
+                let msg = ch.wait().await.unwrap();
+                assert!(
+                    matches!(msg, ChannelMsg::Close),
+                    "expected Close, got {msg:?}"
+                );
                 assert!(ch.wait().await.is_none());
                 c
             },
             |s| async move { s },
+        )
+        .await;
+    }
+
+    /// Verify that the server-side CHANNEL_CLOSE handler delivers
+    /// `ChannelMsg::Close` before the channel stream ends.
+    #[tokio::test]
+    async fn test_server_receives_close_on_client_close() {
+        #[derive(Debug)]
+        struct Client {}
+
+        impl client::Handler for Client {
+            type Error = crate::Error;
+
+            async fn check_server_key(
+                &mut self,
+                _server_public_key: &crate::keys::ssh_key::PublicKey,
+            ) -> Result<bool, Self::Error> {
+                Ok(true)
+            }
+        }
+
+        struct ServerHandle {
+            channel: Option<tokio::sync::oneshot::Sender<Channel<server::Msg>>>,
+        }
+
+        impl server::Handler for ServerHandle {
+            type Error = crate::Error;
+
+            async fn auth_publickey(
+                &mut self,
+                _: &str,
+                _: &crate::keys::ssh_key::PublicKey,
+            ) -> Result<server::Auth, Self::Error> {
+                Ok(server::Auth::Accept)
+            }
+
+            async fn channel_open_session(
+                &mut self,
+                channel: Channel<server::Msg>,
+                _session: &mut server::Session,
+            ) -> Result<bool, Self::Error> {
+                if let Some(tx) = self.channel.take() {
+                    tx.send(channel).unwrap();
+                }
+                Ok(true)
+            }
+        }
+
+        let (tx, rx) = tokio::sync::oneshot::channel::<Channel<server::Msg>>();
+        let sh = ServerHandle { channel: Some(tx) };
+
+        test_session(
+            Client {},
+            sh,
+            |c| async move {
+                let ch = c.channel_open_session().await.unwrap();
+                ch.close().await.unwrap();
+                c
+            },
+            |s| async move {
+                let mut ch = rx.await.unwrap();
+                // The server should receive an explicit Close message
+                // when the client closes the channel.
+                let msg = ch.wait().await.unwrap();
+                assert!(
+                    matches!(msg, ChannelMsg::Close),
+                    "expected Close, got {msg:?}"
+                );
+                assert!(ch.wait().await.is_none());
+                s
+            },
         )
         .await;
     }
@@ -615,5 +693,217 @@ mod server_kex_junk {
 
     impl server::Handler for Server {
         type Error = super::Error;
+    }
+}
+
+/// Integration test for FutureCertificate authentication flow
+#[cfg(unix)]
+mod future_certificate {
+    use std::io::Write;
+    use std::process::Stdio;
+    use std::sync::Arc;
+
+    use ssh_key::{certificate, PrivateKey};
+    use ssh_key::rand_core::OsRng;
+
+    use crate::keys::agent::client::AgentClient;
+    use crate::{client, server};
+    use crate::server::Session;
+
+    /// Helper to spawn an ssh-agent
+    async fn spawn_agent() -> (
+        tokio::process::Child,
+        std::path::PathBuf,
+        tempfile::TempDir,
+    ) {
+        let dir = tempfile::tempdir().unwrap();
+        let agent_path = dir.path().join("agent");
+        let agent = tokio::process::Command::new("ssh-agent")
+            .arg("-a")
+            .arg(&agent_path)
+            .arg("-D")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+
+        // Wait for the socket to be created
+        while agent_path.canonicalize().is_err() {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+
+        (agent, agent_path, dir)
+    }
+
+    /// Helper to create a test certificate
+    fn create_test_cert(ca_key: &PrivateKey, user_key: &PrivateKey) -> ssh_key::Certificate {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let valid_after = now - 3600;
+        let valid_before = now + 86400 * 365;
+
+        let mut builder = certificate::Builder::new_with_random_nonce(
+            &mut OsRng,
+            user_key.public_key(),
+            valid_after,
+            valid_before,
+        )
+        .unwrap();
+
+        builder.serial(1).unwrap();
+        builder.key_id("test-user-cert").unwrap();
+        builder.cert_type(certificate::CertType::User).unwrap();
+        builder.valid_principal("testuser").unwrap();
+        builder.sign(ca_key).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_future_certificate_auth_full_flow() {
+        let _ = env_logger::try_init();
+
+        // 1. Spawn ssh-agent
+        let (mut agent, agent_path, dir) = spawn_agent().await;
+
+        // 2. Create CA key and user key
+        let ca_key = PrivateKey::random(&mut OsRng, ssh_key::Algorithm::Ed25519).unwrap();
+        let user_key = PrivateKey::random(&mut OsRng, ssh_key::Algorithm::Ed25519).unwrap();
+
+        // 3. Create a certificate
+        let cert = create_test_cert(&ca_key, &user_key);
+
+        // 4. Write keys and certificate to temp files and add to agent
+        let user_key_path = dir.path().join("user_key");
+        let cert_path = dir.path().join("user_key-cert.pub");
+
+        let mut f = std::fs::File::create(&user_key_path).unwrap();
+        f.write_all(
+            user_key
+                .to_openssh(ssh_key::LineEnding::LF)
+                .unwrap()
+                .as_bytes(),
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            &user_key_path,
+            std::os::unix::fs::PermissionsExt::from_mode(0o600),
+        )
+        .unwrap();
+
+        let mut f = std::fs::File::create(&cert_path).unwrap();
+        f.write_all(cert.to_openssh().unwrap().as_bytes()).unwrap();
+
+        let status = tokio::process::Command::new("ssh-add")
+            .arg(&user_key_path)
+            .env("SSH_AUTH_SOCK", &agent_path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .await
+            .unwrap();
+        assert!(status.success(), "ssh-add failed");
+
+        // 5. Set up test server that accepts certificate auth
+        let mut server_config = server::Config::default();
+        server_config.inactivity_timeout = None;
+        server_config.auth_rejection_time = std::time::Duration::from_secs(3);
+        server_config
+            .keys
+            .push(PrivateKey::random(&mut OsRng, ssh_key::Algorithm::Ed25519).unwrap());
+        let server_config = Arc::new(server_config);
+
+        let socket = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = socket.local_addr().unwrap();
+
+        // Server that accepts certificate auth
+        let server_join = tokio::spawn(async move {
+            let (socket, _) = socket.accept().await.unwrap();
+
+            struct CertHandler;
+
+            impl server::Handler for CertHandler {
+                type Error = crate::Error;
+
+                async fn auth_publickey_offered(
+                    &mut self,
+                    _user: &str,
+                    _public_key: &ssh_key::PublicKey,
+                ) -> Result<server::Auth, Self::Error> {
+                    // Accept the key/certificate for the probe
+                    Ok(server::Auth::Accept)
+                }
+
+                async fn auth_openssh_certificate(
+                    &mut self,
+                    _user: &str,
+                    cert: &ssh_key::Certificate,
+                ) -> Result<server::Auth, Self::Error> {
+                    // Validate the certificate is signed by our CA
+                    // In a real server, you'd properly verify the CA signature
+                    // For this test, just check the key_id matches
+                    if cert.key_id() == "test-user-cert" {
+                        Ok(server::Auth::Accept)
+                    } else {
+                        Ok(server::Auth::Reject { proceed_with_methods: None, partial_success: false })
+                    }
+                }
+
+                async fn channel_open_session(
+                    &mut self,
+                    channel: crate::Channel<server::Msg>,
+                    _session: &mut Session,
+                ) -> Result<bool, Self::Error> {
+                    drop(channel);
+                    Ok(true)
+                }
+            }
+
+            let handler = CertHandler;
+            server::run_stream(server_config, socket, handler)
+                .await
+                .unwrap()
+        });
+
+        // 6. Connect as client using FutureCertificate auth with the agent
+        let client_config = Arc::new(client::Config::default());
+
+        struct TestClient;
+        impl client::Handler for TestClient {
+            type Error = crate::Error;
+
+            async fn check_server_key(
+                &mut self,
+                _server_public_key: &ssh_key::PublicKey,
+            ) -> Result<bool, Self::Error> {
+                Ok(true)
+            }
+        }
+
+        let mut session = client::connect(client_config, addr, TestClient)
+            .await
+            .unwrap();
+
+        // Connect to the agent
+        let stream = tokio::net::UnixStream::connect(&agent_path).await.unwrap();
+        let mut agent_client = AgentClient::connect(stream);
+
+        // Authenticate using FutureCertificate (None for hash_alg since Ed25519 doesn't need it)
+        let auth_result = session
+            .authenticate_certificate_with("testuser", cert.clone(), None, &mut agent_client)
+            .await
+            .unwrap();
+
+        // 7. Verify authentication succeeded
+        assert!(auth_result.success(), "Certificate authentication should succeed");
+
+        // Clean up
+        session.disconnect(crate::Disconnect::ByApplication, "", "").await.unwrap();
+        drop(session);
+        server_join.abort();
+        agent.kill().await.unwrap();
+        agent.wait().await.unwrap();
     }
 }

@@ -56,7 +56,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use regex::Regex;
 use russh::server::Handle;
-use russh::{ChannelId, CryptoVec};
+use russh::ChannelId;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
@@ -268,7 +268,11 @@ impl CommandExecutor {
             // Send error message to stderr
             let error_msg = format!("Command rejected: {e}\n");
             let _ = handle
-                .extended_data(channel_id, 1, CryptoVec::from_slice(error_msg.as_bytes()))
+                .extended_data(
+                    channel_id,
+                    1,
+                    bytes::Bytes::copy_from_slice(error_msg.as_bytes()),
+                )
                 .await;
             return Ok(EXIT_CODE_REJECTED);
         }
@@ -386,7 +390,11 @@ impl CommandExecutor {
                         self.config.timeout_secs
                     );
                     let _ = handle
-                        .extended_data(channel_id, 1, CryptoVec::from_slice(timeout_msg.as_bytes()))
+                        .extended_data(
+                            channel_id,
+                            1,
+                            bytes::Bytes::copy_from_slice(timeout_msg.as_bytes()),
+                        )
                         .await;
                     return Ok(EXIT_CODE_TIMEOUT);
                 }
@@ -424,7 +432,7 @@ impl CommandExecutor {
                 break;
             }
 
-            let data = CryptoVec::from_slice(&buffer[..n]);
+            let data = bytes::Bytes::copy_from_slice(&buffer[..n]);
 
             let result = if is_stderr {
                 // Extended data type 1 = stderr

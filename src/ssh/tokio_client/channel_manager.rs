@@ -20,9 +20,9 @@
 //! - Managing interactive shells and PTY sessions
 //! - Port forwarding channels
 
+use bytes::Bytes;
 use russh::client::Msg;
 use russh::Channel;
-use russh::CryptoVec;
 use std::io;
 use std::net::SocketAddr;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
@@ -66,9 +66,9 @@ const MAX_SUDO_PASSWORD_SENDS: u32 = 10;
 #[derive(Debug, Clone)]
 pub enum CommandOutput {
     /// Standard output data
-    StdOut(CryptoVec),
+    StdOut(Bytes),
     /// Standard error data
-    StdErr(CryptoVec),
+    StdErr(Bytes),
     /// Exit code (sent when command completes)
     ExitCode(u32),
 }
@@ -436,7 +436,7 @@ impl Client {
                             password_send_count
                         );
                         let _ = sender
-                            .send(CommandOutput::StdErr(CryptoVec::from(error_msg.as_bytes())))
+                            .send(CommandOutput::StdErr(Bytes::from(error_msg.into_bytes())))
                             .await;
                         // Send exit code 1 to indicate failure to the stream
                         let _ = sender.send(CommandOutput::ExitCode(1)).await;
@@ -512,7 +512,7 @@ impl Client {
                                 password_send_count
                             );
                             let _ = sender
-                                .send(CommandOutput::StdErr(CryptoVec::from(error_msg.as_bytes())))
+                                .send(CommandOutput::StdErr(Bytes::from(error_msg.into_bytes())))
                                 .await;
                             // Send exit code 1 to indicate failure to the stream
                             let _ = sender.send(CommandOutput::ExitCode(1)).await;

@@ -50,7 +50,7 @@ use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result};
 use russh::server::Handle;
-use russh::{ChannelId, CryptoVec};
+use russh::ChannelId;
 use tokio::fs::{self, File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
@@ -1007,7 +1007,7 @@ impl ScpHandler {
     /// Send data to the channel.
     async fn send_data(&self, channel_id: ChannelId, handle: &Handle, data: &[u8]) -> Result<()> {
         handle
-            .data(channel_id, CryptoVec::from_slice(data))
+            .data(channel_id, bytes::Bytes::copy_from_slice(data))
             .await
             .map_err(|_| anyhow::anyhow!("Failed to send data"))?;
         Ok(())

@@ -24,10 +24,10 @@ use bssh::executor::{MultiNodeStreamManager, NodeStream};
 use bssh::node::Node;
 use bssh::ssh::tokio_client::CommandOutput;
 use bssh::ui::tui::app::TuiApp;
+use bytes::Bytes;
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 use ratatui::backend::TestBackend;
 use ratatui::Terminal;
-use russh::CryptoVec;
 use std::hint::black_box;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc;
@@ -65,7 +65,7 @@ fn bench_large_output_single_stream(c: &mut Criterion) {
 
                         // Send data in 32KB chunks (typical SSH packet size)
                         let chunk_size = 32 * 1024;
-                        let chunk = CryptoVec::from(vec![b'x'; chunk_size.min(size)]);
+                        let chunk = Bytes::from(vec![b'x'; chunk_size.min(size)]);
                         let num_chunks = size.div_ceil(chunk_size);
 
                         for _ in 0..num_chunks {
@@ -110,7 +110,7 @@ fn bench_rolling_buffer_overflow(c: &mut Criterion) {
 
                         // Send data in chunks to exceed buffer limit
                         let chunk_size = 64 * 1024; // 64KB chunks
-                        let chunk = CryptoVec::from(vec![b'x'; chunk_size]);
+                        let chunk = Bytes::from(vec![b'x'; chunk_size]);
                         let num_chunks = total_size / chunk_size;
 
                         for _ in 0..num_chunks {
@@ -162,7 +162,7 @@ fn bench_concurrent_multi_node(c: &mut Criterion) {
 
                         // Send data to all nodes
                         let data_per_node = 100 * 1024; // 100KB per node
-                        let chunk = CryptoVec::from(vec![b'x'; 1024]);
+                        let chunk = Bytes::from(vec![b'x'; 1024]);
                         let chunks_per_node = data_per_node / 1024;
 
                         for _ in 0..chunks_per_node {
@@ -214,7 +214,7 @@ fn bench_poll_all_throughput(c: &mut Criterion) {
                             senders.push(tx);
                         }
 
-                        let chunk = CryptoVec::from(vec![b'x'; chunk_size]);
+                        let chunk = Bytes::from(vec![b'x'; chunk_size]);
 
                         // Send one chunk to each node and poll
                         for tx in &senders {
@@ -304,7 +304,7 @@ fn bench_tui_render_detail(c: &mut Criterion) {
                 }
 
                 rt.block_on(async {
-                    tx.send(CommandOutput::StdOut(CryptoVec::from(
+                    tx.send(CommandOutput::StdOut(Bytes::from(
                         output.as_bytes().to_vec(),
                     )))
                     .await

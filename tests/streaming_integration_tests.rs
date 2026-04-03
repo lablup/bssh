@@ -24,7 +24,7 @@
 use bssh::executor::{ExecutionStatus, MultiNodeStreamManager, NodeStream};
 use bssh::node::Node;
 use bssh::ssh::tokio_client::CommandOutput;
-use russh::CryptoVec;
+use bytes::Bytes;
 use tokio::sync::mpsc;
 
 // ============================================================================
@@ -55,7 +55,7 @@ async fn test_node_stream_receives_stdout() {
     let mut stream = NodeStream::new(node, rx);
 
     // Send stdout data
-    let data = CryptoVec::from(b"Hello, World!".to_vec());
+    let data = Bytes::from(b"Hello, World!".to_vec());
     tx.send(CommandOutput::StdOut(data)).await.unwrap();
 
     // Poll should receive data
@@ -75,7 +75,7 @@ async fn test_node_stream_receives_stderr() {
     let mut stream = NodeStream::new(node, rx);
 
     // Send stderr data
-    let data = CryptoVec::from(b"Error: something went wrong".to_vec());
+    let data = Bytes::from(b"Error: something went wrong".to_vec());
     tx.send(CommandOutput::StdErr(data)).await.unwrap();
 
     stream.poll();
@@ -90,8 +90,8 @@ async fn test_node_stream_stdout_stderr_separation() {
     let mut stream = NodeStream::new(node, rx);
 
     // Send both stdout and stderr
-    let stdout_data = CryptoVec::from(b"stdout output".to_vec());
-    let stderr_data = CryptoVec::from(b"stderr output".to_vec());
+    let stdout_data = Bytes::from(b"stdout output".to_vec());
+    let stderr_data = Bytes::from(b"stderr output".to_vec());
     tx.send(CommandOutput::StdOut(stdout_data)).await.unwrap();
     tx.send(CommandOutput::StdErr(stderr_data)).await.unwrap();
 
@@ -108,7 +108,7 @@ async fn test_node_stream_multiple_chunks() {
 
     // Send multiple chunks
     for i in 1..=5 {
-        let data = CryptoVec::from(format!("chunk{i}").into_bytes());
+        let data = Bytes::from(format!("chunk{i}").into_bytes());
         tx.send(CommandOutput::StdOut(data)).await.unwrap();
     }
 
@@ -160,8 +160,8 @@ async fn test_node_stream_take_buffers() {
     let mut stream = NodeStream::new(node, rx);
 
     // Send data
-    let stdout = CryptoVec::from(b"stdout data".to_vec());
-    let stderr = CryptoVec::from(b"stderr data".to_vec());
+    let stdout = Bytes::from(b"stdout data".to_vec());
+    let stderr = Bytes::from(b"stderr data".to_vec());
     tx.send(CommandOutput::StdOut(stdout)).await.unwrap();
     tx.send(CommandOutput::StdErr(stderr)).await.unwrap();
 
@@ -244,8 +244,8 @@ async fn test_manager_poll_all() {
     manager.add_stream(node2, rx2);
 
     // Send data to both streams
-    let data1 = CryptoVec::from(b"output1".to_vec());
-    let data2 = CryptoVec::from(b"output2".to_vec());
+    let data1 = Bytes::from(b"output1".to_vec());
+    let data2 = Bytes::from(b"output2".to_vec());
     tx1.send(CommandOutput::StdOut(data1)).await.unwrap();
     tx2.send(CommandOutput::StdOut(data2)).await.unwrap();
 
@@ -354,9 +354,9 @@ async fn test_partial_output_accumulation() {
     let mut stream = NodeStream::new(node, rx);
 
     // Simulate partial line output
-    let chunk1 = CryptoVec::from(b"partial ".to_vec());
-    let chunk2 = CryptoVec::from(b"line ".to_vec());
-    let chunk3 = CryptoVec::from(b"complete\n".to_vec());
+    let chunk1 = Bytes::from(b"partial ".to_vec());
+    let chunk2 = Bytes::from(b"line ".to_vec());
+    let chunk3 = Bytes::from(b"complete\n".to_vec());
 
     tx.send(CommandOutput::StdOut(chunk1)).await.unwrap();
     stream.poll();
@@ -378,16 +378,16 @@ async fn test_interleaved_stdout_stderr() {
     let mut stream = NodeStream::new(node, rx);
 
     // Send interleaved stdout and stderr
-    tx.send(CommandOutput::StdOut(CryptoVec::from(b"out1".to_vec())))
+    tx.send(CommandOutput::StdOut(Bytes::from(b"out1".to_vec())))
         .await
         .unwrap();
-    tx.send(CommandOutput::StdErr(CryptoVec::from(b"err1".to_vec())))
+    tx.send(CommandOutput::StdErr(Bytes::from(b"err1".to_vec())))
         .await
         .unwrap();
-    tx.send(CommandOutput::StdOut(CryptoVec::from(b"out2".to_vec())))
+    tx.send(CommandOutput::StdOut(Bytes::from(b"out2".to_vec())))
         .await
         .unwrap();
-    tx.send(CommandOutput::StdErr(CryptoVec::from(b"err2".to_vec())))
+    tx.send(CommandOutput::StdErr(Bytes::from(b"err2".to_vec())))
         .await
         .unwrap();
 
@@ -446,7 +446,7 @@ async fn test_manager_mixed_connection_states() {
     let node1 = Node::new("host1".to_string(), 22, "user".to_string());
     let (tx1, rx1) = mpsc::channel::<CommandOutput>(100);
     manager.add_stream(node1, rx1);
-    tx1.send(CommandOutput::StdOut(CryptoVec::from(b"success".to_vec())))
+    tx1.send(CommandOutput::StdOut(Bytes::from(b"success".to_vec())))
         .await
         .unwrap();
     tx1.send(CommandOutput::ExitCode(0)).await.unwrap();
@@ -462,7 +462,7 @@ async fn test_manager_mixed_connection_states() {
     let node3 = Node::new("host3".to_string(), 22, "user".to_string());
     let (tx3, rx3) = mpsc::channel::<CommandOutput>(100);
     manager.add_stream(node3, rx3);
-    tx3.send(CommandOutput::StdOut(CryptoVec::from(b"partial".to_vec())))
+    tx3.send(CommandOutput::StdOut(Bytes::from(b"partial".to_vec())))
         .await
         .unwrap();
     tx3.send(CommandOutput::ExitCode(1)).await.unwrap();
@@ -487,7 +487,7 @@ async fn test_high_throughput_single_stream() {
     let mut stream = NodeStream::new(node, rx);
 
     // Send many small chunks
-    let chunk = CryptoVec::from(vec![b'x'; 100]);
+    let chunk = Bytes::from(vec![b'x'; 100]);
     for _ in 0..1000 {
         tx.send(CommandOutput::StdOut(chunk.clone())).await.unwrap();
     }
@@ -519,7 +519,7 @@ async fn test_many_concurrent_streams() {
 
     // Send data to all streams
     for (i, tx) in senders.iter().enumerate() {
-        let data = CryptoVec::from(format!("output from node {i}").into_bytes());
+        let data = Bytes::from(format!("output from node {i}").into_bytes());
         tx.send(CommandOutput::StdOut(data)).await.unwrap();
     }
 
@@ -558,7 +558,7 @@ async fn test_manager_poll_all_returns_correctly() {
     assert!(!manager.poll_all(), "Should return false when no data");
 
     // Send data
-    let data = CryptoVec::from(b"data".to_vec());
+    let data = Bytes::from(b"data".to_vec());
     tx.send(CommandOutput::StdOut(data)).await.unwrap();
 
     assert!(manager.poll_all(), "Should return true when data received");
@@ -575,7 +575,7 @@ async fn test_stream_with_unicode_output() {
     let mut stream = NodeStream::new(node, rx);
 
     // Send unicode data with actual Korean, Chinese, and Emoji characters
-    let data = CryptoVec::from(
+    let data = Bytes::from(
         "Hello, World! Korean: 안녕 Chinese: 你好 Emoji: 🚀🎉"
             .as_bytes()
             .to_vec(),
@@ -601,7 +601,7 @@ async fn test_stream_with_binary_output() {
 
     // Send binary data with null bytes
     let binary_data: Vec<u8> = vec![0x00, 0x01, 0x02, 0xFF, 0xFE, 0x00];
-    let data = CryptoVec::from(binary_data.clone());
+    let data = Bytes::from(binary_data.clone());
     tx.send(CommandOutput::StdOut(data)).await.unwrap();
 
     stream.poll();
@@ -632,7 +632,7 @@ async fn test_app_data_change_detection() {
     assert!(!changed, "Should not detect change when data is same");
 
     // Send data
-    let data = CryptoVec::from(b"new output".to_vec());
+    let data = Bytes::from(b"new output".to_vec());
     tx.send(CommandOutput::StdOut(data)).await.unwrap();
     manager.poll_all();
 
