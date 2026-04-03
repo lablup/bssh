@@ -18,6 +18,7 @@
 //! and behaves as expected in pdsh compatibility mode.
 
 use bssh::cli::{has_pdsh_compat_flag, remove_pdsh_compat_flag, PdshCli, PDSH_COMPAT_ENV_VAR};
+use serial_test::serial;
 use std::env;
 
 /// Helper to run a test with env var protection
@@ -116,6 +117,7 @@ fn test_remove_pdsh_compat_flag_no_flag_present() {
 // =============================================================================
 
 #[test]
+#[serial]
 fn test_env_var_detection_with_one() {
     without_env_var(PDSH_COMPAT_ENV_VAR, || {
         with_env_var(PDSH_COMPAT_ENV_VAR, "1", || {
@@ -130,6 +132,7 @@ fn test_env_var_detection_with_one() {
 }
 
 #[test]
+#[serial]
 fn test_env_var_detection_with_true() {
     without_env_var(PDSH_COMPAT_ENV_VAR, || {
         with_env_var(PDSH_COMPAT_ENV_VAR, "true", || {
@@ -141,6 +144,7 @@ fn test_env_var_detection_with_true() {
 }
 
 #[test]
+#[serial]
 fn test_env_var_detection_disabled_with_zero() {
     without_env_var(PDSH_COMPAT_ENV_VAR, || {
         with_env_var(PDSH_COMPAT_ENV_VAR, "0", || {
@@ -154,6 +158,7 @@ fn test_env_var_detection_disabled_with_zero() {
 }
 
 #[test]
+#[serial]
 fn test_env_var_detection_disabled_with_false() {
     without_env_var(PDSH_COMPAT_ENV_VAR, || {
         with_env_var(PDSH_COMPAT_ENV_VAR, "false", || {
