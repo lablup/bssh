@@ -4,14 +4,14 @@ use byteorder::{BigEndian, ByteOrder};
 use bytes::Bytes;
 use log::{debug, error};
 use ssh_encoding::{Decode, Encode, Reader};
-use ssh_key::{Algorithm, HashAlg, PrivateKey, PublicKey, Signature};
+use ssh_key::{Algorithm, Certificate, HashAlg, PrivateKey, PublicKey, Signature};
 use tokio;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use super::{msg, Constraint};
-use crate::helpers::EncodedExt;
-use crate::keys::{key, Error};
+use super::{AgentIdentity, Constraint, msg};
 use crate::CryptoVec;
+use crate::helpers::EncodedExt;
+use crate::keys::{Error, key};
 
 pub trait AgentStream: AsyncRead + AsyncWrite {}
 
@@ -20,7 +20,7 @@ impl<S: AsyncRead + AsyncWrite> AgentStream for S {}
 /// SSH agent client.
 pub struct AgentClient<S: AgentStream> {
     stream: S,
-    buf: CryptoVec,
+    buf: Vec<u8>,
 }
 
 impl<S: AgentStream + Send + Unpin + 'static> AgentClient<S> {
@@ -45,7 +45,7 @@ impl<S: AgentStream + Unpin> AgentClient<S> {
     pub fn connect(stream: S) -> Self {
         AgentClient {
             stream,
-            buf: CryptoVec::new(),
+            buf: Vec::new(),
         }
     }
 }
@@ -58,7 +58,7 @@ impl AgentClient<tokio::net::UnixStream> {
         let stream = tokio::net::UnixStream::connect(path).await?;
         Ok(AgentClient {
             stream,
-            buf: CryptoVec::new(),
+            buf: Vec::new(),
         })
     }
 
@@ -106,7 +106,7 @@ impl AgentClient<tokio::net::windows::named_pipe::NamedPipeClient> {
 
         Ok(AgentClient {
             stream,
-            buf: CryptoVec::new(),
+            buf: Vec::new(),
         })
     }
 }
@@ -119,13 +119,13 @@ impl<S: AgentStream + Unpin> AgentClient<S> {
 
         // Reading the length
         self.buf.clear();
-        self.buf.resize(4);
+        self.buf.resize(4, 0);
         self.stream.read_exact(&mut self.buf).await?;
 
         // Reading the rest of the buffer
         let len = BigEndian::read_u32(&self.buf) as usize;
         self.buf.clear();
-        self.buf.resize(len);
+        self.buf.resize(len, 0);
         self.stream.read_exact(&mut self.buf).await?;
 
         Ok(())
@@ -150,7 +150,7 @@ impl<S: AgentStream + Unpin> AgentClient<S> {
         // See IETF draft-miller-ssh-agent-13, section 3.2 for format.
         // https://datatracker.ietf.org/doc/html/draft-miller-ssh-agent
         self.buf.clear();
-        self.buf.resize(4);
+        self.buf.resize(4, 0);
         if constraints.is_empty() {
             self.buf.push(msg::ADD_IDENTITY)
         } else {
@@ -195,7 +195,7 @@ impl<S: AgentStream + Unpin> AgentClient<S> {
         constraints: &[Constraint],
     ) -> Result<(), Error> {
         self.buf.clear();
-        self.buf.resize(4);
+        self.buf.resize(4, 0);
         if constraints.is_empty() {
             self.buf.push(msg::ADD_SMARTCARD_KEY)
         } else {
@@ -232,7 +232,7 @@ impl<S: AgentStream + Unpin> AgentClient<S> {
     /// Lock the agent, making it refuse to sign until unlocked.
     pub async fn lock(&mut self, passphrase: &[u8]) -> Result<(), Error> {
         self.buf.clear();
-        self.buf.resize(4);
+        self.buf.resize(4, 0);
         self.buf.push(msg::LOCK);
         passphrase.encode(&mut self.buf)?;
         let len = self.buf.len() - 4;
@@ -244,7 +244,7 @@ impl<S: AgentStream + Unpin> AgentClient<S> {
     /// Unlock the agent, allowing it to sign again.
     pub async fn unlock(&mut self, passphrase: &[u8]) -> Result<(), Error> {
         self.buf.clear();
-        self.buf.resize(4);
+        self.buf.resize(4, 0);
         msg::UNLOCK.encode(&mut self.buf)?;
         passphrase.encode(&mut self.buf)?;
         let len = self.buf.len() - 4;
@@ -254,18 +254,17 @@ impl<S: AgentStream + Unpin> AgentClient<S> {
         Ok(())
     }
 
-    /// Ask the agent for a list of the currently registered secret
-    /// keys.
-    pub async fn request_identities(&mut self) -> Result<Vec<PublicKey>, Error> {
+    /// Ask the agent for a list of identities, including certificates.
+    pub async fn request_identities(&mut self) -> Result<Vec<AgentIdentity>, Error> {
         self.buf.clear();
-        self.buf.resize(4);
+        self.buf.resize(4, 0);
         msg::REQUEST_IDENTITIES.encode(&mut self.buf)?;
         let len = self.buf.len() - 4;
         BigEndian::write_u32(&mut self.buf[..], len as u32);
 
         self.read_response().await?;
         debug!("identities: {:?}", &self.buf[..]);
-        let mut keys = Vec::new();
+        let mut identities = Vec::new();
 
         #[allow(clippy::indexing_slicing)] // static length
         if let Some((&msg::IDENTITIES_ANSWER, mut r)) = self.buf.split_first() {
@@ -273,24 +272,122 @@ impl<S: AgentStream + Unpin> AgentClient<S> {
             for _ in 0..n {
                 let key_blob = Bytes::decode(&mut r)?;
                 let comment = String::decode(&mut r)?;
-                let mut key = key::parse_public_key(&key_blob)?;
-                key.set_comment(comment);
-                keys.push(key);
+
+                // Check if blob starts with a certificate algorithm by reading the algorithm string.
+                // Certificate algorithms end with "-cert-v01@openssh.com".
+                // This avoids parsing the blob twice for regular keys.
+                let identity = if Self::is_certificate_blob(&key_blob) {
+                    match Certificate::decode(&mut key_blob.as_ref()) {
+                        Ok(cert) => AgentIdentity::Certificate { certificate: cert, comment },
+                        Err(_) => {
+                            // Fallback to public key if certificate parsing fails
+                            let key = key::parse_public_key(&key_blob)?;
+                            AgentIdentity::PublicKey { key, comment }
+                        }
+                    }
+                } else {
+                    let key = key::parse_public_key(&key_blob)?;
+                    AgentIdentity::PublicKey { key, comment }
+                };
+                identities.push(identity);
             }
         }
 
-        Ok(keys)
+        Ok(identities)
+    }
+
+    /// Check if a key blob appears to be a certificate by examining the algorithm prefix.
+    /// Certificate algorithms end with "-cert-v01@openssh.com".
+    fn is_certificate_blob(blob: &[u8]) -> bool {
+        // The blob starts with a length-prefixed string containing the algorithm name.
+        // Read the length (4 bytes, big-endian) and then the algorithm string.
+        let Some(len_bytes) = blob.get(..4) else {
+            return false;
+        };
+        let alg_len = BigEndian::read_u32(len_bytes) as usize;
+        let Some(alg_bytes) = blob.get(4..4 + alg_len) else {
+            return false;
+        };
+        if let Ok(alg_str) = str::from_utf8(alg_bytes) {
+            alg_str.ends_with("-cert-v01@openssh.com")
+        } else {
+            false
+        }
     }
 
     /// Ask the agent to sign the supplied piece of data.
     pub async fn sign_request(
         &mut self,
+        identity: &AgentIdentity,
+        hash_alg: Option<HashAlg>,
+        data: Vec<u8>,
+    ) -> Result<Vec<u8>, Error> {
+        match identity {
+            AgentIdentity::PublicKey { key, .. } => self.sign_request_pk(key, hash_alg, data).await,
+            AgentIdentity::Certificate { certificate, .. } => {
+                self.sign_request_cert(certificate, hash_alg, data).await
+            }
+        }
+    }
+
+    async fn sign_request_pk(
+        &mut self,
         public: &PublicKey,
         hash_alg: Option<HashAlg>,
-        mut data: CryptoVec,
-    ) -> Result<CryptoVec, Error> {
+        mut data: Vec<u8>,
+    ) -> Result<Vec<u8>, Error> {
         debug!("sign_request: {data:?}");
         let hash = self.prepare_sign_request(public, hash_alg, &data)?;
+
+        self.read_response().await?;
+
+        match self.buf.split_first() {
+            Some((&msg::SIGN_RESPONSE, mut r)) => {
+                self.write_signature(&mut r, hash, &mut data)?;
+                Ok(data)
+            }
+            Some((&msg::FAILURE, _)) => Err(Error::AgentFailure),
+            _ => {
+                debug!("self.buf = {:?}", &self.buf[..]);
+                Err(Error::AgentProtocolError)
+            }
+        }
+    }
+
+    /// Ask the agent to sign data using a certificate identity.
+    ///
+    /// This sends the certificate blob to the agent (not just the public key),
+    /// allowing the agent to match it to the correct private key.
+    ///
+    /// For RSA certificates, you can specify the hash algorithm to use.
+    async fn sign_request_cert(
+        &mut self,
+        cert: &Certificate,
+        hash_alg: Option<HashAlg>,
+        mut data: Vec<u8>,
+    ) -> Result<Vec<u8>, Error> {
+        debug!("sign_request_cert: {data:?}");
+
+        self.buf.clear();
+        self.buf.resize(4, 0);
+        msg::SIGN_REQUEST.encode(&mut self.buf)?;
+        cert.to_bytes()?.encode(&mut self.buf)?;
+        data.encode(&mut self.buf)?;
+
+        // Calculate hash flag for RSA certificates (same logic as prepare_sign_request)
+        let hash = match cert.algorithm() {
+            Algorithm::Rsa { .. } => match hash_alg {
+                Some(HashAlg::Sha256) => 2,
+                Some(HashAlg::Sha512) => 4,
+                _ => 0,
+            },
+            _ => 0,
+        };
+
+        hash.encode(&mut self.buf)?;
+
+        let len = self.buf.len() - 4;
+        BigEndian::write_u32(&mut self.buf[..], len as u32);
 
         self.read_response().await?;
 
@@ -314,7 +411,7 @@ impl<S: AgentStream + Unpin> AgentClient<S> {
         data: &[u8],
     ) -> Result<u32, Error> {
         self.buf.clear();
-        self.buf.resize(4);
+        self.buf.resize(4, 0);
         msg::SIGN_REQUEST.encode(&mut self.buf)?;
         public.key_data().encoded()?.encode(&mut self.buf)?;
         data.encode(&mut self.buf)?;
@@ -339,7 +436,7 @@ impl<S: AgentStream + Unpin> AgentClient<S> {
         &self,
         r: &mut R,
         hash: u32,
-        data: &mut CryptoVec,
+        data: &mut Vec<u8>,
     ) -> Result<(), Error> {
         let mut resp = &Bytes::decode(r)?[..];
         let t = String::decode(&mut resp)?;
@@ -409,7 +506,7 @@ impl<S: AgentStream + Unpin> AgentClient<S> {
     /// Ask the agent to remove a key from its memory.
     pub async fn remove_identity(&mut self, public: &ssh_key::PublicKey) -> Result<(), Error> {
         self.buf.clear();
-        self.buf.resize(4);
+        self.buf.resize(4, 0);
         self.buf.push(msg::REMOVE_IDENTITY);
         public.key_data().encoded()?.encode(&mut self.buf)?;
         let len = self.buf.len() - 4;
@@ -421,7 +518,7 @@ impl<S: AgentStream + Unpin> AgentClient<S> {
     /// Ask the agent to remove a smartcard from its memory.
     pub async fn remove_smartcard_key(&mut self, id: &str, pin: &[u8]) -> Result<(), Error> {
         self.buf.clear();
-        self.buf.resize(4);
+        self.buf.resize(4, 0);
         msg::REMOVE_SMARTCARD_KEY.encode(&mut self.buf)?;
         id.encode(&mut self.buf)?;
         pin.encode(&mut self.buf)?;
@@ -434,7 +531,7 @@ impl<S: AgentStream + Unpin> AgentClient<S> {
     /// Ask the agent to forget all known keys.
     pub async fn remove_all_identities(&mut self) -> Result<(), Error> {
         self.buf.clear();
-        self.buf.resize(4);
+        self.buf.resize(4, 0);
         msg::REMOVE_ALL_IDENTITIES.encode(&mut self.buf)?;
         1u32.encode(&mut self.buf)?;
         self.read_success().await?;
@@ -444,7 +541,7 @@ impl<S: AgentStream + Unpin> AgentClient<S> {
     /// Send a custom message to the agent.
     pub async fn extension(&mut self, typ: &[u8], ext: &[u8]) -> Result<(), Error> {
         self.buf.clear();
-        self.buf.resize(4);
+        self.buf.resize(4, 0);
         msg::EXTENSION.encode(&mut self.buf)?;
         typ.encode(&mut self.buf)?;
         ext.encode(&mut self.buf)?;
@@ -457,7 +554,7 @@ impl<S: AgentStream + Unpin> AgentClient<S> {
     /// Ask the agent what extensions about supported extensions.
     pub async fn query_extension(&mut self, typ: &[u8], mut ext: CryptoVec) -> Result<bool, Error> {
         self.buf.clear();
-        self.buf.resize(4);
+        self.buf.resize(4, 0);
         msg::EXTENSION.encode(&mut self.buf)?;
         typ.encode(&mut self.buf)?;
         let len = self.buf.len() - 4;

@@ -38,7 +38,7 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use russh::server::{Handle, Msg};
-use russh::{ChannelId, ChannelStream, CryptoVec};
+use russh::{ChannelId, ChannelStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Child;
 use tokio::sync::{mpsc, RwLock};
@@ -522,7 +522,7 @@ pub async fn run_shell_io_loop_with_handle(
                         }
                         Ok(Ok(n)) => {
                             tracing::trace!(channel = ?channel_id, bytes = n, "Read from PTY, calling handle.data()");
-                            let data = CryptoVec::from_slice(&buf[..n]);
+                            let data = bytes::Bytes::copy_from_slice(&buf[..n]);
                             match handle_clone.data(channel_id, data).await {
                                 Ok(_) => {
                                     tracing::trace!(channel = ?channel_id, "handle.data() returned successfully");

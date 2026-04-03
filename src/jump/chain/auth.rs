@@ -413,7 +413,7 @@ pub(super) async fn authenticate_connection(
                 let result = handle
                     .authenticate_publickey_with(
                         username,
-                        identity.clone(),
+                        identity.public_key().into_owned(),
                         handle.best_supported_rsa_hash().await?.flatten(),
                         &mut agent,
                     )
