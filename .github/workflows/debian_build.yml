@@ -39,7 +39,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        package: [bssh, bssh-server]
+        package: [bssh, bssh-server, bssh-keygen]
         distro: [jammy, noble, resolute]
         arch: [amd64, arm64]
         include:
@@ -81,6 +81,12 @@ jobs:
           - arch: arm64
             package: bssh-server
             binary_asset: bssh-server-linux-aarch64.tar.gz
+          - arch: amd64
+            package: bssh-keygen
+            binary_asset: bssh-keygen-linux-x86_64.tar.gz
+          - arch: arm64
+            package: bssh-keygen
+            binary_asset: bssh-keygen-linux-aarch64.tar.gz
     
     steps:
     # ───────────────────────────────────────────────────────────────
