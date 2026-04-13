@@ -1,6 +1,6 @@
 [package]
 name = "bssh-russh"
-version = "0.60.0"
+version = "0.60.1"
 authors = ["Jeongkyu Shin <inureyes@gmail.com>"]
 description = "Temporary fork of russh with high-frequency PTY output fix (Handle::data from spawned tasks)"
 documentation = "https://docs.rs/bssh-russh"
