@@ -1,3 +1,35 @@
+bssh (2.0.1-1~jammy1) jammy; urgency=medium
+
+  * v2.0.1
+  ### New Features
+  None
+
+  ### Improvements
+  - Add bssh-keygen to Debian package build pipeline
+
+  ### Bug Fixes
+  - Fix GitHub Actions debian_build.yml distro configuration (questing -> resolute)
+
+  ### CI/CD Improvements
+  - Added bssh-keygen to Debian package matrix for all architectures
+  - Fixed GitHub Actions workflow validation issue in debian_build.yml
+
+  ### Technical Details
+  - Created debian/control.bssh-keygen.binary and debian/rules.bssh-keygen.binary for bssh-keygen packaging
+
+  ### Dependencies
+  - Bumped bssh-russh from 0.60.0 to 0.60.1 with RustCrypto security updates
+  - Updated RC dependency versions: rsa 0.10.0-rc.17, elliptic-curve 0.14.0-rc.30, p256/p384/p521 0.14.0-rc.8, ml-kem 0.3.0-rc.2
+  - Upgraded spki from 0.8.0-rc.4 to 0.8.0 (stable)
+
+  ### Breaking Changes
+  None
+
+  ### Known Issues
+  None
+
+ -- Jeongkyu Shin <inureyes@gmail.com>  Sun, 13 Apr 2026 12:00:00 +0900
+
 bssh (2.0.0-1~jammy1) jammy; urgency=medium
 
   * v2.0.0

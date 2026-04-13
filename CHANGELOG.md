@@ -5,6 +5,22 @@ All notable changes to bssh will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.1] - 2026-04-13
+
+### Added
+- bssh-keygen now included in Debian package build pipeline for all architectures
+
+### Changed
+- Bumped bssh-russh from 0.60.0 to 0.60.1 with security updates
+
+### Fixed
+- Fixed GitHub Actions debian_build.yml distro configuration (questing -> resolute)
+- Fixed debian_build.yml matrix validation issue causing workflow failures
+
+### Security
+- Updated rsa to 0.10.0-rc.17 (fixes RUSTSEC-2023-0071 RSA Marvin Attack)
+- Updated RC dependencies to latest versions: elliptic-curve 0.14.0-rc.30, p256/p384/p521 0.14.0-rc.8, ml-kem 0.3.0-rc.2, spki 0.8.0 (stable)
+
 ## [2.0.0] - 2026-04-13
 
 ### Added
@@ -734,6 +750,7 @@ None
 - russh library for native SSH implementation
 - Cross-platform support (Linux and macOS)
 
+[2.0.1]: https://github.com/lablup/bssh/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/lablup/bssh/compare/v1.7.0...v2.0.0
 [1.7.0]: https://github.com/lablup/bssh/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/lablup/bssh/compare/v1.5.1...v1.6.0

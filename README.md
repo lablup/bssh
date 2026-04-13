@@ -1445,6 +1445,7 @@ See the [LICENSE](./LICENSE) file for details.
 ## Changelog
 
 ### Recent Updates
+- **v2.0.1 (2026/04/13):** Add bssh-keygen to Debian package build pipeline, bump bssh-russh to 0.60.1 with security updates (RUSTSEC-2023-0071 RSA Marvin Attack fix), update RC dependencies to latest versions
 - **v2.0.0 (2026/04/13):** Major release — bssh-server SSH server for containers with SFTP/SCP, PTY/shell sessions, password + public-key auth; audit logging (file/OpenTelemetry/Logstash); IP access control, rate limiting, session management, file transfer filtering; bssh-keygen tool; SSH idle-disconnect fix via proper keepalive wiring (inactivity_timeout override + TCP SO_KEEPALIVE); bssh-russh fork synced with upstream russh 0.60.0 (rand 0.10 stable, updated RustCrypto chain); separate packaging for bssh and bssh-server
 - **v1.7.0 (2026/01/09):** Add SSH keepalive support with --server-alive-interval and --server-alive-count-max options to prevent idle connection timeouts (#122), update dependencies (russh 0.56, ratatui 0.30, whoami 2.0)
 - **v1.6.0 (2025/12/19):** Add jump_host field support in config.yaml (issue #115), fix SSH config ProxyJump directive application, fix jump host authentication with empty SSH agent (issues #116, #117)
