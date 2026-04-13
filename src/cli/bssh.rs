@@ -387,7 +387,7 @@ pub enum Commands {
     #[command(
         about = "Start interactive shell session",
         long_about = "Opens an interactive shell session with one or more remote hosts.\nSupports both single-node and multiplex modes for efficient cluster management.\nIn multiplex mode, commands are sent to all active nodes simultaneously.\n\nSpecial commands (default prefix '!'):\n  !all              - Activate all connected nodes\n  !broadcast <cmd>  - Execute on all nodes temporarily\n  !node<N>          - Switch to specific node (e.g., !node1)\n  !list             - List all nodes and connection status\n  !status           - Show currently active nodes\n  !help             - Show special commands help\n  exit              - Exit interactive mode\n\nSettings can be configured globally or per-cluster in config file.\nCLI arguments override configuration file settings.",
-        after_help = "Examples:\n  bssh interactive                           # Auto-detect or use defaults\n  bssh -c prod interactive                   # Use production cluster\n  bssh interactive --single-node             # Connect to one node only\n  bssh interactive --prompt-format '{user}>' # Custom prompt\n  bssh interactive --work-dir /var/www       # Set initial directory"
+        after_help = "Examples:\n  bssh interactive                           # Auto-detect or use defaults\n  bssh -C prod interactive                   # Use production cluster\n  bssh interactive --single-node             # Connect to one node only\n  bssh interactive --prompt-format '{user}>' # Custom prompt\n  bssh interactive --work-dir /var/www       # Set initial directory"
     )]
     Interactive {
         #[arg(
