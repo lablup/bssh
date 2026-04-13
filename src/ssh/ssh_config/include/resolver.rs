@@ -231,24 +231,30 @@ mod tests {
 
         // Should have 3 files in lexical order
         assert_eq!(files.len(), 3);
-        assert!(files[0]
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .contains("01-first"));
-        assert!(files[1]
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .contains("02-second"));
-        assert!(files[2]
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .contains("03-third"));
+        assert!(
+            files[0]
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("01-first")
+        );
+        assert!(
+            files[1]
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("02-second")
+        );
+        assert!(
+            files[2]
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("03-third")
+        );
     }
 
     #[tokio::test]

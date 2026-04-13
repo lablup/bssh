@@ -22,7 +22,7 @@ mod types;
 pub use types::{JumpConnection, JumpInfo};
 
 use super::connection::JumpHostConnection;
-use super::parser::{get_max_jump_hosts, JumpHost};
+use super::parser::{JumpHost, get_max_jump_hosts};
 use super::rate_limiter::ConnectionRateLimiter;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
 use crate::ssh::tokio_client::{AuthMethod, SshConnectionConfig};

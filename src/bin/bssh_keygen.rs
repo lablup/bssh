@@ -123,11 +123,11 @@ fn main() -> Result<()> {
     };
 
     // Ensure parent directory exists
-    if let Some(parent) = output.parent() {
-        if !parent.exists() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
-        }
+    if let Some(parent) = output.parent()
+        && !parent.exists()
+    {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create directory: {}", parent.display()))?;
     }
 
     // Check if file exists and prompt for overwrite

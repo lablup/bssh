@@ -16,7 +16,7 @@ use crate::ui::tui::log_buffer::LogBuffer;
 use crate::ui::tui::log_layer::TuiLogLayer;
 use once_cell::sync::OnceCell;
 use std::sync::{Arc, Mutex};
-use tracing_subscriber::{prelude::*, EnvFilter};
+use tracing_subscriber::{EnvFilter, prelude::*};
 
 /// Global log buffer for TUI mode
 static LOG_BUFFER: OnceCell<Arc<Mutex<LogBuffer>>> = OnceCell::new();

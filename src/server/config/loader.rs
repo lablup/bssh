@@ -511,10 +511,12 @@ auth:
 
         let result = validate_config(&config);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("At least one host key"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("At least one host key")
+        );
     }
 
     #[test]
@@ -529,10 +531,12 @@ auth:
 
         let result = validate_config(&config);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("authentication method"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("authentication method")
+        );
     }
 
     #[test]
@@ -596,10 +600,12 @@ auth:
 
         let result = validate_config(&config);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("max_connections must be greater than 0"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("max_connections must be greater than 0")
+        );
     }
 
     #[test]
@@ -614,10 +620,12 @@ auth:
 
         let result = validate_config(&config);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Invalid bind_address"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Invalid bind_address")
+        );
     }
 
     #[test]
@@ -706,10 +714,12 @@ auth:
 
         let result = validate_config(&config);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Default shell does not exist"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Default shell does not exist")
+        );
     }
 
     #[cfg(unix)]

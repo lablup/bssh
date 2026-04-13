@@ -390,9 +390,11 @@ Host web1.secure.example.com
         // Verify first host (*.secure.example.com)
         let host1 = &config.hosts[0];
         assert_eq!(host1.certificate_files.len(), 1);
-        assert!(host1.certificate_files[0]
-            .to_string_lossy()
-            .contains("id_rsa-cert.pub"));
+        assert!(
+            host1.certificate_files[0]
+                .to_string_lossy()
+                .contains("id_rsa-cert.pub")
+        );
         assert_eq!(host1.ca_signature_algorithms.len(), 2);
         assert_eq!(host1.ca_signature_algorithms[0], "ssh-ed25519");
         assert_eq!(host1.ca_signature_algorithms[1], "rsa-sha2-512");
@@ -404,9 +406,11 @@ Host web1.secure.example.com
         // Verify second host (web1.secure.example.com)
         let host2 = &config.hosts[1];
         assert_eq!(host2.certificate_files.len(), 1);
-        assert!(host2.certificate_files[0]
-            .to_string_lossy()
-            .contains("host-cert.pub"));
+        assert!(
+            host2.certificate_files[0]
+                .to_string_lossy()
+                .contains("host-cert.pub")
+        );
         assert_eq!(host2.permit_remote_open.len(), 2);
         assert_eq!(host2.permit_remote_open[0], "localhost:8080");
         assert_eq!(host2.permit_remote_open[1], "db.internal:5432");

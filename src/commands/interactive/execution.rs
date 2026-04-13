@@ -21,7 +21,7 @@ use std::sync::Arc;
 use crate::pty::PtyManager;
 
 use super::super::interactive_signal::{
-    reset_interrupt, setup_async_signal_handlers, setup_signal_handlers, TerminalGuard,
+    TerminalGuard, reset_interrupt, setup_async_signal_handlers, setup_signal_handlers,
 };
 use super::types::{InteractiveCommand, InteractiveResult};
 

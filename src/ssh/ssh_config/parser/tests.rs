@@ -255,10 +255,12 @@ fn test_parse_very_long_line() {
     let content = format!("Host example.com\n    {long_line}");
     let result = parse(&content);
     assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("exceeds maximum length"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("exceeds maximum length")
+    );
 }
 
 #[test]
@@ -268,10 +270,12 @@ fn test_parse_very_long_value() {
     let content = format!("Host example.com\n    User={long_value}");
     let result = parse(&content);
     assert!(result.is_err());
-    assert!(result
-        .unwrap_err()
-        .to_string()
-        .contains("exceeds maximum length"));
+    assert!(
+        result
+            .unwrap_err()
+            .to_string()
+            .contains("exceeds maximum length")
+    );
 }
 
 // Integration tests for Include + Match scenarios
@@ -485,12 +489,16 @@ Host example.com
     assert_eq!(hosts.len(), 1);
     assert_eq!(hosts[0].certificate_files.len(), 2);
     // Paths should be validated and stored
-    assert!(hosts[0].certificate_files[0]
-        .to_string_lossy()
-        .contains("id_rsa-cert.pub"));
-    assert!(hosts[0].certificate_files[1]
-        .to_string_lossy()
-        .contains("host-cert.pub"));
+    assert!(
+        hosts[0].certificate_files[0]
+            .to_string_lossy()
+            .contains("id_rsa-cert.pub")
+    );
+    assert!(
+        hosts[0].certificate_files[1]
+            .to_string_lossy()
+            .contains("host-cert.pub")
+    );
 }
 
 #[test]
@@ -503,9 +511,11 @@ Host example.com
     let hosts = parse(content).unwrap();
     assert_eq!(hosts.len(), 1);
     assert_eq!(hosts[0].certificate_files.len(), 1);
-    assert!(hosts[0].certificate_files[0]
-        .to_string_lossy()
-        .contains("id_ed25519-cert.pub"));
+    assert!(
+        hosts[0].certificate_files[0]
+            .to_string_lossy()
+            .contains("id_ed25519-cert.pub")
+    );
 }
 
 #[test]

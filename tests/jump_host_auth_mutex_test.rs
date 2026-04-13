@@ -19,10 +19,10 @@
 //! - Prevents race conditions when multiple jump hosts need credentials
 //! - Ensures prompts don't overlap or interfere with each other
 
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::sync::Mutex;
-use tokio::time::{sleep, Duration};
+use tokio::time::{Duration, sleep};
 
 /// Simulates an authentication prompt that takes some time
 async fn simulate_auth_prompt(

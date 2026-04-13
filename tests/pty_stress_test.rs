@@ -26,7 +26,7 @@ use bssh::pty::PtyMessage;
 use smallvec::SmallVec;
 use std::time::Duration;
 use tokio::sync::mpsc;
-use tokio::time::{timeout, Instant};
+use tokio::time::{Instant, timeout};
 
 // Helper to generate random data
 #[allow(dead_code)]

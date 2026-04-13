@@ -20,7 +20,7 @@ use bssh::{
     config::Config,
     jump::parse_jump_hosts,
     node::Node,
-    ssh::{known_hosts::StrictHostKeyChecking, SshConfig},
+    ssh::{SshConfig, known_hosts::StrictHostKeyChecking},
     utils::init_logging,
 };
 use std::path::PathBuf;
@@ -275,15 +275,15 @@ pub fn determine_strict_host_key_checking(
     }
 
     // SSH config value for specific hostname
-    if let Some(host) = hostname {
-        if let Some(ssh_config_value) = ssh_config.get_strict_host_key_checking(host) {
-            return match ssh_config_value.to_lowercase().as_str() {
-                "yes" => StrictHostKeyChecking::Yes,
-                "no" => StrictHostKeyChecking::No,
-                "ask" | "accept-new" => StrictHostKeyChecking::AcceptNew,
-                _ => StrictHostKeyChecking::AcceptNew,
-            };
-        }
+    if let Some(host) = hostname
+        && let Some(ssh_config_value) = ssh_config.get_strict_host_key_checking(host)
+    {
+        return match ssh_config_value.to_lowercase().as_str() {
+            "yes" => StrictHostKeyChecking::Yes,
+            "no" => StrictHostKeyChecking::No,
+            "ask" | "accept-new" => StrictHostKeyChecking::AcceptNew,
+            _ => StrictHostKeyChecking::AcceptNew,
+        };
     }
 
     // Default from CLI (already parsed)

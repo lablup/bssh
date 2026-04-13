@@ -20,9 +20,9 @@ use crate::executor::{ExitCodeStrategy, OutputMode, ParallelExecutor, RankDetect
 use crate::forwarding::ForwardingType;
 use crate::node::Node;
 use crate::security::SudoPassword;
+use crate::ssh::SshConfig;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
 use crate::ssh::tokio_client::SshConnectionConfig;
-use crate::ssh::SshConfig;
 use crate::ui::OutputFormatter;
 use crate::utils::output::save_outputs_to_files;
 
@@ -62,10 +62,10 @@ pub async fn execute_command(params: ExecuteCommandParams<'_>) -> Result<()> {
     );
 
     // Handle port forwarding if specified
-    if let Some(ref forwards) = params.port_forwards {
-        if !forwards.is_empty() {
-            return execute_command_with_forwarding(params).await;
-        }
+    if let Some(ref forwards) = params.port_forwards
+        && !forwards.is_empty()
+    {
+        return execute_command_with_forwarding(params).await;
     }
 
     // Execute command without port forwarding (original behavior)
@@ -247,11 +247,11 @@ async fn execute_command_without_forwarding(params: ExecuteCommandParams<'_>) ->
 
     // Save outputs to files if output_dir is specified and not already handled by file mode
     // (File mode already saves outputs, so only save for normal mode with output_dir)
-    if let Some(dir) = params.output_dir {
-        if !params.stream {
-            // Only save if not in stream mode (file mode saves automatically)
-            save_outputs_to_files(&results, dir, params.command).await?;
-        }
+    if let Some(dir) = params.output_dir
+        && !params.stream
+    {
+        // Only save if not in stream mode (file mode saves automatically)
+        save_outputs_to_files(&results, dir, params.command).await?;
     }
 
     // Print results (skip if already printed in stream mode)

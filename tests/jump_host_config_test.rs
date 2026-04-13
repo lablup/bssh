@@ -683,12 +683,14 @@ clusters:
     match &cluster.defaults.jump_host {
         Some(JumpHostConfig::Simple(s)) => {
             assert_eq!(s, "@bastion");
-            assert!(cluster
-                .defaults
-                .jump_host
-                .as_ref()
-                .unwrap()
-                .is_ssh_config_ref());
+            assert!(
+                cluster
+                    .defaults
+                    .jump_host
+                    .as_ref()
+                    .unwrap()
+                    .is_ssh_config_ref()
+            );
             assert_eq!(
                 cluster
                     .defaults

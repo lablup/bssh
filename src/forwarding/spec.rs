@@ -21,7 +21,7 @@
 //! let spec = ForwardingSpec::parse_dynamic("1080").unwrap();
 //! ```
 
-use super::{parse_bind_spec, ForwardingType, SocksVersion};
+use super::{ForwardingType, SocksVersion, parse_bind_spec};
 use anyhow::{Context, Result};
 use std::net::{IpAddr, Ipv4Addr};
 
@@ -43,10 +43,12 @@ impl ForwardingSpec {
         match parts.len() {
             3 => {
                 // Format: port:host:hostport
-                let bind_port = parts[0].parse::<u16>()
+                let bind_port = parts[0]
+                    .parse::<u16>()
                     .with_context(|| format!("Invalid local port: {}", parts[0]))?;
                 let remote_host = parts[1].to_string();
-                let remote_port = parts[2].parse::<u16>()
+                let remote_port = parts[2]
+                    .parse::<u16>()
                     .with_context(|| format!("Invalid remote port: {}", parts[2]))?;
 
                 Ok(ForwardingType::Local {
@@ -61,7 +63,8 @@ impl ForwardingSpec {
                 let bind_spec = format!("{}:{}", parts[0], parts[1]);
                 let bind_addr = parse_bind_spec(&bind_spec)?;
                 let remote_host = parts[2].to_string();
-                let remote_port = parts[3].parse::<u16>()
+                let remote_port = parts[3]
+                    .parse::<u16>()
                     .with_context(|| format!("Invalid remote port: {}", parts[3]))?;
 
                 Ok(ForwardingType::Local {
@@ -90,10 +93,12 @@ impl ForwardingSpec {
         match parts.len() {
             3 => {
                 // Format: port:host:hostport
-                let bind_port = parts[0].parse::<u16>()
+                let bind_port = parts[0]
+                    .parse::<u16>()
                     .with_context(|| format!("Invalid remote port: {}", parts[0]))?;
                 let local_host = parts[1].to_string();
-                let local_port = parts[2].parse::<u16>()
+                let local_port = parts[2]
+                    .parse::<u16>()
                     .with_context(|| format!("Invalid local port: {}", parts[2]))?;
 
                 Ok(ForwardingType::Remote {
@@ -108,7 +113,8 @@ impl ForwardingSpec {
                 let bind_spec = format!("{}:{}", parts[0], parts[1]);
                 let bind_addr = parse_bind_spec(&bind_spec)?;
                 let local_host = parts[2].to_string();
-                let local_port = parts[3].parse::<u16>()
+                let local_port = parts[3]
+                    .parse::<u16>()
                     .with_context(|| format!("Invalid local port: {}", parts[3]))?;
 
                 Ok(ForwardingType::Remote {

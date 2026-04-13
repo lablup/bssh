@@ -17,14 +17,14 @@
 use anyhow::Result;
 use chrono;
 use owo_colors::OwoColorize;
+use rustyline::DefaultEditor;
 use rustyline::config::Configurer;
 use rustyline::error::ReadlineError;
-use rustyline::DefaultEditor;
 use tokio::time::Duration;
 
 use super::super::interactive_signal::is_interrupted;
 use super::types::{
-    InteractiveCommand, NodeSession, NODES_TO_SHOW_IN_COMPACT, SSH_OUTPUT_POLL_INTERVAL_MS,
+    InteractiveCommand, NODES_TO_SHOW_IN_COMPACT, NodeSession, SSH_OUTPUT_POLL_INTERVAL_MS,
 };
 
 impl InteractiveCommand {
@@ -254,8 +254,8 @@ impl InteractiveCommand {
                             // Try to read output from each active session
                             _ = async {
                                 for session in &mut sessions {
-                                    if session.is_connected && session.is_active {
-                                        if let Ok(Some(output)) = session.read_output().await {
+                                    if session.is_connected && session.is_active
+                                        && let Ok(Some(output)) = session.read_output().await {
                                             has_output = true;
                                             // Print output with node prefix and optional timestamp
                                             for line in output.lines() {
@@ -284,7 +284,6 @@ impl InteractiveCommand {
                                                 }
                                             }
                                         }
-                                    }
                                 }
 
                                 // If no output was found, sleep briefly to avoid busy waiting

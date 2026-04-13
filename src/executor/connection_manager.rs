@@ -21,10 +21,10 @@ use std::sync::Arc;
 use crate::node::Node;
 use crate::security::SudoPassword;
 use crate::ssh::{
+    SshClient, SshConfig,
     client::{CommandResult, ConnectionConfig},
     known_hosts::StrictHostKeyChecking,
     tokio_client::SshConnectionConfig,
-    SshClient, SshConfig,
 };
 
 /// Configuration for node execution.

@@ -21,7 +21,7 @@
 //! - Terminal detection utilities
 //! - Cross-platform compatibility
 
-use bssh::pty::{utils::*, PtyConfig};
+use bssh::pty::{PtyConfig, utils::*};
 use signal_hook::consts::SIGWINCH;
 use std::time::Duration;
 

@@ -49,8 +49,8 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result};
-use russh::server::Handle;
 use russh::ChannelId;
+use russh::server::Handle;
 use tokio::fs::{self, File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::mpsc;
@@ -504,10 +504,10 @@ impl ScpHandler {
                 }
                 b'T' => {
                     // Preserve times: T<mtime> 0 <atime> 0
-                    if self.preserve_times {
-                        if let Err(e) = self.parse_times(&line) {
-                            tracing::warn!("Error parsing times: {}", e);
-                        }
+                    if self.preserve_times
+                        && let Err(e) = self.parse_times(&line)
+                    {
+                        tracing::warn!("Error parsing times: {}", e);
                     }
                     self.send_ok(channel_id, &handle).await?;
                 }

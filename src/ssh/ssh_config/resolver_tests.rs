@@ -33,12 +33,16 @@ Host example.com
 
         // Should have both certificate files (appending behavior)
         assert_eq!(config.certificate_files.len(), 2);
-        assert!(config.certificate_files[0]
-            .to_string_lossy()
-            .contains("global-cert.pub"));
-        assert!(config.certificate_files[1]
-            .to_string_lossy()
-            .contains("example-cert.pub"));
+        assert!(
+            config.certificate_files[0]
+                .to_string_lossy()
+                .contains("global-cert.pub")
+        );
+        assert!(
+            config.certificate_files[1]
+                .to_string_lossy()
+                .contains("example-cert.pub")
+        );
     }
 
     #[test]
@@ -57,13 +61,17 @@ Host example.com
         // Should deduplicate the shared cert
         assert_eq!(config.certificate_files.len(), 2);
         // First should be the shared cert (from first Host *)
-        assert!(config.certificate_files[0]
-            .to_string_lossy()
-            .contains("shared-cert.pub"));
+        assert!(
+            config.certificate_files[0]
+                .to_string_lossy()
+                .contains("shared-cert.pub")
+        );
         // Second should be the example-specific cert
-        assert!(config.certificate_files[1]
-            .to_string_lossy()
-            .contains("example-cert.pub"));
+        assert!(
+            config.certificate_files[1]
+                .to_string_lossy()
+                .contains("example-cert.pub")
+        );
     }
 
     #[test]
@@ -235,15 +243,21 @@ Host *
 
         // CertificateFile: all three accumulate
         assert_eq!(config.certificate_files.len(), 3);
-        assert!(config.certificate_files[0]
-            .to_string_lossy()
-            .contains("first-cert.pub"));
-        assert!(config.certificate_files[1]
-            .to_string_lossy()
-            .contains("second-cert.pub"));
-        assert!(config.certificate_files[2]
-            .to_string_lossy()
-            .contains("third-cert.pub"));
+        assert!(
+            config.certificate_files[0]
+                .to_string_lossy()
+                .contains("first-cert.pub")
+        );
+        assert!(
+            config.certificate_files[1]
+                .to_string_lossy()
+                .contains("second-cert.pub")
+        );
+        assert!(
+            config.certificate_files[2]
+                .to_string_lossy()
+                .contains("third-cert.pub")
+        );
     }
 
     #[test]
@@ -433,12 +447,16 @@ Host example.com
 
         // Should merge identity files and inherit UseKeychain
         assert_eq!(config.identity_files.len(), 2);
-        assert!(config.identity_files[0]
-            .to_string_lossy()
-            .contains("id_rsa"));
-        assert!(config.identity_files[1]
-            .to_string_lossy()
-            .contains("id_ed25519"));
+        assert!(
+            config.identity_files[0]
+                .to_string_lossy()
+                .contains("id_rsa")
+        );
+        assert!(
+            config.identity_files[1]
+                .to_string_lossy()
+                .contains("id_ed25519")
+        );
         assert_eq!(config.use_keychain, Some(true));
     }
 

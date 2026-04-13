@@ -36,11 +36,11 @@ use super::{
 use crate::ssh::tokio_client::Client;
 use anyhow::{Context, Result};
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, Semaphore};
+use tokio::sync::{Semaphore, mpsc};
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
@@ -101,7 +101,7 @@ impl LocalForwarder {
             _ => {
                 return Err(anyhow::anyhow!(
                     "Invalid forwarding type for LocalForwarder"
-                ))
+                ));
             }
         };
 
@@ -535,9 +535,11 @@ mod tests {
         );
 
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Invalid forwarding type"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Invalid forwarding type")
+        );
     }
 }

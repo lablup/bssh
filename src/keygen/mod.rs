@@ -110,9 +110,10 @@ mod tests {
         assert!(result.is_ok());
 
         let key = result.unwrap();
-        assert!(key
-            .private_key_pem
-            .contains("-----BEGIN OPENSSH PRIVATE KEY-----"));
+        assert!(
+            key.private_key_pem
+                .contains("-----BEGIN OPENSSH PRIVATE KEY-----")
+        );
         assert!(key.public_key_openssh.starts_with("ssh-ed25519 "));
         assert!(key.public_key_openssh.contains("test@example.com"));
         assert!(key.fingerprint.starts_with("SHA256:"));
@@ -133,9 +134,10 @@ mod tests {
         assert!(result.is_ok());
 
         let key = result.unwrap();
-        assert!(key
-            .private_key_pem
-            .contains("-----BEGIN OPENSSH PRIVATE KEY-----"));
+        assert!(
+            key.private_key_pem
+                .contains("-----BEGIN OPENSSH PRIVATE KEY-----")
+        );
         assert!(key.public_key_openssh.starts_with("ssh-rsa "));
         assert!(key.public_key_openssh.contains("test@example.com"));
         assert!(key.fingerprint.starts_with("SHA256:"));

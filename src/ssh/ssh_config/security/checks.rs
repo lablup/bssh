@@ -52,38 +52,39 @@ pub fn validate_identity_file_security(path: &Path, line_number: usize) -> Resul
 
     // On Unix systems, check file permissions if the file exists
     #[cfg(unix)]
-    if path.exists() && path.is_file() {
-        if let Ok(metadata) = std::fs::metadata(path) {
-            let permissions = metadata.permissions();
-            let mode = permissions.mode();
+    if path.exists()
+        && path.is_file()
+        && let Ok(metadata) = std::fs::metadata(path)
+    {
+        let permissions = metadata.permissions();
+        let mode = permissions.mode();
 
-            // Check if file is world-readable (dangerous for private keys)
-            if mode & 0o004 != 0 {
-                tracing::warn!(
-                    "Security warning: Identity file '{}' at line {} is world-readable. \
+        // Check if file is world-readable (dangerous for private keys)
+        if mode & 0o004 != 0 {
+            tracing::warn!(
+                "Security warning: Identity file '{}' at line {} is world-readable. \
                      Private SSH keys should not be readable by other users (chmod 600 recommended).",
-                    path_str,
-                    line_number
-                );
-            }
+                path_str,
+                line_number
+            );
+        }
 
-            // Check if file is group-readable (also not ideal for private keys)
-            if mode & 0o040 != 0 {
-                tracing::warn!(
-                    "Security warning: Identity file '{}' at line {} is group-readable. \
+        // Check if file is group-readable (also not ideal for private keys)
+        if mode & 0o040 != 0 {
+            tracing::warn!(
+                "Security warning: Identity file '{}' at line {} is group-readable. \
                      Private SSH keys should only be readable by the owner (chmod 600 recommended).",
-                    path_str,
-                    line_number
-                );
-            }
+                path_str,
+                line_number
+            );
+        }
 
-            // Check if file is world-writable (very dangerous)
-            if mode & 0o002 != 0 {
-                anyhow::bail!(
-                    "Security violation: Identity file '{path_str}' at line {line_number} is world-writable. \
+        // Check if file is world-writable (very dangerous)
+        if mode & 0o002 != 0 {
+            anyhow::bail!(
+                "Security violation: Identity file '{path_str}' at line {line_number} is world-writable. \
                      This is extremely dangerous and must be fixed immediately."
-                );
-            }
+            );
         }
     }
 

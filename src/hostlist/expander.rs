@@ -18,7 +18,7 @@
 //! using cartesian product for multiple range expressions.
 
 use super::error::HostlistError;
-use super::parser::{parse_host_pattern, PatternSegment};
+use super::parser::{PatternSegment, parse_host_pattern};
 
 /// Maximum number of hosts that can be generated from a single pattern
 const MAX_EXPANSION_SIZE: usize = 100_000;

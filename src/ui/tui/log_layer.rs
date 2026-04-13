@@ -22,8 +22,8 @@ use super::log_buffer::{LogBuffer, LogEntry};
 use std::sync::{Arc, Mutex};
 use tracing::field::{Field, Visit};
 use tracing::{Event, Level, Subscriber};
-use tracing_subscriber::layer::Context;
 use tracing_subscriber::Layer;
+use tracing_subscriber::layer::Context;
 
 /// A tracing layer that captures log events for TUI display
 ///
@@ -128,8 +128,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::Registry;
+    use tracing_subscriber::layer::SubscriberExt;
 
     #[test]
     fn test_tui_log_layer_captures_events() {

@@ -21,7 +21,7 @@ use bssh::executor::{MultiNodeStreamManager, NodeStream};
 use bssh::node::Node;
 use bssh::ssh::tokio_client::CommandOutput;
 use bssh::ui::tui::app::{TuiApp, ViewMode};
-use ratatui::{backend::TestBackend, buffer::Buffer, Terminal};
+use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
 use tokio::sync::mpsc;
 
 /// Helper to convert buffer to a displayable string for snapshot comparison

@@ -417,15 +417,15 @@ impl MultiExtensionMatcher {
 
 impl Matcher for MultiExtensionMatcher {
     fn matches(&self, path: &Path) -> bool {
-        if let Some(ext) = path.extension() {
-            if let Some(ext_str) = ext.to_str() {
-                let ext_cmp = if self.case_sensitive {
-                    ext_str.to_string()
-                } else {
-                    ext_str.to_lowercase()
-                };
-                return self.extensions.contains(&ext_cmp);
-            }
+        if let Some(ext) = path.extension()
+            && let Some(ext_str) = ext.to_str()
+        {
+            let ext_cmp = if self.case_sensitive {
+                ext_str.to_string()
+            } else {
+                ext_str.to_lowercase()
+            };
+            return self.extensions.contains(&ext_cmp);
         }
         false
     }
@@ -504,15 +504,15 @@ impl SizeMatcher {
 
     /// Check if the given size matches.
     pub fn matches_size(&self, size: u64) -> bool {
-        if let Some(min) = self.min_size {
-            if size < min {
-                return false;
-            }
+        if let Some(min) = self.min_size
+            && size < min
+        {
+            return false;
         }
-        if let Some(max) = self.max_size {
-            if size > max {
-                return false;
-            }
+        if let Some(max) = self.max_size
+            && size > max
+        {
+            return false;
         }
         true
     }
@@ -811,9 +811,11 @@ mod tests {
         assert!(matcher.pattern_description().contains("bat"));
 
         let case_sensitive = MultiExtensionMatcher::new(vec!["EXE"], true);
-        assert!(case_sensitive
-            .pattern_description()
-            .contains("case-sensitive"));
+        assert!(
+            case_sensitive
+                .pattern_description()
+                .contains("case-sensitive")
+        );
     }
 
     // Tests for SizeMatcher

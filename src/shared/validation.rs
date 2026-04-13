@@ -412,12 +412,12 @@ pub fn sanitize_error_message(message: &str) -> String {
     let mut sanitized = message.to_string();
 
     // Remove specific usernames (format: user 'username')
-    if let Some(start) = sanitized.find("user '") {
-        if let Some(end) = sanitized[start + 6..].find('\'') {
-            let before = &sanitized[..start + 5];
-            let after = &sanitized[start + 6 + end + 1..];
-            sanitized = format!("{before}<redacted>{after}");
-        }
+    if let Some(start) = sanitized.find("user '")
+        && let Some(end) = sanitized[start + 6..].find('\'')
+    {
+        let before = &sanitized[..start + 5];
+        let after = &sanitized[start + 6 + end + 1..];
+        sanitized = format!("{before}<redacted>{after}");
     }
 
     // Remove hostname:port combinations in common patterns

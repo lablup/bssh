@@ -69,7 +69,10 @@ pub fn secure_validate_path(path: &str, path_type: &str, line_number: usize) -> 
             Err(e) => {
                 tracing::debug!(
                     "Could not canonicalize {} path '{}' at line {}: {}. Using expanded path as-is.",
-                    path_type, path_str, line_number, e
+                    path_type,
+                    path_str,
+                    line_number,
+                    e
                 );
                 expanded_path.clone()
             }

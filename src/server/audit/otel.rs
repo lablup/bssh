@@ -23,11 +23,11 @@ use super::exporter::AuditExporter;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use opentelemetry::{
-    logs::{AnyValue, LogRecord as _, Logger, LoggerProvider as _, Severity},
     KeyValue,
+    logs::{AnyValue, LogRecord as _, Logger, LoggerProvider as _, Severity},
 };
 use opentelemetry_otlp::{LogExporter, WithExportConfig};
-use opentelemetry_sdk::{logs::SdkLoggerProvider, Resource};
+use opentelemetry_sdk::{Resource, logs::SdkLoggerProvider};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::sync::RwLockReadGuard;

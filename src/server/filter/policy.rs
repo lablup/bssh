@@ -28,7 +28,7 @@ use crate::server::config::{
     CompositeLogicType, FilterAction, FilterConfig, FilterRule as FilterRuleConfig, MatcherConfig,
 };
 use crate::server::filter::path::{
-    normalize_path, ComponentMatcher, MultiExtensionMatcher, PrefixMatcher,
+    ComponentMatcher, MultiExtensionMatcher, PrefixMatcher, normalize_path,
 };
 use crate::server::filter::pattern::{AllMatcher, CombinedMatcher, GlobMatcher, NotMatcher};
 
@@ -343,7 +343,9 @@ impl FilterPolicy {
         } else if let Some(ref directory) = config.directory {
             Ok(Box::new(ComponentMatcher::new(directory.as_str())))
         } else {
-            anyhow::bail!("Matcher config must have one of: 'pattern', 'path_prefix', 'extensions', 'directory', or 'not'")
+            anyhow::bail!(
+                "Matcher config must have one of: 'pattern', 'path_prefix', 'extensions', 'directory', or 'not'"
+            )
         }
     }
 }

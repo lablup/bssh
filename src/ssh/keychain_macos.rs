@@ -54,7 +54,7 @@
 
 use anyhow::{Context, Result};
 use security_framework::passwords::{
-    delete_generic_password, generic_password, set_generic_password, PasswordOptions,
+    PasswordOptions, delete_generic_password, generic_password, set_generic_password,
 };
 use std::path::Path;
 use zeroize::Zeroizing;

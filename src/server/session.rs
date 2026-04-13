@@ -59,14 +59,14 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use russh::server::Msg;
 use russh::{Channel, ChannelId};
 use thiserror::Error;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 
 use super::pty::PtyMaster;
 
@@ -170,13 +170,13 @@ impl SessionConfig {
             );
         }
 
-        if let Some(session_timeout) = self.session_timeout {
-            if session_timeout < self.idle_timeout {
-                warnings.push(format!(
+        if let Some(session_timeout) = self.session_timeout
+            && session_timeout < self.idle_timeout
+        {
+            warnings.push(format!(
                     "session_timeout ({:?}) < idle_timeout ({:?}) - sessions may be terminated before idle check",
                     session_timeout, self.idle_timeout
                 ));
-            }
         }
 
         warnings
@@ -692,12 +692,12 @@ impl SessionManager {
 
         // Remove from user sessions tracking
         if let Some(ref session) = session {
-            if let Some(ref username) = session.user {
-                if let Some(user_sessions) = self.user_sessions.get_mut(username) {
-                    user_sessions.retain(|&sid| sid != id);
-                    if user_sessions.is_empty() {
-                        self.user_sessions.remove(username);
-                    }
+            if let Some(ref username) = session.user
+                && let Some(user_sessions) = self.user_sessions.get_mut(username)
+            {
+                user_sessions.retain(|&sid| sid != id);
+                if user_sessions.is_empty() {
+                    self.user_sessions.remove(username);
                 }
             }
 
@@ -759,10 +759,10 @@ impl SessionManager {
                     return Some(*id);
                 }
                 // Check session timeout
-                if let Some(max_duration) = self.config.session_timeout {
-                    if info.is_expired(max_duration) {
-                        return Some(*id);
-                    }
+                if let Some(max_duration) = self.config.session_timeout
+                    && info.is_expired(max_duration)
+                {
+                    return Some(*id);
                 }
                 None
             })

@@ -400,30 +400,30 @@ impl russh_sftp::server::Handler for SftpHandler {
 
             // Check if the path is a symlink and validate the target
             let metadata = fs::symlink_metadata(&path).await;
-            if let Ok(meta) = metadata {
-                if meta.is_symlink() {
-                    // Follow the symlink and ensure target is within root
-                    let target = fs::read_link(&path).await?;
-                    let resolved_target = if target.is_absolute() {
-                        target
-                    } else {
-                        // Resolve relative symlink from the symlink's directory
-                        let base = path.parent().unwrap_or(&root_dir);
-                        let joined = base.join(&target);
-                        // Use tokio's canonicalize for async operation
-                        tokio::fs::canonicalize(&joined).await.unwrap_or(target)
-                    };
+            if let Ok(meta) = metadata
+                && meta.is_symlink()
+            {
+                // Follow the symlink and ensure target is within root
+                let target = fs::read_link(&path).await?;
+                let resolved_target = if target.is_absolute() {
+                    target
+                } else {
+                    // Resolve relative symlink from the symlink's directory
+                    let base = path.parent().unwrap_or(&root_dir);
+                    let joined = base.join(&target);
+                    // Use tokio's canonicalize for async operation
+                    tokio::fs::canonicalize(&joined).await.unwrap_or(target)
+                };
 
-                    if !resolved_target.starts_with(&root_dir) {
-                        tracing::warn!(
-                            path = %path.display(),
-                            target = %resolved_target.display(),
-                            "Symlink target outside root directory"
-                        );
-                        return Err(SftpError::permission_denied(
-                            "Symlink target outside allowed directory",
-                        ));
-                    }
+                if !resolved_target.starts_with(&root_dir) {
+                    tracing::warn!(
+                        path = %path.display(),
+                        target = %resolved_target.display(),
+                        "Symlink target outside root directory"
+                    );
+                    return Err(SftpError::permission_denied(
+                        "Symlink target outside allowed directory",
+                    ));
                 }
             }
 

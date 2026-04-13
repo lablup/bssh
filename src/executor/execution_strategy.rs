@@ -24,7 +24,7 @@ use tokio::sync::Semaphore;
 use crate::node::Node;
 
 use super::connection_manager::{
-    download_from_node, execute_on_node_with_jump_hosts, upload_to_node, ExecutionConfig,
+    ExecutionConfig, download_from_node, execute_on_node_with_jump_hosts, upload_to_node,
 };
 use super::result_types::{DownloadResult, ExecutionResult, UploadResult};
 

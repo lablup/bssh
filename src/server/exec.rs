@@ -55,8 +55,8 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use regex::Regex;
-use russh::server::Handle;
 use russh::ChannelId;
+use russh::server::Handle;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncReadExt;
 use tokio::process::Command;
@@ -517,10 +517,10 @@ impl CommandExecutor {
         ];
 
         for (pattern, description) in &dangerous_patterns {
-            if let Ok(re) = Regex::new(pattern) {
-                if re.is_match(command) {
-                    anyhow::bail!("Command contains dangerous pattern ({})", description);
-                }
+            if let Ok(re) = Regex::new(pattern)
+                && re.is_match(command)
+            {
+                anyhow::bail!("Command contains dangerous pattern ({})", description);
             }
         }
 
@@ -534,10 +534,10 @@ impl CommandExecutor {
             }
 
             // Also check if the first word matches (for command names)
-            if let Some(first_word) = normalized.split_whitespace().next() {
-                if first_word == blocked_normalized {
-                    anyhow::bail!("Command '{first_word}' is blocked");
-                }
+            if let Some(first_word) = normalized.split_whitespace().next()
+                && first_word == blocked_normalized
+            {
+                anyhow::bail!("Command '{first_word}' is blocked");
             }
         }
 
@@ -602,9 +602,11 @@ mod tests {
         assert_eq!(config.working_dir, Some(PathBuf::from("/tmp")));
         assert_eq!(config.env.get("LANG"), Some(&"en_US.UTF-8".to_string()));
         assert!(config.allowed_commands.is_some());
-        assert!(config
-            .blocked_commands
-            .contains(&"dangerous_cmd".to_string()));
+        assert!(
+            config
+                .blocked_commands
+                .contains(&"dangerous_cmd".to_string())
+        );
     }
 
     #[test]
@@ -628,9 +630,11 @@ mod tests {
         assert!(executor.validate_command("rm -rf /").is_err());
         assert!(executor.validate_command("rm -fr /home").is_err());
         assert!(executor.validate_command("sudo mkfs /dev/sda").is_err());
-        assert!(executor
-            .validate_command("dd if=/dev/zero of=/dev/sda")
-            .is_err());
+        assert!(
+            executor
+                .validate_command("dd if=/dev/zero of=/dev/sda")
+                .is_err()
+        );
 
         // Test command chaining attempts
         assert!(executor.validate_command("ls; rm -rf /").is_err());
@@ -661,18 +665,24 @@ mod tests {
 
         // Test disallowed commands
         assert!(executor.validate_command("rm -rf /").is_err());
-        assert!(executor
-            .validate_command("wget http://example.com")
-            .is_err());
-        assert!(executor
-            .validate_command("curl http://example.com")
-            .is_err());
+        assert!(
+            executor
+                .validate_command("wget http://example.com")
+                .is_err()
+        );
+        assert!(
+            executor
+                .validate_command("curl http://example.com")
+                .is_err()
+        );
 
         // Test that command chaining is blocked even with allowed commands
         assert!(executor.validate_command("ls; rm -rf /").is_err());
-        assert!(executor
-            .validate_command("cat /etc/passwd && rm -rf /")
-            .is_err());
+        assert!(
+            executor
+                .validate_command("cat /etc/passwd && rm -rf /")
+                .is_err()
+        );
     }
 
     #[test]

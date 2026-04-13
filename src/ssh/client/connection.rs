@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use super::core::SshClient;
-use crate::jump::{parse_jump_hosts, JumpHostChain};
+use crate::jump::{JumpHostChain, parse_jump_hosts};
 use crate::ssh::known_hosts::StrictHostKeyChecking;
 use crate::ssh::tokio_client::{AuthMethod, Client, SshConnectionConfig};
 use anyhow::{Context, Result};

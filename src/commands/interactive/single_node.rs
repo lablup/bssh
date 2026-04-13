@@ -15,14 +15,14 @@
 //! Single node interactive session handling
 
 use anyhow::Result;
+use rustyline::DefaultEditor;
 use rustyline::config::Configurer;
 use rustyline::error::ReadlineError;
-use rustyline::DefaultEditor;
 use std::io::{self, Write};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tokio::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::Mutex;
+use tokio::sync::mpsc;
 use tokio::time::Duration;
 
 use super::super::interactive_signal::is_interrupted;

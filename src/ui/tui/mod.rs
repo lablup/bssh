@@ -31,7 +31,7 @@ use crate::utils::get_log_buffer;
 use anyhow::Result;
 use app::{TuiApp, ViewMode};
 use log_buffer::LogBuffer;
-use ratatui::{backend::CrosstermBackend, Terminal};
+use ratatui::{Terminal, backend::CrosstermBackend};
 use std::io;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

@@ -128,12 +128,14 @@ mod tests {
         let key = result.unwrap();
 
         // Verify private key format
-        assert!(key
-            .private_key_pem
-            .contains("-----BEGIN OPENSSH PRIVATE KEY-----"));
-        assert!(key
-            .private_key_pem
-            .contains("-----END OPENSSH PRIVATE KEY-----"));
+        assert!(
+            key.private_key_pem
+                .contains("-----BEGIN OPENSSH PRIVATE KEY-----")
+        );
+        assert!(
+            key.private_key_pem
+                .contains("-----END OPENSSH PRIVATE KEY-----")
+        );
 
         // Verify public key format
         assert!(key.public_key_openssh.starts_with("ssh-ed25519 "));

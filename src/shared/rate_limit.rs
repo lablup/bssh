@@ -41,7 +41,7 @@
 //! // For user IDs: RateLimiter<u64>
 //! ```
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::Arc;

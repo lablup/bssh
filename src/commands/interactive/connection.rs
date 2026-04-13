@@ -16,13 +16,13 @@
 
 use anyhow::{Context, Result};
 use crossterm::terminal;
-use russh::client::Msg;
 use russh::Channel;
+use russh::client::Msg;
 use std::io::{self, Write};
-use tokio::time::{timeout, Duration};
+use tokio::time::{Duration, timeout};
 use zeroize::Zeroizing;
 
-use crate::jump::{parse_jump_hosts, JumpHostChain};
+use crate::jump::{JumpHostChain, parse_jump_hosts};
 use crate::node::Node;
 use crate::ssh::{
     known_hosts::get_check_method,

@@ -23,58 +23,57 @@ impl Config {
     pub fn get_interactive_config(&self, cluster_name: Option<&str>) -> InteractiveConfig {
         let mut config = self.interactive.clone();
 
-        if let Some(cluster_name) = cluster_name {
-            if let Some(cluster) = self.get_cluster(cluster_name) {
-                if let Some(ref cluster_interactive) = cluster.interactive {
-                    // Merge cluster-specific overrides with global config
-                    // Cluster settings take precedence where specified
-                    config.default_mode = cluster_interactive.default_mode.clone();
+        if let Some(cluster_name) = cluster_name
+            && let Some(cluster) = self.get_cluster(cluster_name)
+            && let Some(ref cluster_interactive) = cluster.interactive
+        {
+            // Merge cluster-specific overrides with global config
+            // Cluster settings take precedence where specified
+            config.default_mode = cluster_interactive.default_mode.clone();
 
-                    if !cluster_interactive.prompt_format.is_empty() {
-                        config.prompt_format = cluster_interactive.prompt_format.clone();
-                    }
+            if !cluster_interactive.prompt_format.is_empty() {
+                config.prompt_format = cluster_interactive.prompt_format.clone();
+            }
 
-                    if cluster_interactive.history_file.is_some() {
-                        config.history_file = cluster_interactive.history_file.clone();
-                    }
+            if cluster_interactive.history_file.is_some() {
+                config.history_file = cluster_interactive.history_file.clone();
+            }
 
-                    if cluster_interactive.work_dir.is_some() {
-                        config.work_dir = cluster_interactive.work_dir.clone();
-                    }
+            if cluster_interactive.work_dir.is_some() {
+                config.work_dir = cluster_interactive.work_dir.clone();
+            }
 
-                    if cluster_interactive.broadcast_prefix.is_some() {
-                        config.broadcast_prefix = cluster_interactive.broadcast_prefix.clone();
-                    }
+            if cluster_interactive.broadcast_prefix.is_some() {
+                config.broadcast_prefix = cluster_interactive.broadcast_prefix.clone();
+            }
 
-                    if cluster_interactive.node_switch_prefix.is_some() {
-                        config.node_switch_prefix = cluster_interactive.node_switch_prefix.clone();
-                    }
+            if cluster_interactive.node_switch_prefix.is_some() {
+                config.node_switch_prefix = cluster_interactive.node_switch_prefix.clone();
+            }
 
-                    // Note: For booleans, we always use the cluster value since there's no "unset" state
-                    config.show_timestamps = cluster_interactive.show_timestamps;
+            // Note: For booleans, we always use the cluster value since there's no "unset" state
+            config.show_timestamps = cluster_interactive.show_timestamps;
 
-                    // Merge colors (cluster colors override global ones)
-                    for (k, v) in &cluster_interactive.colors {
-                        config.colors.insert(k.clone(), v.clone());
-                    }
+            // Merge colors (cluster colors override global ones)
+            for (k, v) in &cluster_interactive.colors {
+                config.colors.insert(k.clone(), v.clone());
+            }
 
-                    // Merge keybindings
-                    if !cluster_interactive.keybindings.switch_node.is_empty() {
-                        config.keybindings.switch_node =
-                            cluster_interactive.keybindings.switch_node.clone();
-                    }
-                    if !cluster_interactive.keybindings.broadcast_toggle.is_empty() {
-                        config.keybindings.broadcast_toggle =
-                            cluster_interactive.keybindings.broadcast_toggle.clone();
-                    }
-                    if !cluster_interactive.keybindings.quit.is_empty() {
-                        config.keybindings.quit = cluster_interactive.keybindings.quit.clone();
-                    }
-                    if cluster_interactive.keybindings.clear_screen.is_some() {
-                        config.keybindings.clear_screen =
-                            cluster_interactive.keybindings.clear_screen.clone();
-                    }
-                }
+            // Merge keybindings
+            if !cluster_interactive.keybindings.switch_node.is_empty() {
+                config.keybindings.switch_node =
+                    cluster_interactive.keybindings.switch_node.clone();
+            }
+            if !cluster_interactive.keybindings.broadcast_toggle.is_empty() {
+                config.keybindings.broadcast_toggle =
+                    cluster_interactive.keybindings.broadcast_toggle.clone();
+            }
+            if !cluster_interactive.keybindings.quit.is_empty() {
+                config.keybindings.quit = cluster_interactive.keybindings.quit.clone();
+            }
+            if cluster_interactive.keybindings.clear_screen.is_some() {
+                config.keybindings.clear_screen =
+                    cluster_interactive.keybindings.clear_screen.clone();
             }
         }
 

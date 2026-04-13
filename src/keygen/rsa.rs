@@ -24,7 +24,7 @@
 //! RSA key generation is provided for compatibility with legacy systems.
 
 use super::GeneratedKey;
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use russh::keys::{Algorithm, HashAlg, PrivateKey};
 use ssh_key::LineEnding;
 use std::io::Write;
@@ -167,12 +167,14 @@ mod tests {
         let key = result.unwrap();
 
         // Verify private key format
-        assert!(key
-            .private_key_pem
-            .contains("-----BEGIN OPENSSH PRIVATE KEY-----"));
-        assert!(key
-            .private_key_pem
-            .contains("-----END OPENSSH PRIVATE KEY-----"));
+        assert!(
+            key.private_key_pem
+                .contains("-----BEGIN OPENSSH PRIVATE KEY-----")
+        );
+        assert!(
+            key.private_key_pem
+                .contains("-----END OPENSSH PRIVATE KEY-----")
+        );
 
         // Verify public key format
         assert!(key.public_key_openssh.starts_with("ssh-rsa "));

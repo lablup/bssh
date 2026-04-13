@@ -38,7 +38,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use nix::libc;
-use nix::pty::{openpty, OpenptyResult, Winsize};
+use nix::pty::{OpenptyResult, Winsize, openpty};
 use nix::unistd;
 use tokio::io::unix::AsyncFd;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};

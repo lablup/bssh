@@ -454,27 +454,33 @@ mod tests {
         assert_eq!(result.len(), 3);
 
         // Check lexical ordering of included files
-        assert!(result[0]
-            .path
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .contains("01-first"));
-        assert!(result[1]
-            .path
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .contains("02-second"));
-        assert!(result[2]
-            .path
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .contains("03-third"));
+        assert!(
+            result[0]
+                .path
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("01-first")
+        );
+        assert!(
+            result[1]
+                .path
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("02-second")
+        );
+        assert!(
+            result[2]
+                .path
+                .file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .contains("03-third")
+        );
     }
 
     #[tokio::test]

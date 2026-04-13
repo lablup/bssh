@@ -341,18 +341,17 @@ impl russh::server::Server for BsshServerRunner {
             // Use try_read to avoid blocking in sync context
             if let Ok(is_banned) = tokio::runtime::Handle::try_current()
                 .map(|h| h.block_on(self.auth_rate_limiter.is_banned(&ip)))
+                && is_banned
             {
-                if is_banned {
-                    tracing::info!(
-                        ip = %ip,
-                        "Connection rejected from banned IP"
-                    );
-                    return SshHandler::rejected(
-                        peer_addr,
-                        Arc::clone(&self.config),
-                        Arc::clone(&self.sessions),
-                    );
-                }
+                tracing::info!(
+                    ip = %ip,
+                    "Connection rejected from banned IP"
+                );
+                return SshHandler::rejected(
+                    peer_addr,
+                    Arc::clone(&self.config),
+                    Arc::clone(&self.sessions),
+                );
             }
         }
 

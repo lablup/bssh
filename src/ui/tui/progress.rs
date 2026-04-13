@@ -59,26 +59,25 @@ pub fn parse_progress(text: &str) -> Option<f32> {
         return None;
     }
     // Try apt-specific pattern first (more specific)
-    if let Some(cap) = APT_PROGRESS.captures(text) {
-        if let Ok(percent) = cap[1].parse::<f32>() {
-            return Some(percent.min(100.0));
-        }
+    if let Some(cap) = APT_PROGRESS.captures(text)
+        && let Ok(percent) = cap[1].parse::<f32>()
+    {
+        return Some(percent.min(100.0));
     }
 
     // Try general percent pattern: "78%"
-    if let Some(cap) = PERCENT_PATTERN.captures(text) {
-        if let Ok(percent) = cap[1].parse::<f32>() {
-            return Some(percent.min(100.0));
-        }
+    if let Some(cap) = PERCENT_PATTERN.captures(text)
+        && let Ok(percent) = cap[1].parse::<f32>()
+    {
+        return Some(percent.min(100.0));
     }
 
     // Try fraction pattern: "23/100"
-    if let Some(cap) = FRACTION_PATTERN.captures(text) {
-        if let (Ok(current), Ok(total)) = (cap[1].parse::<f32>(), cap[2].parse::<f32>()) {
-            if total > 0.0 {
-                return Some((current / total * 100.0).min(100.0));
-            }
-        }
+    if let Some(cap) = FRACTION_PATTERN.captures(text)
+        && let (Ok(current), Ok(total)) = (cap[1].parse::<f32>(), cap[2].parse::<f32>())
+        && total > 0.0
+    {
+        return Some((current / total * 100.0).min(100.0));
     }
 
     None

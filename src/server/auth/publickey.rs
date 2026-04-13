@@ -397,40 +397,40 @@ impl PublicKeyVerifier {
         }
 
         // SECURITY: Validate parent directory permissions
-        if let Some(parent) = path.parent() {
-            if let Ok(parent_metadata) = std::fs::symlink_metadata(parent) {
-                let parent_mode = parent_metadata.mode();
+        if let Some(parent) = path.parent()
+            && let Ok(parent_metadata) = std::fs::symlink_metadata(parent)
+        {
+            let parent_mode = parent_metadata.mode();
 
-                // Parent directory should not be world-writable or group-writable
-                if parent_mode & 0o002 != 0 {
-                    anyhow::bail!(
-                        "Parent directory {} of authorized_keys is world-writable (mode {:o})",
-                        parent.display(),
-                        parent_mode & 0o777
-                    );
-                }
+            // Parent directory should not be world-writable or group-writable
+            if parent_mode & 0o002 != 0 {
+                anyhow::bail!(
+                    "Parent directory {} of authorized_keys is world-writable (mode {:o})",
+                    parent.display(),
+                    parent_mode & 0o777
+                );
+            }
 
-                if parent_mode & 0o020 != 0 {
-                    tracing::warn!(
-                        "Parent directory {} of authorized_keys is group-writable (mode {:o}). This is a potential security risk.",
-                        parent.display(),
-                        parent_mode & 0o777
-                    );
-                }
+            if parent_mode & 0o020 != 0 {
+                tracing::warn!(
+                    "Parent directory {} of authorized_keys is group-writable (mode {:o}). This is a potential security risk.",
+                    parent.display(),
+                    parent_mode & 0o777
+                );
+            }
 
-                // Check ownership - parent directory should be owned by same user as file
-                let file_uid = metadata.uid();
-                let parent_uid = parent_metadata.uid();
+            // Check ownership - parent directory should be owned by same user as file
+            let file_uid = metadata.uid();
+            let parent_uid = parent_metadata.uid();
 
-                if file_uid != parent_uid {
-                    tracing::warn!(
-                        "authorized_keys file {} (uid: {}) and parent directory {} (uid: {}) have different owners",
-                        path.display(),
-                        file_uid,
-                        parent.display(),
-                        parent_uid
-                    );
-                }
+            if file_uid != parent_uid {
+                tracing::warn!(
+                    "authorized_keys file {} (uid: {}) and parent directory {} (uid: {}) have different owners",
+                    path.display(),
+                    file_uid,
+                    parent.display(),
+                    parent_uid
+                );
             }
         }
 
@@ -744,8 +744,7 @@ mod tests {
         let verifier = PublicKeyVerifier::new(PublicKeyAuthConfig::default());
 
         // Valid ed25519 key
-        let line =
-            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl test@example";
+        let line = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl test@example";
         let result = verifier.parse_authorized_key_line(line);
         assert!(result.is_ok());
         let key = result.unwrap();

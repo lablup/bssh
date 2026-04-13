@@ -61,8 +61,8 @@ use std::fmt;
 use std::path::Path;
 
 pub use self::path::{
-    normalize_path, ComponentMatcher, ExactMatcher, ExtensionMatcher, MultiExtensionMatcher,
-    PrefixMatcher, SizeMatcher,
+    ComponentMatcher, ExactMatcher, ExtensionMatcher, MultiExtensionMatcher, PrefixMatcher,
+    SizeMatcher, normalize_path,
 };
 pub use self::pattern::{
     AllMatcher, CombinedMatcher, CompositeMatcher, GlobMatcher, NotMatcher, RegexMatcher,

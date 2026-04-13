@@ -156,10 +156,10 @@ impl GlobMatcher {
 
     /// Check if the filename matches the pattern.
     fn matches_filename(&self, path: &Path) -> bool {
-        if let Some(filename) = path.file_name() {
-            if let Some(filename_str) = filename.to_str() {
-                return self.pattern.matches(filename_str);
-            }
+        if let Some(filename) = path.file_name()
+            && let Some(filename_str) = filename.to_str()
+        {
+            return self.pattern.matches(filename_str);
         }
         false
     }
@@ -800,7 +800,7 @@ mod tests {
         let matcher = GlobMatcher::with_mode("*.key", GlobMatchMode::FullPathOnly).unwrap();
 
         assert!(matcher.matches(Path::new("secret.key"))); // Direct match
-                                                           // * in glob matches path separators too, so this actually matches
+        // * in glob matches path separators too, so this actually matches
         assert!(matcher.matches(Path::new("/etc/secret.key")));
     }
 

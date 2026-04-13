@@ -19,23 +19,23 @@ use bssh::{
     cli::{Cli, Commands},
     commands::{
         download::download_file,
-        exec::{execute_command, ExecuteCommandParams},
+        exec::{ExecuteCommandParams, execute_command},
         interactive::InteractiveCommand,
         list::list_clusters,
         ping::ping_nodes,
-        upload::{upload_file, FileTransferParams},
+        upload::{FileTransferParams, upload_file},
     },
     config::InteractiveMode,
     pty::PtyConfig,
     security::get_sudo_password,
-    ssh::tokio_client::{SshConnectionConfig, DEFAULT_KEEPALIVE_INTERVAL, DEFAULT_KEEPALIVE_MAX},
+    ssh::tokio_client::{DEFAULT_KEEPALIVE_INTERVAL, DEFAULT_KEEPALIVE_MAX, SshConnectionConfig},
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 #[cfg(target_os = "macos")]
 use super::initialization::determine_use_keychain;
-use super::initialization::{determine_ssh_key_path, AppContext};
+use super::initialization::{AppContext, determine_ssh_key_path};
 use super::utils::format_duration;
 
 /// Build SSH connection config with keepalive settings.

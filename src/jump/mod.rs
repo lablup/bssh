@@ -42,4 +42,4 @@ pub mod rate_limiter;
 
 pub use chain::{JumpConnection, JumpHostChain};
 pub use connection::JumpHostConnection;
-pub use parser::{parse_jump_hosts, JumpHost};
+pub use parser::{JumpHost, parse_jump_hosts};

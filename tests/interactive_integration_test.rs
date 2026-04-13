@@ -21,8 +21,8 @@ use bssh::pty::PtyConfig;
 use bssh::ssh::known_hosts::StrictHostKeyChecking;
 use bssh::ssh::tokio_client::SshConnectionConfig;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 use tempfile::tempdir;
 

@@ -15,8 +15,8 @@
 //! Core types and structures for interactive mode
 
 use anyhow::Result;
-use russh::client::Msg;
 use russh::Channel;
+use russh::client::Msg;
 use std::path::PathBuf;
 use tokio::time::Duration;
 

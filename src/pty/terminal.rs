@@ -22,8 +22,8 @@ use crossterm::{
 };
 use once_cell::sync::Lazy;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
     Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
 };
 
 /// Global terminal cleanup synchronization
