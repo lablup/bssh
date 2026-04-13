@@ -436,7 +436,7 @@ dependencies = [
 
 [[package]]
 name = "bssh"
-version = "2.0.0-beta.1"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "argon2",

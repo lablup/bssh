@@ -5,7 +5,7 @@ All notable changes to bssh will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [2.0.0-beta.1] - 2026-01-29
+## [2.0.0] - 2026-04-13
 
 ### Added
 - **bssh-server SSH Server** - A lightweight SSH server designed for container environments
@@ -49,12 +49,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - **Documentation**: Added comprehensive server configuration manual and manpages
-- **CI/CD**: Updated release workflow for dual-package distribution
+- **CI/CD**: Updated release workflow for dual-package distribution; Teams release notification added
+- **Dependencies**: Synced bssh-russh fork with upstream `warp-tech/russh` v0.60.0, which brings the RustCrypto chain migration — rand 0.9 → **0.10 stable**, signature 3.0.0-rc.10, ed25519-dalek 3.0.0-pre.6, elliptic-curve 0.14.0-rc.28, p256/p384/p521 0.14.0-rc.7, ecdsa 0.17.0-rc.16, curve25519-dalek 5.0.0-pre.6, der 0.8, sec1 0.8, pkcs8 0.11.0-rc.11, pkcs5 0.8.0-rc.13, spki 0.8.0-rc.4, ml-kem 0.3.0-rc.1, ssh-key 0.6.18, tokio 1.51.1, socket2 0.6.3, signal-hook 0.4.4, fastrand 2.4.1
+- **Cluster flag help**: Help examples and man pages now correctly show `-C` (uppercase) for the cluster flag; running the previous `-c` examples failed with clap's "unexpected argument" error
+
+### Fixed
+- **SSH idle disconnects**: Interactive sessions could disconnect inconsistently after idle time — sometimes within minutes, sometimes ~10 minutes
+  - `russh::Config::inactivity_timeout` (10-minute client-side ceiling) is now explicitly set to `None` when keepalive is enabled so the keepalive mechanism alone decides peer liveness
+  - TCP-level `SO_KEEPALIVE` (via `socket2::TcpKeepalive`) is now applied to every SSH socket so the kernel can detect broken paths even when SSH keepalive replies are dropped by middleboxes
+  - The exec-mode code path previously dropped the user-configured `SshConnectionConfig` at the `ConnectionConfig` boundary; it now flows through `connect_direct` / `connect_via_jump_hosts` / the jump chain, so `server_alive_interval` actually takes effect in non-interactive runs
+- **bssh-server**: Use consistent source package name in Debian `control` file so dual-package builds resolve correctly
+- **bssh-server**: Use type inference for `ioctl` to support both glibc and musl builds
 
 ### Technical Details
 - Shared module structure for client/server code reuse
 - russh-based SSH server handler implementation
 - Modular audit exporter architecture with trait-based design
+- `SshConnectionConfig::to_russh_config()` now overrides `inactivity_timeout` based on keepalive state; `to_tcp_keepalive()` derives a kernel TCP keepalive config from the same settings
+- `Client::connect_with_config` rewritten around `russh::client::connect_stream`, building the `TcpStream` manually so SO_KEEPALIVE can be applied before the SSH handshake
+- Dropped the `ssh_key::rand_core::OsRng` workaround in key-generation sites; now pass `&mut rand::rng()` (rand 0.10's thread RNG implements the new `rand_core 0.10` `CryptoRng` trait directly)
 
 ## [1.7.0] - 2026-01-09
 
@@ -721,7 +734,7 @@ None
 - russh library for native SSH implementation
 - Cross-platform support (Linux and macOS)
 
-[2.0.0-beta.1]: https://github.com/lablup/bssh/compare/v1.7.0...v2.0.0-beta.1
+[2.0.0]: https://github.com/lablup/bssh/compare/v1.7.0...v2.0.0
 [1.7.0]: https://github.com/lablup/bssh/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/lablup/bssh/compare/v1.5.1...v1.6.0
 [1.5.1]: https://github.com/lablup/bssh/compare/v1.5.0...v1.5.1
