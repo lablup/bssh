@@ -61,13 +61,13 @@ jobs:
             os: ubuntu-24.04-arm
             version: "24.04"
           - arch: amd64
-            distro: questing
+            distro: resolute
             os: ubuntu-24.04
-            version: "25.10"
+            version: "26.04"
           - arch: arm64
-            distro: questing
+            distro: resolute
             os: ubuntu-24.04-arm
-            version: "25.10"
+            version: "26.04"
           # Binary asset mappings
           - arch: amd64
             package: bssh

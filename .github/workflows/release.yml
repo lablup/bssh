@@ -2,7 +2,7 @@ name: Release
 
 on:
   release:
-    types: [published]
+    types: [published, prereleased]
   workflow_dispatch:
     inputs:
       update_homebrew:
@@ -98,9 +98,9 @@ jobs:
           sudo apt update
           sudo apt install -y musl-tools
 
-      # 5) Build release binaries (bssh and bssh-server)
+      # 5) Build release binaries (bssh, bssh-server, and bssh-keygen)
       - name: Build release binaries
-        run: cargo build --release --target ${{ matrix.target }} --locked --bin bssh --bin bssh-server
+        run: cargo build --release --target ${{ matrix.target }} --locked --bin bssh --bin bssh-server --bin bssh-keygen
 
       # 6) macOS code signing
       - name: Import Distribution certificate
@@ -114,18 +114,19 @@ jobs:
         if: runner.os == 'macOS'
         run: |
           BIN_DIR=target/${{ matrix.target }}/release
-          for bin in bssh bssh-server; do
+          for bin in bssh bssh-server bssh-keygen; do
             codesign --force --timestamp --options runtime \
                      --sign "Distribution" "$BIN_DIR/$bin"
           done
 
-      # 7) Package binaries (separate packages for bssh and bssh-server)
+      # 7) Package binaries (separate packages for bssh, bssh-server, and bssh-keygen)
       - name: Package Linux binaries (tar.gz)
         if: runner.os == 'Linux'
         run: |
           BIN_DIR=target/${{ matrix.target }}/release
           ASSET_BASE="${{ matrix.asset_name }}"
           SERVER_ASSET_BASE="${ASSET_BASE/bssh/bssh-server}"
+          KEYGEN_ASSET_BASE="${ASSET_BASE/bssh/bssh-keygen}"
 
           # Package bssh
           mkdir -p package-bssh
@@ -139,12 +140,19 @@ jobs:
           cp docs/man/bssh-server.8 package-bssh-server/
           tar -C package-bssh-server -czf "${SERVER_ASSET_BASE}.tar.gz" .
 
+          # Package bssh-keygen
+          mkdir -p package-bssh-keygen
+          cp "$BIN_DIR/bssh-keygen" package-bssh-keygen/
+          cp docs/man/bssh-keygen.1 package-bssh-keygen/
+          tar -C package-bssh-keygen -czf "${KEYGEN_ASSET_BASE}.tar.gz" .
+
       - name: Package macOS binaries (zip)
         if: runner.os == 'macOS'
         run: |
           BIN_DIR="target/${{ matrix.target }}/release"
           ASSET_BASE="${{ matrix.asset_name }}"
           SERVER_ASSET_BASE="${ASSET_BASE/bssh/bssh-server}"
+          KEYGEN_ASSET_BASE="${ASSET_BASE/bssh/bssh-keygen}"
 
           # Package bssh
           mkdir -p package-bssh
@@ -158,14 +166,21 @@ jobs:
           cp docs/man/bssh-server.8 package-bssh-server/
           ditto -c -k --sequesterRsrc package-bssh-server "${SERVER_ASSET_BASE}.zip"
 
+          # Package bssh-keygen
+          mkdir -p package-bssh-keygen
+          cp "$BIN_DIR/bssh-keygen" package-bssh-keygen/
+          cp docs/man/bssh-keygen.1 package-bssh-keygen/
+          ditto -c -k --sequesterRsrc package-bssh-keygen "${KEYGEN_ASSET_BASE}.zip"
+
       # 8) Generate checksums
       - name: Generate checksums
         run: |
           ASSET_BASE="${{ matrix.asset_name }}"
           SERVER_ASSET_BASE="${ASSET_BASE/bssh/bssh-server}"
+          KEYGEN_ASSET_BASE="${ASSET_BASE/bssh/bssh-keygen}"
           EXT="${{ matrix.archive_ext }}"
 
-          for file in "${ASSET_BASE}${EXT}" "${SERVER_ASSET_BASE}${EXT}"; do
+          for file in "${ASSET_BASE}${EXT}" "${SERVER_ASSET_BASE}${EXT}" "${KEYGEN_ASSET_BASE}${EXT}"; do
             if [[ "$RUNNER_OS" == "Linux" ]]; then
               sha256sum "$file" > "$file.sha256"
             else
@@ -179,6 +194,7 @@ jobs:
         run: |
           ASSET_BASE="${{ matrix.asset_name }}"
           SERVER_ASSET_BASE="${ASSET_BASE/bssh/bssh-server}"
+          KEYGEN_ASSET_BASE="${ASSET_BASE/bssh/bssh-keygen}"
           EXT="${{ matrix.archive_ext }}"
           TAG="${{ github.event.release.tag_name || github.event.inputs.release_tag }}"
 
@@ -187,9 +203,33 @@ jobs:
             "${ASSET_BASE}${EXT}.sha256" \
             "${SERVER_ASSET_BASE}${EXT}" \
             "${SERVER_ASSET_BASE}${EXT}.sha256" \
+            "${KEYGEN_ASSET_BASE}${EXT}" \
+            "${KEYGEN_ASSET_BASE}${EXT}.sha256" \
             --clobber
         env:
           GH_TOKEN: ${{ github.token }}
+
+  # ============================================================================
+  # Publish pre-release as official release (after all builds complete)
+  # ============================================================================
+  publish-release:
+    name: Publish pre-release as official
+    needs: [build]
+    if: github.event_name == 'release' && github.event.release.prerelease
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Convert pre-release to official release
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          gh release edit "$TAG" --prerelease=false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ============================================================================
   # Microsoft Teams release notification (Power Automate Workflows webhook)

@@ -36,7 +36,8 @@ jobs:
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ -n "${{ github.event.inputs.release_tag }}" ]; then
             echo "VERSION=${{ github.event.inputs.release_tag }}" >> $GITHUB_ENV
           else
-            TAG=$(gh api repos/${{ github.repository }}/releases/latest --jq .tag_name)
+            # Get the latest official (non-pre-release) release
+            TAG=$(gh release view --json tagName --jq .tagName)
             echo "VERSION=$TAG" >> $GITHUB_ENV
           fi
         env:
@@ -66,6 +67,11 @@ jobs:
           SERVER_LINUX_ARM_URL="https://github.com/lablup/bssh/releases/download/v${VERSION}/bssh-server-linux-aarch64.tar.gz"
           SERVER_LINUX_X86_URL="https://github.com/lablup/bssh/releases/download/v${VERSION}/bssh-server-linux-x86_64.tar.gz"
 
+          # bssh-keygen URLs
+          KEYGEN_MAC_URL="https://github.com/lablup/bssh/releases/download/v${VERSION}/bssh-keygen-macos-aarch64.zip"
+          KEYGEN_LINUX_ARM_URL="https://github.com/lablup/bssh/releases/download/v${VERSION}/bssh-keygen-linux-aarch64.tar.gz"
+          KEYGEN_LINUX_X86_URL="https://github.com/lablup/bssh/releases/download/v${VERSION}/bssh-keygen-linux-x86_64.tar.gz"
+
           mkdir -p tmp
 
           # Download bssh artifacts
@@ -77,6 +83,11 @@ jobs:
           curl -Ls "$SERVER_MAC_URL" -o tmp/server-mac.zip
           curl -Ls "$SERVER_LINUX_ARM_URL" -o tmp/server-linux-arm.tar.gz
           curl -Ls "$SERVER_LINUX_X86_URL" -o tmp/server-linux-x86.tar.gz
+
+          # Download bssh-keygen artifacts
+          curl -Ls "$KEYGEN_MAC_URL" -o tmp/keygen-mac.zip
+          curl -Ls "$KEYGEN_LINUX_ARM_URL" -o tmp/keygen-linux-arm.tar.gz
+          curl -Ls "$KEYGEN_LINUX_X86_URL" -o tmp/keygen-linux-x86.tar.gz
 
           # Export bssh URLs and checksums
           echo "mac_url=$MAC_URL" >> $GITHUB_ENV
@@ -93,6 +104,14 @@ jobs:
           echo "server_mac_sha=$(shasum -a 256 tmp/server-mac.zip | awk '{print $1}')" >> $GITHUB_ENV
           echo "server_linux_arm_sha=$(shasum -a 256 tmp/server-linux-arm.tar.gz | awk '{print $1}')" >> $GITHUB_ENV
           echo "server_linux_x86_sha=$(shasum -a 256 tmp/server-linux-x86.tar.gz | awk '{print $1}')" >> $GITHUB_ENV
+
+          # Export bssh-keygen URLs and checksums
+          echo "keygen_mac_url=$KEYGEN_MAC_URL" >> $GITHUB_ENV
+          echo "keygen_linux_arm_url=$KEYGEN_LINUX_ARM_URL" >> $GITHUB_ENV
+          echo "keygen_linux_x86_url=$KEYGEN_LINUX_X86_URL" >> $GITHUB_ENV
+          echo "keygen_mac_sha=$(shasum -a 256 tmp/keygen-mac.zip | awk '{print $1}')" >> $GITHUB_ENV
+          echo "keygen_linux_arm_sha=$(shasum -a 256 tmp/keygen-linux-arm.tar.gz | awk '{print $1}')" >> $GITHUB_ENV
+          echo "keygen_linux_x86_sha=$(shasum -a 256 tmp/keygen-linux-x86.tar.gz | awk '{print $1}')" >> $GITHUB_ENV
 
       - name: Update bssh formula
         run: |
@@ -131,6 +150,27 @@ jobs:
             echo "Warning: Formula/bssh-server.rb not found, skipping server formula update"
           fi
 
+      - name: Update bssh-keygen formula
+        run: |
+          cd homebrew-tap
+          VERSION="${{ env.VERSION_NO_V }}"
+
+          # Check if bssh-keygen formula exists
+          if [ -f "Formula/bssh-keygen.rb" ]; then
+            gsed -i "s/^  version .*/  version \"${VERSION}\"/" Formula/bssh-keygen.rb
+
+            gsed -i "s|https://github.com/.*/bssh-keygen-macos-aarch64.zip|${keygen_mac_url}|" Formula/bssh-keygen.rb
+            gsed -i "/bssh-keygen-macos-aarch64.zip\"/!b;n;c\      sha256 \"${keygen_mac_sha}\"" Formula/bssh-keygen.rb
+
+            gsed -i "s|https://github.com/.*/bssh-keygen-linux-aarch64.tar.gz|${keygen_linux_arm_url}|" Formula/bssh-keygen.rb
+            gsed -i "/bssh-keygen-linux-aarch64.tar.gz\"/!b;n;c\      sha256 \"${keygen_linux_arm_sha}\"" Formula/bssh-keygen.rb
+
+            gsed -i "s|https://github.com/.*/bssh-keygen-linux-x86_64.tar.gz|${keygen_linux_x86_url}|" Formula/bssh-keygen.rb
+            gsed -i "/bssh-keygen-linux-x86_64.tar.gz\"/!b;n;c\      sha256 \"${keygen_linux_x86_sha}\"" Formula/bssh-keygen.rb
+          else
+            echo "Warning: Formula/bssh-keygen.rb not found, skipping keygen formula update"
+          fi
+
       - name: Commit and push changes to tap
         run: |
           cd homebrew-tap
@@ -138,5 +178,8 @@ jobs:
           if [ -f "Formula/bssh-server.rb" ]; then
             git add Formula/bssh-server.rb
           fi
-          git commit -m "bump: bssh and bssh-server to v${{ env.VERSION_NO_V }}"
+          if [ -f "Formula/bssh-keygen.rb" ]; then
+            git add Formula/bssh-keygen.rb
+          fi
+          git commit -m "bump: bssh, bssh-server, and bssh-keygen to v${{ env.VERSION_NO_V }}"
           git push origin main
