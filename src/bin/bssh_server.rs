@@ -359,13 +359,12 @@ fn check_config(cli: &Cli) -> Result<()> {
 /// Generate SSH host keys
 fn gen_host_key(key_type: &str, output: &PathBuf, _bits: u32) -> Result<()> {
     use russh::keys::PrivateKey;
-    use ssh_key::rand_core::OsRng;
     use ssh_key::LineEnding;
 
     let key = match key_type.to_lowercase().as_str() {
         "ed25519" => {
             tracing::info!("Generating Ed25519 host key");
-            PrivateKey::random(&mut OsRng, russh::keys::Algorithm::Ed25519)
+            PrivateKey::random(&mut rand::rng(), russh::keys::Algorithm::Ed25519)
                 .context("Failed to generate Ed25519 key")?
         }
         "rsa" => {
@@ -374,7 +373,7 @@ fn gen_host_key(key_type: &str, output: &PathBuf, _bits: u32) -> Result<()> {
             }
             tracing::info!(bits = _bits, "Generating RSA host key");
             PrivateKey::random(
-                &mut OsRng,
+                &mut rand::rng(),
                 russh::keys::Algorithm::Rsa {
                     hash: Some(russh::keys::HashAlg::Sha256),
                 },

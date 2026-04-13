@@ -26,7 +26,6 @@
 use super::GeneratedKey;
 use anyhow::{bail, Context, Result};
 use russh::keys::{Algorithm, HashAlg, PrivateKey};
-use ssh_key::rand_core::OsRng;
 use ssh_key::LineEnding;
 use std::io::Write;
 use std::path::Path;
@@ -77,7 +76,7 @@ pub fn generate(output_path: &Path, bits: u32, comment: Option<&str>) -> Result<
     // Generate key pair using cryptographically secure RNG
     // Use SHA-256 for the RSA signature hash algorithm
     let keypair = PrivateKey::random(
-        &mut OsRng,
+        &mut rand::rng(),
         Algorithm::Rsa {
             hash: Some(HashAlg::Sha256),
         },

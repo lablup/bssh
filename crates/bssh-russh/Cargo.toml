@@ -1,6 +1,6 @@
 [package]
 name = "bssh-russh"
-version = "0.59.0"
+version = "0.60.0"
 authors = ["Jeongkyu Shin <inureyes@gmail.com>"]
 description = "Temporary fork of russh with high-frequency PTY output fix (Handle::data from spawned tasks)"
 documentation = "https://docs.rs/bssh-russh"
@@ -31,17 +31,19 @@ bitflags = "2.0"
 block-padding = { version = "0.3", features = ["std"] }
 byteorder = "1.4"
 bytes = "1.7"
-cbc = "0.1"
+cbc = { version = "0.1" }
+cipher = "0.5.1"
 ctr = "0.9"
-curve25519-dalek = "4.1.3"
+curve25519-dalek = "5.0.0-pre.6"
+crypto-bigint = { version = "0.7.0-rc.28", features = ["alloc"] }
 data-encoding = "2.3"
 delegate = "0.13"
 digest = "0.10"
-der = "0.7"
+der = "0.8"
 des = { version = "0.8.1", optional = true }
-ecdsa = "0.16"
-ed25519-dalek = { version = "2.0", features = ["rand_core", "pkcs8"] }
-elliptic-curve = { version = "0.13", features = ["ecdh"] }
+ecdsa = "0.17.0-rc.16"
+ed25519-dalek = { version = "3.0.0-pre.6", features = ["alloc", "rand_core", "pkcs8"] }
+elliptic-curve = { version = "0.14.0-rc.28", features = ["ecdh"] }
 enum_dispatch = "0.3.13"
 flate2 = { version = "1.0.15", optional = true }
 futures = "0.3"
@@ -52,29 +54,34 @@ hmac = "0.12"
 inout = { version = "0.1", features = ["std"] }
 log = "0.4"
 md5 = "0.7"
-ml-kem = "0.2.3"
-num-bigint = { version = "0.4.2", features = ["rand"] }
-p256 = { version = "0.13", features = ["ecdh"] }
-p384 = { version = "0.13", features = ["ecdh"] }
-p521 = { version = "0.13", features = ["ecdh"] }
+ml-kem = "0.3.0-rc.1"
+module-lattice = "0.2"
+# num-bigint 0.4.x only supports rand 0.8; upstream russh ships a fork that
+# adds rand 0.10 support via the `rand_0_10` feature flag.
+num-bigint = { package = "internal-russh-num-bigint", version = "=0.5.0", features = ["rand_0_10"] }
+p256 = { version = "0.14.0-rc.7", features = ["ecdh"] }
+p384 = { version = "0.14.0-rc.7", features = ["ecdh"] }
+p521 = { version = "0.14.0-rc.7", features = ["ecdh"] }
 pbkdf2 = "0.12"
 pkcs1 = { version = "0.8.0-rc.4", optional = true }
-pkcs5 = "0.7"
-pkcs8 = { version = "0.10", features = ["pkcs5", "encryption", "std"] }
-rand_core = { version = "=0.10.0-rc-3" }
-rand = { version = "0.9", features = ["thread_rng"] }
+pkcs5 = "0.8.0-rc.13"
+pkcs8 = { version = "0.11.0-rc.11", features = ["encryption", "std"] }
+polyval = "0.7.1"
+rand_core = { version = "0.10.0" }
+rand = { version = "0.10", features = ["thread_rng"] }
 ring = { version = "0.17.14", optional = true }
 rsa = { version = "0.10.0-rc.10", optional = true }
-sec1 = { version = "0.7", features = ["pkcs8", "der"] }
+sec1 = { version = "0.8", features = ["der"] }
 sha1 = { version = "0.10.5", features = ["oid"] }
 sha2 = { version = "0.10.6", features = ["oid"] }
-signature = "2.2"
-spki = "0.7"
+signature = "3.0.0-rc.10"
+spki = "0.8.0-rc.4"
 ssh-encoding = { version = "0.2", features = ["bytes"] }
 subtle = "2.4"
 thiserror = "2.0.18"
-tokio = { version = "1.50.0", features = ["io-util", "sync", "time", "rt-multi-thread", "net"] }
+tokio = { version = "1.51.1", features = ["io-util", "sync", "time", "rt-multi-thread", "net"] }
 typenum = "1.17"
+universal-hash = "0.6.1"
 yasna = { version = "0.5.0", features = ["bit-vec", "num-bigint"], optional = true }
 zeroize = "1.7"
 
@@ -83,7 +90,7 @@ russh-cryptovec = { version = "0.59.0", features = ["ssh-encoding"] }
 russh-util = "0.52.0"
 
 # Use the forked ssh-key from russh
-ssh-key = { version = "=0.6.16", features = [
+ssh-key = { version = "=0.6.18", features = [
     "ed25519",
     "p256",
     "p384",

@@ -24,7 +24,6 @@
 use super::GeneratedKey;
 use anyhow::{Context, Result};
 use russh::keys::{Algorithm, HashAlg, PrivateKey};
-use ssh_key::rand_core::OsRng;
 use ssh_key::LineEnding;
 use std::io::Write;
 use std::path::Path;
@@ -43,7 +42,7 @@ pub fn generate(output_path: &Path, comment: Option<&str>) -> Result<GeneratedKe
     tracing::info!("Generating Ed25519 key pair");
 
     // Generate key pair using cryptographically secure RNG
-    let keypair = PrivateKey::random(&mut OsRng, Algorithm::Ed25519)
+    let keypair = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)
         .context("Failed to generate Ed25519 key")?;
 
     // Get public key and fingerprint
