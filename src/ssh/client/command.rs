@@ -62,6 +62,7 @@ impl SshClient {
             timeout_seconds,
             connect_timeout_seconds: None, // Use default
             jump_hosts_spec: None,         // No jump hosts
+            ssh_connection_config: None,
         };
 
         self.connect_and_execute_with_jump_hosts(command, &config)
@@ -101,6 +102,7 @@ impl SshClient {
                 config.use_agent,
                 config.use_password,
                 config.connect_timeout_seconds,
+                config.ssh_connection_config,
             )
             .await?;
 
@@ -211,6 +213,7 @@ impl SshClient {
                 config.use_agent,
                 config.use_password,
                 config.connect_timeout_seconds,
+                config.ssh_connection_config,
             )
             .await?;
 
@@ -322,6 +325,7 @@ impl SshClient {
                 config.use_agent,
                 config.use_password,
                 config.connect_timeout_seconds,
+                config.ssh_connection_config,
             )
             .await?;
 

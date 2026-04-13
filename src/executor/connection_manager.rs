@@ -42,9 +42,8 @@ pub(crate) struct ExecutionConfig<'a> {
     pub sudo_password: Option<Arc<SudoPassword>>,
     pub ssh_config: Option<&'a SshConfig>,
     /// SSH connection configuration (keepalive settings).
-    /// Note: This field is currently passed through the executor for future use.
-    /// Keepalive is applied at the Client::connect_with_ssh_config level.
-    #[allow(dead_code)]
+    /// Threaded through to `Client::connect_with_ssh_config` so user-configured
+    /// `server_alive_interval` / `server_alive_count_max` apply to exec mode.
     pub ssh_connection_config: Option<&'a SshConnectionConfig>,
 }
 
@@ -82,6 +81,7 @@ pub(crate) async fn execute_on_node_with_jump_hosts(
         timeout_seconds: config.timeout,
         connect_timeout_seconds: config.connect_timeout,
         jump_hosts_spec: effective_jump_hosts,
+        ssh_connection_config: config.ssh_connection_config,
     };
 
     // If sudo password is provided, use streaming execution to handle prompts

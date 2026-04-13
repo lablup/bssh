@@ -61,6 +61,7 @@ lru = "0.16.2"
 uuid = { version = "1.23.0", features = ["v4"] }
 fastrand = "2.3.0"
 tokio-util = "0.7.17"
+socket2 = "0.6"
 shell-words = "1.1.1"
 libc = "0.2"
 ipnetwork = "0.21"
