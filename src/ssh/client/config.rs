@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::ssh::known_hosts::StrictHostKeyChecking;
+use crate::ssh::tokio_client::SshConnectionConfig;
 use std::path::Path;
 
 /// Configuration for SSH connection and command execution
@@ -27,4 +28,6 @@ pub struct ConnectionConfig<'a> {
     pub timeout_seconds: Option<u64>,
     pub connect_timeout_seconds: Option<u64>,
     pub jump_hosts_spec: Option<&'a str>,
+    /// SSH keepalive / inactivity settings. `None` falls back to defaults.
+    pub ssh_connection_config: Option<&'a SshConnectionConfig>,
 }

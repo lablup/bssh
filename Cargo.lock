@@ -443,6 +443,7 @@ dependencies = [
  "shell-words",
  "signal-hook 0.4.3",
  "smallvec",
+ "socket2",
  "ssh-key",
  "tempfile",
  "terminal_size",

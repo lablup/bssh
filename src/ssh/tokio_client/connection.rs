@@ -100,12 +100,52 @@ impl SshConnectionConfig {
     }
 
     /// Convert this configuration to a russh client Config.
+    ///
+    /// When keepalive is enabled, `inactivity_timeout` is set to `None` so the
+    /// keepalive mechanism is the sole dead-peer detector. russh's default
+    /// `inactivity_timeout` is 10 minutes and would otherwise tear down an
+    /// otherwise-healthy idle session at that mark regardless of keepalive
+    /// liveness. When keepalive is disabled, we preserve a generous
+    /// inactivity timeout so truly dead sockets are still reaped.
     pub fn to_russh_config(&self) -> Config {
+        let inactivity_timeout = if self.keepalive_interval.is_some() {
+            None
+        } else {
+            Some(Duration::from_secs(3600))
+        };
         Config {
             keepalive_interval: self.keepalive_interval.map(Duration::from_secs),
             keepalive_max: self.keepalive_max,
+            inactivity_timeout,
             ..Default::default()
         }
+    }
+
+    /// Derive a TCP-level keepalive configuration from this SSH keepalive
+    /// configuration. Returns `None` if SSH keepalive is disabled.
+    ///
+    /// TCP keepalive is a belt-and-suspenders mechanism: it lets the kernel
+    /// detect a broken TCP path even when no application data is flowing and
+    /// even if SSH-level keepalive replies are dropped by a middlebox.
+    pub fn to_tcp_keepalive(&self) -> Option<socket2::TcpKeepalive> {
+        let interval = self.keepalive_interval?;
+        // Start probing after `interval` seconds of idleness, probe every
+        // half-interval, up to keepalive_max retries.
+        let probe_interval = (interval / 2).max(1);
+        let ka = socket2::TcpKeepalive::new()
+            .with_time(Duration::from_secs(interval))
+            .with_interval(Duration::from_secs(probe_interval));
+        #[cfg(any(
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "freebsd",
+            target_os = "netbsd",
+            target_os = "tvos",
+            target_os = "watchos",
+            target_os = "ios",
+        ))]
+        let ka = ka.with_retries(self.keepalive_max.max(1) as u32);
+        Some(ka)
     }
 }
 use super::ToSocketAddrsWithHostname;
@@ -213,7 +253,16 @@ impl Client {
         ssh_config: &SshConnectionConfig,
     ) -> Result<Self, super::Error> {
         let config = ssh_config.to_russh_config();
-        Self::connect_with_config(addr, username, auth, server_check, config).await
+        let tcp_keepalive = ssh_config.to_tcp_keepalive();
+        Self::connect_with_config_inner(
+            addr,
+            username,
+            auth,
+            server_check,
+            config,
+            tcp_keepalive.as_ref(),
+        )
+        .await
     }
 
     /// Same as `connect`, but with the option to specify a non default
@@ -228,13 +277,27 @@ impl Client {
         server_check: ServerCheckMethod,
         config: Config,
     ) -> Result<Self, super::Error> {
+        Self::connect_with_config_inner(addr, username, auth, server_check, config, None).await
+    }
+
+    async fn connect_with_config_inner(
+        addr: impl ToSocketAddrsWithHostname,
+        username: &str,
+        auth: AuthMethod,
+        server_check: ServerCheckMethod,
+        config: Config,
+        tcp_keepalive: Option<&socket2::TcpKeepalive>,
+    ) -> Result<Self, super::Error> {
         let config = Arc::new(config);
 
         // Connection code inspired from std::net::TcpStream::connect and std::net::each_addr
         let socket_addrs = addr
             .to_socket_addrs()
             .map_err(super::Error::AddressInvalid)?;
-        let mut connect_res = Err(super::Error::AddressInvalid(io::Error::new(
+        let mut connect_res: Result<
+            (SocketAddr, russh::client::Handle<ClientHandler>),
+            super::Error,
+        > = Err(super::Error::AddressInvalid(io::Error::new(
             io::ErrorKind::InvalidInput,
             "could not resolve to any addresses",
         )));
@@ -244,7 +307,27 @@ impl Client {
                 host: socket_addr,
                 server_check: server_check.clone(),
             };
-            match russh::client::connect(config.clone(), socket_addr, handler).await {
+
+            let stream = match tokio::net::TcpStream::connect(socket_addr).await {
+                Ok(s) => s,
+                Err(e) => {
+                    connect_res = Err(super::Error::IoError(e));
+                    continue;
+                }
+            };
+
+            if let Some(ka) = tcp_keepalive {
+                let sock_ref = socket2::SockRef::from(&stream);
+                if let Err(e) = sock_ref.set_tcp_keepalive(ka) {
+                    tracing::debug!(
+                        "Failed to set TCP keepalive on socket to {}: {}",
+                        socket_addr,
+                        e
+                    );
+                }
+            }
+
+            match russh::client::connect_stream(config.clone(), stream, handler).await {
                 Ok(h) => {
                     connect_res = Ok((socket_addr, h));
                     break;

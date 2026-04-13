@@ -1132,6 +1132,7 @@ impl ParallelExecutor {
             let jump_hosts = self.jump_hosts.clone();
             let sudo_password = self.sudo_password.clone();
             let semaphore = Arc::clone(&semaphore);
+            let ssh_connection_config = self.ssh_connection_config.clone();
 
             let handle = tokio::spawn(async move {
                 // Use defer pattern to ensure cleanup even on panic
@@ -1177,6 +1178,7 @@ impl ParallelExecutor {
                     timeout_seconds: timeout,
                     connect_timeout_seconds: connect_timeout,
                     jump_hosts_spec: jump_hosts.as_deref(),
+                    ssh_connection_config: Some(&ssh_connection_config),
                 };
 
                 // Execute with or without sudo password support

@@ -15,7 +15,7 @@
 use super::core::SshClient;
 use crate::jump::{parse_jump_hosts, JumpHostChain};
 use crate::ssh::known_hosts::StrictHostKeyChecking;
-use crate::ssh::tokio_client::{AuthMethod, Client};
+use crate::ssh::tokio_client::{AuthMethod, Client, SshConnectionConfig};
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::time::Duration;
@@ -65,6 +65,7 @@ impl SshClient {
         auth_method: &AuthMethod,
         strict_mode: StrictHostKeyChecking,
         connect_timeout_seconds: Option<u64>,
+        ssh_connection_config: Option<&SshConnectionConfig>,
     ) -> Result<Client> {
         // SECURITY: Add rate limiting before connection attempts
         const RATE_LIMIT_DELAY: Duration = Duration::from_millis(100);
@@ -79,9 +80,24 @@ impl SshClient {
         let connect_timeout =
             Duration::from_secs(connect_timeout_seconds.unwrap_or(SSH_CONNECT_TIMEOUT_SECS));
 
+        let default_conn_cfg;
+        let conn_cfg = match ssh_connection_config {
+            Some(c) => c,
+            None => {
+                default_conn_cfg = SshConnectionConfig::default();
+                &default_conn_cfg
+            }
+        };
+
         let result = match tokio::time::timeout(
             connect_timeout,
-            Client::connect(addr, &self.username, auth_method.clone(), check_method),
+            Client::connect_with_ssh_config(
+                addr,
+                &self.username,
+                auth_method.clone(),
+                check_method,
+                conn_cfg,
+            ),
         )
         .await
         {
@@ -148,13 +164,17 @@ impl SshClient {
         use_agent: bool,
         use_password: bool,
         connect_timeout_seconds: Option<u64>,
+        ssh_connection_config: Option<&SshConnectionConfig>,
     ) -> Result<Client> {
         // Create jump host chain with user-specified or default connect timeout
         let connect_timeout =
             Duration::from_secs(connect_timeout_seconds.unwrap_or(SSH_CONNECT_TIMEOUT_SECS));
-        let chain = JumpHostChain::new(jump_hosts.to_vec())
+        let mut chain = JumpHostChain::new(jump_hosts.to_vec())
             .with_connect_timeout(connect_timeout)
             .with_command_timeout(Duration::from_secs(300));
+        if let Some(cfg) = ssh_connection_config {
+            chain = chain.with_ssh_connection_config(cfg.clone());
+        }
 
         // Connect through the chain
         let connection = chain
@@ -195,6 +215,7 @@ impl SshClient {
         use_agent: bool,
         use_password: bool,
         connect_timeout_seconds: Option<u64>,
+        ssh_connection_config: Option<&SshConnectionConfig>,
     ) -> Result<Client> {
         if let Some(jump_spec) = jump_hosts_spec {
             // Parse jump hosts
@@ -204,8 +225,13 @@ impl SshClient {
 
             if jump_hosts.is_empty() {
                 tracing::debug!("No valid jump hosts found, using direct connection");
-                self.connect_direct(auth_method, strict_mode, connect_timeout_seconds)
-                    .await
+                self.connect_direct(
+                    auth_method,
+                    strict_mode,
+                    connect_timeout_seconds,
+                    ssh_connection_config,
+                )
+                .await
             } else {
                 tracing::info!(
                     "Connecting to {}:{} via {} jump host(s): {}",
@@ -227,14 +253,20 @@ impl SshClient {
                     use_agent,
                     use_password,
                     connect_timeout_seconds,
+                    ssh_connection_config,
                 )
                 .await
             }
         } else {
             // Direct connection
             tracing::debug!("Using direct connection (no jump hosts)");
-            self.connect_direct(auth_method, strict_mode, connect_timeout_seconds)
-                .await
+            self.connect_direct(
+                auth_method,
+                strict_mode,
+                connect_timeout_seconds,
+                ssh_connection_config,
+            )
+            .await
         }
     }
 }

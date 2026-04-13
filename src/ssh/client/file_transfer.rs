@@ -700,6 +700,7 @@ impl SshClient {
             use_agent,
             use_password,
             connect_timeout_seconds,
+            None,
         )
         .await
     }
