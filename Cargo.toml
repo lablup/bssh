@@ -18,7 +18,7 @@ edition = "2021"
 
 [dependencies]
 bytes = "1"
-tokio = { version = "1.50.0", features = ["full"] }
+tokio = { version = "1.51.1", features = ["full"] }
 # Use our internal russh fork with session loop fixes
 # - Development: uses local path (crates/bssh-russh)
 # - Publishing: uses crates.io version (path ignored)
@@ -52,14 +52,14 @@ ratatui = "0.30"
 regex = "1.12.3"
 lazy_static = "1.5"
 ctrlc = "3.5.2"
-signal-hook = "0.4.3"
+signal-hook = "0.4.4"
 nix = { version = "0.31", features = ["fs", "poll", "process", "signal", "term"] }
 atty = "0.2.14"
 arrayvec = "0.7.6"
 smallvec = "1.15.1"
 lru = "0.16.2"
 uuid = { version = "1.23.0", features = ["v4"] }
-fastrand = "2.3.0"
+fastrand = "2.4.1"
 tokio-util = "0.7.17"
 socket2 = "0.6"
 shell-words = "1.1.1"
