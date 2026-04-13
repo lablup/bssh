@@ -1232,11 +1232,11 @@ Specify target hosts:
 .TP
 .B --filter
 Include only matching hosts:
-.B bssh -c cluster --filter "web[1-5]" "systemctl status nginx"
+.B bssh -C cluster --filter "web[1-5]" "systemctl status nginx"
 .TP
 .B --exclude
 Exclude matching hosts:
-.B bssh -c cluster --exclude "node[1,3,5]" "df -h"
+.B bssh -C cluster --exclude "node[1,3,5]" "df -h"
 
 .SS Examples
 .nf
