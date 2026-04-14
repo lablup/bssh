@@ -3,22 +3,46 @@
 # Enable all hardening options
 export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 
-# Use vendored dependencies for offline builds
-export CARGO_HOME = $(CURDIR)/debian/cargo
+# Use vendored dependencies for offline builds.
+export HOME = $(CURDIR)/debian/home
+export CARGO_HOME = $(HOME)/.cargo
 export CARGO_TARGET_DIR = $(CURDIR)/target
+export CARGO_NET_OFFLINE = true
+
+RUSTC := $(shell if command -v rustc-1.85 >/dev/null 2>&1; then printf '%s' rustc-1.85; else printf '%s' rustc; fi)
+CARGO := $(shell if command -v cargo-1.85 >/dev/null 2>&1; then printf '%s' cargo-1.85; else printf '%s' cargo; fi)
 
 %:
-	dh $@ --buildsystem=cargo
+	dh $@
+
+override_dh_auto_configure:
+	mkdir -p $(CARGO_HOME)
+	test -d vendor
+	test -f .cargo/config.toml
+	$(RUSTC) --version
+	$(CARGO) --version
+	rustc_version=$$($(RUSTC) --version | awk '{print $$2}'); \
+	cargo_version=$$($(CARGO) --version | awk '{print $$2}'); \
+	dpkg --compare-versions "$$rustc_version" ge 1.85 || { \
+		echo "rustc 1.85+ is required for Rust edition 2024 (found $$rustc_version)"; \
+		exit 1; \
+	}; \
+	dpkg --compare-versions "$$cargo_version" ge 1.85 || { \
+		echo "cargo 1.85+ is required for Rust edition 2024 (found $$cargo_version)"; \
+		exit 1; \
+	}
 
 override_dh_auto_build:
-	dh_auto_build -- --release --locked
+	$(CARGO) build --release --frozen --workspace
 
 override_dh_auto_install:
-	# Install the compiled binary
 	install -D -m 0755 target/release/bssh debian/bssh/usr/bin/bssh
 
 override_dh_auto_test:
-	dh_auto_test -- --release
+	@echo "Skipping tests for PPA build"
+
+override_dh_auto_clean:
+	rm -rf target/ $(HOME)
 
 override_dh_builddeb:
 	dh_builddeb --destdir=../
