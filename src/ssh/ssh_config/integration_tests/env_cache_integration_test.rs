@@ -21,6 +21,8 @@ use std::time::{Duration, Instant};
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::EnvGuard;
+    use serial_test::serial;
 
     #[test]
     fn test_path_expansion_uses_cache() {
@@ -222,6 +224,7 @@ mod tests {
     }
 
     #[test]
+    #[serial]
     fn test_cache_ttl_behavior() {
         // Create cache with very short TTL
         let config = EnvCacheConfig {
@@ -234,7 +237,7 @@ mod tests {
         // Use a custom environment variable for testing to avoid conflicts with other tests
         // that might modify HOME
         let test_var = "BSSH_TEST_CACHE_VAR";
-        std::env::set_var(test_var, "test_value_12345");
+        let _test_var_guard = EnvGuard::set(test_var, "test_value_12345");
 
         // Add test variable to safe list for this test
         // Since we can't modify the safe list at runtime, we'll use USER which is safe
@@ -271,7 +274,6 @@ mod tests {
         let final_stats = cache.stats();
         assert!(final_stats.ttl_evictions > 0, "Should have TTL evictions");
 
-        // Clean up test variable
-        std::env::remove_var(test_var);
+        // `_test_var_guard` dropped here -> test variable automatically removed.
     }
 }

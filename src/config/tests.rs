@@ -18,13 +18,14 @@ use std::path::{Path, PathBuf};
 
 use super::types::{Config, InteractiveMode, NodeConfig};
 use super::utils::{expand_env_vars, expand_tilde};
+use crate::test_helpers::EnvGuard;
+use serial_test::serial;
 
 #[test]
+#[serial]
 fn test_expand_env_vars() {
-    unsafe {
-        std::env::set_var("TEST_VAR", "test_value");
-        std::env::set_var("TEST_USER", "testuser");
-    }
+    let _test_var = EnvGuard::set("TEST_VAR", "test_value");
+    let _test_user = EnvGuard::set("TEST_USER", "testuser");
 
     // Test ${VAR} syntax
     assert_eq!(expand_env_vars("Hello ${TEST_VAR}!"), "Hello test_value!");
@@ -49,22 +50,12 @@ fn test_expand_env_vars() {
 }
 
 #[test]
+#[serial]
 fn test_expand_tilde() {
-    // Save original HOME value
-    let original_home = std::env::var("HOME").ok();
-
-    // Set test HOME value
-    std::env::set_var("HOME", "/home/user");
+    let _home = EnvGuard::set("HOME", "/home/user");
 
     let path = Path::new("~/.ssh/config");
     let expanded = expand_tilde(path);
-
-    // Restore original HOME value
-    if let Some(home) = original_home {
-        std::env::set_var("HOME", home);
-    } else {
-        std::env::remove_var("HOME");
-    }
 
     assert_eq!(expanded, PathBuf::from("/home/user/.ssh/config"));
 }
@@ -194,14 +185,13 @@ clusters:
 }
 
 #[test]
+#[serial]
 fn test_backendai_env_parsing() {
-    // Set up Backend.AI environment variables
-    unsafe {
-        std::env::set_var("BACKENDAI_CLUSTER_HOSTS", "sub1,main1");
-        std::env::set_var("BACKENDAI_CLUSTER_HOST", "main1");
-        std::env::set_var("BACKENDAI_CLUSTER_ROLE", "main");
-        std::env::set_var("USER", "testuser");
-    }
+    // Set up Backend.AI environment variables; guards restore prior values on drop.
+    let _hosts = EnvGuard::set("BACKENDAI_CLUSTER_HOSTS", "sub1,main1");
+    let _host = EnvGuard::set("BACKENDAI_CLUSTER_HOST", "main1");
+    let _role = EnvGuard::set("BACKENDAI_CLUSTER_ROLE", "main");
+    let _user = EnvGuard::set("USER", "testuser");
 
     let cluster = Config::from_backendai_env().unwrap();
 
@@ -216,10 +206,11 @@ fn test_backendai_env_parsing() {
         _ => panic!("Expected Simple node config"),
     }
 
-    // Test with sub role - should skip the first (main) node
-    unsafe {
-        std::env::set_var("BACKENDAI_CLUSTER_ROLE", "sub");
-    }
+    // Test with sub role - should skip the first (main) node.
+    // The new guard shadows the outer `_role` binding; when it drops at the end
+    // of this test it'll restore to "main" (the value saved by `_role`), and
+    // then the outer `_role` drops and restores to the pre-test value.
+    let _role_sub = EnvGuard::set("BACKENDAI_CLUSTER_ROLE", "sub");
     let cluster = Config::from_backendai_env().unwrap();
     assert_eq!(cluster.nodes.len(), 1);
 
@@ -228,13 +219,6 @@ fn test_backendai_env_parsing() {
             assert_eq!(host, "testuser@main1:2200");
         }
         _ => panic!("Expected Simple node config"),
-    }
-
-    // Clean up
-    unsafe {
-        std::env::remove_var("BACKENDAI_CLUSTER_HOSTS");
-        std::env::remove_var("BACKENDAI_CLUSTER_HOST");
-        std::env::remove_var("BACKENDAI_CLUSTER_ROLE");
     }
 }
 
@@ -465,12 +449,11 @@ clusters:
 }
 
 #[test]
+#[serial]
 fn test_jump_host_env_var_expansion() {
-    // Set up test environment variables
-    unsafe {
-        std::env::set_var("TEST_BASTION_HOST", "bastion.example.com");
-        std::env::set_var("TEST_BASTION_PORT", "2222");
-    }
+    // Set up test environment variables; guards restore prior values on drop.
+    let _host = EnvGuard::set("TEST_BASTION_HOST", "bastion.example.com");
+    let _port = EnvGuard::set("TEST_BASTION_PORT", "2222");
 
     let yaml = r#"
 defaults:
@@ -504,12 +487,6 @@ clusters:
         config.get_cluster_jump_host(Some("staging")),
         Some("bastion.example.com".to_string())
     );
-
-    // Clean up
-    unsafe {
-        std::env::remove_var("TEST_BASTION_HOST");
-        std::env::remove_var("TEST_BASTION_PORT");
-    }
 }
 
 #[test]

@@ -237,6 +237,7 @@ pub fn get_sudo_password(warn_env: bool) -> Result<SudoPassword> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::EnvGuard;
     use serial_test::serial;
 
     #[test]
@@ -325,12 +326,9 @@ mod tests {
     #[test]
     #[serial]
     fn test_get_sudo_password_from_env_empty() {
-        // Ensure variable is not set from other tests
-        std::env::remove_var("BSSH_SUDO_PASSWORD");
-        // Set environment variable to empty string
-        std::env::set_var("BSSH_SUDO_PASSWORD", "");
+        // Set environment variable to empty string; guard restores prior value on drop.
+        let _guard = EnvGuard::set("BSSH_SUDO_PASSWORD", "");
         let result = get_sudo_password_from_env();
-        std::env::remove_var("BSSH_SUDO_PASSWORD");
 
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("empty"));
@@ -339,12 +337,9 @@ mod tests {
     #[test]
     #[serial]
     fn test_get_sudo_password_from_env_valid() {
-        // Ensure variable is not set from other tests
-        std::env::remove_var("BSSH_SUDO_PASSWORD");
-        // Set environment variable to valid password
-        std::env::set_var("BSSH_SUDO_PASSWORD", "test_password");
+        // Set environment variable to valid password; guard restores prior value on drop.
+        let _guard = EnvGuard::set("BSSH_SUDO_PASSWORD", "test_password");
         let result = get_sudo_password_from_env();
-        std::env::remove_var("BSSH_SUDO_PASSWORD");
 
         assert!(result.is_ok());
         let password = result.unwrap();
@@ -355,7 +350,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_get_sudo_password_from_env_not_set() {
-        std::env::remove_var("BSSH_SUDO_PASSWORD");
+        let _guard = EnvGuard::remove("BSSH_SUDO_PASSWORD");
         let result = get_sudo_password_from_env();
 
         assert!(result.is_ok());

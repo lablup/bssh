@@ -17,9 +17,12 @@
 //! These tests verify the end-to-end behavior of exit code handling,
 //! including rank detection and strategy application.
 
+mod common;
+
 use bssh::executor::{ExecutionResult, ExitCodeStrategy, RankDetector};
 use bssh::node::Node;
 use bssh::ssh::client::CommandResult;
+use common::EnvGuard;
 use serial_test::serial;
 
 /// Helper to create a success result
@@ -137,9 +140,9 @@ fn test_hybrid_strategy_main_fails() {
 #[test]
 #[serial]
 fn test_backendai_main_rank_detection() {
-    // Set Backend.AI environment
-    std::env::set_var("BACKENDAI_CLUSTER_ROLE", "main");
-    std::env::set_var("BACKENDAI_CLUSTER_HOST", "host2");
+    // Set Backend.AI environment; guards restore prior values on drop.
+    let _role = EnvGuard::set("BACKENDAI_CLUSTER_ROLE", "main");
+    let _host = EnvGuard::set("BACKENDAI_CLUSTER_HOST", "host2");
 
     let nodes = vec![
         Node::new("host1".to_string(), 22, "user".to_string()),
@@ -153,10 +156,6 @@ fn test_backendai_main_rank_detection() {
         Some(1),
         "Should detect host2 as main rank via Backend.AI env"
     );
-
-    // Cleanup
-    std::env::remove_var("BACKENDAI_CLUSTER_ROLE");
-    std::env::remove_var("BACKENDAI_CLUSTER_HOST");
 }
 
 #[test]
@@ -273,9 +272,9 @@ fn test_main_rank_marking_in_results() {
 #[test]
 #[serial]
 fn test_main_rank_marking_with_backendai_env() {
-    // Test that Backend.AI environment affects rank marking
-    std::env::set_var("BACKENDAI_CLUSTER_ROLE", "main");
-    std::env::set_var("BACKENDAI_CLUSTER_HOST", "host3");
+    // Test that Backend.AI environment affects rank marking; guards restore on drop.
+    let _role = EnvGuard::set("BACKENDAI_CLUSTER_ROLE", "main");
+    let _host = EnvGuard::set("BACKENDAI_CLUSTER_HOST", "host3");
 
     let nodes = vec![
         Node::new("host1".to_string(), 22, "user".to_string()),
@@ -315,10 +314,6 @@ fn test_main_rank_marking_with_backendai_env() {
         results[2].is_main_rank,
         "host3 should be marked as main rank"
     );
-
-    // Cleanup
-    std::env::remove_var("BACKENDAI_CLUSTER_ROLE");
-    std::env::remove_var("BACKENDAI_CLUSTER_HOST");
 }
 
 #[test]

@@ -404,6 +404,7 @@ fn validate_config(config: &ServerFileConfig) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::EnvGuard;
     use std::io::Write;
     use tempfile::NamedTempFile;
 
@@ -446,62 +447,45 @@ auth:
     #[test]
     #[serial_test::serial]
     fn test_env_override_port() {
-        // Clear any existing env vars
-        std::env::remove_var("BSSH_PORT");
-
-        std::env::set_var("BSSH_PORT", "3333");
+        let _port = EnvGuard::set("BSSH_PORT", "3333");
         let config = apply_env_overrides(ServerFileConfig::default()).unwrap();
         assert_eq!(config.server.port, 3333);
-        std::env::remove_var("BSSH_PORT");
     }
 
     #[test]
     #[serial_test::serial]
     fn test_env_override_bind_address() {
-        // Clear any existing env vars
-        std::env::remove_var("BSSH_PORT");
-
-        std::env::set_var("BSSH_BIND_ADDRESS", "192.168.1.1");
+        let _port = EnvGuard::remove("BSSH_PORT");
+        let _bind = EnvGuard::set("BSSH_BIND_ADDRESS", "192.168.1.1");
         let config = apply_env_overrides(ServerFileConfig::default()).unwrap();
         assert_eq!(config.server.bind_address, "192.168.1.1");
-        std::env::remove_var("BSSH_BIND_ADDRESS");
     }
 
     #[test]
     #[serial_test::serial]
     fn test_env_override_host_keys() {
-        // Clear any existing env vars
-        std::env::remove_var("BSSH_PORT");
-
-        std::env::set_var("BSSH_HOST_KEY", "/key1,/key2,/key3");
+        let _port = EnvGuard::remove("BSSH_PORT");
+        let _host_key = EnvGuard::set("BSSH_HOST_KEY", "/key1,/key2,/key3");
         let config = apply_env_overrides(ServerFileConfig::default()).unwrap();
         assert_eq!(config.server.host_keys.len(), 3);
         assert_eq!(config.server.host_keys[0], PathBuf::from("/key1"));
-        std::env::remove_var("BSSH_HOST_KEY");
     }
 
     #[test]
     #[serial_test::serial]
     fn test_env_override_auth_methods() {
-        // Clear any existing env vars
-        std::env::remove_var("BSSH_PORT");
-
-        std::env::set_var("BSSH_AUTH_METHODS", "publickey,password");
+        let _port = EnvGuard::remove("BSSH_PORT");
+        let _methods = EnvGuard::set("BSSH_AUTH_METHODS", "publickey,password");
         let config = apply_env_overrides(ServerFileConfig::default()).unwrap();
         assert_eq!(config.auth.methods.len(), 2);
-        std::env::remove_var("BSSH_AUTH_METHODS");
     }
 
     #[test]
     #[serial_test::serial]
     fn test_env_override_invalid_port() {
-        // Clear any existing env vars first
-        std::env::remove_var("BSSH_PORT");
-
-        std::env::set_var("BSSH_PORT", "invalid");
+        let _port = EnvGuard::set("BSSH_PORT", "invalid");
         let result = apply_env_overrides(ServerFileConfig::default());
         assert!(result.is_err());
-        std::env::remove_var("BSSH_PORT");
     }
 
     #[test]

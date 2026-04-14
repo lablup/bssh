@@ -737,6 +737,8 @@ impl AuthContext {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::EnvGuard;
+    use serial_test::serial;
     use tempfile::TempDir;
 
     #[tokio::test]
@@ -856,9 +858,10 @@ mod tests {
 
     #[cfg(not(target_os = "windows"))]
     #[tokio::test]
+    #[serial]
     async fn test_agent_auth_with_invalid_socket() {
-        // Set SSH_AUTH_SOCK to non-existent path
-        std::env::set_var("SSH_AUTH_SOCK", "/tmp/nonexistent-ssh-agent.sock");
+        // Set SSH_AUTH_SOCK to non-existent path; guard restores prior value on drop.
+        let _sock = EnvGuard::set("SSH_AUTH_SOCK", "/tmp/nonexistent-ssh-agent.sock");
 
         let ctx = AuthContext::new("user".to_string(), "host".to_string())
             .unwrap()
@@ -867,9 +870,6 @@ mod tests {
         // Should return None since socket doesn't exist
         let auth = ctx.agent_auth().unwrap();
         assert!(auth.is_none());
-
-        // Clean up
-        std::env::remove_var("SSH_AUTH_SOCK");
     }
 
     #[tokio::test]
@@ -886,20 +886,17 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial]
     async fn test_password_fallback_in_non_interactive() {
-        // Save original environment variables
-        let original_home = std::env::var("HOME").ok();
-        let original_ssh_auth_sock = std::env::var("SSH_AUTH_SOCK").ok();
-
         // Create a fake home directory WITHOUT default keys (to trigger fallback)
         let temp_dir = TempDir::new().unwrap();
         let ssh_dir = temp_dir.path().join(".ssh");
         std::fs::create_dir_all(&ssh_dir).unwrap();
         // Intentionally NOT creating any key files
 
-        // Set test environment
-        std::env::set_var("HOME", temp_dir.path().to_str().unwrap());
-        std::env::remove_var("SSH_AUTH_SOCK");
+        // Set test environment; guards restore prior values on drop.
+        let _home = EnvGuard::set("HOME", temp_dir.path().to_str().unwrap());
+        let _sock = EnvGuard::remove("SSH_AUTH_SOCK");
 
         let ctx = AuthContext::new("user".to_string(), "host".to_string()).unwrap();
 
@@ -910,15 +907,5 @@ mod tests {
         // Error message should mention authentication failure
         let error_msg = result.unwrap_err().to_string();
         assert!(error_msg.contains("authentication"));
-
-        // Restore original environment variables
-        if let Some(home) = original_home {
-            std::env::set_var("HOME", home);
-        } else {
-            std::env::remove_var("HOME");
-        }
-        if let Some(sock) = original_ssh_auth_sock {
-            std::env::set_var("SSH_AUTH_SOCK", sock);
-        }
     }
 }

@@ -14,12 +14,11 @@
 
 //! Shared test utilities.
 //!
-//! This module is compiled only under `#[cfg(test)]` and is not linked into
-//! release binaries. Integration tests under `tests/` access this code via
-//! `tests/common/mod.rs`, which includes `env_guard.rs` directly with
-//! `#[path]` so both unit and integration tests share one implementation.
-
-#![cfg(test)]
+//! This module is compiled only under `#[cfg(test)]` (gated at the `lib.rs`
+//! declaration) and is not linked into release binaries. Integration tests
+//! under `tests/` access this code via `tests/common/mod.rs`, which includes
+//! `env_guard.rs` directly with `#[path]` so both unit and integration tests
+//! share one implementation.
 
 mod env_guard;
 pub use env_guard::EnvGuard;

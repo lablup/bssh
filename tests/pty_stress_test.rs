@@ -225,16 +225,12 @@ async fn test_concurrent_message_producers() {
             if let PtyMessage::LocalInput(data) = msg {
                 let content = String::from_utf8_lossy(&data);
                 // Extract producer ID from message
-                if let Some(start) = content.find("Producer ") {
-                    if let Some(end) = content[start + 9..].find(" ") {
-                        if let Ok(producer_id) =
-                            content[start + 9..start + 9 + end].parse::<usize>()
-                        {
-                            if producer_id < producers {
-                                producer_counts[producer_id] += 1;
-                            }
-                        }
-                    }
+                if let Some(start) = content.find("Producer ")
+                    && let Some(end) = content[start + 9..].find(" ")
+                    && let Ok(producer_id) = content[start + 9..start + 9 + end].parse::<usize>()
+                    && producer_id < producers
+                {
+                    producer_counts[producer_id] += 1;
                 }
                 total_received += 1;
             }

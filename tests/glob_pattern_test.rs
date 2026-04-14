@@ -18,17 +18,17 @@ use tempfile::TempDir;
 
 /// Helper function to resolve glob patterns (mimics the main.rs implementation)
 fn resolve_source_files(source: &Path) -> anyhow::Result<Vec<PathBuf>> {
-    if let Some(pattern_str) = source.to_str() {
-        if pattern_str.contains('*') || pattern_str.contains('?') || pattern_str.contains('[') {
-            // It's a glob pattern
-            let matches: Vec<PathBuf> = glob::glob(pattern_str)?.filter_map(Result::ok).collect();
+    if let Some(pattern_str) = source.to_str()
+        && (pattern_str.contains('*') || pattern_str.contains('?') || pattern_str.contains('['))
+    {
+        // It's a glob pattern
+        let matches: Vec<PathBuf> = glob::glob(pattern_str)?.filter_map(Result::ok).collect();
 
-            if matches.is_empty() {
-                anyhow::bail!("No files matched the pattern: {pattern_str}");
-            }
-
-            return Ok(matches);
+        if matches.is_empty() {
+            anyhow::bail!("No files matched the pattern: {pattern_str}");
         }
+
+        return Ok(matches);
     }
 
     // Not a glob pattern, return as-is

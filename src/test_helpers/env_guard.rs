@@ -65,8 +65,13 @@ pub struct EnvGuard {
     original: Option<OsString>,
 }
 
+// `#[allow(dead_code)]` is applied per-method so integration tests that only
+// use one constructor don't generate "unused" warnings for the other. The
+// file is shared between the unit test module (via the `test_helpers` module
+// tree) and integration tests (via `#[path]` include in `tests/common/mod.rs`).
 impl EnvGuard {
     /// Set an environment variable, saving its prior value for restoration.
+    #[allow(dead_code)]
     pub fn set(key: impl Into<OsString>, value: impl AsRef<OsStr>) -> Self {
         let key = key.into();
         let original = std::env::var_os(&key);
@@ -79,6 +84,7 @@ impl EnvGuard {
     }
 
     /// Remove an environment variable, saving its prior value for restoration.
+    #[allow(dead_code)]
     pub fn remove(key: impl Into<OsString>) -> Self {
         let key = key.into();
         let original = std::env::var_os(&key);

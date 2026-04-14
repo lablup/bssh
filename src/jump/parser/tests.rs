@@ -14,6 +14,7 @@
 
 use super::host_parser::parse_single_jump_host;
 use super::*;
+use crate::test_helpers::EnvGuard;
 
 #[test]
 fn test_parse_single_jump_host_hostname_only() {
@@ -174,8 +175,7 @@ fn test_jump_host_effective_values() {
 #[test]
 #[serial_test::serial]
 fn test_max_jump_hosts_limit_exactly_10() {
-    // Clear any environment variable first
-    std::env::remove_var("BSSH_MAX_JUMP_HOSTS");
+    let _guard = EnvGuard::remove("BSSH_MAX_JUMP_HOSTS");
 
     // Exactly 10 jump hosts should be allowed
     let spec = (0..10)
@@ -190,8 +190,7 @@ fn test_max_jump_hosts_limit_exactly_10() {
 #[test]
 #[serial_test::serial]
 fn test_max_jump_hosts_limit_11_rejected() {
-    // Clear any environment variable first
-    std::env::remove_var("BSSH_MAX_JUMP_HOSTS");
+    let _guard = EnvGuard::remove("BSSH_MAX_JUMP_HOSTS");
 
     // 11 jump hosts should be rejected
     let spec = (0..11)
@@ -240,7 +239,7 @@ fn test_max_jump_hosts_limit_excessive() {
 #[serial_test::serial]
 fn test_get_max_jump_hosts_default() {
     // Without environment variable, should return default (10)
-    std::env::remove_var("BSSH_MAX_JUMP_HOSTS");
+    let _guard = EnvGuard::remove("BSSH_MAX_JUMP_HOSTS");
     let max = get_max_jump_hosts();
     assert_eq!(max, 10, "Default should be 10");
 }
@@ -249,68 +248,46 @@ fn test_get_max_jump_hosts_default() {
 #[serial_test::serial]
 fn test_get_max_jump_hosts_custom_value() {
     // Set environment variable to custom value
-    unsafe {
-        std::env::set_var("BSSH_MAX_JUMP_HOSTS", "15");
-    }
+    let _guard = EnvGuard::set("BSSH_MAX_JUMP_HOSTS", "15");
     let max = get_max_jump_hosts();
     assert_eq!(max, 15, "Should use custom value from environment");
-
-    // Cleanup
-    std::env::remove_var("BSSH_MAX_JUMP_HOSTS");
 }
 
 #[test]
 #[serial_test::serial]
 fn test_get_max_jump_hosts_capped_at_absolute_max() {
     // Set environment variable beyond absolute maximum (30)
-    unsafe {
-        std::env::set_var("BSSH_MAX_JUMP_HOSTS", "50");
-    }
+    let _guard = EnvGuard::set("BSSH_MAX_JUMP_HOSTS", "50");
     let max = get_max_jump_hosts();
     assert_eq!(
         max, 30,
         "Should be capped at absolute maximum of 30 for security"
     );
-
-    // Cleanup
-    std::env::remove_var("BSSH_MAX_JUMP_HOSTS");
 }
 
 #[test]
 #[serial_test::serial]
 fn test_get_max_jump_hosts_zero_falls_back() {
     // Zero is invalid, should fall back to default
-    unsafe {
-        std::env::set_var("BSSH_MAX_JUMP_HOSTS", "0");
-    }
+    let _guard = EnvGuard::set("BSSH_MAX_JUMP_HOSTS", "0");
     let max = get_max_jump_hosts();
     assert_eq!(max, 10, "Zero should fall back to default (10)");
-
-    // Cleanup
-    std::env::remove_var("BSSH_MAX_JUMP_HOSTS");
 }
 
 #[test]
 #[serial_test::serial]
 fn test_get_max_jump_hosts_invalid_value() {
     // Invalid value should fall back to default
-    unsafe {
-        std::env::set_var("BSSH_MAX_JUMP_HOSTS", "invalid");
-    }
+    let _guard = EnvGuard::set("BSSH_MAX_JUMP_HOSTS", "invalid");
     let max = get_max_jump_hosts();
     assert_eq!(max, 10, "Invalid value should fall back to default (10)");
-
-    // Cleanup
-    std::env::remove_var("BSSH_MAX_JUMP_HOSTS");
 }
 
 #[test]
 #[serial_test::serial]
 fn test_max_jump_hosts_respects_environment() {
     // Set custom limit via environment variable
-    unsafe {
-        std::env::set_var("BSSH_MAX_JUMP_HOSTS", "15");
-    }
+    let _guard = EnvGuard::set("BSSH_MAX_JUMP_HOSTS", "15");
 
     // Create spec with 15 hosts (should succeed)
     let spec_15 = (0..15)
@@ -334,7 +311,4 @@ fn test_max_jump_hosts_respects_environment() {
         result.is_err(),
         "Should reject 16 hosts when BSSH_MAX_JUMP_HOSTS=15"
     );
-
-    // Cleanup
-    std::env::remove_var("BSSH_MAX_JUMP_HOSTS");
 }

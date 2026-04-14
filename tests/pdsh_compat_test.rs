@@ -17,38 +17,12 @@
 //! These tests verify that bssh correctly handles pdsh-style arguments
 //! and behaves as expected in pdsh compatibility mode.
 
+mod common;
+
 use bssh::cli::{PDSH_COMPAT_ENV_VAR, PdshCli, has_pdsh_compat_flag, remove_pdsh_compat_flag};
+use common::EnvGuard;
 use serial_test::serial;
 use std::env;
-
-/// Helper to run a test with env var protection
-fn with_env_var<F, T>(key: &str, value: &str, f: F) -> T
-where
-    F: FnOnce() -> T,
-{
-    let original = env::var(key).ok();
-    env::set_var(key, value);
-    let result = f();
-    match original {
-        Some(v) => env::set_var(key, v),
-        None => env::remove_var(key),
-    }
-    result
-}
-
-/// Helper to run a test with env var removed
-fn without_env_var<F, T>(key: &str, f: F) -> T
-where
-    F: FnOnce() -> T,
-{
-    let original = env::var(key).ok();
-    env::remove_var(key);
-    let result = f();
-    if let Some(v) = original {
-        env::set_var(key, v);
-    }
-    result
-}
 
 // =============================================================================
 // CLI Flag Detection Tests
@@ -119,56 +93,44 @@ fn test_remove_pdsh_compat_flag_no_flag_present() {
 #[test]
 #[serial]
 fn test_env_var_detection_with_one() {
-    without_env_var(PDSH_COMPAT_ENV_VAR, || {
-        with_env_var(PDSH_COMPAT_ENV_VAR, "1", || {
-            // We can't call is_pdsh_compat_mode directly because it also checks argv[0]
-            // Instead, verify the env var logic works
-            let value = env::var(PDSH_COMPAT_ENV_VAR).ok();
-            assert!(value.is_some());
-            let v = value.unwrap();
-            assert!(v == "1" || v.to_lowercase() == "true");
-        });
-    });
+    let _guard = EnvGuard::set(PDSH_COMPAT_ENV_VAR, "1");
+    // We can't call is_pdsh_compat_mode directly because it also checks argv[0]
+    // Instead, verify the env var logic works
+    let value = env::var(PDSH_COMPAT_ENV_VAR).ok();
+    assert!(value.is_some());
+    let v = value.unwrap();
+    assert!(v == "1" || v.to_lowercase() == "true");
 }
 
 #[test]
 #[serial]
 fn test_env_var_detection_with_true() {
-    without_env_var(PDSH_COMPAT_ENV_VAR, || {
-        with_env_var(PDSH_COMPAT_ENV_VAR, "true", || {
-            let value = env::var(PDSH_COMPAT_ENV_VAR).ok();
-            assert!(value.is_some());
-            assert_eq!(value.unwrap().to_lowercase(), "true");
-        });
-    });
+    let _guard = EnvGuard::set(PDSH_COMPAT_ENV_VAR, "true");
+    let value = env::var(PDSH_COMPAT_ENV_VAR).ok();
+    assert!(value.is_some());
+    assert_eq!(value.unwrap().to_lowercase(), "true");
 }
 
 #[test]
 #[serial]
 fn test_env_var_detection_disabled_with_zero() {
-    without_env_var(PDSH_COMPAT_ENV_VAR, || {
-        with_env_var(PDSH_COMPAT_ENV_VAR, "0", || {
-            let value = env::var(PDSH_COMPAT_ENV_VAR).ok();
-            assert!(value.is_some());
-            let v = value.unwrap();
-            // "0" should NOT be treated as enabled
-            assert!(!(v == "1" || v.to_lowercase() == "true"));
-        });
-    });
+    let _guard = EnvGuard::set(PDSH_COMPAT_ENV_VAR, "0");
+    let value = env::var(PDSH_COMPAT_ENV_VAR).ok();
+    assert!(value.is_some());
+    let v = value.unwrap();
+    // "0" should NOT be treated as enabled
+    assert!(!(v == "1" || v.to_lowercase() == "true"));
 }
 
 #[test]
 #[serial]
 fn test_env_var_detection_disabled_with_false() {
-    without_env_var(PDSH_COMPAT_ENV_VAR, || {
-        with_env_var(PDSH_COMPAT_ENV_VAR, "false", || {
-            let value = env::var(PDSH_COMPAT_ENV_VAR).ok();
-            assert!(value.is_some());
-            let v = value.unwrap();
-            // "false" should NOT be treated as enabled
-            assert!(!(v == "1" || v.to_lowercase() == "true"));
-        });
-    });
+    let _guard = EnvGuard::set(PDSH_COMPAT_ENV_VAR, "false");
+    let value = env::var(PDSH_COMPAT_ENV_VAR).ok();
+    assert!(value.is_some());
+    let v = value.unwrap();
+    // "false" should NOT be treated as enabled
+    assert!(!(v == "1" || v.to_lowercase() == "true"));
 }
 
 // =============================================================================

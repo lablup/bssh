@@ -21,8 +21,12 @@
 //! Tests for issue #167 verify per-jump-host SSH key configuration.
 //! Tests for issue #170 verify SSH config Host alias reference support.
 
+mod common;
+
 use bssh::config::{Config, JumpHostConfig};
 use bssh::ssh::ssh_config::SshConfig;
+use common::EnvGuard;
+use serial_test::serial;
 
 /// Test that global default jump_host is applied to all clusters
 #[test]
@@ -165,12 +169,11 @@ clusters:
 
 /// Test environment variable expansion in jump_host
 #[test]
+#[serial]
 fn test_config_jump_host_env_expansion() {
-    // Set environment variables
-    unsafe {
-        std::env::set_var("BSSH_TEST_BASTION", "env-bastion.example.com");
-        std::env::set_var("BSSH_TEST_PORT", "2222");
-    }
+    // Set environment variables; guards restore prior values on drop.
+    let _bastion = EnvGuard::set("BSSH_TEST_BASTION", "env-bastion.example.com");
+    let _port = EnvGuard::set("BSSH_TEST_PORT", "2222");
 
     let yaml = r#"
 defaults:
@@ -204,12 +207,6 @@ clusters:
         config.get_jump_host("production", 1),
         Some("env-bastion.example.com:2222".to_string())
     );
-
-    // Clean up
-    unsafe {
-        std::env::remove_var("BSSH_TEST_BASTION");
-        std::env::remove_var("BSSH_TEST_PORT");
-    }
 }
 
 /// Test jump_host with user@host:port format
@@ -513,9 +510,10 @@ clusters:
 
 /// Test environment variable expansion in jump_host ssh_key field
 #[test]
+#[serial]
 fn test_jump_host_ssh_key_env_expansion() {
-    std::env::set_var("TEST_JUMP_HOST", "env-bastion.example.com");
-    std::env::set_var("TEST_JUMP_KEY", "/keys/env_key");
+    let _host = EnvGuard::set("TEST_JUMP_HOST", "env-bastion.example.com");
+    let _key = EnvGuard::set("TEST_JUMP_KEY", "/keys/env_key");
 
     let yaml = r#"
 clusters:
@@ -534,9 +532,6 @@ clusters:
 
     assert_eq!(conn_str, "env-bastion.example.com");
     assert_eq!(ssh_key.as_deref(), Some("/keys/env_key"));
-
-    std::env::remove_var("TEST_JUMP_HOST");
-    std::env::remove_var("TEST_JUMP_KEY");
 }
 
 /// Test backward compatibility: both simple and structured formats work
