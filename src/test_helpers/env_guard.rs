@@ -19,6 +19,22 @@
 //! a safe, cleanup-guaranteed way to manipulate process-wide environment
 //! variables without scattering `unsafe {}` blocks across the codebase.
 //!
+//! ## Soundness contract
+//!
+//! `EnvGuard` consolidates the `unsafe` env mutation that `std::env::set_var`
+//! and `std::env::remove_var` require under Rust 2024. The `unsafe` blocks
+//! inside this module are sound only when callers uphold the following
+//! contract: every test that constructs an `EnvGuard` MUST be annotated
+//! with `#[serial_test::serial]`, AND every other test in the same crate
+//! that reads or mutates the same environment variable MUST also be
+//! `#[serial]` (or share a matching `#[serial(key)]` group). Non-serial
+//! tests racing against `EnvGuard` mutations are undefined behaviour at the
+//! libc level on glibc/musl/macOS.
+//!
+//! Note: `#[serial]` only serializes against other `#[serial]` and
+//! `#[parallel]` tests. Tests with neither attribute may run concurrently
+//! with serial tests and are not covered by the serial ordering guarantee.
+//!
 //! # Usage
 //!
 //! ```ignore
@@ -75,8 +91,13 @@ impl EnvGuard {
     pub fn set(key: impl Into<OsString>, value: impl AsRef<OsStr>) -> Self {
         let key = key.into();
         let original = std::env::var_os(&key);
-        // SAFETY: tests that construct `EnvGuard` are `#[serial]`, so no
-        // other thread reads or writes the environment concurrently.
+        // SAFETY: `#[serial]`-annotated tests that construct `EnvGuard` do not
+        // run concurrently with each other, so cross-serial races on the env
+        // block are eliminated. Callers MUST ensure that any test which
+        // observes or mutates the same variable is also annotated with
+        // `#[serial]` (or with a matching `#[serial(key)]`); non-serial tests
+        // reading these variables can still race with `EnvGuard`'s mutations.
+        // See the module-level soundness contract for full requirements.
         unsafe {
             std::env::set_var(&key, value);
         }
@@ -88,7 +109,8 @@ impl EnvGuard {
     pub fn remove(key: impl Into<OsString>) -> Self {
         let key = key.into();
         let original = std::env::var_os(&key);
-        // SAFETY: same rationale as `set`.
+        // SAFETY: same rationale as `EnvGuard::set`; see the full comment
+        // there and the module-level soundness contract.
         unsafe {
             std::env::remove_var(&key);
         }
@@ -98,7 +120,8 @@ impl EnvGuard {
 
 impl Drop for EnvGuard {
     fn drop(&mut self) {
-        // SAFETY: same rationale as `set` / `remove`.
+        // SAFETY: same rationale as `EnvGuard::set`; see the full comment
+        // there and the module-level soundness contract.
         unsafe {
             match self.original.take() {
                 Some(v) => std::env::set_var(&self.key, v),
