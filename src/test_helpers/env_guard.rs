@@ -130,3 +130,125 @@ impl Drop for EnvGuard {
         }
     }
 }
+
+// The file is already gated with `#![cfg(test)]`, so no additional
+// `#[cfg(test)]` attribute is needed on this inner module.
+mod tests {
+    use super::EnvGuard;
+    use serial_test::serial;
+
+    // Use a unique prefix so these tests cannot clash with any other test
+    // that happens to read or write a same-named variable in parallel.
+    const KEY_SET: &str = "BSSH_ENVGUARD_TEST_VAR_SET";
+    const KEY_REMOVE: &str = "BSSH_ENVGUARD_TEST_VAR_REMOVE";
+    const KEY_CHAIN: &str = "BSSH_ENVGUARD_TEST_VAR_CHAIN";
+    const KEY_UNSET: &str = "BSSH_ENVGUARD_TEST_VAR_UNSET";
+    const KEY_OVERWRITE: &str = "BSSH_ENVGUARD_TEST_VAR_OVERWRITE";
+
+    /// `EnvGuard::set` must restore the prior value (or absence) when dropped.
+    #[test]
+    #[serial]
+    fn set_restores_prior_value_on_drop() {
+        // Ensure the variable is absent before we start.
+        unsafe { std::env::remove_var(KEY_SET) };
+
+        {
+            let _guard = EnvGuard::set(KEY_SET, "temporary");
+            assert_eq!(std::env::var(KEY_SET).ok().as_deref(), Some("temporary"));
+        }
+        // After the guard drops the variable must be absent again.
+        assert!(
+            std::env::var(KEY_SET).is_err(),
+            "variable should be unset after guard drop"
+        );
+    }
+
+    /// `EnvGuard::remove` must restore the prior value when dropped.
+    #[test]
+    #[serial]
+    fn remove_restores_prior_value_on_drop() {
+        unsafe { std::env::set_var(KEY_REMOVE, "original") };
+
+        {
+            let _guard = EnvGuard::remove(KEY_REMOVE);
+            assert!(
+                std::env::var(KEY_REMOVE).is_err(),
+                "variable should be absent while guard is live"
+            );
+        }
+        // After drop the original value must be back.
+        assert_eq!(
+            std::env::var(KEY_REMOVE).ok().as_deref(),
+            Some("original"),
+            "variable should be restored after guard drop"
+        );
+        // Clean up so later test runs start clean.
+        unsafe { std::env::remove_var(KEY_REMOVE) };
+    }
+
+    /// Multiple guards dropped in LIFO order must each restore their own prior state.
+    #[test]
+    #[serial]
+    fn chained_set_guards_restore_in_lifo_order() {
+        unsafe { std::env::remove_var(KEY_CHAIN) };
+
+        {
+            let _g1 = EnvGuard::set(KEY_CHAIN, "first");
+            assert_eq!(std::env::var(KEY_CHAIN).ok().as_deref(), Some("first"));
+
+            {
+                let _g2 = EnvGuard::set(KEY_CHAIN, "second");
+                assert_eq!(std::env::var(KEY_CHAIN).ok().as_deref(), Some("second"));
+            }
+            // _g2 dropped: KEY_CHAIN should be back to "first" (what _g1 saved).
+            assert_eq!(
+                std::env::var(KEY_CHAIN).ok().as_deref(),
+                Some("first"),
+                "inner guard should restore to value set by outer guard"
+            );
+        }
+        // _g1 dropped: KEY_CHAIN should be absent (what existed before _g1).
+        assert!(
+            std::env::var(KEY_CHAIN).is_err(),
+            "outer guard should restore to absent state"
+        );
+    }
+
+    /// `EnvGuard::remove` on a variable that is already unset must be a no-op
+    /// and leave the variable unset after dropping.
+    #[test]
+    #[serial]
+    fn remove_on_already_unset_variable_is_noop() {
+        unsafe { std::env::remove_var(KEY_UNSET) };
+
+        {
+            let _guard = EnvGuard::remove(KEY_UNSET);
+            assert!(std::env::var(KEY_UNSET).is_err());
+        }
+        // Still absent after drop — no spurious value introduced.
+        assert!(
+            std::env::var(KEY_UNSET).is_err(),
+            "removing an already-absent variable should leave it absent"
+        );
+    }
+
+    /// `EnvGuard::set` when the variable already has a value must restore
+    /// that pre-existing value, not leave the variable absent.
+    #[test]
+    #[serial]
+    fn set_over_existing_value_restores_original() {
+        unsafe { std::env::set_var(KEY_OVERWRITE, "before") };
+
+        {
+            let _guard = EnvGuard::set(KEY_OVERWRITE, "during");
+            assert_eq!(std::env::var(KEY_OVERWRITE).ok().as_deref(), Some("during"));
+        }
+        assert_eq!(
+            std::env::var(KEY_OVERWRITE).ok().as_deref(),
+            Some("before"),
+            "guard should restore the pre-existing value, not remove the variable"
+        );
+        // Clean up.
+        unsafe { std::env::remove_var(KEY_OVERWRITE) };
+    }
+}
