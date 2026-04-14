@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use tracing::warn;
 
 /// Sanitize and validate SSH commands to prevent injection attacks
@@ -169,10 +169,11 @@ pub fn sanitize_username(username: &str) -> Result<String> {
     }
 
     // Username should start with letter or underscore (Unix convention)
-    if let Some(first_char) = username.chars().next() {
-        if !first_char.is_ascii_alphabetic() && first_char != '_' {
-            bail!("Username must start with letter or underscore");
-        }
+    if let Some(first_char) = username.chars().next()
+        && !first_char.is_ascii_alphabetic()
+        && first_char != '_'
+    {
+        bail!("Username must start with letter or underscore");
     }
 
     Ok(username.to_string())

@@ -198,10 +198,10 @@ pub fn should_use_colors() -> bool {
     }
 
     // Check TERM
-    if let Ok(term) = std::env::var("TERM") {
-        if term == "dumb" {
-            return false;
-        }
+    if let Ok(term) = std::env::var("TERM")
+        && term == "dumb"
+    {
+        return false;
     }
 
     true

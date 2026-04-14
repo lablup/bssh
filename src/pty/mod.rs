@@ -19,10 +19,10 @@
 //! and special keys.
 
 use anyhow::{Context, Result};
-use russh::{client::Msg, Channel};
+use russh::{Channel, client::Msg};
 use signal_hook::{consts::SIGWINCH, iterator::Signals};
 use smallvec::SmallVec;
-use terminal_size::{terminal_size, Height, Width};
+use terminal_size::{Height, Width, terminal_size};
 use tokio::sync::{mpsc, watch};
 use tokio::time::Duration;
 
@@ -30,7 +30,7 @@ pub mod session;
 pub mod terminal;
 
 pub use session::PtySession;
-pub use terminal::{force_terminal_cleanup, TerminalState, TerminalStateGuard};
+pub use terminal::{TerminalState, TerminalStateGuard, force_terminal_cleanup};
 
 /// Session processing interval for multiplex mode
 /// - 100ms provides reasonable time-slicing for multiplex mode

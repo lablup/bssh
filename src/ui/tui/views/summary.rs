@@ -17,11 +17,11 @@
 use crate::executor::{ExecutionStatus, MultiNodeStreamManager};
 use crate::ui::tui::progress::{extract_status_message, parse_progress_from_output};
 use ratatui::{
+    Frame,
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
-    Frame,
 };
 
 /// Render the summary view

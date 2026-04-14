@@ -134,20 +134,19 @@ impl EscapeSequenceFilter {
         let mut output = Vec::with_capacity(data.len());
 
         // Check for timed-out incomplete sequences at the start of each filter call
-        if self.state != FilterState::Normal {
-            if let Some(start) = self.sequence_start {
-                if start.elapsed() > SEQUENCE_TIMEOUT {
-                    tracing::trace!(
-                        "Flushing timed-out escape sequence ({:?}): {:?}",
-                        start.elapsed(),
-                        String::from_utf8_lossy(&self.pending_buffer)
-                    );
-                    output.extend_from_slice(&self.pending_buffer);
-                    self.pending_buffer.clear();
-                    self.state = FilterState::Normal;
-                    self.sequence_start = None;
-                }
-            }
+        if self.state != FilterState::Normal
+            && let Some(start) = self.sequence_start
+            && start.elapsed() > SEQUENCE_TIMEOUT
+        {
+            tracing::trace!(
+                "Flushing timed-out escape sequence ({:?}): {:?}",
+                start.elapsed(),
+                String::from_utf8_lossy(&self.pending_buffer)
+            );
+            output.extend_from_slice(&self.pending_buffer);
+            self.pending_buffer.clear();
+            self.state = FilterState::Normal;
+            self.sequence_start = None;
         }
 
         let mut i = 0;
@@ -489,11 +488,7 @@ impl EscapeSequenceFilter {
         }
 
         // Return Some only if we parsed at least one digit
-        if idx > start {
-            Some(value)
-        } else {
-            None
-        }
+        if idx > start { Some(value) } else { None }
     }
 
     /// Reset the filter state.
@@ -508,10 +503,10 @@ impl EscapeSequenceFilter {
     /// Returns true if there's an incomplete sequence that has timed out.
     #[allow(dead_code)]
     pub fn has_timed_out_sequence(&self) -> bool {
-        if self.state != FilterState::Normal {
-            if let Some(start) = self.sequence_start {
-                return start.elapsed() > SEQUENCE_TIMEOUT;
-            }
+        if self.state != FilterState::Normal
+            && let Some(start) = self.sequence_start
+        {
+            return start.elapsed() > SEQUENCE_TIMEOUT;
         }
         false
     }
@@ -657,7 +652,7 @@ mod tests {
         // Create a malformed CSI sequence that exceeds MAX_CSI_SEQUENCE_SIZE (256 bytes)
         // without a proper terminator (no alphabetic character or ~)
         let mut malformed = vec![0x1b, b'[']; // ESC [
-                                              // Add enough non-terminating bytes to exceed the limit
+        // Add enough non-terminating bytes to exceed the limit
         malformed.extend(std::iter::repeat_n(b';', 300)); // Keep adding parameter separators
         malformed.push(b'X'); // Finally add a terminator
 
@@ -677,7 +672,7 @@ mod tests {
         // Create a DCS sequence that exceeds MAX_PENDING_SIZE (4096 bytes)
         // DCS sequences don't have the early termination, only the global limit applies
         let mut large_dcs = vec![0x1b, b'P']; // ESC P (DCS start)
-                                              // Add enough bytes to exceed the 4096 byte limit
+        // Add enough bytes to exceed the 4096 byte limit
         for i in 0..5000 {
             large_dcs.push(b'A' + (i % 26) as u8);
         }
@@ -702,7 +697,7 @@ mod tests {
         let mut filter = EscapeSequenceFilter::new();
         // Create a malformed CSI ? sequence that exceeds MAX_CSI_SEQUENCE_SIZE
         let mut malformed = vec![0x1b, b'[', b'?']; // ESC [ ?
-                                                    // Add enough non-terminating bytes
+        // Add enough non-terminating bytes
         malformed.extend(std::iter::repeat_n(b'0', 300)); // Keep adding digits
         malformed.push(b'h'); // Finally add a terminator
 

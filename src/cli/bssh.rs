@@ -444,12 +444,12 @@ pub enum Commands {
 impl Cli {
     pub fn get_command(&self) -> String {
         // In multi-server mode with destination, treat destination as first command arg
-        if self.is_multi_server_mode() {
-            if let Some(dest) = &self.destination {
-                let mut all_args = vec![dest.clone()];
-                all_args.extend(self.command_args.clone());
-                return all_args.join(" ");
-            }
+        if self.is_multi_server_mode()
+            && let Some(dest) = &self.destination
+        {
+            let mut all_args = vec![dest.clone()];
+            all_args.extend(self.command_args.clone());
+            return all_args.join(" ");
         }
         if !self.command_args.is_empty() {
             self.command_args.join(" ")
@@ -567,10 +567,10 @@ impl Cli {
 
         // Check SSH options for Port=
         for opt in &self.ssh_options {
-            if let Some(port_str) = opt.strip_prefix("Port=") {
-                if let Ok(port) = port_str.parse::<u16>() {
-                    return Some(port);
-                }
+            if let Some(port_str) = opt.strip_prefix("Port=")
+                && let Ok(port) = port_str.parse::<u16>()
+            {
+                return Some(port);
             }
         }
 

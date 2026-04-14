@@ -14,7 +14,7 @@
 
 use anyhow::Result;
 use bssh::cli::{
-    has_pdsh_compat_flag, is_pdsh_compat_mode, remove_pdsh_compat_flag, Cli, Commands, PdshCli,
+    Cli, Commands, PdshCli, has_pdsh_compat_flag, is_pdsh_compat_mode, remove_pdsh_compat_flag,
 };
 use bssh::hostlist;
 use clap::Parser;
@@ -103,56 +103,57 @@ async fn handle_pdsh_query_mode(pdsh_cli: &PdshCli) -> Result<()> {
             .map_err(|e| anyhow::anyhow!("Failed to expand host expression: {e}"))?;
 
         // Process exclusion patterns (supports both glob patterns and hostlist expressions)
-        let (expanded_exclusions, glob_exclusions): (Vec<String>, Vec<Pattern>) =
-            if let Some(ref exclude_str) = pdsh_cli.exclude {
-                let mut expanded = Vec::new();
-                let mut globs = Vec::new();
+        let (expanded_exclusions, glob_exclusions): (Vec<String>, Vec<Pattern>) = if let Some(
+            ref exclude_str,
+        ) =
+            pdsh_cli.exclude
+        {
+            let mut expanded = Vec::new();
+            let mut globs = Vec::new();
 
-                for pattern in exclude_str.split(',').map(|s| s.trim()) {
-                    // Security: Validate pattern length
-                    const MAX_PATTERN_LENGTH: usize = 256;
-                    if pattern.len() > MAX_PATTERN_LENGTH {
+            for pattern in exclude_str.split(',').map(|s| s.trim()) {
+                // Security: Validate pattern length
+                const MAX_PATTERN_LENGTH: usize = 256;
+                if pattern.len() > MAX_PATTERN_LENGTH {
+                    anyhow::bail!(
+                        "Exclusion pattern too long (max {MAX_PATTERN_LENGTH} characters)"
+                    );
+                }
+
+                // Security: Skip empty patterns
+                if pattern.is_empty() {
+                    continue;
+                }
+
+                // Check if it's a hostlist expression (contains numeric range brackets)
+                if hostlist::is_hostlist_expression(pattern) {
+                    // Expand hostlist expression
+                    let expanded_hosts = hostlist::expand_host_specs(pattern)
+                        .map_err(|e| anyhow::anyhow!("Failed to expand exclusion pattern: {e}"))?;
+                    expanded.extend(expanded_hosts);
+                } else {
+                    // Security: Prevent excessive wildcards for glob patterns
+                    let wildcard_count = pattern.chars().filter(|c| *c == '*' || *c == '?').count();
+                    const MAX_WILDCARDS: usize = 10;
+                    if wildcard_count > MAX_WILDCARDS {
                         anyhow::bail!(
-                            "Exclusion pattern too long (max {MAX_PATTERN_LENGTH} characters)"
-                        );
-                    }
-
-                    // Security: Skip empty patterns
-                    if pattern.is_empty() {
-                        continue;
-                    }
-
-                    // Check if it's a hostlist expression (contains numeric range brackets)
-                    if hostlist::is_hostlist_expression(pattern) {
-                        // Expand hostlist expression
-                        let expanded_hosts = hostlist::expand_host_specs(pattern).map_err(|e| {
-                            anyhow::anyhow!("Failed to expand exclusion pattern: {e}")
-                        })?;
-                        expanded.extend(expanded_hosts);
-                    } else {
-                        // Security: Prevent excessive wildcards for glob patterns
-                        let wildcard_count =
-                            pattern.chars().filter(|c| *c == '*' || *c == '?').count();
-                        const MAX_WILDCARDS: usize = 10;
-                        if wildcard_count > MAX_WILDCARDS {
-                            anyhow::bail!(
                             "Exclusion pattern contains too many wildcards (max {MAX_WILDCARDS})"
                         );
-                        }
+                    }
 
-                        // Compile the glob pattern
-                        match Pattern::new(pattern) {
-                            Ok(p) => globs.push(p),
-                            Err(_) => {
-                                anyhow::bail!("Invalid exclusion pattern: {pattern}");
-                            }
+                    // Compile the glob pattern
+                    match Pattern::new(pattern) {
+                        Ok(p) => globs.push(p),
+                        Err(_) => {
+                            anyhow::bail!("Invalid exclusion pattern: {pattern}");
                         }
                     }
                 }
-                (expanded, globs)
-            } else {
-                (Vec::new(), Vec::new())
-            };
+            }
+            (expanded, globs)
+        } else {
+            (Vec::new(), Vec::new())
+        };
 
         // Create a set for O(1) lookup of expanded exclusions
         let exclusion_set: std::collections::HashSet<&str> =

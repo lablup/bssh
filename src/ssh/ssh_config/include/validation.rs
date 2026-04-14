@@ -160,10 +160,12 @@ mod tests {
         // Test too many wildcards
         let result = validate_glob_pattern("a*/b*/c*/d*/e*/f*");
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Too many wildcards"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Too many wildcards")
+        );
 
         // Test too-long pattern
         let long_pattern = "a".repeat(600);

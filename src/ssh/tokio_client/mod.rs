@@ -25,7 +25,7 @@ mod to_socket_addrs_with_hostname;
 pub use authentication::{AuthKeyboardInteractive, AuthMethod, ServerCheckMethod};
 pub use channel_manager::{CommandExecutedResult, CommandOutput};
 pub use connection::{
-    Client, ClientHandler, SshConnectionConfig, DEFAULT_KEEPALIVE_INTERVAL, DEFAULT_KEEPALIVE_MAX,
+    Client, ClientHandler, DEFAULT_KEEPALIVE_INTERVAL, DEFAULT_KEEPALIVE_MAX, SshConnectionConfig,
 };
 pub use error::Error;
 pub use to_socket_addrs_with_hostname::ToSocketAddrsWithHostname;

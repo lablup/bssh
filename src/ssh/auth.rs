@@ -256,10 +256,10 @@ impl AuthContext {
         }
 
         // Priority 2: SSH agent (explicit request)
-        if self.use_agent {
-            if let Some(auth) = self.agent_auth()? {
-                return Ok(auth);
-            }
+        if self.use_agent
+            && let Some(auth) = self.agent_auth()?
+        {
+            return Ok(auth);
         }
 
         // Priority 3: Key file authentication (explicit -i flag)
@@ -290,7 +290,9 @@ impl AuthContext {
                     // If allow_password_fallback is set (interactive mode), skip consent prompt
                     // Otherwise, ask for explicit user consent for security
                     let should_attempt_password = if self.allow_password_fallback {
-                        tracing::info!("SSH key authentication failed, falling back to password authentication");
+                        tracing::info!(
+                            "SSH key authentication failed, falling back to password authentication"
+                        );
 
                         // SECURITY: Add rate limiting before password fallback to prevent rapid attempts
                         const FALLBACK_DELAY: Duration = Duration::from_secs(1);

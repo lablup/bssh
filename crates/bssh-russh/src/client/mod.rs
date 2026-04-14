@@ -966,11 +966,10 @@ pub async fn connect<H: Handler + Send + 'static, A: tokio::net::ToSocketAddrs>(
     handler: H,
 ) -> Result<Handle<H>, H::Error> {
     let socket = map_err!(tokio::net::TcpStream::connect(addrs).await)?;
-    if config.as_ref().nodelay {
-        if let Err(e) = socket.set_nodelay(true) {
+    if config.as_ref().nodelay
+        && let Err(e) = socket.set_nodelay(true) {
             warn!("set_nodelay() failed: {e:?}");
         }
-    }
 
     connect_stream(config, socket, handler).await
 }
@@ -1211,8 +1210,8 @@ impl Session {
                     reading.set(start_reading(stream_read, buffer, opening_cipher));
                 }
                 () = &mut keepalive_timer => {
-                    if let Some(ref mut enc) = self.common.encrypted {
-                        if matches!(enc.state, EncryptedState::Authenticated) {
+                    if let Some(ref mut enc) = self.common.encrypted
+                        && matches!(enc.state, EncryptedState::Authenticated) {
                             self.common.alive_timeouts = self.common.alive_timeouts.saturating_add(1);
                             if self.common.config.keepalive_max != 0 && self.common.alive_timeouts > self.common.config.keepalive_max {
                                 debug!("Timeout, server not responding to keepalives");
@@ -1221,7 +1220,6 @@ impl Session {
                             sent_keepalive = true;
                             self.send_keepalive(true)?;
                         }
-                    }
                 }
                 () = &mut inactivity_timer => {
                     debug!("timeout");
@@ -1263,15 +1261,14 @@ impl Session {
             self.flush()?;
             map_err!(self.common.packet_writer.flush_into(stream_write).await)?;
 
-            if let Some(ref mut enc) = self.common.encrypted {
-                if let EncryptedState::InitCompression = enc.state {
+            if let Some(ref mut enc) = self.common.encrypted
+                && let EncryptedState::InitCompression = enc.state {
                     if enc.client_compression.is_deferred() {
                         enc.client_compression
                             .init_compress(self.common.packet_writer.compress());
                     }
                     enc.state = EncryptedState::Authenticated;
                 }
-            }
 
             if self.common.received_data {
                 // Reset the number of failed keepalive attempts. We don't
@@ -1281,22 +1278,20 @@ impl Session {
                 // data from it.
                 self.common.alive_timeouts = 0;
             }
-            if self.common.received_data || sent_keepalive {
-                if let (futures::future::Either::Right(ref mut sleep), Some(d)) = (
+            if (self.common.received_data || sent_keepalive)
+                && let (futures::future::Either::Right(ref mut sleep), Some(d)) = (
                     keepalive_timer.as_mut().as_pin_mut(),
                     self.common.config.keepalive_interval,
                 ) {
                     sleep.as_mut().reset(tokio::time::Instant::now() + d);
                 }
-            }
-            if !sent_keepalive {
-                if let (futures::future::Either::Right(ref mut sleep), Some(d)) = (
+            if !sent_keepalive
+                && let (futures::future::Either::Right(ref mut sleep), Some(d)) = (
                     inactivity_timer.as_mut().as_pin_mut(),
                     self.common.config.inactivity_timeout,
                 ) {
                     sleep.as_mut().reset(tokio::time::Instant::now() + d);
                 }
-            }
         }
 
         result
@@ -1528,15 +1523,14 @@ impl Session {
     /// Flush the temporary cleartext buffer into the encryption
     /// buffer. This does *not* flush to the socket.
     fn flush(&mut self) -> Result<(), crate::Error> {
-        if let Some(ref mut enc) = self.common.encrypted {
-            if enc.flush(
+        if let Some(ref mut enc) = self.common.encrypted
+            && enc.flush(
                 &self.common.config.as_ref().limits,
                 &mut self.common.packet_writer,
             )? && !self.kex.active()
             {
                 self.begin_rekey()?;
             }
-        }
         Ok(())
     }
 
@@ -1581,8 +1575,8 @@ async fn reply<H: Handler>(
 
     let is_kex_msg = pkt.buffer.first().cloned().map(is_kex_msg).unwrap_or(false);
 
-    if is_kex_msg {
-        if let SessionKexState::InProgress(kex) = session.kex.take() {
+    if is_kex_msg
+        && let SessionKexState::InProgress(kex) = session.kex.take() {
             let progress = kex.step(Some(pkt), &mut session.common.packet_writer)?;
 
             match progress {
@@ -1652,7 +1646,6 @@ async fn reply<H: Handler>(
 
             return Ok(());
         }
-    }
 
     session.client_read_encrypted(handler, pkt).await
 }

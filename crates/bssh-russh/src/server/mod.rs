@@ -879,11 +879,10 @@ pub trait Server {
                                 let error_tx = error_tx.clone();
 
                                 russh_util::runtime::spawn(async move {
-                                    if config.nodelay {
-                                        if let Err(e) = socket.set_nodelay(true) {
+                                    if config.nodelay
+                                        && let Err(e) = socket.set_nodelay(true) {
                                             warn!("set_nodelay() failed: {e:?}");
                                         }
-                                    }
 
                                     let session = match run_stream(config, socket, handler).await {
                                         Ok(s) => s,
@@ -1096,8 +1095,8 @@ async fn reply<H: Handler + Send>(
 
     let is_kex_msg = pkt.buffer.first().cloned().map(is_kex_msg).unwrap_or(false);
 
-    if is_kex_msg {
-        if let SessionKexState::InProgress(kex) = session.kex.take() {
+    if is_kex_msg
+        && let SessionKexState::InProgress(kex) = session.kex.take() {
             let progress = kex
                 .step(Some(pkt), &mut session.common.packet_writer, handler)
                 .await?;
@@ -1158,7 +1157,6 @@ async fn reply<H: Handler + Send>(
 
             return Ok(());
         }
-    }
 
     // Handle key exchange/re-exchange.
     session.server_read_encrypted(handler, pkt).await

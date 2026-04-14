@@ -23,11 +23,11 @@ use tokio::sync::Semaphore;
 
 use crate::node::Node;
 use crate::security::SudoPassword;
+use crate::ssh::SshConfig;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
 use crate::ssh::tokio_client::SshConnectionConfig;
-use crate::ssh::SshConfig;
 
-use super::connection_manager::{download_from_node, ExecutionConfig};
+use super::connection_manager::{ExecutionConfig, download_from_node};
 use super::execution_strategy::{
     create_progress_style, download_file_task, execute_command_task, setup_download_progress_bar,
     setup_progress_bar, upload_file_task,
@@ -1106,8 +1106,8 @@ impl ParallelExecutor {
         }
 
         use super::stream_manager::MultiNodeStreamManager;
-        use crate::ssh::client::ConnectionConfig;
         use crate::ssh::SshClient;
+        use crate::ssh::client::ConnectionConfig;
         use tokio::sync::mpsc;
 
         let semaphore = Arc::new(Semaphore::new(self.max_parallel));
@@ -1230,7 +1230,8 @@ impl ParallelExecutor {
 
         // Execute based on mode and ensure cleanup
         let no_prefix = output_mode.is_no_prefix();
-        let result = if output_mode.is_tui() {
+
+        if output_mode.is_tui() {
             // TUI mode: interactive terminal UI
             self.handle_tui_mode(&mut manager, handles, command).await
         } else if output_mode.is_stream() {
@@ -1244,9 +1245,7 @@ impl ParallelExecutor {
         } else {
             // Fallback to normal mode
             self.execute(command).await
-        };
-
-        result
+        }
     }
 
     /// Handle stream mode output with optional [node] prefixes

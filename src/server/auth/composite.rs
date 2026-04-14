@@ -160,10 +160,10 @@ impl AuthProvider for CompositeAuthProvider {
 
     async fn get_user_info(&self, username: &str) -> Result<Option<UserInfo>> {
         // Try to get user info from password verifier first (has more detailed info)
-        if let Some(ref verifier) = self.password_verifier {
-            if let Some(info) = verifier.get_user_info(username).await? {
-                return Ok(Some(info));
-            }
+        if let Some(ref verifier) = self.password_verifier
+            && let Some(info) = verifier.get_user_info(username).await?
+        {
+            return Ok(Some(info));
         }
 
         // Fall back to public key verifier
@@ -176,17 +176,17 @@ impl AuthProvider for CompositeAuthProvider {
 
     async fn user_exists(&self, username: &str) -> Result<bool> {
         // Check password verifier first
-        if let Some(ref verifier) = self.password_verifier {
-            if verifier.user_exists(username).await? {
-                return Ok(true);
-            }
+        if let Some(ref verifier) = self.password_verifier
+            && verifier.user_exists(username).await?
+        {
+            return Ok(true);
         }
 
         // Check public key verifier
-        if let Some(ref verifier) = self.publickey_verifier {
-            if verifier.user_exists(username).await? {
-                return Ok(true);
-            }
+        if let Some(ref verifier) = self.publickey_verifier
+            && verifier.user_exists(username).await?
+        {
+            return Ok(true);
         }
 
         Ok(false)

@@ -41,7 +41,7 @@ use russh::server::{Handle, Msg};
 use russh::{ChannelId, ChannelStream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::process::Child;
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::{RwLock, mpsc};
 
 use super::pty::{PtyConfig, PtyMaster};
 use crate::shared::auth_types::UserInfo;
@@ -428,7 +428,7 @@ async fn drain_pty_output_to_stream(
 
 /// Wait for child process to exit and return exit code.
 async fn wait_for_child(child: &mut Option<Child>) -> i32 {
-    if let Some(ref mut c) = child {
+    if let Some(c) = child {
         match c.wait().await {
             Ok(status) => status.code().unwrap_or(1),
             Err(e) => {

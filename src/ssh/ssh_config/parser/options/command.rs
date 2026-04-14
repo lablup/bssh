@@ -290,34 +290,34 @@ mod tests {
     #[test]
     fn test_validate_command_with_tokens_valid() {
         // Valid commands with tokens
-        assert!(validate_command_with_tokens(
-            "rsync -av ~/project/ %h:~/project/",
-            "LocalCommand",
-            1
-        )
-        .is_ok());
+        assert!(
+            validate_command_with_tokens("rsync -av ~/project/ %h:~/project/", "LocalCommand", 1)
+                .is_ok()
+        );
 
-        assert!(validate_command_with_tokens(
-            "notify-send \"Connected to %h on port %p\"",
-            "LocalCommand",
-            1
-        )
-        .is_ok());
+        assert!(
+            validate_command_with_tokens(
+                "notify-send \"Connected to %h on port %p\"",
+                "LocalCommand",
+                1
+            )
+            .is_ok()
+        );
 
-        assert!(validate_command_with_tokens(
-            "/usr/local/bin/fetch-host-key %H",
-            "KnownHostsCommand",
-            1
-        )
-        .is_ok());
+        assert!(
+            validate_command_with_tokens(
+                "/usr/local/bin/fetch-host-key %H",
+                "KnownHostsCommand",
+                1
+            )
+            .is_ok()
+        );
 
         // Command with escaped percent
-        assert!(validate_command_with_tokens(
-            "echo \"Progress: 50%% complete\"",
-            "LocalCommand",
-            1
-        )
-        .is_ok());
+        assert!(
+            validate_command_with_tokens("echo \"Progress: 50%% complete\"", "LocalCommand", 1)
+                .is_ok()
+        );
     }
 
     #[test]
@@ -418,31 +418,35 @@ mod tests {
         let mut config = SshHostConfig::default();
 
         // Simple command
-        assert!(parse_command_option(
-            &mut config,
-            "remotecommand",
-            &["ls".to_string(), "-la".to_string()],
-            1
-        )
-        .is_ok());
+        assert!(
+            parse_command_option(
+                &mut config,
+                "remotecommand",
+                &["ls".to_string(), "-la".to_string()],
+                1
+            )
+            .is_ok()
+        );
         assert_eq!(config.remote_command, Some("ls -la".to_string()));
 
         // Complex command (no validation for remote commands)
-        assert!(parse_command_option(
-            &mut config,
-            "remotecommand",
-            &[
-                "tmux".to_string(),
-                "attach".to_string(),
-                "-t".to_string(),
-                "dev".to_string(),
-                "||".to_string(),
-                "tmux".to_string(),
-                "new".to_string()
-            ],
-            1
-        )
-        .is_ok());
+        assert!(
+            parse_command_option(
+                &mut config,
+                "remotecommand",
+                &[
+                    "tmux".to_string(),
+                    "attach".to_string(),
+                    "-t".to_string(),
+                    "dev".to_string(),
+                    "||".to_string(),
+                    "tmux".to_string(),
+                    "new".to_string()
+                ],
+                1
+            )
+            .is_ok()
+        );
         assert_eq!(
             config.remote_command,
             Some("tmux attach -t dev || tmux new".to_string())

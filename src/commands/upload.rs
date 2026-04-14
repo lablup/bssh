@@ -18,8 +18,8 @@ use std::path::Path;
 
 use crate::executor::ParallelExecutor;
 use crate::node::Node;
-use crate::ssh::known_hosts::StrictHostKeyChecking;
 use crate::ssh::SshConfig;
+use crate::ssh::known_hosts::StrictHostKeyChecking;
 use crate::ui::OutputFormatter;
 use crate::utils::fs::{format_bytes, resolve_source_files};
 
@@ -117,17 +117,17 @@ pub async fn upload_file(
                     let remote_relative = relative_path.to_string_lossy();
 
                     // Create remote directory structure if needed
-                    if let Some(parent) = relative_path.parent() {
-                        if !parent.as_os_str().is_empty() {
-                            let remote_dir = if validated_destination.ends_with('/') {
-                                format!("{}{}", validated_destination, parent.display())
-                            } else {
-                                format!("{}/{}", validated_destination, parent.display())
-                            };
-                            // Create remote directory using SSH command
-                            let mkdir_cmd = format!("mkdir -p '{remote_dir}'");
-                            let _ = executor.execute(&mkdir_cmd).await;
-                        }
+                    if let Some(parent) = relative_path.parent()
+                        && !parent.as_os_str().is_empty()
+                    {
+                        let remote_dir = if validated_destination.ends_with('/') {
+                            format!("{}{}", validated_destination, parent.display())
+                        } else {
+                            format!("{}/{}", validated_destination, parent.display())
+                        };
+                        // Create remote directory using SSH command
+                        let mkdir_cmd = format!("mkdir -p '{remote_dir}'");
+                        let _ = executor.execute(&mkdir_cmd).await;
                     }
 
                     if validated_destination.ends_with('/') {

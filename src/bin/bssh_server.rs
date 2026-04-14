@@ -17,8 +17,8 @@
 //! This binary provides a command-line interface for managing the bssh SSH server.
 
 use anyhow::{Context, Result};
-use bssh::server::config::{generate_config_template, load_config, ServerFileConfig};
 use bssh::server::BsshServer;
+use bssh::server::config::{ServerFileConfig, generate_config_template, load_config};
 use bssh::utils::logging;
 use clap::{ArgAction, Parser, Subcommand};
 use std::fs;
@@ -471,36 +471,35 @@ fn setup_signal_handlers() -> Result<impl std::future::Future<Output = ()>> {
 /// Write the current process ID to a PID file
 fn write_pid_file(path: &PathBuf) -> Result<()> {
     // Check if PID file already exists and refers to a running process
-    if path.exists() {
-        if let Ok(existing_pid_str) = fs::read_to_string(path) {
-            if let Ok(existing_pid) = existing_pid_str.trim().parse::<i32>() {
-                // Check if process is still running
-                #[cfg(unix)]
-                {
-                    use nix::sys::signal::kill;
-                    use nix::unistd::Pid;
+    if path.exists()
+        && let Ok(existing_pid_str) = fs::read_to_string(path)
+        && let Ok(existing_pid) = existing_pid_str.trim().parse::<i32>()
+    {
+        // Check if process is still running
+        #[cfg(unix)]
+        {
+            use nix::sys::signal::kill;
+            use nix::unistd::Pid;
 
-                    let pid = Pid::from_raw(existing_pid);
-                    // Use signal 0 (None) to check if process exists without sending actual signal
-                    if kill(pid, None).is_ok() {
-                        anyhow::bail!(
-                            "Another instance is already running with PID {}. \
+            let pid = Pid::from_raw(existing_pid);
+            // Use signal 0 (None) to check if process exists without sending actual signal
+            if kill(pid, None).is_ok() {
+                anyhow::bail!(
+                    "Another instance is already running with PID {}. \
                              If this is incorrect, remove {} and try again.",
-                            existing_pid,
-                            path.display()
-                        );
-                    }
-                }
-
-                #[cfg(not(unix))]
-                {
-                    // On non-Unix systems, warn but allow overwrite
-                    tracing::warn!(
-                        "PID file exists with PID {}. Overwriting (process check not available on this platform).",
-                        existing_pid
-                    );
-                }
+                    existing_pid,
+                    path.display()
+                );
             }
+        }
+
+        #[cfg(not(unix))]
+        {
+            // On non-Unix systems, warn but allow overwrite
+            tracing::warn!(
+                "PID file exists with PID {}. Overwriting (process check not available on this platform).",
+                existing_pid
+            );
         }
     }
 
@@ -798,10 +797,12 @@ mod tests {
 
         let result = gen_host_key("rsa", &key_path, 1024);
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("RSA key size must be at least 2048"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("RSA key size must be at least 2048")
+        );
     }
 
     #[test]

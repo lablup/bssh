@@ -17,7 +17,7 @@
 //! These tests verify that bssh correctly handles pdsh-style arguments
 //! and behaves as expected in pdsh compatibility mode.
 
-use bssh::cli::{has_pdsh_compat_flag, remove_pdsh_compat_flag, PdshCli, PDSH_COMPAT_ENV_VAR};
+use bssh::cli::{PDSH_COMPAT_ENV_VAR, PdshCli, has_pdsh_compat_flag, remove_pdsh_compat_flag};
 use serial_test::serial;
 use std::env;
 

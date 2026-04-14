@@ -231,7 +231,9 @@ pub(super) fn parse_connection_option(
                                 if !valid_tos.contains(&num) {
                                     tracing::warn!(
                                         "IPQoS value '{}' ({:#04x}) at line {} is not a standard DSCP (0-63) or ToS value",
-                                        value, num, line_number
+                                        value,
+                                        num,
+                                        line_number
                                     );
                                 }
                             }
@@ -243,7 +245,8 @@ pub(super) fn parse_connection_option(
                                     if num > 63 && ![0x00, 0x04, 0x08, 0x10, 0xff].contains(&num) {
                                         tracing::warn!(
                                             "IPQoS hex value '{}' at line {} is outside standard ranges",
-                                            value, line_number
+                                            value,
+                                            line_number
                                         );
                                     }
                                 } else {
@@ -325,7 +328,9 @@ pub(super) fn parse_connection_option(
                                 tracing::warn!(
                                     "RekeyLimit data limit '{}' at line {} is very small ({} bytes). \
                                      This may cause frequent rekeying",
-                                    data_limit, line_number, total
+                                    data_limit,
+                                    line_number,
+                                    total
                                 );
                             }
                         } else {
@@ -381,7 +386,9 @@ pub(super) fn parse_connection_option(
                                     tracing::warn!(
                                         "RekeyLimit time limit '{}' at line {} is very long ({} days). \
                                          This may reduce security",
-                                        time_limit, line_number, total_seconds / 86400
+                                        time_limit,
+                                        line_number,
+                                        total_seconds / 86400
                                     );
                                 }
                                 // Warn if rekey time is very short (< 60 seconds)
@@ -389,7 +396,9 @@ pub(super) fn parse_connection_option(
                                     tracing::warn!(
                                         "RekeyLimit time limit '{}' at line {} is very short ({} seconds). \
                                          This may cause frequent rekeying",
-                                        time_limit, line_number, total_seconds
+                                        time_limit,
+                                        line_number,
+                                        total_seconds
                                     );
                                 }
                             } else {

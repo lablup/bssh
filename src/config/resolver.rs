@@ -88,12 +88,11 @@ impl Config {
 
     /// Get SSH key for a cluster.
     pub fn get_ssh_key(&self, cluster_name: Option<&str>) -> Option<String> {
-        if let Some(cluster_name) = cluster_name {
-            if let Some(cluster) = self.get_cluster(cluster_name) {
-                if let Some(key) = &cluster.defaults.ssh_key {
-                    return Some(key.clone());
-                }
-            }
+        if let Some(cluster_name) = cluster_name
+            && let Some(cluster) = self.get_cluster(cluster_name)
+            && let Some(key) = &cluster.defaults.ssh_key
+        {
+            return Some(key.clone());
         }
 
         self.defaults.ssh_key.clone()
@@ -101,12 +100,11 @@ impl Config {
 
     /// Get timeout for a cluster.
     pub fn get_timeout(&self, cluster_name: Option<&str>) -> Option<u64> {
-        if let Some(cluster_name) = cluster_name {
-            if let Some(cluster) = self.get_cluster(cluster_name) {
-                if let Some(timeout) = cluster.defaults.timeout {
-                    return Some(timeout);
-                }
-            }
+        if let Some(cluster_name) = cluster_name
+            && let Some(cluster) = self.get_cluster(cluster_name)
+            && let Some(timeout) = cluster.defaults.timeout
+        {
+            return Some(timeout);
         }
 
         self.defaults.timeout
@@ -114,12 +112,11 @@ impl Config {
 
     /// Get parallelism level for a cluster.
     pub fn get_parallel(&self, cluster_name: Option<&str>) -> Option<usize> {
-        if let Some(cluster_name) = cluster_name {
-            if let Some(cluster) = self.get_cluster(cluster_name) {
-                if let Some(parallel) = cluster.defaults.parallel {
-                    return Some(parallel);
-                }
-            }
+        if let Some(cluster_name) = cluster_name
+            && let Some(cluster) = self.get_cluster(cluster_name)
+            && let Some(parallel) = cluster.defaults.parallel
+        {
+            return Some(parallel);
         }
 
         self.defaults.parallel
@@ -315,12 +312,11 @@ impl Config {
         cluster_name: Option<&str>,
         ssh_config: Option<&SshConfig>,
     ) -> Option<(String, Option<String>)> {
-        if let Some(cluster_name) = cluster_name {
-            if let Some(cluster) = self.get_cluster(cluster_name) {
-                if let Some(jh) = &cluster.defaults.jump_host {
-                    return self.process_jump_host_config(jh, ssh_config);
-                }
-            }
+        if let Some(cluster_name) = cluster_name
+            && let Some(cluster) = self.get_cluster(cluster_name)
+            && let Some(jh) = &cluster.defaults.jump_host
+        {
+            return self.process_jump_host_config(jh, ssh_config);
         }
         // Fall back to global default
         self.defaults
@@ -337,12 +333,11 @@ impl Config {
     ///
     /// Returns None if not specified (defaults will be applied at connection time).
     pub fn get_server_alive_interval(&self, cluster_name: Option<&str>) -> Option<u64> {
-        if let Some(cluster_name) = cluster_name {
-            if let Some(cluster) = self.get_cluster(cluster_name) {
-                if let Some(interval) = cluster.defaults.server_alive_interval {
-                    return Some(interval);
-                }
-            }
+        if let Some(cluster_name) = cluster_name
+            && let Some(cluster) = self.get_cluster(cluster_name)
+            && let Some(interval) = cluster.defaults.server_alive_interval
+        {
+            return Some(interval);
         }
         self.defaults.server_alive_interval
     }
@@ -355,12 +350,11 @@ impl Config {
     ///
     /// Returns None if not specified (defaults will be applied at connection time).
     pub fn get_server_alive_count_max(&self, cluster_name: Option<&str>) -> Option<usize> {
-        if let Some(cluster_name) = cluster_name {
-            if let Some(cluster) = self.get_cluster(cluster_name) {
-                if let Some(count) = cluster.defaults.server_alive_count_max {
-                    return Some(count);
-                }
-            }
+        if let Some(cluster_name) = cluster_name
+            && let Some(cluster) = self.get_cluster(cluster_name)
+            && let Some(count) = cluster.defaults.server_alive_count_max
+        {
+            return Some(count);
         }
         self.defaults.server_alive_count_max
     }

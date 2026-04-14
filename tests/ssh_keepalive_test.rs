@@ -23,7 +23,7 @@
 
 use bssh::ssh::ssh_config::SshConfig;
 use bssh::ssh::tokio_client::{
-    SshConnectionConfig, DEFAULT_KEEPALIVE_INTERVAL, DEFAULT_KEEPALIVE_MAX,
+    DEFAULT_KEEPALIVE_INTERVAL, DEFAULT_KEEPALIVE_MAX, SshConnectionConfig,
 };
 
 // =============================================================================
@@ -813,8 +813,8 @@ fn test_jump_host_chain_with_ssh_connection_config() {
 #[test]
 fn test_jump_host_chain_with_custom_keepalive_for_long_running_sessions() {
     // Test real-world use case: long-running sessions need longer keepalive
-    use bssh::jump::parser::JumpHost;
     use bssh::jump::JumpHostChain;
+    use bssh::jump::parser::JumpHost;
     use std::time::Duration;
 
     // For long-running interactive sessions, use longer keepalive intervals

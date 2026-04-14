@@ -96,10 +96,10 @@ impl Drop for PooledBuffer {
         // Clear the buffer and return it to the pool
         self.buffer.clear();
 
-        if let Ok(mut pool) = self.pool.lock() {
-            if pool.len() < MAX_POOL_SIZE {
-                pool.push(std::mem::take(&mut self.buffer));
-            }
+        if let Ok(mut pool) = self.pool.lock()
+            && pool.len() < MAX_POOL_SIZE
+        {
+            pool.push(std::mem::take(&mut self.buffer));
         }
     }
 }

@@ -306,11 +306,11 @@ impl TuiApp {
 
     /// Check if there are new log entries and trigger redraw if needed
     pub fn check_log_updates(&mut self) -> bool {
-        if let Ok(mut buffer) = self.log_buffer.lock() {
-            if buffer.take_has_new_entries() {
-                self.needs_redraw = true;
-                return true;
-            }
+        if let Ok(mut buffer) = self.log_buffer.lock()
+            && buffer.take_has_new_entries()
+        {
+            self.needs_redraw = true;
+            return true;
         }
         false
     }

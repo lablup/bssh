@@ -133,7 +133,8 @@ pub(super) fn parse_authentication_option(
                     if trimmed.len() > MAX_ALGORITHM_NAME_LENGTH {
                         tracing::warn!(
                             "Algorithm name at line {} exceeds maximum length of {} characters, skipping",
-                            line_number, MAX_ALGORITHM_NAME_LENGTH
+                            line_number,
+                            MAX_ALGORITHM_NAME_LENGTH
                         );
                         continue;
                     }
@@ -165,7 +166,9 @@ pub(super) fn parse_authentication_option(
             if truncated {
                 tracing::warn!(
                     "PubkeyAcceptedAlgorithms at line {} contains {} algorithms, truncated to first {}",
-                    line_number, total_count, MAX_ALGORITHMS
+                    line_number,
+                    total_count,
+                    MAX_ALGORITHMS
                 );
             }
 
@@ -263,7 +266,8 @@ pub(super) fn parse_authentication_option(
                     if trimmed.len() > MAX_ALGORITHM_NAME_LENGTH {
                         tracing::warn!(
                             "Algorithm name at line {} exceeds maximum length of {} characters, skipping",
-                            line_number, MAX_ALGORITHM_NAME_LENGTH
+                            line_number,
+                            MAX_ALGORITHM_NAME_LENGTH
                         );
                         continue;
                     }
@@ -295,7 +299,9 @@ pub(super) fn parse_authentication_option(
             if truncated {
                 tracing::warn!(
                     "HostbasedAcceptedAlgorithms at line {} contains {} algorithms, truncated to first {}",
-                    line_number, total_count, MAX_ALGORITHMS
+                    line_number,
+                    total_count,
+                    MAX_ALGORITHMS
                 );
             }
 

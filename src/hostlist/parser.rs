@@ -163,12 +163,12 @@ pub fn parse_host_pattern(pattern: &str) -> Result<HostPattern, HostlistError> {
                 }
 
                 // Check for IPv6 literal (starts with digit or colon after [)
-                if let Some(&next_ch) = chars.peek() {
-                    if is_ipv6_start(next_ch, &chars) {
-                        // This might be an IPv6 literal, collect until matching ]
-                        current_literal.push(ch);
-                        continue;
-                    }
+                if let Some(&next_ch) = chars.peek()
+                    && is_ipv6_start(next_ch, &chars)
+                {
+                    // This might be an IPv6 literal, collect until matching ]
+                    current_literal.push(ch);
+                    continue;
                 }
 
                 // Save any accumulated literal

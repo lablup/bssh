@@ -155,10 +155,10 @@ impl AuthRateLimiter {
         }
 
         let bans = self.bans.read().await;
-        if let Some(expiry) = bans.get(ip) {
-            if Instant::now() < *expiry {
-                return true;
-            }
+        if let Some(expiry) = bans.get(ip)
+            && Instant::now() < *expiry
+        {
+            return true;
         }
         false
     }

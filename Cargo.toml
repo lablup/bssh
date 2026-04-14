@@ -14,7 +14,7 @@ repository = "https://github.com/lablup/bssh"
 readme = "README.md"
 keywords = ["cli", "rust"]
 categories = ["command-line-utilities"]
-edition = "2021"
+edition = "2024"
 
 [dependencies]
 bytes = "1.11.1"

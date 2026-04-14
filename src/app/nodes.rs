@@ -562,10 +562,12 @@ mod tests {
         let result = exclude_nodes(nodes, &patterns);
 
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("too many wildcards"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("too many wildcards")
+        );
     }
 
     #[test]
@@ -575,10 +577,12 @@ mod tests {
         let result = exclude_nodes(nodes, &patterns);
 
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("invalid characters"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("invalid characters")
+        );
     }
 
     #[test]
@@ -588,10 +592,12 @@ mod tests {
         let result = exclude_nodes(nodes, &patterns);
 
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("invalid sequences"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("invalid sequences")
+        );
     }
 
     #[test]

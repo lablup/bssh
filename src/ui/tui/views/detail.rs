@@ -16,11 +16,11 @@
 
 use crate::executor::{ExecutionStatus, NodeStream};
 use ratatui::{
+    Frame,
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph, Wrap},
-    Frame,
 };
 
 /// Render the detail view for a single node

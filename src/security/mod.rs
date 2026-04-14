@@ -35,6 +35,6 @@ pub use crate::shared::validation::{
 
 // Re-export sudo password handling
 pub use sudo::{
-    contains_sudo_failure, contains_sudo_prompt, get_sudo_password, prompt_sudo_password,
-    SudoPassword, SUDO_FAILURE_PATTERNS, SUDO_PROMPT_PATTERNS,
+    SUDO_FAILURE_PATTERNS, SUDO_PROMPT_PATTERNS, SudoPassword, contains_sudo_failure,
+    contains_sudo_prompt, get_sudo_password, prompt_sudo_password,
 };

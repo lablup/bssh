@@ -52,7 +52,7 @@ mod parser;
 
 pub use error::HostlistError;
 pub use expander::{expand_host_spec, expand_host_specs, expand_hostlist};
-pub use parser::{parse_host_pattern, parse_hostfile, HostPattern};
+pub use parser::{HostPattern, parse_host_pattern, parse_hostfile};
 
 /// Check if a pattern is a hostlist expression (contains numeric range brackets)
 ///

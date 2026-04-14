@@ -18,12 +18,11 @@ use std::path::{Path, PathBuf};
 
 /// Expand tilde (~) in path to home directory.
 pub fn expand_tilde(path: &Path) -> PathBuf {
-    if let Some(path_str) = path.to_str() {
-        if path_str.starts_with("~/") {
-            if let Ok(home) = std::env::var("HOME") {
-                return PathBuf::from(path_str.replacen("~", &home, 1));
-            }
-        }
+    if let Some(path_str) = path.to_str()
+        && path_str.starts_with("~/")
+        && let Ok(home) = std::env::var("HOME")
+    {
+        return PathBuf::from(path_str.replacen("~", &home, 1));
     }
     path.to_path_buf()
 }

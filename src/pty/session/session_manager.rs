@@ -20,11 +20,11 @@ use super::local_escape::{LocalAction, LocalEscapeDetector};
 use super::raw_input::RawInputReader;
 use super::terminal_modes::configure_terminal_modes;
 use crate::pty::{
-    terminal::{TerminalOps, TerminalStateGuard},
     PtyConfig, PtyMessage, PtyState,
+    terminal::{TerminalOps, TerminalStateGuard},
 };
 use anyhow::{Context, Result};
-use russh::{client::Msg, Channel, ChannelMsg};
+use russh::{Channel, ChannelMsg, client::Msg};
 use std::io::{self, Write};
 use tokio::sync::{mpsc, watch};
 use tokio::time::Duration;
@@ -194,15 +194,14 @@ impl PtySession {
                         }
                         signal_hook::consts::SIGWINCH // fallback, won't be reached
                     } => {
-                        if signal == signal_hook::consts::SIGWINCH {
-                            if let Ok((width, height)) = crate::pty::utils::get_terminal_size() {
+                        if signal == signal_hook::consts::SIGWINCH
+                            && let Ok((width, height)) = crate::pty::utils::get_terminal_size() {
                                 // Try to send resize message, but don't block if channel is full
                                 if resize_tx.try_send(PtyMessage::Resize { width, height }).is_err() {
                                     // Channel full or closed, exit gracefully
                                     break;
                                 }
                             }
-                        }
                     }
 
                     // Handle cancellation

@@ -65,11 +65,11 @@ impl SshConfigCache {
 
         // Wait for all file checks to complete
         for task in check_tasks {
-            if let Ok((path, is_stale, _file_exists)) = task.await {
-                if is_stale {
-                    to_remove.push(path);
-                    stale_count += 1;
-                }
+            if let Ok((path, is_stale, _file_exists)) = task.await
+                && is_stale
+            {
+                to_remove.push(path);
+                stale_count += 1;
             }
         }
 

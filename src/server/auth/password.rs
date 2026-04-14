@@ -55,8 +55,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use argon2::{
-    password_hash::{rand_core::OsRng, PasswordHash, PasswordHasher, PasswordVerifier as _},
     Algorithm, Argon2, Params, Version,
+    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier as _, rand_core::OsRng},
 };
 use async_trait::async_trait;
 use russh::keys::ssh_key::PublicKey;
@@ -576,10 +576,12 @@ mod tests {
         let verifier = PasswordVerifier::new(config).await.unwrap();
 
         // Correct password should verify
-        assert!(verifier
-            .verify("testuser", "correct_password")
-            .await
-            .unwrap());
+        assert!(
+            verifier
+                .verify("testuser", "correct_password")
+                .await
+                .unwrap()
+        );
 
         // Incorrect password should not verify
         assert!(!verifier.verify("testuser", "wrong_password").await.unwrap());
@@ -604,10 +606,12 @@ mod tests {
         let verifier = PasswordVerifier::new(config).await.unwrap();
 
         // bcrypt password should verify
-        assert!(verifier
-            .verify("bcryptuser", "bcrypt_password")
-            .await
-            .unwrap());
+        assert!(
+            verifier
+                .verify("bcryptuser", "bcrypt_password")
+                .await
+                .unwrap()
+        );
 
         // Wrong password should not verify
         assert!(!verifier.verify("bcryptuser", "wrong").await.unwrap());

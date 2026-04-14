@@ -226,13 +226,13 @@ pub fn validate_exec_command(command: &str) -> Result<()> {
             }
             '$' if !in_single_quote => {
                 // $ is dangerous in double quotes or unquoted
-                if let Some(next) = command.chars().nth(command.find('$').unwrap() + 1) {
-                    if next == '(' || next == '{' {
-                        anyhow::bail!(
-                            "Match exec command contains potential command or variable substitution. \
+                if let Some(next) = command.chars().nth(command.find('$').unwrap() + 1)
+                    && (next == '(' || next == '{')
+                {
+                    anyhow::bail!(
+                        "Match exec command contains potential command or variable substitution. \
                              This is blocked for security."
-                        );
-                    }
+                    );
                 }
             }
             _ => {}

@@ -13,7 +13,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpListener;
-use tokio::sync::{mpsc, Semaphore};
+use tokio::sync::{Semaphore, mpsc};
 use tokio_util::sync::CancellationToken;
 use tracing::{error, info, warn};
 use uuid::Uuid;
@@ -54,7 +54,7 @@ impl DynamicForwarder {
             _ => {
                 return Err(anyhow::anyhow!(
                     "Invalid forwarding type for DynamicForwarder"
-                ))
+                ));
             }
         };
 

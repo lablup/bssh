@@ -26,7 +26,7 @@ pub mod keychain_macos;
 
 pub use auth::AuthContext;
 pub use client::SshClient;
-pub use config_cache::{CacheConfig, CacheStats, SshConfigCache, GLOBAL_CACHE};
+pub use config_cache::{CacheConfig, CacheStats, GLOBAL_CACHE, SshConfigCache};
 pub use handler::BsshHandler;
 pub use pool::ConnectionPool;
 pub use ssh_config::{SshConfig, SshHostConfig};

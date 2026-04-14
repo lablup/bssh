@@ -92,7 +92,7 @@ impl RawInputReader {
     /// }
     /// ```
     pub fn poll(&self, timeout: Duration) -> io::Result<bool> {
-        use nix::poll::{poll, PollFd, PollFlags, PollTimeout};
+        use nix::poll::{PollFd, PollFlags, PollTimeout, poll};
         use std::os::unix::io::BorrowedFd;
 
         let fd = self.stdin.as_raw_fd();

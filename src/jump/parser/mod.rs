@@ -19,7 +19,7 @@ mod host;
 mod host_parser;
 mod main_parser;
 
-pub use config::{get_max_jump_hosts, ABSOLUTE_MAX_JUMP_HOSTS, DEFAULT_MAX_JUMP_HOSTS};
+pub use config::{ABSOLUTE_MAX_JUMP_HOSTS, DEFAULT_MAX_JUMP_HOSTS, get_max_jump_hosts};
 pub use host::JumpHost;
 pub use main_parser::parse_jump_hosts;
 

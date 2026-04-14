@@ -90,7 +90,8 @@ pub(super) fn parse_security_option(
                     if trimmed.len() > MAX_ALGORITHM_NAME_LENGTH {
                         tracing::warn!(
                             "HostKeyAlgorithm name at line {} exceeds maximum length of {} characters, skipping",
-                            line_number, MAX_ALGORITHM_NAME_LENGTH
+                            line_number,
+                            MAX_ALGORITHM_NAME_LENGTH
                         );
                         continue;
                     }
@@ -162,7 +163,8 @@ pub(super) fn parse_security_option(
                     if trimmed.len() > MAX_ALGORITHM_NAME_LENGTH {
                         tracing::warn!(
                             "KexAlgorithm name at line {} exceeds maximum length of {} characters, skipping",
-                            line_number, MAX_ALGORITHM_NAME_LENGTH
+                            line_number,
+                            MAX_ALGORITHM_NAME_LENGTH
                         );
                         continue;
                     }
@@ -234,7 +236,8 @@ pub(super) fn parse_security_option(
                     if trimmed.len() > MAX_CIPHER_NAME_LENGTH {
                         tracing::warn!(
                             "Cipher name at line {} exceeds maximum length of {} characters, skipping",
-                            line_number, MAX_CIPHER_NAME_LENGTH
+                            line_number,
+                            MAX_CIPHER_NAME_LENGTH
                         );
                         continue;
                     }
@@ -384,7 +387,8 @@ pub(super) fn parse_security_option(
                     if trimmed.len() > MAX_ALGORITHM_NAME_LENGTH {
                         tracing::warn!(
                             "Algorithm name at line {} exceeds maximum length of {} characters, skipping",
-                            line_number, MAX_ALGORITHM_NAME_LENGTH
+                            line_number,
+                            MAX_ALGORITHM_NAME_LENGTH
                         );
                         continue;
                     }
@@ -416,7 +420,9 @@ pub(super) fn parse_security_option(
             if truncated {
                 tracing::warn!(
                     "CASignatureAlgorithms at line {} contains {} algorithms, truncated to first {}",
-                    line_number, total_count, MAX_ALGORITHMS
+                    line_number,
+                    total_count,
+                    MAX_ALGORITHMS
                 );
             }
 
@@ -499,7 +505,8 @@ pub(super) fn parse_security_option(
             }
             tracing::debug!(
                 "Setting HostKeyAlias to '{}' at line {} (security-sensitive: affects host key verification)",
-                alias, line_number
+                alias,
+                line_number
             );
             host.host_key_alias = Some(alias.clone());
         }

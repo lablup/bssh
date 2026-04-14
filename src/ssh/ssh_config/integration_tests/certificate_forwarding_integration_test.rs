@@ -70,12 +70,16 @@ Host web.prod.example.com
         // Test resolution for web.prod.example.com (should get certs from included file)
         let resolved = config.find_host_config("web.prod.example.com");
         assert_eq!(resolved.certificate_files.len(), 2);
-        assert!(resolved.certificate_files[0]
-            .to_string_lossy()
-            .contains("prod-user-cert.pub"));
-        assert!(resolved.certificate_files[1]
-            .to_string_lossy()
-            .contains("prod-host-cert.pub"));
+        assert!(
+            resolved.certificate_files[0]
+                .to_string_lossy()
+                .contains("prod-user-cert.pub")
+        );
+        assert!(
+            resolved.certificate_files[1]
+                .to_string_lossy()
+                .contains("prod-host-cert.pub")
+        );
         assert_eq!(resolved.ca_signature_algorithms.len(), 2);
         assert_eq!(resolved.user, Some("webuser".to_string()));
         assert_eq!(resolved.port, Some(22));
@@ -155,9 +159,11 @@ Host web.prod.example.com
 
         // Match block should have certificate options
         assert_eq!(config.hosts[0].certificate_files.len(), 1);
-        assert!(config.hosts[0].certificate_files[0]
-            .to_string_lossy()
-            .contains("admin-cert.pub"));
+        assert!(
+            config.hosts[0].certificate_files[0]
+                .to_string_lossy()
+                .contains("admin-cert.pub")
+        );
         assert_eq!(config.hosts[0].ca_signature_algorithms.len(), 1);
         assert_eq!(config.hosts[0].hostbased_authentication, Some(true));
     }
@@ -325,9 +331,11 @@ Host web1.prod.example.com
         // - Permit remote open from Match block
         // - User from specific Host block
         assert_eq!(resolved.certificate_files.len(), 1);
-        assert!(resolved.certificate_files[0]
-            .to_string_lossy()
-            .contains("default-cert.pub"));
+        assert!(
+            resolved.certificate_files[0]
+                .to_string_lossy()
+                .contains("default-cert.pub")
+        );
         assert_eq!(resolved.ca_signature_algorithms.len(), 2);
         assert_eq!(resolved.hostbased_authentication, Some(true)); // Overridden
         assert_eq!(resolved.gateway_ports, Some("clientspecified".to_string()));

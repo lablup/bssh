@@ -44,6 +44,6 @@ pub use bssh::{Cli, Commands};
 
 // Re-export pdsh compatibility utilities
 pub use pdsh::{
-    has_pdsh_compat_flag, is_pdsh_compat_mode, remove_pdsh_compat_flag, PdshCli, QueryResult,
-    PDSH_COMPAT_ENV_VAR,
+    PDSH_COMPAT_ENV_VAR, PdshCli, QueryResult, has_pdsh_compat_flag, is_pdsh_compat_mode,
+    remove_pdsh_compat_flag,
 };

@@ -21,16 +21,16 @@
 //! - Port forwarding channels
 
 use bytes::Bytes;
-use russh::client::Msg;
 use russh::Channel;
+use russh::client::Msg;
 use std::io;
 use std::net::SocketAddr;
-use tokio::sync::mpsc::{channel, Receiver, Sender};
+use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tokio::task::JoinHandle;
 
-use super::connection::Client;
 use super::ToSocketAddrsWithHostname;
-use crate::security::{contains_sudo_failure, contains_sudo_prompt, SudoPassword};
+use super::connection::Client;
+use crate::security::{SudoPassword, contains_sudo_failure, contains_sudo_prompt};
 
 // Buffer size constants for SSH operations
 /// SSH I/O buffer size constants - optimized for different operation types

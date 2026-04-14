@@ -789,22 +789,20 @@ impl Session {
                 // data from it.
                 self.common.alive_timeouts = 0;
             }
-            if self.common.received_data || sent_keepalive {
-                if let (futures::future::Either::Right(ref mut sleep), Some(d)) = (
+            if (self.common.received_data || sent_keepalive)
+                && let (futures::future::Either::Right(ref mut sleep), Some(d)) = (
                     keepalive_timer.as_mut().as_pin_mut(),
                     self.common.config.keepalive_interval,
                 ) {
                     sleep.as_mut().reset(tokio::time::Instant::now() + d);
                 }
-            }
-            if !sent_keepalive {
-                if let (futures::future::Either::Right(ref mut sleep), Some(d)) = (
+            if !sent_keepalive
+                && let (futures::future::Either::Right(ref mut sleep), Some(d)) = (
                     inactivity_timer.as_mut().as_pin_mut(),
                     self.common.config.inactivity_timeout,
                 ) {
                     sleep.as_mut().reset(tokio::time::Instant::now() + d);
                 }
-            }
         }
         debug!("disconnected");
         // Shutdown
@@ -833,38 +831,35 @@ impl Session {
     }
 
     pub fn writable_packet_size(&self, channel: &ChannelId) -> u32 {
-        if let Some(ref enc) = self.common.encrypted {
-            if let Some(channel) = enc.channels.get(channel) {
+        if let Some(ref enc) = self.common.encrypted
+            && let Some(channel) = enc.channels.get(channel) {
                 return channel
                     .sender_window_size
                     .min(channel.sender_maximum_packet_size);
             }
-        }
         0
     }
 
     pub fn window_size(&self, channel: &ChannelId) -> u32 {
-        if let Some(ref enc) = self.common.encrypted {
-            if let Some(channel) = enc.channels.get(channel) {
+        if let Some(ref enc) = self.common.encrypted
+            && let Some(channel) = enc.channels.get(channel) {
                 return channel.sender_window_size;
             }
-        }
         0
     }
 
     pub fn max_packet_size(&self, channel: &ChannelId) -> u32 {
-        if let Some(ref enc) = self.common.encrypted {
-            if let Some(channel) = enc.channels.get(channel) {
+        if let Some(ref enc) = self.common.encrypted
+            && let Some(channel) = enc.channels.get(channel) {
                 return channel.sender_maximum_packet_size;
             }
-        }
         0
     }
 
     /// Flush the session, i.e. encrypt the pending buffer.
     pub fn flush(&mut self) -> Result<(), Error> {
-        if let Some(ref mut enc) = self.common.encrypted {
-            if enc.flush(
+        if let Some(ref mut enc) = self.common.encrypted
+            && enc.flush(
                 &self.common.config.as_ref().limits,
                 &mut self.common.packet_writer,
             )? && self.kex == SessionKexState::Idle
@@ -874,7 +869,6 @@ impl Session {
                     self.begin_rekey()?;
                 }
             }
-        }
         Ok(())
     }
 
@@ -949,12 +943,11 @@ impl Session {
     /// cancelling). Always call this function if the request was
     /// successful (it checks whether the client expects an answer).
     pub fn request_success(&mut self) {
-        if self.common.wants_reply {
-            if let Some(ref mut enc) = self.common.encrypted {
+        if self.common.wants_reply
+            && let Some(ref mut enc) = self.common.encrypted {
                 self.common.wants_reply = false;
                 push_packet!(enc.write, enc.write.push(msg::REQUEST_SUCCESS))
             }
-        }
     }
 
     /// Send a "failure" reply to a global request.
@@ -969,8 +962,8 @@ impl Session {
     /// function if the request was successful (it checks whether the
     /// client expects an answer).
     pub fn channel_success(&mut self, channel: ChannelId) -> Result<(), crate::Error> {
-        if let Some(ref mut enc) = self.common.encrypted {
-            if let Some(channel) = enc.channels.get_mut(&channel) {
+        if let Some(ref mut enc) = self.common.encrypted
+            && let Some(channel) = enc.channels.get_mut(&channel) {
                 assert!(channel.confirmed);
                 if channel.wants_reply {
                     channel.wants_reply = false;
@@ -981,14 +974,13 @@ impl Session {
                     })
                 }
             }
-        }
         Ok(())
     }
 
     /// Send a "failure" reply to a global request.
     pub fn channel_failure(&mut self, channel: ChannelId) -> Result<(), crate::Error> {
-        if let Some(ref mut enc) = self.common.encrypted {
-            if let Some(channel) = enc.channels.get_mut(&channel) {
+        if let Some(ref mut enc) = self.common.encrypted
+            && let Some(channel) = enc.channels.get_mut(&channel) {
                 assert!(channel.confirmed);
                 if channel.wants_reply {
                     channel.wants_reply = false;
@@ -998,7 +990,6 @@ impl Session {
                     })
                 }
             }
-        }
         Ok(())
     }
 
@@ -1081,8 +1072,8 @@ impl Session {
         channel: ChannelId,
         client_can_do: bool,
     ) -> Result<(), Error> {
-        if let Some(ref mut enc) = self.common.encrypted {
-            if let Some(channel) = enc.channels.get(&channel) {
+        if let Some(ref mut enc) = self.common.encrypted
+            && let Some(channel) = enc.channels.get(&channel) {
                 assert!(channel.confirmed);
                 push_packet!(enc.write, {
                     msg::CHANNEL_REQUEST.encode(&mut enc.write)?;
@@ -1093,7 +1084,6 @@ impl Session {
                     (client_can_do as u8).encode(&mut enc.write)?;
                 })
             }
-        }
         Ok(())
     }
 
@@ -1133,8 +1123,8 @@ impl Session {
         channel: ChannelId,
         exit_status: u32,
     ) -> Result<(), Error> {
-        if let Some(ref mut enc) = self.common.encrypted {
-            if let Some(channel) = enc.channels.get(&channel) {
+        if let Some(ref mut enc) = self.common.encrypted
+            && let Some(channel) = enc.channels.get(&channel) {
                 assert!(channel.confirmed);
                 push_packet!(enc.write, {
                     msg::CHANNEL_REQUEST.encode(&mut enc.write)?;
@@ -1145,7 +1135,6 @@ impl Session {
                     exit_status.encode(&mut enc.write)?;
                 })
             }
-        }
         Ok(())
     }
 
@@ -1158,8 +1147,8 @@ impl Session {
         error_message: &str,
         language_tag: &str,
     ) -> Result<(), Error> {
-        if let Some(ref mut enc) = self.common.encrypted {
-            if let Some(channel) = enc.channels.get(&channel) {
+        if let Some(ref mut enc) = self.common.encrypted
+            && let Some(channel) = enc.channels.get(&channel) {
                 assert!(channel.confirmed);
                 push_packet!(enc.write, {
                     msg::CHANNEL_REQUEST.encode(&mut enc.write)?;
@@ -1173,7 +1162,6 @@ impl Session {
                     language_tag.encode(&mut enc.write)?;
                 })
             }
-        }
         Ok(())
     }
 

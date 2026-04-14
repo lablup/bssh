@@ -18,7 +18,7 @@ pub mod logging;
 pub mod output;
 pub mod sanitize;
 
-pub use buffer_pool::{global_buffer_pool, BufferPool, PooledBuffer};
+pub use buffer_pool::{BufferPool, PooledBuffer, global_buffer_pool};
 pub use fs::{format_bytes, resolve_source_files, walk_directory};
 pub use logging::{disable_fmt_logging, enable_fmt_logging, get_log_buffer, init_logging};
 pub use output::save_outputs_to_files;

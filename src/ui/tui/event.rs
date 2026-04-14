@@ -22,10 +22,10 @@ use std::time::Duration;
 ///
 /// Returns Some(KeyEvent) if a key was pressed, None if timeout occurred
 pub fn poll_event(timeout: Duration) -> anyhow::Result<Option<KeyEvent>> {
-    if event::poll(timeout)? {
-        if let Event::Key(key) = event::read()? {
-            return Ok(Some(key));
-        }
+    if event::poll(timeout)?
+        && let Event::Key(key) = event::read()?
+    {
+        return Ok(Some(key));
     }
     Ok(None)
 }
