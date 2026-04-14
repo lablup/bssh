@@ -274,6 +274,7 @@ impl SshClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::EnvGuard;
     use serial_test::serial;
     use tempfile::TempDir;
 
@@ -310,10 +311,6 @@ mod tests {
     async fn test_determine_auth_method_with_agent() {
         use std::os::unix::net::UnixListener;
 
-        // Save original environment
-        let original_ssh_auth_sock = std::env::var("SSH_AUTH_SOCK").ok();
-        let original_home = std::env::var("HOME").ok();
-
         // Create a temporary directory for the socket and SSH keys
         let temp_dir = TempDir::new().unwrap();
         let socket_path = temp_dir.path().join("ssh-agent.sock");
@@ -329,8 +326,9 @@ mod tests {
             "-----BEGIN PRIVATE KEY-----\nfake key content\n-----END PRIVATE KEY-----";
         std::fs::write(ssh_dir.join("id_rsa"), key_content).unwrap();
 
-        std::env::set_var("SSH_AUTH_SOCK", socket_path.to_str().unwrap());
-        std::env::set_var("HOME", temp_dir.path());
+        // Guards restore prior values on drop.
+        let _sock = EnvGuard::set("SSH_AUTH_SOCK", socket_path.to_str().unwrap());
+        let _home = EnvGuard::set("HOME", temp_dir.path());
 
         let client = SshClient::new("test.com".to_string(), 22, "user".to_string());
         let auth = client
@@ -343,16 +341,6 @@ mod tests {
             )
             .await
             .unwrap();
-
-        // Restore original environment
-        if let Some(sock) = original_ssh_auth_sock {
-            std::env::set_var("SSH_AUTH_SOCK", sock);
-        } else {
-            std::env::remove_var("SSH_AUTH_SOCK");
-        }
-        if let Some(home) = original_home {
-            std::env::set_var("HOME", home);
-        }
 
         // With the agent identity check, if the agent has no identities (our fake socket),
         // it will fall back to key file authentication. Accept either outcome.
@@ -373,10 +361,6 @@ mod tests {
     async fn test_determine_auth_method_with_agent() {
         use std::os::unix::net::UnixListener;
 
-        // Save original environment
-        let original_ssh_auth_sock = std::env::var("SSH_AUTH_SOCK").ok();
-        let original_home = std::env::var("HOME").ok();
-
         // Create a temporary directory for the socket and SSH keys
         let temp_dir = TempDir::new().unwrap();
         let socket_path = temp_dir.path().join("ssh-agent.sock");
@@ -392,24 +376,15 @@ mod tests {
             "-----BEGIN PRIVATE KEY-----\nfake key content\n-----END PRIVATE KEY-----";
         std::fs::write(ssh_dir.join("id_rsa"), key_content).unwrap();
 
-        std::env::set_var("SSH_AUTH_SOCK", socket_path.to_str().unwrap());
-        std::env::set_var("HOME", temp_dir.path());
+        // Guards restore prior values on drop.
+        let _sock = EnvGuard::set("SSH_AUTH_SOCK", socket_path.to_str().unwrap());
+        let _home = EnvGuard::set("HOME", temp_dir.path());
 
         let client = SshClient::new("test.com".to_string(), 22, "user".to_string());
         let auth = client
             .determine_auth_method(None, true, false)
             .await
             .unwrap();
-
-        // Restore original environment
-        if let Some(sock) = original_ssh_auth_sock {
-            std::env::set_var("SSH_AUTH_SOCK", sock);
-        } else {
-            std::env::remove_var("SSH_AUTH_SOCK");
-        }
-        if let Some(home) = original_home {
-            std::env::set_var("HOME", home);
-        }
 
         // With the agent identity check, if the agent has no identities (our fake socket),
         // it will fall back to key file authentication. Accept either outcome.
@@ -436,10 +411,6 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn test_determine_auth_method_fallback_to_default() {
-        // Save original environment variables
-        let original_home = std::env::var("HOME").ok();
-        let original_ssh_auth_sock = std::env::var("SSH_AUTH_SOCK").ok();
-
         // Create a fake home directory with default key
         let temp_dir = TempDir::new().unwrap();
         let ssh_dir = temp_dir.path().join(".ssh");
@@ -447,9 +418,9 @@ mod tests {
         let default_key = ssh_dir.join("id_rsa");
         std::fs::write(&default_key, "fake key").unwrap();
 
-        // Set test environment
-        std::env::set_var("HOME", temp_dir.path().to_str().unwrap());
-        std::env::remove_var("SSH_AUTH_SOCK");
+        // Guards restore prior values on drop.
+        let _home = EnvGuard::set("HOME", temp_dir.path().to_str().unwrap());
+        let _sock = EnvGuard::remove("SSH_AUTH_SOCK");
 
         let client = SshClient::new("test.com".to_string(), 22, "user".to_string());
         let auth = client
@@ -462,16 +433,6 @@ mod tests {
             )
             .await
             .unwrap();
-
-        // Restore original environment variables
-        if let Some(home) = original_home {
-            std::env::set_var("HOME", home);
-        } else {
-            std::env::remove_var("HOME");
-        }
-        if let Some(sock) = original_ssh_auth_sock {
-            std::env::set_var("SSH_AUTH_SOCK", sock);
-        }
 
         match auth {
             AuthMethod::PrivateKeyFile { key_file_path, .. } => {

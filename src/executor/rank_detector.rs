@@ -101,6 +101,7 @@ impl RankDetector {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::EnvGuard;
     use serial_test::serial;
 
     #[test]
@@ -113,8 +114,8 @@ mod tests {
     #[serial]
     fn test_fallback_to_first_node() {
         // Clear Backend.AI env vars to test fallback behavior
-        env::remove_var("BACKENDAI_CLUSTER_ROLE");
-        env::remove_var("BACKENDAI_CLUSTER_HOST");
+        let _role = EnvGuard::remove("BACKENDAI_CLUSTER_ROLE");
+        let _host = EnvGuard::remove("BACKENDAI_CLUSTER_HOST");
 
         let nodes = vec![
             Node::new("host1".to_string(), 22, "user".to_string()),
@@ -129,36 +130,27 @@ mod tests {
     #[test]
     #[serial]
     fn test_backendai_role_detection() {
-        // Set environment variable
-        env::set_var("BACKENDAI_CLUSTER_ROLE", "main");
+        // Set environment variable; guard restores on drop.
+        let _role = EnvGuard::set("BACKENDAI_CLUSTER_ROLE", "main");
 
         assert!(RankDetector::is_backendai_main());
-
-        // Cleanup
-        env::remove_var("BACKENDAI_CLUSTER_ROLE");
     }
 
     #[test]
     #[serial]
     fn test_backendai_role_case_insensitive() {
-        env::set_var("BACKENDAI_CLUSTER_ROLE", "MAIN");
+        let _role_upper = EnvGuard::set("BACKENDAI_CLUSTER_ROLE", "MAIN");
         assert!(RankDetector::is_backendai_main());
 
-        env::set_var("BACKENDAI_CLUSTER_ROLE", "Main");
+        let _role_mixed = EnvGuard::set("BACKENDAI_CLUSTER_ROLE", "Main");
         assert!(RankDetector::is_backendai_main());
-
-        // Cleanup
-        env::remove_var("BACKENDAI_CLUSTER_ROLE");
     }
 
     #[test]
     #[serial]
     fn test_backendai_role_non_main() {
-        env::set_var("BACKENDAI_CLUSTER_ROLE", "sub");
+        let _role = EnvGuard::set("BACKENDAI_CLUSTER_ROLE", "sub");
         assert!(!RankDetector::is_backendai_main());
-
-        // Cleanup
-        env::remove_var("BACKENDAI_CLUSTER_ROLE");
     }
 
     #[test]
@@ -170,16 +162,12 @@ mod tests {
             Node::new("host3".to_string(), 22, "user".to_string()),
         ];
 
-        // Set Backend.AI environment
-        env::set_var("BACKENDAI_CLUSTER_ROLE", "main");
-        env::set_var("BACKENDAI_CLUSTER_HOST", "host2");
+        // Set Backend.AI environment; guards restore on drop.
+        let _role = EnvGuard::set("BACKENDAI_CLUSTER_ROLE", "main");
+        let _host = EnvGuard::set("BACKENDAI_CLUSTER_HOST", "host2");
 
         // Should find host2 at index 1
         assert_eq!(RankDetector::identify_main_rank(&nodes), Some(1));
-
-        // Cleanup
-        env::remove_var("BACKENDAI_CLUSTER_ROLE");
-        env::remove_var("BACKENDAI_CLUSTER_HOST");
     }
 
     #[test]
@@ -190,16 +178,12 @@ mod tests {
             Node::new("host2".to_string(), 22, "user".to_string()),
         ];
 
-        // Set Backend.AI environment with non-existent host
-        env::set_var("BACKENDAI_CLUSTER_ROLE", "main");
-        env::set_var("BACKENDAI_CLUSTER_HOST", "nonexistent");
+        // Set Backend.AI environment with non-existent host; guards restore on drop.
+        let _role = EnvGuard::set("BACKENDAI_CLUSTER_ROLE", "main");
+        let _host = EnvGuard::set("BACKENDAI_CLUSTER_HOST", "nonexistent");
 
         // Should fallback to first node
         assert_eq!(RankDetector::identify_main_rank(&nodes), Some(0));
-
-        // Cleanup
-        env::remove_var("BACKENDAI_CLUSTER_ROLE");
-        env::remove_var("BACKENDAI_CLUSTER_HOST");
     }
 
     #[test]

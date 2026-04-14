@@ -20,6 +20,8 @@ use bssh::ssh::known_hosts::StrictHostKeyChecking;
 use bssh::ssh::tokio_client::SshConnectionConfig;
 use std::path::PathBuf;
 
+mod common;
+
 #[tokio::test]
 async fn test_interactive_command_creation() {
     let cmd = InteractiveCommand {
@@ -196,7 +198,9 @@ mod terminal_tests {
 
 #[cfg(test)]
 mod auth_method_tests {
+    use crate::common::EnvGuard;
     use bssh::ssh::tokio_client::AuthMethod;
+    use serial_test::serial;
     use std::env;
 
     #[test]
@@ -220,23 +224,9 @@ mod auth_method_tests {
     }
 
     #[test]
+    #[serial]
     fn test_ssh_agent_detection() {
-        // Save original value
-        let original = env::var("SSH_AUTH_SOCK").ok();
-
-        // Test with SSH_AUTH_SOCK set
-        unsafe {
-            env::set_var("SSH_AUTH_SOCK", "/tmp/ssh-agent.sock");
-        }
+        let _guard = EnvGuard::set("SSH_AUTH_SOCK", "/tmp/ssh-agent.sock");
         assert!(env::var("SSH_AUTH_SOCK").is_ok());
-
-        // Restore original value
-        unsafe {
-            if let Some(val) = original {
-                env::set_var("SSH_AUTH_SOCK", val);
-            } else {
-                env::remove_var("SSH_AUTH_SOCK");
-            }
-        }
     }
 }

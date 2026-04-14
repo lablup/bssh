@@ -744,6 +744,46 @@ User Input → CLI Parser → Mode Detection → Node Resolution
 - **Timeout handling**: Configurable per-connection and per-command
 - **Signal handling**: Clean shutdown on Ctrl+C with two-stage confirmation
 
+### Test Environment-Variable Mutation Pattern (`EnvGuard`)
+
+Several test suites must temporarily set or remove process-wide environment
+variables (e.g. `BACKENDAI_CLUSTER_HOSTS`, `HOME`, `SSH_AUTH_SOCK`). Under
+Rust 2024 edition, `std::env::set_var` and `std::env::remove_var` are marked
+`unsafe` because concurrent mutation of the environment is undefined behaviour
+at the libc level on glibc, musl, and macOS. `EnvGuard` centralises all such
+mutations in `src/test_helpers/env_guard.rs`.
+
+**Soundness contract**: every test that constructs an `EnvGuard` MUST be
+annotated with `#[serial_test::serial]`. Every other test in the same crate
+binary that reads or mutates the same variable MUST also carry `#[serial]` (or
+a matching `#[serial(key)]` group). Note that `#[serial]` only serializes
+against other `#[serial]` / `#[parallel]` tests — unannotated tests may still
+run concurrently with serial ones and would race on environment reads. This is
+not an `EnvGuard` limitation; it is an inherent constraint of the libc
+environment-variable API.
+
+```rust
+use serial_test::serial;
+use crate::test_helpers::EnvGuard;
+
+#[test]
+#[serial]
+fn my_test() {
+    let _host = EnvGuard::set("BACKENDAI_CLUSTER_HOSTS", "node1,node2");
+    // Variable is automatically restored when `_host` drops at end of scope.
+}
+```
+
+**Integration tests** access the same struct via a `#[path]`-based re-export
+in `tests/common/mod.rs`, which avoids making `EnvGuard` part of the public
+`bssh` crate API while keeping a single source of truth. When adding a new
+integration-test binary that needs `EnvGuard`, add `mod common;` at the top of
+that file and use `common::EnvGuard`.
+
+Use `#[serial(key)]` (a named group) when two sets of tests touch different,
+non-overlapping variables and can therefore run concurrently with each other
+but not with themselves; omit the key (plain `#[serial]`) when in doubt.
+
 ## Security Model
 
 ### Authentication

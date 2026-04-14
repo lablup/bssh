@@ -449,6 +449,7 @@ pub(super) async fn authenticate_connection(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_helpers::EnvGuard;
     use std::env;
     use tempfile::TempDir;
 
@@ -487,40 +488,27 @@ dGVzdHMgLSBub3QgcmVhbAECAwQ=
     #[tokio::test]
     #[serial_test::serial]
     async fn test_agent_available_false_when_no_socket() {
-        // Save and clear SSH_AUTH_SOCK
-        let original = env::var("SSH_AUTH_SOCK").ok();
-        env::remove_var("SSH_AUTH_SOCK");
+        let _sock = EnvGuard::remove("SSH_AUTH_SOCK");
 
         // Verify SSH_AUTH_SOCK is not set
         assert!(env::var("SSH_AUTH_SOCK").is_err());
 
         // The agent_available logic in determine_auth_method checks this
-        let agent_available = if env::var("SSH_AUTH_SOCK").is_ok() {
-            true // Would call agent_has_identities() in real code
-        } else {
-            false
-        };
+        let agent_available = env::var("SSH_AUTH_SOCK").is_ok();
 
         assert!(
             !agent_available,
             "agent_available should be false when SSH_AUTH_SOCK is not set"
         );
-
-        // Restore SSH_AUTH_SOCK
-        if let Some(val) = original {
-            env::set_var("SSH_AUTH_SOCK", val);
-        }
     }
 
     /// Test: When SSH_AUTH_SOCK points to invalid path, agent_has_identities returns false
     #[tokio::test]
     #[cfg(not(target_os = "windows"))]
+    #[serial_test::serial]
     async fn test_agent_has_identities_invalid_socket() {
-        // Save original value
-        let original = env::var("SSH_AUTH_SOCK").ok();
-
-        // Set to a non-existent path
-        env::set_var("SSH_AUTH_SOCK", "/tmp/nonexistent_ssh_agent_socket_12345");
+        // Set to a non-existent path; guard restores prior value on drop.
+        let _sock = EnvGuard::set("SSH_AUTH_SOCK", "/tmp/nonexistent_ssh_agent_socket_12345");
 
         // agent_has_identities should return false (connection will fail)
         let result = agent_has_identities().await;
@@ -528,20 +516,14 @@ dGVzdHMgLSBub3QgcmVhbAECAwQ=
             !result,
             "agent_has_identities should return false for invalid socket"
         );
-
-        // Restore original value
-        match original {
-            Some(val) => env::set_var("SSH_AUTH_SOCK", val),
-            None => env::remove_var("SSH_AUTH_SOCK"),
-        }
     }
 
     /// Test: determine_auth_method falls back to key file when agent is unavailable
     #[tokio::test]
+    #[serial_test::serial]
     async fn test_determine_auth_method_fallback_to_key_file() {
-        // Save and clear SSH_AUTH_SOCK to ensure agent is "unavailable"
-        let original = env::var("SSH_AUTH_SOCK").ok();
-        env::remove_var("SSH_AUTH_SOCK");
+        // Clear SSH_AUTH_SOCK to ensure agent is "unavailable"; guard restores on drop.
+        let _sock = EnvGuard::remove("SSH_AUTH_SOCK");
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let key_path = create_test_ssh_key(&temp_dir, "id_test");
@@ -572,11 +554,6 @@ dGVzdHMgLSBub3QgcmVhbAECAwQ=
             other => {
                 panic!("Unexpected auth method: {:?}", other);
             }
-        }
-
-        // Restore SSH_AUTH_SOCK
-        if let Some(val) = original {
-            env::set_var("SSH_AUTH_SOCK", val);
         }
     }
 
@@ -633,10 +610,10 @@ dGVzdHMgLSBub3QgcmVhbAECAwQ=
 
     /// Test: determine_auth_method falls back to default keys when no key_path provided
     #[tokio::test]
+    #[serial_test::serial]
     async fn test_determine_auth_method_tries_default_keys() {
-        // Save and clear SSH_AUTH_SOCK
-        let original_sock = env::var("SSH_AUTH_SOCK").ok();
-        env::remove_var("SSH_AUTH_SOCK");
+        // Clear SSH_AUTH_SOCK; guard restores on drop.
+        let _sock = EnvGuard::remove("SSH_AUTH_SOCK");
 
         // Create a temporary HOME directory with an SSH key
         let temp_home = TempDir::new().expect("Failed to create temp home");
@@ -653,9 +630,8 @@ dGVzdHMgLSBub3QgcmVhbAECAwQ=
 -----END OPENSSH PRIVATE KEY-----"#;
         std::fs::write(ssh_dir.join("id_ed25519"), key_content).expect("Failed to write key");
 
-        // Save and set HOME
-        let original_home = env::var("HOME").ok();
-        env::set_var("HOME", temp_home.path());
+        // Set HOME; guard restores on drop.
+        let _home = EnvGuard::set("HOME", temp_home.path());
 
         let jump_host = create_test_jump_host();
         let auth_mutex = Mutex::new(());
@@ -688,14 +664,6 @@ dGVzdHMgLSBub3QgcmVhbAECAwQ=
                 panic!("Expected PrivateKeyFile, got {:?}", other);
             }
         }
-
-        // Restore environment
-        if let Some(val) = original_sock {
-            env::set_var("SSH_AUTH_SOCK", val);
-        }
-        if let Some(val) = original_home {
-            env::set_var("HOME", val);
-        }
     }
 
     /// Test: determine_auth_method fails when no authentication method is available
@@ -703,13 +671,10 @@ dGVzdHMgLSBub3QgcmVhbAECAwQ=
     #[tokio::test]
     #[serial_test::serial]
     async fn test_determine_auth_method_fails_when_no_method_available() {
-        // Save original environment values
-        let original_sock = env::var("SSH_AUTH_SOCK").ok();
-        let original_home = env::var("HOME").ok();
-
-        // Set SSH_AUTH_SOCK to an invalid path to ensure agent is "unavailable"
-        // Using remove_var alone isn't reliable in parallel test execution
-        env::set_var(
+        // Set SSH_AUTH_SOCK to an invalid path to ensure agent is "unavailable";
+        // using remove_var alone isn't reliable in parallel test execution.
+        // Guards restore prior values on drop.
+        let _sock = EnvGuard::set(
             "SSH_AUTH_SOCK",
             "/nonexistent/path/to/agent/socket/test_12345",
         );
@@ -720,7 +685,7 @@ dGVzdHMgLSBub3QgcmVhbAECAwQ=
         std::fs::create_dir_all(&ssh_dir).expect("Failed to create .ssh dir");
         // Don't create any keys - the .ssh dir is empty
 
-        env::set_var("HOME", temp_home.path());
+        let _home = EnvGuard::set("HOME", temp_home.path());
 
         let jump_host = create_test_jump_host();
         let auth_mutex = Mutex::new(());
@@ -734,15 +699,6 @@ dGVzdHMgLSBub3QgcmVhbAECAwQ=
             &auth_mutex,
         )
         .await;
-
-        // Restore environment BEFORE assertions to ensure cleanup happens
-        match original_sock {
-            Some(val) => env::set_var("SSH_AUTH_SOCK", val),
-            None => env::remove_var("SSH_AUTH_SOCK"),
-        }
-        if let Some(val) = original_home {
-            env::set_var("HOME", val);
-        }
 
         // Now check the result
         // Note: Due to race conditions with parallel tests and environment variables,
@@ -814,10 +770,10 @@ dGVzdHMgLSBub3QgcmVhbAECAwQ=
 
     /// Test: Jump host's own ssh_key takes priority over cluster key_path
     #[tokio::test]
+    #[serial_test::serial]
     async fn test_jump_host_ssh_key_priority() {
-        // Save and clear SSH_AUTH_SOCK
-        let original_sock = env::var("SSH_AUTH_SOCK").ok();
-        env::remove_var("SSH_AUTH_SOCK");
+        // Clear SSH_AUTH_SOCK; guard restores on drop.
+        let _sock = EnvGuard::remove("SSH_AUTH_SOCK");
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
 
@@ -868,19 +824,14 @@ dGVzdHMgLSBub3QgcmVhbAECAwQ=
                 panic!("Expected PrivateKeyFile, got {:?}", other);
             }
         }
-
-        // Restore SSH_AUTH_SOCK
-        if let Some(val) = original_sock {
-            env::set_var("SSH_AUTH_SOCK", val);
-        }
     }
 
     /// Test: Falls back to cluster key when jump host has no ssh_key
     #[tokio::test]
+    #[serial_test::serial]
     async fn test_fallback_to_cluster_key() {
-        // Save and clear SSH_AUTH_SOCK
-        let original_sock = env::var("SSH_AUTH_SOCK").ok();
-        env::remove_var("SSH_AUTH_SOCK");
+        // Clear SSH_AUTH_SOCK; guard restores on drop.
+        let _sock = EnvGuard::remove("SSH_AUTH_SOCK");
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let cluster_key_path = create_test_ssh_key(&temp_dir, "cluster_key");
@@ -918,11 +869,6 @@ dGVzdHMgLSBub3QgcmVhbAECAwQ=
             other => {
                 panic!("Expected PrivateKeyFile, got {:?}", other);
             }
-        }
-
-        // Restore SSH_AUTH_SOCK
-        if let Some(val) = original_sock {
-            env::set_var("SSH_AUTH_SOCK", val);
         }
     }
 }

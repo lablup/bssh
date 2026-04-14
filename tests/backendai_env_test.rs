@@ -12,29 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use bssh::config::Config;
-use once_cell::sync::Lazy;
-use std::env;
-use tokio::sync::Mutex;
+mod common;
 
-// Global mutex to serialize tests that modify environment variables
-static ENV_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+use bssh::config::Config;
+use common::EnvGuard;
+use serial_test::serial;
 
 #[tokio::test]
+#[serial]
 async fn test_backendai_env_auto_detection() {
-    let _guard = ENV_MUTEX.lock().await;
-
-    // Save original env vars
-    let orig_hosts = env::var("BACKENDAI_CLUSTER_HOSTS").ok();
-    let orig_host = env::var("BACKENDAI_CLUSTER_HOST").ok();
-    let orig_role = env::var("BACKENDAI_CLUSTER_ROLE").ok();
-
-    // Set Backend.AI environment variables
-    unsafe {
-        env::set_var("BACKENDAI_CLUSTER_HOSTS", "node1.ai,node2.ai,node3.ai");
-        env::set_var("BACKENDAI_CLUSTER_HOST", "node1.ai");
-        env::set_var("BACKENDAI_CLUSTER_ROLE", "main");
-    }
+    // Guards restore prior values on drop.
+    let _hosts = EnvGuard::set("BACKENDAI_CLUSTER_HOSTS", "node1.ai,node2.ai,node3.ai");
+    let _host = EnvGuard::set("BACKENDAI_CLUSTER_HOST", "node1.ai");
+    let _role = EnvGuard::set("BACKENDAI_CLUSTER_ROLE", "main");
 
     // Create a temporary directory for the test
     let temp_dir = tempfile::tempdir().unwrap();
@@ -79,45 +69,16 @@ async fn test_backendai_env_auto_detection() {
         Some("/home/config/ssh/id_cluster".to_string()),
         "get_ssh_key should return Backend.AI cluster key path"
     );
-
-    // Restore original env vars
-    unsafe {
-        if let Some(val) = orig_hosts {
-            env::set_var("BACKENDAI_CLUSTER_HOSTS", val);
-        } else {
-            env::remove_var("BACKENDAI_CLUSTER_HOSTS");
-        }
-
-        if let Some(val) = orig_host {
-            env::set_var("BACKENDAI_CLUSTER_HOST", val);
-        } else {
-            env::remove_var("BACKENDAI_CLUSTER_HOST");
-        }
-
-        if let Some(val) = orig_role {
-            env::set_var("BACKENDAI_CLUSTER_ROLE", val);
-        } else {
-            env::remove_var("BACKENDAI_CLUSTER_ROLE");
-        }
-    }
 }
 
 #[tokio::test]
+#[serial]
 async fn test_backendai_env_with_single_host() {
-    let _guard = ENV_MUTEX.lock().await;
-
-    // Save original env vars
-    let orig_hosts = env::var("BACKENDAI_CLUSTER_HOSTS").ok();
-    let orig_host = env::var("BACKENDAI_CLUSTER_HOST").ok();
-    let orig_role = env::var("BACKENDAI_CLUSTER_ROLE").ok();
-
-    // Set Backend.AI environment variables with single host
-    unsafe {
-        env::set_var("BACKENDAI_CLUSTER_HOSTS", "single-node.ai");
-        env::set_var("BACKENDAI_CLUSTER_HOST", "single-node.ai");
-        // Explicitly remove ROLE to avoid contamination from previous tests
-        env::remove_var("BACKENDAI_CLUSTER_ROLE");
-    }
+    // Guards restore prior values on drop.
+    let _hosts = EnvGuard::set("BACKENDAI_CLUSTER_HOSTS", "single-node.ai");
+    let _host = EnvGuard::set("BACKENDAI_CLUSTER_HOST", "single-node.ai");
+    // Explicitly remove ROLE to avoid contamination from previous tests
+    let _role = EnvGuard::remove("BACKENDAI_CLUSTER_ROLE");
 
     // Create a temporary directory for the test
     let temp_dir = tempfile::tempdir().unwrap();
@@ -137,42 +98,15 @@ async fn test_backendai_env_with_single_host() {
     assert_eq!(nodes.len(), 1);
     assert_eq!(nodes[0].host, "single-node.ai");
     assert_eq!(nodes[0].port, 2200);
-
-    // Restore
-    unsafe {
-        if let Some(val) = orig_hosts {
-            env::set_var("BACKENDAI_CLUSTER_HOSTS", val);
-        } else {
-            env::remove_var("BACKENDAI_CLUSTER_HOSTS");
-        }
-
-        if let Some(val) = orig_host {
-            env::set_var("BACKENDAI_CLUSTER_HOST", val);
-        } else {
-            env::remove_var("BACKENDAI_CLUSTER_HOST");
-        }
-
-        if let Some(val) = orig_role {
-            env::set_var("BACKENDAI_CLUSTER_ROLE", val);
-        } else {
-            env::remove_var("BACKENDAI_CLUSTER_ROLE");
-        }
-    }
 }
 
 #[tokio::test]
+#[serial]
 async fn test_no_backendai_env() {
-    let _guard = ENV_MUTEX.lock().await;
-
-    // Save and clear Backend.AI env vars
-    let orig_hosts = env::var("BACKENDAI_CLUSTER_HOSTS").ok();
-    let orig_host = env::var("BACKENDAI_CLUSTER_HOST").ok();
-
-    unsafe {
-        env::remove_var("BACKENDAI_CLUSTER_HOSTS");
-        env::remove_var("BACKENDAI_CLUSTER_HOST");
-        env::remove_var("BACKENDAI_CLUSTER_ROLE");
-    }
+    // Clear all Backend.AI env vars; guards restore prior values on drop.
+    let _hosts = EnvGuard::remove("BACKENDAI_CLUSTER_HOSTS");
+    let _host = EnvGuard::remove("BACKENDAI_CLUSTER_HOST");
+    let _role = EnvGuard::remove("BACKENDAI_CLUSTER_ROLE");
 
     // Load config without Backend.AI env
     let config = Config::load_with_priority(&std::path::PathBuf::from("nonexistent.yaml"))
@@ -181,14 +115,4 @@ async fn test_no_backendai_env() {
 
     // Verify no backendai cluster was created
     assert!(!config.clusters.contains_key("backendai"));
-
-    // Restore if needed
-    unsafe {
-        if let Some(val) = orig_hosts {
-            env::set_var("BACKENDAI_CLUSTER_HOSTS", val);
-        }
-        if let Some(val) = orig_host {
-            env::set_var("BACKENDAI_CLUSTER_HOST", val);
-        }
-    }
 }

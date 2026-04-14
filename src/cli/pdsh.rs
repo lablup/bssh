@@ -141,12 +141,11 @@ pub const PDSH_COMPAT_ENV_VAR: &str = "BSSH_PDSH_COMPAT";
 ///
 /// # Examples
 ///
-/// ```
-/// use std::env;
-///
-/// // When environment variable is set
-/// env::set_var("BSSH_PDSH_COMPAT", "1");
-/// // is_pdsh_compat_mode() would return true
+/// ```ignore
+/// // When BSSH_PDSH_COMPAT=1 is set in the environment,
+/// // is_pdsh_compat_mode() returns true.
+/// // (Example is marked `ignore` because mutating environment variables in
+/// // Rust 2024 requires `unsafe`; see `EnvGuard` in `src/test_helpers`.)
 /// ```
 pub fn is_pdsh_compat_mode() -> bool {
     // Check environment variable first
