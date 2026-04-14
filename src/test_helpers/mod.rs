@@ -12,27 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub mod cli;
-pub mod commands;
-pub mod config;
-pub mod executor;
-pub mod forwarding;
-pub mod hostlist;
-pub mod jump;
-pub mod keygen;
-pub mod node;
-pub mod pty;
-pub mod security;
-pub mod server;
-pub mod shared;
-pub mod ssh;
-pub mod ui;
-pub mod utils;
+//! Shared test utilities.
+//!
+//! This module is compiled only under `#[cfg(test)]` and is not linked into
+//! release binaries. Integration tests under `tests/` access this code via
+//! `tests/common/mod.rs`, which includes `env_guard.rs` directly with
+//! `#[path]` so both unit and integration tests share one implementation.
 
-#[cfg(test)]
-pub(crate) mod test_helpers;
+#![cfg(test)]
 
-pub use cli::Cli;
-pub use config::Config;
-pub use executor::ParallelExecutor;
-pub use node::Node;
+mod env_guard;
+pub use env_guard::EnvGuard;

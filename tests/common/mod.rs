@@ -12,27 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub mod cli;
-pub mod commands;
-pub mod config;
-pub mod executor;
-pub mod forwarding;
-pub mod hostlist;
-pub mod jump;
-pub mod keygen;
-pub mod node;
-pub mod pty;
-pub mod security;
-pub mod server;
-pub mod shared;
-pub mod ssh;
-pub mod ui;
-pub mod utils;
+//! Shared helpers for integration tests.
+//!
+//! The integration test binaries under `tests/` cannot see the crate-private
+//! `test_helpers` module directly, so we include the `env_guard.rs`
+//! implementation via `#[path]`. This ensures unit and integration tests share
+//! one source of truth without exposing `EnvGuard` as public API of `bssh`.
 
-#[cfg(test)]
-pub(crate) mod test_helpers;
+#[path = "../../src/test_helpers/env_guard.rs"]
+mod env_guard_impl;
 
-pub use cli::Cli;
-pub use config::Config;
-pub use executor::ParallelExecutor;
-pub use node::Node;
+#[allow(unused_imports)]
+pub use env_guard_impl::EnvGuard;
