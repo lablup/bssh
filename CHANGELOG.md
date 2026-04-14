@@ -5,6 +5,22 @@ All notable changes to bssh will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-04-14
+
+### Added
+- `EnvGuard` RAII wrapper (`src/test_helpers/env_guard.rs`) for safe environment variable handling in tests, with Drop-based restore semantics and soundness contract documentation (#179, #181)
+- Test Environment-Variable Mutation Pattern section in ARCHITECTURE.md documenting the `EnvGuard` soundness contract and `#[serial]` usage
+
+### Changed
+- Migrated bssh and the bundled `bssh-russh` crate to the Rust 2024 edition
+- Applied 2024 edition clippy improvements: collapsed 38 nested `if let` statements into guard-clause form (`if let Some(x) = y && condition`) across `bssh-russh` client/server/keys/kex modules
+- Replaced 177 ad-hoc `unsafe { env::set_var/remove_var }` call sites across 17 test-bearing files with `EnvGuard::set` / `EnvGuard::remove` plus `#[serial]` from the `serial_test` crate
+- Removed hand-rolled `ENV_MUTEX` / `once_cell::sync::Lazy<Mutex<()>>` pattern in integration tests in favor of `#[serial]`
+- Pinned `bytes` dependency to v1.11.1
+
+### Fixed
+- Fixed pattern matching for Rust 2024 edition: removed explicit `ref` / `ref mut` bindings in `if let` patterns in `src/server/handler.rs` and `src/server/shell.rs`
+
 ## [2.0.1] - 2026-04-13
 
 ### Added
@@ -750,6 +766,7 @@ None
 - russh library for native SSH implementation
 - Cross-platform support (Linux and macOS)
 
+[2.1.0]: https://github.com/lablup/bssh/compare/v2.0.1...v2.1.0
 [2.0.1]: https://github.com/lablup/bssh/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/lablup/bssh/compare/v1.7.0...v2.0.0
 [1.7.0]: https://github.com/lablup/bssh/compare/v1.6.0...v1.7.0

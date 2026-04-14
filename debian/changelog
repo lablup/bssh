@@ -1,3 +1,35 @@
+bssh (2.1.0-1~jammy1) jammy; urgency=medium
+
+  * v2.1.0
+  ### New Features
+  - EnvGuard RAII wrapper for safe environment variable handling in tests (#179, #181)
+
+  ### Improvements
+  - Migrated bssh and bundled bssh-russh crate to Rust 2024 edition
+  - Applied 2024 edition clippy improvements: collapsed 38 nested if-let statements into guard-clause form in bssh-russh
+  - Replaced 177 ad-hoc unsafe env::set_var/remove_var call sites across 17 test files with EnvGuard + #[serial]
+  - Removed hand-rolled ENV_MUTEX pattern in integration tests in favor of #[serial]
+
+  ### Bug Fixes
+  - Fixed pattern matching for Rust 2024 edition: removed explicit ref / ref mut bindings in if-let patterns
+
+  ### CI/CD Improvements
+  None
+
+  ### Technical Details
+  - Added Test Environment-Variable Mutation Pattern section to ARCHITECTURE.md documenting EnvGuard soundness contract
+
+  ### Dependencies
+  - Pinned bytes to v1.11.1
+
+  ### Breaking Changes
+  None
+
+  ### Known Issues
+  None
+
+ -- Jeongkyu Shin <inureyes@gmail.com>  Tue, 14 Apr 2026 12:00:00 +0900
+
 bssh (2.0.1-1~jammy1) jammy; urgency=medium
 
   * v2.0.1
