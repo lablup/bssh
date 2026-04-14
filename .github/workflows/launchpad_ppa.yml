@@ -55,12 +55,25 @@ jobs:
       env:
         GH_TOKEN: ${{ github.token }}
 
+    - name: Preserve current packaging overlay
+      if: steps.check_distro.outputs.should_run == 'true'
+      run: |
+        rm -rf /tmp/bssh-packaging
+        mkdir -p /tmp/bssh-packaging
+        cp -a debian /tmp/bssh-packaging/debian
+
     - name: Check out release tag
       if: steps.check_distro.outputs.should_run == 'true'
       uses: actions/checkout@v4
       with:
         ref: ${{ steps.get_tag.outputs.tag }}
         fetch-depth: 0
+
+    - name: Restore current packaging overlay
+      if: steps.check_distro.outputs.should_run == 'true'
+      run: |
+        rm -rf debian
+        cp -a /tmp/bssh-packaging/debian debian
 
     - name: Update debian/changelog from release
       if: steps.check_distro.outputs.should_run == 'true'
