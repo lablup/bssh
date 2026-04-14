@@ -8,9 +8,9 @@ on:
         description: 'Release tag to upload to PPA (e.g. v0.5.0). Empty = latest release'
         required: false
       distributions:
-        description: 'Target distributions (comma-separated: jammy,noble,oracular)'
+        description: 'Target distributions (comma-separated: jammy,noble,resolute)'
         required: false
-        default: 'jammy,noble'
+        default: 'jammy,noble,resolute'
 
 permissions:
   contents: read
@@ -23,7 +23,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        distro: [jammy, noble, oracular]
+        distro: [jammy, noble, resolute]
 
     steps:
     - name: Checkout code
@@ -55,10 +55,17 @@ jobs:
       env:
         GH_TOKEN: ${{ github.token }}
 
+    - name: Check out release tag
+      if: steps.check_distro.outputs.should_run == 'true'
+      uses: actions/checkout@v4
+      with:
+        ref: ${{ steps.get_tag.outputs.tag }}
+        fetch-depth: 0
+
     - name: Update debian/changelog from release
       if: steps.check_distro.outputs.should_run == 'true'
       run: |
-        sudo apt-get update && sudo apt-get install -y curl
+        sudo apt-get update && sudo apt-get install -y curl jq
         bash ./debian/update-changelog.sh \
           -d ${{ matrix.distro }} \
           -p lablup/backend-ai \
@@ -81,45 +88,28 @@ jobs:
           dpkg-dev \
           build-essential
 
-    # ───────────────────────────────────────────────────────────────
-    # NEW Step 5.5: Install Rust toolchain 1.75 (to produce lockfile v3)
-    # ───────────────────────────────────────────────────────────────
-    - name: Install Rust 1.75 (for lockfile v3 & vendor)
+    - name: Install Rust 1.85 for vendoring
       if: steps.check_distro.outputs.should_run == 'true'
-      uses: dtolnay/rust-toolchain@1.75.0
+      uses: dtolnay/rust-toolchain@1.85.1
 
-    # ───────────────────────────────────────────────────────────────
-    # NEW Step 5.6: Generate Cargo.lock (v3) with Cargo 1.75
-    # ───────────────────────────────────────────────────────────────
-    - name: Generate lockfile v3 (Cargo 1.75)
+    - name: Validate lockfile with Rust 1.85
       if: steps.check_distro.outputs.should_run == 'true'
       run: |
-        # Ensure we create a lockfile compatible with jammy's cargo (v3)
-        rm -f Cargo.lock
-        cargo generate-lockfile
-        # Safety check: lockfile must be version = 3 (1.75 writes v3)
+        cargo --version
+        rustc --version
+        cargo metadata --format-version 1 --locked --no-deps > /dev/null
         awk '/^version = /{print; found=1} END{ if(!found) exit 1 }' Cargo.lock
-        if ! grep -q '^version = 3' Cargo.lock; then
-          echo "ERROR: Cargo.lock is not v3 (jammy-compatible)."
-          exit 1
-        fi
 
-    # ───────────────────────────────────────────────────────────────
-    # NEW Step 5.7: Vendor dependencies & write .cargo/config.toml
-    # ───────────────────────────────────────────────────────────────
-    - name: Vendor Rust dependencies (offline build on Launchpad)
+    - name: Vendor Rust dependencies for offline Launchpad build
       if: steps.check_distro.outputs.should_run == 'true'
       run: |
+        rm -rf vendor .cargo
         mkdir -p .cargo
-        # Create vendor directory and config
-        cargo vendor vendor > .cargo/config.toml
-        # Ensure config has replace-with vendored-sources
+        cargo vendor --locked vendor > .cargo/config.toml
         grep -q 'replace-with = "vendored-sources"' .cargo/config.toml
         grep -q '\[source.vendored-sources\]' .cargo/config.toml
         grep -q '^directory = "vendor"$' .cargo/config.toml
-        # Quick sanity: no network is needed for build now
-        echo "Vendoring done. Files:"
-        ls -lah vendor | head -n 50
+        test -d vendor
 
     - name: Prepare package version
       if: steps.check_distro.outputs.should_run == 'true'
@@ -170,16 +160,13 @@ jobs:
     - name: Build source package
       if: steps.check_distro.outputs.should_run == 'true'
       run: |
-        # Clean any build artifacts
         rm -f bssh
         rm -rf target/
-        # Ensure Architecture field is 'any'
+        test -d vendor
+        test -f .cargo/config.toml
         sed -i 's/Architecture: .*/Architecture: any/' debian/control
         chmod +x debian/rules
         export GNUPGHOME=/home/runner/.gnupg
-
-        # IMPORTANT: vendor/ and .cargo/config.toml are already present in the tree
-        # dpkg-buildpackage -S -sa will include them into the source tarball
 
         if [ -n "${{ secrets.GPG_PASSPHRASE }}" ]; then
           echo "Building and signing source package with passphrase..."
