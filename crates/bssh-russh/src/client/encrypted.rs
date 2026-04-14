@@ -437,15 +437,14 @@ impl Session {
                 let channel_num = map_err!(ChannelId::decode(&mut r))?;
                 let data = map_err!(Bytes::decode(&mut r))?;
                 let target = self.common.config.window_size;
-                if let Some(ref mut enc) = self.common.encrypted {
-                    if enc.adjust_window_size(channel_num, &data, target)? {
+                if let Some(ref mut enc) = self.common.encrypted
+                    && enc.adjust_window_size(channel_num, &data, target)? {
                         let next_window =
                             client.adjust_window(channel_num, self.target_window_size);
                         if next_window > 0 {
                             self.target_window_size = next_window
                         }
                     }
-                }
 
                 if let Some(chan) = self.channels.get(&channel_num) {
                     let _ = chan.send(ChannelMsg::Data { data: data.clone() }).await;
@@ -459,15 +458,14 @@ impl Session {
                 let extended_code = map_err!(u32::decode(&mut r))?;
                 let data = map_err!(Bytes::decode(&mut r))?;
                 let target = self.common.config.window_size;
-                if let Some(ref mut enc) = self.common.encrypted {
-                    if enc.adjust_window_size(channel_num, &data, target)? {
+                if let Some(ref mut enc) = self.common.encrypted
+                    && enc.adjust_window_size(channel_num, &data, target)? {
                         let next_window =
                             client.adjust_window(channel_num, self.target_window_size);
                         if next_window > 0 {
                             self.target_window_size = next_window
                         }
                     }
-                }
 
                 if let Some(chan) = self.channels.get(&channel_num) {
                     let _ = chan
@@ -551,8 +549,8 @@ impl Session {
                     }
                     _ => {
                         let wants_reply = map_err!(u8::decode(&mut r))?;
-                        if wants_reply == 1 {
-                            if let Some(ref mut enc) = self.common.encrypted {
+                        if wants_reply == 1
+                            && let Some(ref mut enc) = self.common.encrypted {
                                 self.common.wants_reply = false;
                                 if let Some(ch) = enc.channels.get(&channel_num) {
                                     push_packet!(enc.write, {
@@ -561,7 +559,6 @@ impl Session {
                                     })
                                 }
                             }
-                        }
                         info!("Unknown channel request {req:?} {wants_reply:?}",);
                         Ok(())
                     }

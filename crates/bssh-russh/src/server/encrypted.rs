@@ -632,14 +632,13 @@ impl Session {
                 let data = map_err!(Bytes::decode(r))?;
                 let target = self.target_window_size;
 
-                if let Some(ref mut enc) = self.common.encrypted {
-                    if enc.adjust_window_size(channel_num, &data, target)? {
+                if let Some(ref mut enc) = self.common.encrypted
+                    && enc.adjust_window_size(channel_num, &data, target)? {
                         let window = handler.adjust_window(channel_num, self.target_window_size);
                         if window > 0 {
                             self.target_window_size = window
                         }
                     }
-                }
                 self.flush()?;
                 if let Some(ext) = ext {
                     if let Some(chan) = self.channels.get(&channel_num) {
@@ -731,11 +730,10 @@ impl Session {
                 let channel_num = map_err!(ChannelId::decode(r))?;
                 let req_type = map_err!(String::decode(r))?;
                 let wants_reply = map_err!(u8::decode(r))?;
-                if let Some(ref mut enc) = self.common.encrypted {
-                    if let Some(channel) = enc.channels.get_mut(&channel_num) {
+                if let Some(ref mut enc) = self.common.encrypted
+                    && let Some(channel) = enc.channels.get_mut(&channel_num) {
                         channel.wants_reply = wants_reply != 0;
                     }
-                }
                 match req_type.as_str() {
                     "pty-req" => {
                         let term = map_err!(String::decode(r))?;
