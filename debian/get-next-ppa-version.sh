@@ -19,25 +19,31 @@ get_highest_revision() {
     local base_version="$1"
     local distro="$2"
     local ppa="$3"
-    
-    # Try to fetch package info from PPA
-    # Using rmadison if available, otherwise use apt-cache policy
-    if command -v rmadison >/dev/null 2>&1; then
-        # rmadison can query PPAs
-        existing_versions=$(rmadison -s "$distro" -a source bssh 2>/dev/null | grep -E "${base_version}-[0-9]+~${distro}[0-9]+" | awk '{print $2}' || true)
-    else
-        # Fallback: try to query using curl from Launchpad API
-        ppa_owner=$(echo "$ppa" | cut -d'/' -f1)
-        ppa_name=$(echo "$ppa" | cut -d'/' -f2)
-        
-        # Query Launchpad API for published sources
-        api_url="https://api.launchpad.net/1.0/~${ppa_owner}/+archive/ubuntu/${ppa_name}?ws.op=getPublishedSources&source_name=bssh&distro_series=https://api.launchpad.net/1.0/ubuntu/${distro}&status=Published"
-        
-        existing_versions=$(curl -s "$api_url" | \
+    local existing_versions=""
+    local ppa_owner
+    local ppa_name
+
+    fetch_versions_for_status() {
+        local status="$1"
+        local api_url
+
+        api_url="https://api.launchpad.net/1.0/~${ppa_owner}/+archive/ubuntu/${ppa_name}?ws.op=getPublishedSources&source_name=bssh&distro_series=https://api.launchpad.net/1.0/ubuntu/${distro}&status=${status}"
+
+        curl -s "$api_url" | \
             grep -o '"source_package_version": "[^"]*"' | \
             cut -d'"' -f4 | \
-            grep -E "^${base_version}-[0-9]+~${distro}[0-9]+$" || true)
-    fi
+            grep -E "^${base_version}-[0-9]+~${distro}[0-9]+$" || true
+    }
+
+    ppa_owner=$(echo "$ppa" | cut -d'/' -f1)
+    ppa_name=$(echo "$ppa" | cut -d'/' -f2)
+    # Count both published and pending uploads so retries pick a fresh revision.
+    existing_versions=$(
+        {
+            fetch_versions_for_status "Published"
+            fetch_versions_for_status "Pending"
+        } | sort -u
+    )
     
     if [ -z "$existing_versions" ]; then
         # No existing versions found
@@ -49,7 +55,7 @@ get_highest_revision() {
     highest=0
     for ver in $existing_versions; do
         # Extract revision number (e.g., "0.7.2-1~noble2" -> "2")
-        revision=$(echo "$ver" | sed -n "s/^${base_version}-[0-9]*~${distro}\([0-9]\+\)$/\1/p")
+        revision="${ver##*~${distro}}"
         if [ -n "$revision" ] && [ "$revision" -gt "$highest" ]; then
             highest=$revision
         fi
