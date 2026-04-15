@@ -137,10 +137,12 @@ jobs:
         rm -rf vendor .cargo
         mkdir -p .cargo
         cargo vendor --locked vendor > .cargo/config.toml
+        python3 debian/sanitize-vendor.py
         grep -q 'replace-with = "vendored-sources"' .cargo/config.toml
         grep -q '\[source.vendored-sources\]' .cargo/config.toml
         grep -q '^directory = "vendor"$' .cargo/config.toml
         test -d vendor
+        ! find vendor -name '*.orig' -print | grep -q .
 
     - name: Prepare package version
       if: steps.check_distro.outputs.should_run == 'true'
