@@ -10,24 +10,24 @@ Launchpad build environments do NOT have internet access. This means:
 
 ### Build Dependencies
 The following packages are required and must be available to Launchpad through the Ubuntu archive or a configured dependency PPA:
-- `rustc-1.85` or `rustc (>= 1.85)` - Rust compiler (Rust edition 2024 requires Rust 1.85+)
-- `cargo-1.85` or `cargo (>= 1.85)` - Rust package manager
+- `rustc-1.92` or `rustc (>= 1.92)` - Rust compiler
+- `cargo-1.92` or `cargo (>= 1.92)` - Rust package manager
 - `pkg-config` - For finding system libraries
 - `cmake` - Build system
 
 ### Rust Version Requirements
-This project requires Rust 1.85 or newer because it uses Rust edition 2024. This means:
-- Ubuntu 22.04 (Jammy): requires a versioned Rust 1.85 toolchain from the PPA itself or a dependent PPA
-- Ubuntu 24.04 (Noble): requires a versioned Rust 1.85 toolchain from the PPA itself or a dependent PPA
-- Ubuntu 26.04 (Resolute): can use the archive's default Rust toolchain
+This project currently requires Rust 1.92 or newer because the vendored dependency set no longer builds with Rust 1.85. This means:
+- Ubuntu 22.04 (Jammy): requires a versioned Rust 1.92 toolchain from the dependent PPA `~lablup/+archive/ubuntu/rustc-release`
+- Ubuntu 24.04 (Noble): requires a versioned Rust 1.92 toolchain from the dependent PPA `~lablup/+archive/ubuntu/rustc-release`
+- Ubuntu 26.04 (Resolute): can use the archive's Rust 1.92+ toolchain without the extra dependency PPA
 
 If building for older Ubuntu versions, you may need to:
-1. Add a Launchpad PPA dependency that provides `rustc-1.85` and `cargo-1.85`
-2. Limit support to distributions with Rust 1.85+
+1. Add a Launchpad PPA dependency on `~lablup/+archive/ubuntu/rustc-release` so Jammy and Noble can see `rustc-1.92` and `cargo-1.92`
+2. Limit support to distributions with Rust 1.92+
 
 ### Build Process
 1. GitHub Actions vendors crates into `vendor/` and generates `.cargo/config.toml`
-2. The `debian/rules` file requires Rust/Cargo 1.85+ and enables offline cargo mode
+2. The `debian/rules` file requires Rust/Cargo 1.92+ and enables offline cargo mode
 3. Launchpad builds the project with `cargo build --release --frozen --workspace`
 4. The binary is installed to `/usr/bin/bssh`
 
@@ -36,8 +36,8 @@ If the build fails on Launchpad:
 1. Check the build log for the exact error
 2. Common issues:
    - Missing build dependencies: Add them to debian/control
-   - Rust version incompatibility: Ensure Rust 1.85+ is available
-   - Missing PPA dependency: Jammy/Noble need access to `rustc-1.85` and `cargo-1.85`
+   - Rust version incompatibility: Ensure Rust 1.92+ is available
+   - Missing PPA dependency: Jammy/Noble need access to `rustc-1.92` and `cargo-1.92`
    - Missing vendored crates: Ensure `vendor/` and `.cargo/config.toml` are included in the source package
    - Cargo registry access: The build will fail if it tries to download crates
 

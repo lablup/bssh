@@ -1,6 +1,6 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: bssh
-Upstream-Contact: Jeongkyu Shin <inureyes@gmail.com>
+Upstream-Contact: Jeongkyu Shin <jshin@lablup.com>
 Source: https://github.com/lablup/bssh
 
 Files: *

@@ -23,7 +23,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        distro: [jammy, noble, resolute]
+        include:
+          - distro: jammy
+            vendor_rust: "1.92.0"
+            toolchain_source: "Requires backend-ai PPA dependency on ~lablup/+archive/ubuntu/rustc-release"
+          - distro: noble
+            vendor_rust: "1.92.0"
+            toolchain_source: "Requires backend-ai PPA dependency on ~lablup/+archive/ubuntu/rustc-release"
+          - distro: resolute
+            vendor_rust: "1.92.0"
+            toolchain_source: "Uses the official Ubuntu 26.04 archive Rust 1.92+ toolchain"
 
     steps:
     - name: Checkout code
@@ -75,6 +84,13 @@ jobs:
         rm -rf debian
         cp -a /tmp/bssh-packaging/debian debian
 
+    - name: Describe Rust toolchain source
+      if: steps.check_distro.outputs.should_run == 'true'
+      run: |
+        echo "Target distro: ${{ matrix.distro }}"
+        echo "Vendoring toolchain: Rust ${{ matrix.vendor_rust }}"
+        echo "Launchpad build toolchain: ${{ matrix.toolchain_source }}"
+
     - name: Update debian/changelog from release
       if: steps.check_distro.outputs.should_run == 'true'
       run: |
@@ -101,11 +117,13 @@ jobs:
           dpkg-dev \
           build-essential
 
-    - name: Install Rust 1.85 for vendoring
+    - name: Install Rust ${{ matrix.vendor_rust }} for vendoring
       if: steps.check_distro.outputs.should_run == 'true'
-      uses: dtolnay/rust-toolchain@1.85.1
+      uses: dtolnay/rust-toolchain@master
+      with:
+        toolchain: ${{ matrix.vendor_rust }}
 
-    - name: Validate lockfile with Rust 1.85
+    - name: Validate lockfile with Rust ${{ matrix.vendor_rust }}
       if: steps.check_distro.outputs.should_run == 'true'
       run: |
         cargo --version
