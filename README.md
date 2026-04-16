@@ -10,6 +10,12 @@ A high-performance SSH client with **SSH-compatible syntax** for both single-hos
 
 *Developed and maintained as part of the Backend.AI project.*
 
+## Recent Updates
+
+- **v2.1.1 (2026/04/17):** Fix server panic and auth rejection on every client connection
+- **v2.1.0 (2026/04/14):** Rust 2024 edition migration, EnvGuard for safe test env handling, bytes pin
+- **v2.0.1 (2026/04/13):** Security updates (RSA Marvin Attack fix), bssh-keygen in Debian pipeline
+
 ## Features
 
 - **SSH Compatibility**: Drop-in replacement for SSH with compatible command-line syntax

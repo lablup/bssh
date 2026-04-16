@@ -1,3 +1,18 @@
+bssh (2.1.1-1~jammy1) jammy; urgency=high
+
+  * v2.1.1
+  ### Bug Fixes
+  - Fixed bssh-server panic on every client connection: block_on() called inside
+    tokio async runtime for auth rate limiter ban check (#185)
+  - Fixed bssh-server rejecting authenticated clients: session not registered
+    with SessionManager after successful key/password verification (#185)
+
+  ### Improvements
+  - Improved Launchpad PPA packaging for Rust 2024 edition
+  - Added sanitize-vendor.py for vendored crate checksum sanitization
+
+ -- Jeongkyu Shin <inureyes@gmail.com>  Thu, 17 Apr 2026 00:00:00 +0900
+
 bssh (2.1.0-1~jammy1) jammy; urgency=medium
 
   * v2.1.0

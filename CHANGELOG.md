@@ -5,6 +5,16 @@ All notable changes to bssh will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.1] - 2026-04-17
+
+### Fixed
+- **bssh-server panic on client connection**: `new_client_with_addr` called `block_on()` inside the tokio async runtime to check the auth rate limiter ban list, causing an immediate "Cannot start a runtime from within a runtime" panic on every incoming connection. Added non-blocking `AuthRateLimiter::try_is_banned()` using `RwLock::try_read()`. (#185)
+- **bssh-server auth rejection after successful verification**: All `SshHandler` constructors created a local `SessionInfo` that was never registered with `SessionManager`. After public key or password verification succeeded, `authenticate_session()` returned `SessionNotFound`, rejecting the client. Fixed by deferring session creation to the authentication flow via `SessionManager::create_session()`. (#185)
+
+### Changed
+- Improved Launchpad PPA packaging for Rust 2024 edition: updated `debian/rules` variants, added `debian/sanitize-vendor.py` for vendored crate checksum sanitization, fixed hidden path handling
+- Added `.pyc` files to `.gitignore`
+
 ## [2.1.0] - 2026-04-14
 
 ### Added
@@ -766,6 +776,7 @@ None
 - russh library for native SSH implementation
 - Cross-platform support (Linux and macOS)
 
+[2.1.1]: https://github.com/lablup/bssh/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/lablup/bssh/compare/v2.0.1...v2.1.0
 [2.0.1]: https://github.com/lablup/bssh/compare/v2.0.0...v2.0.1
 [2.0.0]: https://github.com/lablup/bssh/compare/v1.7.0...v2.0.0
