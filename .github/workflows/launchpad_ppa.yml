@@ -138,6 +138,25 @@ jobs:
         mkdir -p .cargo
         cargo vendor --locked vendor > .cargo/config.toml
         python3 debian/sanitize-vendor.py
+        python3 - <<'PY'
+        import json
+        from pathlib import Path, PurePosixPath
+
+        offenders = []
+        for checksum_file in Path("vendor").rglob(".cargo-checksum.json"):
+            data = json.loads(checksum_file.read_text())
+            for rel_path in data.get("files", {}):
+                if rel_path.endswith(".orig") or any(
+                    part.startswith(".") for part in PurePosixPath(rel_path).parts
+                ):
+                    offenders.append(f"{checksum_file}: {rel_path}")
+
+        if offenders:
+            raise SystemExit(
+                "vendor checksum still references hidden/orig files:\n"
+                + "\n".join(offenders[:50])
+            )
+        PY
         grep -q 'replace-with = "vendored-sources"' .cargo/config.toml
         grep -q '\[source.vendored-sources\]' .cargo/config.toml
         grep -q '^directory = "vendor"$' .cargo/config.toml

@@ -22,6 +22,7 @@ echo "Vendoring Rust dependencies..."
 rm -rf vendor .cargo
 mkdir -p .cargo
 cargo vendor --locked vendor > .cargo/config.toml
+python3 debian/sanitize-vendor.py
 
 if ! grep -q '^directory = "vendor"$' .cargo/config.toml; then
     echo "Error: cargo vendor did not generate the expected source replacement config"

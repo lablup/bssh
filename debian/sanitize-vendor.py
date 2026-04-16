@@ -4,6 +4,11 @@ import json
 from pathlib import Path
 
 
+def should_strip(rel_path: str) -> bool:
+    path = Path(rel_path)
+    return rel_path.endswith(".orig") or any(part.startswith(".") for part in path.parts)
+
+
 def main() -> int:
     vendor_root = Path("vendor")
     if not vendor_root.is_dir():
@@ -17,7 +22,7 @@ def main() -> int:
 
         removed = []
         for rel_path in list(files.keys()):
-            if rel_path.endswith(".orig"):
+            if should_strip(rel_path):
                 removed.append(rel_path)
                 files.pop(rel_path, None)
                 target = crate_dir / rel_path
@@ -28,7 +33,7 @@ def main() -> int:
             checksum_file.write_text(
                 json.dumps(data, separators=(",", ":"), sort_keys=True) + "\n"
             )
-            print(f"sanitized {checksum_file} ({len(removed)} .orig entries)")
+            print(f"sanitized {checksum_file} ({len(removed)} hidden/orig entries)")
 
     return 0
 
