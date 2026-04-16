@@ -95,7 +95,7 @@ impl SshHandler {
             auth_provider,
             rate_limiter,
             auth_rate_limiter: None,
-            session_info: Some(SessionInfo::new(peer_addr)),
+            session_info: None,
             channels: HashMap::new(),
             rejected: false,
         }
@@ -120,7 +120,7 @@ impl SshHandler {
             auth_provider,
             rate_limiter,
             auth_rate_limiter: None,
-            session_info: Some(SessionInfo::new(peer_addr)),
+            session_info: None,
             channels: HashMap::new(),
             rejected: false,
         }
@@ -147,7 +147,7 @@ impl SshHandler {
             auth_provider,
             rate_limiter,
             auth_rate_limiter: Some(auth_rate_limiter),
-            session_info: Some(SessionInfo::new(peer_addr)),
+            session_info: None,
             channels: HashMap::new(),
             rejected: false,
         }
@@ -171,7 +171,7 @@ impl SshHandler {
             auth_provider,
             rate_limiter,
             auth_rate_limiter: None,
-            session_info: Some(SessionInfo::new(peer_addr)),
+            session_info: None,
             channels: HashMap::new(),
             rejected: false,
         }
@@ -445,12 +445,33 @@ impl russh::server::Handler for SshHandler {
                         "Public key authentication successful"
                     );
 
-                    // Try to authenticate session with per-user limits
-                    if let Some(info) = &session_info {
+                    // Ensure session is registered with SessionManager
+                    {
                         let mut sessions_guard = sessions.write().await;
+                        if session_info.is_none() {
+                            if let Some(info) = sessions_guard.create_session(peer_addr) {
+                                tracing::debug!(
+                                    session_id = %info.id,
+                                    peer = ?peer_addr,
+                                    "Session created during pubkey auth"
+                                );
+                                *session_info = Some(info);
+                            } else {
+                                tracing::warn!(
+                                    peer = ?peer_addr,
+                                    "Session limit reached, rejecting authentication"
+                                );
+                                return Ok(Auth::Reject {
+                                    proceed_with_methods: None,
+                                    partial_success: false,
+                                });
+                            }
+                        }
+
+                        // Try to authenticate session with per-user limits
+                        let info = session_info.as_ref().unwrap();
                         match sessions_guard.authenticate_session(info.id, &user) {
                             Ok(()) => {
-                                // Also update local session info
                                 drop(sessions_guard);
                                 if let Some(local_info) = &mut session_info {
                                     local_info.authenticate(&user);
@@ -678,12 +699,33 @@ impl russh::server::Handler for SshHandler {
                         "Password authentication successful"
                     );
 
-                    // Try to authenticate session with per-user limits
-                    if let Some(info) = &session_info {
+                    // Ensure session is registered with SessionManager
+                    {
                         let mut sessions_guard = sessions.write().await;
+                        if session_info.is_none() {
+                            if let Some(info) = sessions_guard.create_session(peer_addr) {
+                                tracing::debug!(
+                                    session_id = %info.id,
+                                    peer = ?peer_addr,
+                                    "Session created during password auth"
+                                );
+                                *session_info = Some(info);
+                            } else {
+                                tracing::warn!(
+                                    peer = ?peer_addr,
+                                    "Session limit reached, rejecting authentication"
+                                );
+                                return Ok(Auth::Reject {
+                                    proceed_with_methods: None,
+                                    partial_success: false,
+                                });
+                            }
+                        }
+
+                        // Try to authenticate session with per-user limits
+                        let info = session_info.as_ref().unwrap();
                         match sessions_guard.authenticate_session(info.id, &user) {
                             Ok(()) => {
-                                // Also update local session info
                                 drop(sessions_guard);
                                 if let Some(local_info) = &mut session_info {
                                     local_info.authenticate(&user);
@@ -1593,8 +1635,8 @@ mod tests {
         let handler = SshHandler::new(Some(test_addr()), test_config(), test_sessions());
 
         assert_eq!(handler.peer_addr(), Some(test_addr()));
-        // Session ID is assigned at creation time
-        assert!(handler.session_id().is_some());
+        // Session is registered with SessionManager during auth, not at construction
+        assert!(handler.session_id().is_none());
         assert!(!handler.is_authenticated());
         assert!(handler.username().is_none());
     }
@@ -1656,8 +1698,8 @@ mod tests {
         let handler = SshHandler::new(None, test_config(), test_sessions());
 
         assert!(handler.peer_addr().is_none());
-        // Session ID is assigned at creation time even without peer address
-        assert!(handler.session_id().is_some());
+        // Session is registered with SessionManager during auth, not at construction
+        assert!(handler.session_id().is_none());
         assert!(!handler.is_authenticated());
     }
 
