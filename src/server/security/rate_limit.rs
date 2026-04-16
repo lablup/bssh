@@ -144,6 +144,29 @@ impl AuthRateLimiter {
         }
     }
 
+    /// Check if an IP address is currently banned (non-blocking).
+    ///
+    /// Uses `try_read` on the bans lock so it can be called from
+    /// synchronous trait methods that run inside the tokio runtime
+    /// (e.g. `Server::new_client_with_addr`).
+    ///
+    /// Returns `None` if the lock could not be acquired immediately;
+    /// callers should treat that as "not banned" to avoid rejecting
+    /// legitimate connections under contention.
+    pub fn try_is_banned(&self, ip: &IpAddr) -> Option<bool> {
+        if self.config.whitelist.contains(ip) {
+            return Some(false);
+        }
+
+        let bans = self.bans.try_read().ok()?;
+        if let Some(expiry) = bans.get(ip)
+            && Instant::now() < *expiry
+        {
+            return Some(true);
+        }
+        Some(false)
+    }
+
     /// Check if an IP address is currently banned.
     ///
     /// Returns `true` if the IP is banned and the ban has not expired.

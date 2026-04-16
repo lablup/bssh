@@ -338,11 +338,8 @@ impl russh::server::Server for BsshServerRunner {
             }
 
             // Check if banned by auth rate limiter
-            // Use try_read to avoid blocking in sync context
-            if let Ok(is_banned) = tokio::runtime::Handle::try_current()
-                .map(|h| h.block_on(self.auth_rate_limiter.is_banned(&ip)))
-                && is_banned
-            {
+            // Use try_is_banned to avoid blocking the async runtime
+            if self.auth_rate_limiter.try_is_banned(&ip).unwrap_or(false) {
                 tracing::info!(
                     ip = %ip,
                     "Connection rejected from banned IP"
