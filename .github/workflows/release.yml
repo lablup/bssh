@@ -232,6 +232,17 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ============================================================================
+  # Update Homebrew formula (after publish converts pre-release to official)
+  # ============================================================================
+  update-homebrew:
+    name: Update Homebrew formula
+    needs: [publish-release]
+    uses: ./.github/workflows/update_homebrew_formula.yml
+    with:
+      release_tag: ${{ github.event.release.tag_name }}
+    secrets: inherit
+
+  # ============================================================================
   # Microsoft Teams release notification (Power Automate Workflows webhook)
   # ============================================================================
   notify-teams:
