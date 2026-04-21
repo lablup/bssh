@@ -5,6 +5,14 @@ All notable changes to bssh will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Internal fork of `russh-sftp` as `crates/bssh-russh-sftp` with a `serde_bytes` performance fix for `SSH_FXP_WRITE` and `SSH_FXP_DATA` packets. The upstream serde derive routes `Vec<u8>` through `deserialize_seq` (byte-by-byte), accounting for ~42% of server CPU during 1 GiB SFTP uploads in `perf` profiling. Annotating the `data` fields with `#[serde(with = "serde_bytes")]` and implementing wire-compatible `serialize_bytes` on the SFTP `Serializer` routes through the existing bulk `deserialize_byte_buf`/`try_get_bytes` path. Measured impact on a CPU-bound host (Xeon Silver 4214): 1 GiB SFTP upload throughput improves from 74.8 MiB/s to 96.4 MiB/s (+29%), closing the gap to OpenSSH `sftp-server` from ~26% to ~5%.
+
+### Changed
+- Switched the top-level `russh-sftp` dependency from crates.io `russh-sftp = "2.1.1"` to `russh-sftp = { package = "bssh-russh-sftp", version = "2.1.1", path = "crates/bssh-russh-sftp" }`. All existing `use russh_sftp::...` imports continue to work unchanged.
+
 ## [2.1.1] - 2026-04-17
 
 ### Fixed
