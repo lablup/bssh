@@ -1,0 +1,35 @@
+[package]
+name = "bssh-russh-sftp"
+version = "2.1.1"
+authors = ["Jeongkyu Shin <inureyes@gmail.com>"]
+description = "Temporary fork of russh-sftp with a serde_bytes performance fix for SFTP Write/Data packets"
+documentation = "https://docs.rs/bssh-russh-sftp"
+edition = "2021"
+homepage = "https://github.com/lablup/bssh"
+keywords = ["russh", "sftp", "ssh2", "server", "client"]
+license = "Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/lablup/bssh"
+
+[dependencies]
+tokio = { version = "1", default-features = false, features = [
+    "io-util",
+    "rt",
+    "sync",
+    "time",
+    "macros",
+] }
+tokio-util = "0.7"
+serde = { version = "1.0", features = ["derive"] }
+serde_bytes = "0.11"
+bitflags = { version = "2.9", features = ["serde"] }
+async-trait = { version = "0.1", optional = true }
+
+thiserror = "2.0"
+chrono = "0.4"
+bytes = "1.10"
+log = "0.4"
+flurry = "0.5"
+
+[features]
+async-trait = ["dep:async-trait"]
