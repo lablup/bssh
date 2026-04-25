@@ -207,8 +207,22 @@ impl Drop for TerminalStateGuard {
 /// This is a best-effort, infallible cleanup that disables mouse tracking, resets
 /// alternate screen and cursor visibility, and exits raw mode. Each operation is
 /// performed independently so a failure in one does not prevent the rest.
+///
+/// # Panic-safety
+///
+/// This function is safe to call from a panic hook. It uses `try_lock()` rather than
+/// `lock()` so it never deadlocks if the panicking thread already holds
+/// `TERMINAL_MUTEX` (re-entrant acquisition of `std::sync::Mutex` on the same thread
+/// would otherwise deadlock), and it tolerates a poisoned mutex without secondary
+/// panics. The underlying operations (stdout writes, `disable_raw_mode`) are
+/// individually safe to run without the mutex; the lock only serializes concurrent
+/// teardown attempts.
 pub fn force_terminal_cleanup() {
-    let _guard = TERMINAL_MUTEX.lock().unwrap();
+    // Acquire the mutex if we can, but never block or panic on it. If the mutex is
+    // already held by this thread (re-entrant via panic hook) or poisoned by a
+    // previous panic, fall through and run the cleanup unsynchronized — the
+    // operations below are individually safe.
+    let _guard = TERMINAL_MUTEX.try_lock().ok();
 
     // Best-effort: disable all mouse tracking modes, restore cursor, and leave alternate
     // screen. Written as a single atomic blob to minimize partial-state risk.
