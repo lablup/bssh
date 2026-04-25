@@ -14,6 +14,12 @@
 
 //! Terminal state management for PTY sessions.
 
+use std::io::Write;
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
+
 use anyhow::{Context, Result};
 use crossterm::{
     event::{DisableBracketedPaste, EnableBracketedPaste},
@@ -21,10 +27,6 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode},
 };
 use once_cell::sync::Lazy;
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
-};
 
 /// Global terminal cleanup synchronization
 /// Ensures only one cleanup attempt happens even with multiple guards
@@ -165,6 +167,15 @@ impl TerminalStateGuard {
             eprintln!("Warning: Failed to disable bracketed paste mode during cleanup: {e}");
         }
 
+        // Best-effort: disable all mouse tracking modes that a remote program may have
+        // enabled. Each write is independent so one failure does not abort the rest.
+        // Modes: 1000 (X11), 1002 (button-event), 1003 (any-event), 1006 (SGR),
+        //        1015 (urxvt), plus restore cursor visibility and alternate screen.
+        let _ = std::io::stdout().write_all(
+            b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l\x1b[?1049l\x1b[?25h",
+        );
+        let _ = std::io::stdout().flush();
+
         // Exit raw mode if it's globally active
         if RAW_MODE_ACTIVE.load(Ordering::SeqCst) {
             if let Err(e) = disable_raw_mode() {
@@ -179,9 +190,6 @@ impl TerminalStateGuard {
             self.is_raw_mode_active.store(false, Ordering::Relaxed);
         }
 
-        // TODO: Restore other terminal settings if needed
-        // For now, just exiting raw mode is sufficient
-
         Ok(())
     }
 }
@@ -194,9 +202,22 @@ impl Drop for TerminalStateGuard {
     }
 }
 
-/// Force terminal cleanup - can be called from anywhere to ensure terminal is restored
+/// Force terminal cleanup - can be called from anywhere to ensure terminal is restored.
+///
+/// This is a best-effort, infallible cleanup that disables mouse tracking, resets
+/// alternate screen and cursor visibility, and exits raw mode. Each operation is
+/// performed independently so a failure in one does not prevent the rest.
 pub fn force_terminal_cleanup() {
     let _guard = TERMINAL_MUTEX.lock().unwrap();
+
+    // Best-effort: disable all mouse tracking modes, restore cursor, and leave alternate
+    // screen. Written as a single atomic blob to minimize partial-state risk.
+    // Modes: 1000 (X11), 1002 (button-event), 1003 (any-event), 1006 (SGR),
+    //        1015 (urxvt); then restore cursor visibility and normal screen buffer.
+    let _ = std::io::stdout()
+        .write_all(b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l\x1b[?1049l\x1b[?25h");
+    let _ = std::io::stdout().flush();
+
     if RAW_MODE_ACTIVE.load(Ordering::SeqCst) {
         let _ = disable_raw_mode();
         RAW_MODE_ACTIVE.store(false, Ordering::SeqCst);

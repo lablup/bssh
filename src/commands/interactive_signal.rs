@@ -133,21 +133,14 @@ impl TerminalGuard {
         }
     }
 
-    /// Restore terminal to normal mode
+    /// Restore terminal to normal mode.
+    ///
+    /// Delegates to `force_terminal_cleanup()` from `pty::terminal` so that the
+    /// panic-hook path shares exactly the same cleanup logic (mouse tracking reset,
+    /// alternate-screen restore, cursor show, raw-mode off) as every other cleanup
+    /// path. No bespoke logic is duplicated here.
     pub fn restore_terminal() -> Result<()> {
-        use crossterm::{execute, terminal};
-        use std::io;
-
-        // Disable raw mode if it was enabled
-        let _ = terminal::disable_raw_mode();
-
-        // Show cursor
-        let _ = execute!(
-            io::stdout(),
-            crossterm::cursor::Show,
-            terminal::LeaveAlternateScreen
-        );
-
+        crate::pty::terminal::force_terminal_cleanup();
         Ok(())
     }
 }

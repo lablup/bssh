@@ -5,6 +5,11 @@ All notable changes to bssh will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **PTY session mouse tracking leak**: after a PTY session disconnects (normal exit, Ctrl+C, network drop, or panic), the local terminal no longer prints raw SGR mouse escape sequences when the mouse is moved. All cleanup paths (`TerminalStateGuard::Drop`, `force_terminal_cleanup`, and the panic hook via `TerminalGuard`) now emit the full set of mouse-tracking-off sequences (modes 1000, 1002, 1003, 1006, 1015) plus cursor-show and alternate-screen-exit on teardown. (#189)
+
 ## [2.1.1] - 2026-04-17
 
 ### Fixed
