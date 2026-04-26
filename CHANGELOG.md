@@ -7,8 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.2] - 2026-04-27
+
 ### Fixed
-- **PTY session mouse tracking leak**: after a PTY session disconnects (normal exit, Ctrl+C, network drop, or panic), the local terminal no longer prints raw SGR mouse escape sequences when the mouse is moved. All cleanup paths (`TerminalStateGuard::Drop`, `force_terminal_cleanup`, and the panic hook via `TerminalGuard`) now emit the full set of mouse-tracking-off sequences (modes 1000, 1002, 1003, 1006, 1015) plus cursor-show and alternate-screen-exit on teardown. (#189)
+- **PTY session mouse tracking leak**: after a PTY session disconnects (normal exit, Ctrl+C, network drop, or panic), the local terminal no longer prints raw SGR mouse escape sequences when the mouse is moved. All cleanup paths (`TerminalStateGuard::Drop`, `force_terminal_cleanup`, and the panic hook via `TerminalGuard`) now emit the full set of mouse-tracking-off sequences (modes 1000, 1002, 1003, 1006, 1015) plus cursor-show and alternate-screen-exit on teardown. (#189, #190)
+- **Panic-hook safety in terminal cleanup**: `force_terminal_cleanup()` now uses `try_lock()` instead of `lock()` so the panic hook path (`TerminalGuard::restore_terminal` → `force_terminal_cleanup`) cannot deadlock if the panicking thread already holds `TERMINAL_MUTEX`, and a previously poisoned mutex no longer triggers a secondary panic. The lock only serializes concurrent teardown; the underlying stdout writes and `disable_raw_mode` are individually safe. (#190)
+
+### Changed
+- Centralized terminal teardown logic: `TerminalGuard::restore_terminal()` in `interactive_signal.rs` now delegates to `force_terminal_cleanup()` instead of carrying its own incomplete cleanup, closing the gap on the panic-hook path.
+
+### Tests
+- Added unit tests for `force_terminal_cleanup()` covering idempotency, poisoned-mutex resilience, and held-mutex resilience (using local `Mutex` instances rather than the global `TERMINAL_MUTEX` to keep the global state undisturbed).
+
+### CI/CD
+- Trigger the Homebrew formula update workflow only after the official release: `release.yml` now calls `update_homebrew_formula.yml` via `workflow_call` from the `publish-release` job (which converts pre-release to official), instead of `workflow_run` firing on every Release workflow completion (including pre-release builds).
+- Prevent the release workflow from being triggered twice: removed the `published` event type from the trigger list since `publish-release` already handles the pre-release → official conversion. `workflow_dispatch` continues to cover manual runs.
 
 ## [2.1.1] - 2026-04-17
 
@@ -781,6 +794,7 @@ None
 - russh library for native SSH implementation
 - Cross-platform support (Linux and macOS)
 
+[2.1.2]: https://github.com/lablup/bssh/compare/v2.1.1...v2.1.2
 [2.1.1]: https://github.com/lablup/bssh/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/lablup/bssh/compare/v2.0.1...v2.1.0
 [2.0.1]: https://github.com/lablup/bssh/compare/v2.0.0...v2.0.1

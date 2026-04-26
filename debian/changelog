@@ -1,3 +1,26 @@
+bssh (2.1.2-1~jammy1) jammy; urgency=medium
+
+  * v2.1.2
+  ### Bug Fixes
+  - Restore terminal mouse tracking state on PTY session disconnect (#190):
+    after a PTY session disconnects (normal exit, Ctrl+C, network drop, or
+    panic), the local terminal no longer prints raw SGR mouse escape
+    sequences. All cleanup paths now emit the full set of mouse-tracking-off
+    sequences (modes 1000, 1002, 1003, 1006, 1015) plus cursor-show and
+    alternate-screen-exit on teardown.
+  - Make force_terminal_cleanup safe to call from the panic hook: switch to
+    try_lock() so a poisoned mutex or self-held lock cannot deadlock or
+    secondary-panic during teardown.
+
+  ### CI/CD Improvements
+  - Trigger Homebrew formula update only after the official release
+    (workflow_call from publish-release), not on every Release workflow run.
+  - Prevent double-trigger of the release workflow by removing the
+    "published" event type — publish-release already handles the
+    pre-release to official conversion.
+
+ -- Jeongkyu Shin <inureyes@gmail.com>  Mon, 27 Apr 2026 00:00:00 +0900
+
 bssh (2.1.1-1~jammy1) jammy; urgency=high
 
   * v2.1.1
