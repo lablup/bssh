@@ -93,7 +93,7 @@ jobs:
     # Step 1: Checkout source code
     # ───────────────────────────────────────────────────────────────
     - name: Checkout code
-      uses: actions/checkout@v4
+      uses: actions/checkout@v6
       with:
         fetch-depth: 0  # Full history for changelog generation
 
@@ -244,7 +244,7 @@ jobs:
     # Step 11: Upload build artifacts
     # ───────────────────────────────────────────────────────────────
     - name: Upload build artifacts
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@v7
       with:
         name: ${{ matrix.package }}_${{ env.PACKAGE_VERSION }}_ubuntu${{ matrix.version }}.${{ matrix.distro }}_${{ matrix.arch }}
         path: artifacts/

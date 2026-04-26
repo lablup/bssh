@@ -70,11 +70,11 @@ jobs:
     steps:
       # 1) Checkout repository
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       # 2) Cache Cargo build artifacts
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -105,7 +105,7 @@ jobs:
       # 6) macOS code signing
       - name: Import Distribution certificate
         if: runner.os == 'macOS'
-        uses: apple-actions/import-codesign-certs@v3
+        uses: apple-actions/import-codesign-certs@v7
         with:
           p12-file-base64: ${{ secrets.DEV_ID_CERT_P12 }}
           p12-password: ${{ secrets.DEV_ID_CERT_PASSWORD }}
@@ -222,7 +222,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Convert pre-release to official release
         run: |
