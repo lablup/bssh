@@ -26,7 +26,7 @@ serde = ["ssh-key/serde"]
 [dependencies]
 aes = "0.8"
 async-trait = { version = "0.1.50", optional = true }
-aws-lc-rs = { version = "1.16.2", optional = true }
+aws-lc-rs = { version = "1.16.3", optional = true }
 bitflags = "2.0"
 block-padding = { version = "0.3", features = ["std"] }
 byteorder = "1.4"
@@ -41,9 +41,9 @@ delegate = "0.13"
 digest = "0.10"
 der = "0.8"
 des = { version = "0.8.1", optional = true }
-ecdsa = "0.17.0-rc.16"
+ecdsa = "0.17.0-rc.17"
 ed25519-dalek = { version = "3.0.0-pre.6", features = ["alloc", "rand_core", "pkcs8"] }
-elliptic-curve = { version = "0.14.0-rc.30", features = ["ecdh"] }
+elliptic-curve = { version = "0.14.0-rc.31", features = ["ecdh"] }
 enum_dispatch = "0.3.13"
 flate2 = { version = "1.0.15", optional = true }
 futures = "0.3"
@@ -59,12 +59,14 @@ module-lattice = "0.2"
 # num-bigint 0.4.x only supports rand 0.8; upstream russh ships a fork that
 # adds rand 0.10 support via the `rand_0_10` feature flag.
 num-bigint = { package = "internal-russh-num-bigint", version = "=0.5.0", features = ["rand_0_10"] }
-p256 = { version = "0.14.0-rc.8", features = ["ecdh"] }
-p384 = { version = "0.14.0-rc.8", features = ["ecdh"] }
-p521 = { version = "0.14.0-rc.8", features = ["ecdh"] }
+p256 = { version = "0.14.0-rc.9", features = ["ecdh"] }
+p384 = { version = "0.14.0-rc.9", features = ["ecdh"] }
+p521 = { version = "0.14.0-rc.9", features = ["ecdh"] }
 pbkdf2 = "0.12"
 pkcs1 = { version = "0.8.0-rc.4", optional = true }
-pkcs5 = "0.8.0-rc.13"
+# Pinned: pkcs8 0.11.0-rc.11 still calls the rc.13-era `Parameters::recommended` API.
+# Stable 0.8.0 renamed it to `generate_recommended` and breaks pkcs8.
+pkcs5 = "=0.8.0-rc.13"
 pkcs8 = { version = "0.11.0-rc.11", features = ["encryption", "std"] }
 polyval = "0.7.1"
 rand_core = { version = "0.10.0" }
@@ -79,7 +81,7 @@ spki = "0.8.0"
 ssh-encoding = { version = "0.2", features = ["bytes"] }
 subtle = "2.4"
 thiserror = "2.0.18"
-tokio = { version = "1.51.1", features = ["io-util", "sync", "time", "rt-multi-thread", "net"] }
+tokio = { version = "1.52.1", features = ["io-util", "sync", "time", "rt-multi-thread", "net"] }
 typenum = "1.17"
 universal-hash = "0.6.1"
 yasna = { version = "0.5.0", features = ["bit-vec", "num-bigint"], optional = true }

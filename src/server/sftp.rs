@@ -1191,18 +1191,18 @@ impl russh_sftp::server::Handler for SftpHandler {
                     match component {
                         Component::Normal(c) => resolved.push(c),
                         Component::CurDir => {}
-                        Component::ParentDir => {
-                            if !resolved.pop() || !resolved.starts_with(&root_dir) {
-                                tracing::warn!(
-                                    user = %user,
-                                    link = %link_path.display(),
-                                    target = %targetpath,
-                                    "Relative symlink target escapes root"
-                                );
-                                return Err(SftpError::permission_denied(
-                                    "Symlink target must be within root directory",
-                                ));
-                            }
+                        Component::ParentDir
+                            if (!resolved.pop() || !resolved.starts_with(&root_dir)) =>
+                        {
+                            tracing::warn!(
+                                user = %user,
+                                link = %link_path.display(),
+                                target = %targetpath,
+                                "Relative symlink target escapes root"
+                            );
+                            return Err(SftpError::permission_denied(
+                                "Symlink target must be within root directory",
+                            ));
                         }
                         _ => {}
                     }

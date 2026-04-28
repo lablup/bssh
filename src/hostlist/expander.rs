@@ -223,10 +223,8 @@ fn parse_port_suffix(spec: &str) -> Result<(&str, Option<String>), HostlistError
     for (i, ch) in spec.char_indices() {
         match ch {
             '[' => bracket_depth += 1,
-            ']' => {
-                if bracket_depth > 0 {
-                    bracket_depth -= 1;
-                }
+            ']' if bracket_depth > 0 => {
+                bracket_depth -= 1;
             }
             ':' if bracket_depth == 0 => {
                 last_colon_outside = Some(i);

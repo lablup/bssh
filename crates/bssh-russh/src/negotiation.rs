@@ -131,13 +131,12 @@ const CIPHER_ORDER: &[cipher::Name] = &[
     cipher::AES_128_CTR,
 ];
 
-const HMAC_ORDER: &[mac::Name] = &[
+// SHA-1 MAC variants are excluded from defaults.
+const SAFE_HMAC_ORDER: &[mac::Name] = &[
     mac::HMAC_SHA512_ETM,
     mac::HMAC_SHA256_ETM,
     mac::HMAC_SHA512,
     mac::HMAC_SHA256,
-    mac::HMAC_SHA1_ETM,
-    mac::HMAC_SHA1,
 ];
 
 const COMPRESSION_ORDER: &[compression::Name] = &[
@@ -171,7 +170,7 @@ impl Preferred {
             Algorithm::Rsa { hash: None },
         ]),
         cipher: Cow::Borrowed(CIPHER_ORDER),
-        mac: Cow::Borrowed(HMAC_ORDER),
+        mac: Cow::Borrowed(SAFE_HMAC_ORDER),
         compression: Cow::Borrowed(COMPRESSION_ORDER),
     };
 
@@ -179,7 +178,7 @@ impl Preferred {
         kex: Cow::Borrowed(SAFE_KEX_ORDER),
         key: Preferred::DEFAULT.key,
         cipher: Cow::Borrowed(CIPHER_ORDER),
-        mac: Cow::Borrowed(HMAC_ORDER),
+        mac: Cow::Borrowed(SAFE_HMAC_ORDER),
         compression: Cow::Borrowed(COMPRESSION_ORDER),
     };
 }

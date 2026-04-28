@@ -10,7 +10,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UPSTREAM_URL="https://github.com/warp-tech/russh.git"
 TEMP_DIR="/tmp/russh-sync-$$"
-PATCH_FILE="$SCRIPT_DIR/patches/handle-data-fix.patch"
+PATCH_DIR="$SCRIPT_DIR/patches"
 
 # Colors for output
 RED='\033[0;31m'
@@ -82,27 +82,50 @@ if [ "$VERSION" != "main" ]; then
 fi
 
 # Apply our patches
+#
+# Each *.patch file under patches/ is a forward-port of a fix that is either
+# unique to this fork (e.g. handle-data-fix.patch) or a cherry-pick of an
+# unreleased upstream commit. For cherry-picks, once upstream releases a
+# version that includes the change, the next sync will automatically detect
+# it (reverse-apply succeeds) and skip the patch — at which point the patch
+# file should be deleted.
 log_info "Applying patches..."
 
-if [ -f "$PATCH_FILE" ]; then
-    if patch -p1 --dry-run < "$PATCH_FILE" > /dev/null 2>&1; then
-        patch -p1 < "$PATCH_FILE"
-        log_info "Applied handle-data-fix.patch"
+shopt -s nullglob
+PATCH_FILES=("$PATCH_DIR"/*.patch)
+shopt -u nullglob
+
+if [ ${#PATCH_FILES[@]} -eq 0 ]; then
+    log_warn "No patch files found in $PATCH_DIR/"
+fi
+
+OBSOLETE_PATCHES=()
+
+for PATCH_FILE in "${PATCH_FILES[@]}"; do
+    PATCH_NAME=$(basename "$PATCH_FILE")
+
+    # If reverse-apply succeeds, the change is already in upstream — skip and
+    # mark the patch as obsolete so the maintainer can delete it.
+    if patch -p1 -R --dry-run --silent < "$PATCH_FILE" > /dev/null 2>&1; then
+        log_info "Skipping $PATCH_NAME — already present in upstream (consider deleting this patch file)"
+        OBSOLETE_PATCHES+=("$PATCH_NAME")
+        continue
+    fi
+
+    if patch -p1 --dry-run --silent < "$PATCH_FILE" > /dev/null 2>&1; then
+        patch -p1 --silent < "$PATCH_FILE"
+        log_info "Applied $PATCH_NAME"
     else
-        log_warn "Patch may not apply cleanly, attempting with fuzz..."
+        log_warn "$PATCH_NAME may not apply cleanly, attempting with fuzz..."
         if patch -p1 --fuzz=3 < "$PATCH_FILE"; then
-            log_warn "Patch applied with fuzz - please verify manually"
+            log_warn "$PATCH_NAME applied with fuzz - please verify manually"
         else
-            log_error "Failed to apply patch. Manual intervention required."
+            log_error "Failed to apply $PATCH_NAME. Manual intervention required."
             log_error "Patch file: $PATCH_FILE"
             exit 1
         fi
     fi
-else
-    log_error "Patch file not found: $PATCH_FILE"
-    log_error "Please create the patch file first using: ./create-patch.sh"
-    exit 1
-fi
+done
 
 # Verify build
 log_info "Verifying build..."
@@ -116,6 +139,16 @@ fi
 
 log_info "Sync complete!"
 log_info "Upstream version: $VERSION ($COMMIT_HASH)"
+
+if [ ${#OBSOLETE_PATCHES[@]} -gt 0 ]; then
+    log_info ""
+    log_warn "The following patches are now obsolete (already in upstream $VERSION):"
+    for p in "${OBSOLETE_PATCHES[@]}"; do
+        log_warn "  - $p"
+    done
+    log_warn "Delete these patch files: rm $PATCH_DIR/{$(IFS=,; echo "${OBSOLETE_PATCHES[*]}")}"
+fi
+
 log_info ""
 log_info "Next steps:"
 log_info "  1. Review changes: git diff crates/bssh-russh/"
