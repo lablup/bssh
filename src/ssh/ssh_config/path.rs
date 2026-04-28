@@ -370,24 +370,22 @@ fn sanitize_environment_value(value: &str, var_name: &str) -> Result<String> {
 
     // Additional validation for specific variable types
     match var_name {
-        "SSH_AUTH_SOCK" => {
+        "SSH_AUTH_SOCK"
             // Should be a socket path, typically in /tmp or similar
-            if !value.starts_with('/') && !value.starts_with("./") {
+            if !value.starts_with('/') && !value.starts_with("./") => {
                 tracing::warn!(
                     "SSH_AUTH_SOCK '{}' does not look like a typical socket path",
                     value
                 );
             }
-        }
-        "HOME" => {
+        "HOME"
             // Should be an absolute path to a directory
-            if !value.starts_with('/') && !value.contains(":\\") {
+            if !value.starts_with('/') && !value.contains(":\\") => {
                 tracing::warn!(
                     "HOME '{}' does not look like a typical home directory path",
                     value
                 );
             }
-        }
         _ => {}
     }
 

@@ -113,19 +113,15 @@ fn handle_summary_keys(app: &mut TuiApp, key: KeyEvent, num_nodes: usize) {
             }
         }
         // 's' for split view
-        KeyCode::Char('s') => {
-            if num_nodes >= 2 {
-                // Default to first 4 nodes
-                let indices: Vec<usize> = (0..num_nodes.min(4)).collect();
-                app.show_split(indices, num_nodes);
-            }
+        KeyCode::Char('s') if num_nodes >= 2 => {
+            // Default to first 4 nodes
+            let indices: Vec<usize> = (0..num_nodes.min(4)).collect();
+            app.show_split(indices, num_nodes);
         }
         // 'd' for diff view
-        KeyCode::Char('d') => {
-            if num_nodes >= 2 {
-                // Default to first 2 nodes
-                app.show_diff(0, 1, num_nodes);
-            }
+        KeyCode::Char('d') if num_nodes >= 2 => {
+            // Default to first 2 nodes
+            app.show_diff(0, 1, num_nodes);
         }
         _ => {}
     }

@@ -266,25 +266,23 @@ impl Client {
                         }
                     }
                 }
-                russh::ChannelMsg::ExtendedData { ref data, ext } => {
-                    if ext == 1 {
-                        // Handle backpressure for stderr as well
-                        match sender.try_send(CommandOutput::StdErr(data.clone())) {
-                            Ok(_) => {}
-                            Err(tokio::sync::mpsc::error::TrySendError::Full(output)) => {
-                                // Channel is full - apply backpressure by waiting
-                                tracing::trace!("Channel full, applying backpressure for stderr");
-                                if sender.send(output).await.is_err() {
-                                    // Receiver dropped - stop processing
-                                    tracing::debug!("Receiver dropped, stopping stderr processing");
-                                    break;
-                                }
-                            }
-                            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                russh::ChannelMsg::ExtendedData { ref data, ext } if ext == 1 => {
+                    // Handle backpressure for stderr as well
+                    match sender.try_send(CommandOutput::StdErr(data.clone())) {
+                        Ok(_) => {}
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(output)) => {
+                            // Channel is full - apply backpressure by waiting
+                            tracing::trace!("Channel full, applying backpressure for stderr");
+                            if sender.send(output).await.is_err() {
                                 // Receiver dropped - stop processing
-                                tracing::debug!("Channel closed, stopping stderr processing");
+                                tracing::debug!("Receiver dropped, stopping stderr processing");
                                 break;
                             }
+                        }
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                            // Receiver dropped - stop processing
+                            tracing::debug!("Channel closed, stopping stderr processing");
+                            break;
                         }
                     }
                 }
@@ -448,80 +446,77 @@ impl Client {
                         return Ok(1);
                     }
                 }
-                russh::ChannelMsg::ExtendedData { ref data, ext } => {
-                    if ext == 1 {
-                        // Stderr - also check for sudo prompts
-                        let text = String::from_utf8_lossy(data);
-                        accumulated_output.push_str(&text);
+                russh::ChannelMsg::ExtendedData { ref data, ext } if ext == 1 => {
+                    // Stderr - also check for sudo prompts
+                    let text = String::from_utf8_lossy(data);
+                    accumulated_output.push_str(&text);
 
-                        // Enforce buffer size limit to prevent unbounded memory growth
-                        if accumulated_output.len() > MAX_SUDO_PROMPT_BUFFER_SIZE {
-                            // Keep only the last MAX_SUDO_PROMPT_BUFFER_SIZE bytes
-                            let truncate_at =
-                                accumulated_output.len() - MAX_SUDO_PROMPT_BUFFER_SIZE;
-                            accumulated_output = accumulated_output[truncate_at..].to_string();
-                            tracing::debug!(
-                                "Sudo prompt buffer exceeded limit (stderr), truncated to {} bytes",
-                                MAX_SUDO_PROMPT_BUFFER_SIZE
-                            );
-                        }
+                    // Enforce buffer size limit to prevent unbounded memory growth
+                    if accumulated_output.len() > MAX_SUDO_PROMPT_BUFFER_SIZE {
+                        // Keep only the last MAX_SUDO_PROMPT_BUFFER_SIZE bytes
+                        let truncate_at = accumulated_output.len() - MAX_SUDO_PROMPT_BUFFER_SIZE;
+                        accumulated_output = accumulated_output[truncate_at..].to_string();
+                        tracing::debug!(
+                            "Sudo prompt buffer exceeded limit (stderr), truncated to {} bytes",
+                            MAX_SUDO_PROMPT_BUFFER_SIZE
+                        );
+                    }
 
-                        match sender.try_send(CommandOutput::StdErr(data.clone())) {
-                            Ok(_) => {}
-                            Err(tokio::sync::mpsc::error::TrySendError::Full(output)) => {
-                                tracing::trace!("Channel full, applying backpressure for stderr");
-                                if sender.send(output).await.is_err() {
-                                    tracing::debug!("Receiver dropped, stopping stderr processing");
-                                    break;
-                                }
-                            }
-                            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                                tracing::debug!("Channel closed, stopping stderr processing");
+                    match sender.try_send(CommandOutput::StdErr(data.clone())) {
+                        Ok(_) => {}
+                        Err(tokio::sync::mpsc::error::TrySendError::Full(output)) => {
+                            tracing::trace!("Channel full, applying backpressure for stderr");
+                            if sender.send(output).await.is_err() {
+                                tracing::debug!("Receiver dropped, stopping stderr processing");
                                 break;
                             }
                         }
-
-                        // Check if we need to send the password (sudo can prompt on stderr)
-                        if password_send_count < MAX_SUDO_PASSWORD_SENDS
-                            && contains_sudo_prompt(&accumulated_output)
-                        {
-                            password_send_count += 1;
-                            tracing::debug!(
-                                "Sudo prompt detected on stderr, sending password (attempt {}/{})",
-                                password_send_count,
-                                MAX_SUDO_PASSWORD_SENDS
-                            );
-                            let password_data = sudo_password.with_newline();
-                            if let Err(e) = channel.data(&password_data[..]).await {
-                                tracing::error!("Failed to send sudo password: {}", e);
-                                return Err(super::Error::SshError(e));
-                            }
-                            accumulated_output.clear();
+                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                            tracing::debug!("Channel closed, stopping stderr processing");
+                            break;
                         }
+                    }
 
-                        // Check for sudo failure
-                        if password_send_count > 0 && contains_sudo_failure(&accumulated_output) {
-                            tracing::debug!(
-                                "Sudo authentication failed on stderr after {} attempt(s), closing channel",
-                                password_send_count
-                            );
-                            // Send error message to stderr so user can see why it failed
-                            let error_msg = format!(
-                                "\n[bssh] Sudo authentication failed after {} attempt(s). \
+                    // Check if we need to send the password (sudo can prompt on stderr)
+                    if password_send_count < MAX_SUDO_PASSWORD_SENDS
+                        && contains_sudo_prompt(&accumulated_output)
+                    {
+                        password_send_count += 1;
+                        tracing::debug!(
+                            "Sudo prompt detected on stderr, sending password (attempt {}/{})",
+                            password_send_count,
+                            MAX_SUDO_PASSWORD_SENDS
+                        );
+                        let password_data = sudo_password.with_newline();
+                        if let Err(e) = channel.data(&password_data[..]).await {
+                            tracing::error!("Failed to send sudo password: {}", e);
+                            return Err(super::Error::SshError(e));
+                        }
+                        accumulated_output.clear();
+                    }
+
+                    // Check for sudo failure
+                    if password_send_count > 0 && contains_sudo_failure(&accumulated_output) {
+                        tracing::debug!(
+                            "Sudo authentication failed on stderr after {} attempt(s), closing channel",
+                            password_send_count
+                        );
+                        // Send error message to stderr so user can see why it failed
+                        let error_msg = format!(
+                            "\n[bssh] Sudo authentication failed after {} attempt(s). \
                                  Please verify your sudo password is correct.\n",
-                                password_send_count
-                            );
-                            let _ = sender
-                                .send(CommandOutput::StdErr(Bytes::from(error_msg.into_bytes())))
-                                .await;
-                            // Send exit code 1 to indicate failure to the stream
-                            let _ = sender.send(CommandOutput::ExitCode(1)).await;
-                            // Close the channel and return failure exit code
-                            let _ = channel.eof().await;
-                            let _ = channel.close().await;
-                            drop(sender);
-                            return Ok(1);
-                        }
+                            password_send_count
+                        );
+                        let _ = sender
+                            .send(CommandOutput::StdErr(Bytes::from(error_msg.into_bytes())))
+                            .await;
+                        // Send exit code 1 to indicate failure to the stream
+                        let _ = sender.send(CommandOutput::ExitCode(1)).await;
+                        // Close the channel and return failure exit code
+                        let _ = channel.eof().await;
+                        let _ = channel.close().await;
+                        drop(sender);
+                        return Ok(1);
                     }
                 }
                 russh::ChannelMsg::ExitStatus { exit_status } => result = Some(exit_status),

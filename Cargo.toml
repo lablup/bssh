@@ -18,16 +18,16 @@ edition = "2024"
 
 [dependencies]
 bytes = "1.11.1"
-tokio = { version = "1.51.1", features = ["full"] }
+tokio = { version = "1.52.1", features = ["full"] }
 # Use our internal russh fork with session loop fixes
 # - Development: uses local path (crates/bssh-russh)
 # - Publishing: uses crates.io version (path ignored)
 russh = { package = "bssh-russh", version = "0.60.1", path = "crates/bssh-russh" }
 russh-sftp = "2.1.1"
-clap = { version = "4.6.0", features = ["derive", "env"] }
+clap = { version = "4.6.1", features = ["derive", "env"] }
 anyhow = "1.0.102"
 thiserror = "2.0.18"
-tracing = "0.1.43"
+tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_yaml = "0.9"
@@ -57,10 +57,10 @@ nix = { version = "0.31", features = ["fs", "poll", "process", "signal", "term"]
 atty = "0.2.14"
 arrayvec = "0.7.6"
 smallvec = "1.15.1"
-lru = "0.16.2"
-uuid = { version = "1.23.0", features = ["v4"] }
+lru = "0.17.0"
+uuid = { version = "1.23.1", features = ["v4"] }
 fastrand = "2.4.1"
-tokio-util = "0.7.17"
+tokio-util = "0.7.18"
 socket2 = "0.6"
 shell-words = "1.1.1"
 libc = "0.2"
