@@ -289,6 +289,33 @@ fn resolve_chroot_scp(requested: &Path, root: &Path, user: &str) -> Result<PathB
     Ok(resolved)
 }
 
+/// Find the closest existing ancestor of `path` and return both the ancestor
+/// and its canonicalized form.
+///
+/// Walks up `path` (popping one component at a time) until a path that exists
+/// on the filesystem is found, then canonicalizes it. Used by chroot
+/// resolution to detect intermediate-directory symlinks pointing outside the
+/// chroot — without this check, `OpenOptions::open(...)` on a non-existent
+/// final path would happily follow a parent-symlink and write outside the
+/// chroot.
+///
+/// Returns `None` when no ancestor exists or canonicalization fails for every
+/// candidate.
+fn closest_existing_canonical(path: &Path) -> Option<(PathBuf, PathBuf)> {
+    let mut cur = path.to_path_buf();
+    loop {
+        if cur.exists() {
+            if let Ok(canonical) = std::fs::canonicalize(&cur) {
+                return Some((cur, canonical));
+            }
+            return None;
+        }
+        if !cur.pop() {
+            return None;
+        }
+    }
+}
+
 /// Resolve a client-supplied SCP path without a chroot.
 ///
 /// Absolute paths are used verbatim. Relative paths join with `cwd`
@@ -403,6 +430,10 @@ impl ScpHandler {
     /// - Absolute client paths outside `root` are rejected.
     /// - Relative paths are joined with `root`; `..` traversal is clamped.
     /// - Existing paths are canonicalized to catch symlink-escape attempts.
+    /// - For non-existent paths (typical for new-file creates), the closest
+    ///   existing ancestor is canonicalized and verified to stay inside
+    ///   `root`. This blocks intermediate-directory symlinks pointing outside
+    ///   the chroot.
     ///
     /// ## Without chroot (`root_dir = None`):
     /// - Absolute paths are used verbatim.
@@ -444,6 +475,34 @@ impl ScpHandler {
                         "Canonicalization failed, using resolved path"
                     );
                 }
+            }
+        } else if let Some(root) = self.root_dir.as_deref() {
+            // Path does not exist (typical for new-file create/upload). Walk
+            // up to the closest existing ancestor and verify its canonical
+            // form stays inside the chroot. This catches the case where an
+            // intermediate parent is a symlink pointing outside the chroot;
+            // without this check, `OpenOptions::open(...)` would follow the
+            // symlink and create the file outside the chroot.
+            //
+            // Compare canonical-vs-canonical: an unresolved root might itself
+            // contain symlinks, so we canonicalize both sides. If the chroot
+            // root does not exist on disk, the operator config is bad and we
+            // can only fall back to the lexical check above (skip enforcement).
+            if let Some(canonical_root) = std::fs::canonicalize(root).ok()
+                && let Some((ancestor, canonical_ancestor)) = closest_existing_canonical(&resolved)
+                && !canonical_ancestor.starts_with(&canonical_root)
+            {
+                tracing::warn!(
+                    event = "symlink_escape_attempt",
+                    user = %self.user_info.username,
+                    requested = %path_str,
+                    resolved = %resolved.display(),
+                    ancestor = %ancestor.display(),
+                    canonical_ancestor = %canonical_ancestor.display(),
+                    canonical_root = %canonical_root.display(),
+                    "Security: parent-directory symlink escape blocked"
+                );
+                anyhow::bail!("Access denied: symlink target outside root");
             }
         }
 

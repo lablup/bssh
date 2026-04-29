@@ -282,6 +282,33 @@ fn resolve_chroot(requested: &Path, root: &Path) -> Result<PathBuf, SftpError> {
     Ok(resolved)
 }
 
+/// Find the closest existing ancestor of `path` and return both the ancestor
+/// and its canonicalized form.
+///
+/// Walks up `path` (popping one component at a time) until a path that exists
+/// on the filesystem is found, then canonicalizes it. Used by chroot
+/// resolution to detect intermediate-directory symlinks pointing outside the
+/// chroot — without this check, `open(...)` / `create_dir(...)` etc. on a
+/// non-existent final path would happily follow a parent-symlink and operate
+/// outside the chroot.
+///
+/// Returns `None` when no ancestor exists or canonicalization fails for every
+/// candidate.
+fn closest_existing_canonical(path: &Path) -> Option<(PathBuf, PathBuf)> {
+    let mut cur = path.to_path_buf();
+    loop {
+        if cur.exists() {
+            if let Ok(canonical) = std::fs::canonicalize(&cur) {
+                return Some((cur, canonical));
+            }
+            return None;
+        }
+        if !cur.pop() {
+            return None;
+        }
+    }
+}
+
 /// Resolve a client-supplied path without a chroot.
 ///
 /// - Absolute paths are used verbatim, after normalizing `.` and `..`.
@@ -398,10 +425,43 @@ impl SftpHandler {
     ) -> Result<PathBuf, SftpError> {
         let requested = Path::new(path);
 
-        match root_dir {
-            Some(root) => resolve_chroot(requested, root),
-            None => Ok(resolve_no_chroot(requested, cwd)),
+        let resolved = match root_dir {
+            Some(root) => resolve_chroot(requested, root)?,
+            None => return Ok(resolve_no_chroot(requested, cwd)),
+        };
+
+        // Chroot mode: also verify the closest existing ancestor canonicalizes
+        // inside the chroot. This catches intermediate-directory symlinks
+        // pointing outside the chroot. Without this, a chroot-internal symlink
+        // such as `chroot/escape -> /etc` would let a client target
+        // `chroot/escape/passwd` and have `open(...)` follow the symlink to
+        // write `/etc/passwd`. Lexical `starts_with(root)` alone cannot
+        // detect this; we need filesystem-level canonicalization.
+        //
+        // Compare canonical-vs-canonical: an unresolved root might itself
+        // contain symlinks, so we canonicalize both sides. If the chroot
+        // root does not exist on disk, the operator config is bad and we
+        // can only fall back to the lexical check (skip enforcement here).
+        let root = root_dir.expect("chroot branch implies Some(root)");
+        if let Some(canonical_root) = std::fs::canonicalize(root).ok()
+            && let Some((ancestor, canonical_ancestor)) = closest_existing_canonical(&resolved)
+            && !canonical_ancestor.starts_with(&canonical_root)
+        {
+            tracing::warn!(
+                event = "symlink_escape_attempt",
+                requested = %path,
+                resolved = %resolved.display(),
+                ancestor = %ancestor.display(),
+                canonical_ancestor = %canonical_ancestor.display(),
+                canonical_root = %canonical_root.display(),
+                "Security: parent-directory symlink escape blocked"
+            );
+            return Err(SftpError::permission_denied(
+                "Access denied: path outside root",
+            ));
         }
+
+        Ok(resolved)
     }
 
     /// Resolve a client path to an absolute filesystem path.

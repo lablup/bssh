@@ -296,3 +296,149 @@ fn scp_chroot_blocks_relative_symlink_escape() {
         .expect_err("relative symlink escape must be blocked");
     assert!(err.to_string().contains("symlink target outside root"));
 }
+
+// ---------------------------------------------------------------------------
+// Parent-directory symlink escape (issue #186 review-time finding)
+// ---------------------------------------------------------------------------
+//
+// An attacker who can place a symlink inside the chroot pointing to a
+// directory outside the chroot must not be able to create files outside the
+// chroot by writing through the symlink. Lexical `starts_with(root)` alone
+// cannot detect this — the chroot resolver also has to canonicalize the
+// closest existing ancestor and compare it against the canonicalized chroot.
+
+#[test]
+#[cfg(unix)]
+fn scp_chroot_blocks_parent_symlink_create() {
+    let dir = tempdir().unwrap();
+    let chroot = dir.path().join("chroot");
+    std::fs::create_dir(&chroot).unwrap();
+    let outside = dir.path().join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    std::os::unix::fs::symlink(&outside, chroot.join("escape")).unwrap();
+
+    let target = chroot.join("escape").join("newfile.txt");
+    let handler = ScpHandler::new(
+        ScpMode::Sink,
+        target.clone(),
+        user(),
+        Some(chroot.clone()),
+        chroot.clone(),
+    );
+
+    let err = handler
+        .resolve_path(&target)
+        .expect_err("parent-symlink escape must be blocked");
+    assert!(
+        err.to_string().contains("outside root"),
+        "expected access-denied error, got: {err}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn sftp_chroot_blocks_parent_symlink_create() {
+    let dir = tempdir().unwrap();
+    let chroot = dir.path().join("chroot");
+    std::fs::create_dir(&chroot).unwrap();
+    let outside = dir.path().join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    std::os::unix::fs::symlink(&outside, chroot.join("escape")).unwrap();
+
+    let handler = SftpHandler::new(user(), Some(chroot.clone()), chroot.clone());
+
+    let target_str = format!("{}/escape/newfile.txt", chroot.display());
+    let err = handler
+        .resolve_path(&target_str)
+        .expect_err("parent-symlink escape must be blocked");
+    assert!(
+        err.to_string().contains("outside root"),
+        "expected permission-denied, got: {err}"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn sftp_chroot_blocks_parent_symlink_mkdir() {
+    let dir = tempdir().unwrap();
+    let chroot = dir.path().join("chroot");
+    std::fs::create_dir(&chroot).unwrap();
+    let outside = dir.path().join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    std::os::unix::fs::symlink(&outside, chroot.join("escape")).unwrap();
+
+    let handler = SftpHandler::new(user(), Some(chroot.clone()), chroot.clone());
+
+    let target_str = format!("{}/escape/newdir", chroot.display());
+    let err = handler
+        .resolve_path(&target_str)
+        .expect_err("parent-symlink mkdir-target must be blocked");
+    assert!(err.to_string().contains("outside root"));
+}
+
+#[test]
+#[cfg(unix)]
+fn scp_chroot_blocks_relative_through_parent_symlink() {
+    let dir = tempdir().unwrap();
+    let chroot = dir.path().join("chroot");
+    std::fs::create_dir(&chroot).unwrap();
+    let outside = dir.path().join("outside");
+    std::fs::create_dir(&outside).unwrap();
+    std::os::unix::fs::symlink(&outside, chroot.join("escape")).unwrap();
+
+    let handler = ScpHandler::new(
+        ScpMode::Sink,
+        PathBuf::from("escape/newfile.txt"),
+        user(),
+        Some(chroot.clone()),
+        chroot.clone(),
+    );
+
+    let err = handler
+        .resolve_path(Path::new("escape/newfile.txt"))
+        .expect_err("relative parent-symlink escape must be blocked");
+    assert!(err.to_string().contains("outside root"));
+}
+
+#[test]
+#[cfg(unix)]
+fn scp_chroot_allows_legitimate_nested_create() {
+    // Sanity: ensure the new check does not over-reject normal nested writes
+    // through legitimate (in-chroot) directories.
+    let dir = tempdir().unwrap();
+    let chroot = dir.path().join("chroot");
+    std::fs::create_dir(&chroot).unwrap();
+    std::fs::create_dir(chroot.join("subdir")).unwrap();
+
+    let target = chroot.join("subdir").join("legit.txt");
+    let handler = ScpHandler::new(
+        ScpMode::Sink,
+        target.clone(),
+        user(),
+        Some(chroot.clone()),
+        chroot.clone(),
+    );
+
+    let resolved = handler
+        .resolve_path(&target)
+        .expect("legitimate nested create should resolve");
+    assert!(resolved.starts_with(&chroot));
+}
+
+#[test]
+#[cfg(unix)]
+fn sftp_chroot_allows_create_in_nonexistent_subdir() {
+    // The intermediate-symlink check must NOT reject paths whose parents
+    // simply don't exist (legitimate mkdir-then-create flow).
+    let dir = tempdir().unwrap();
+    let chroot = dir.path().join("chroot");
+    std::fs::create_dir(&chroot).unwrap();
+
+    let handler = SftpHandler::new(user(), Some(chroot.clone()), chroot.clone());
+
+    let target_str = format!("{}/will-be-created/newfile.txt", chroot.display());
+    let resolved = handler
+        .resolve_path(&target_str)
+        .expect("nested non-existent subdir should resolve");
+    assert!(resolved.starts_with(&chroot));
+}
