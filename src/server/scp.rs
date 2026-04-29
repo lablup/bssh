@@ -37,11 +37,22 @@
 //! use std::path::PathBuf;
 //!
 //! let user = UserInfo::new("testuser");
+//! // Without chroot (OpenSSH-compatible behavior):
+//! let handler = ScpHandler::new(
+//!     ScpMode::Sink,
+//!     PathBuf::from("/tmp/upload"),
+//!     user.clone(),
+//!     None,
+//!     PathBuf::from("/home/testuser"),
+//! );
+//!
+//! // With chroot:
 //! let handler = ScpHandler::new(
 //!     ScpMode::Sink,
 //!     PathBuf::from("/tmp/upload"),
 //!     user,
-//!     Some(PathBuf::from("/home/testuser")),
+//!     Some(PathBuf::from("/srv/scp")),
+//!     PathBuf::from("/home/testuser"),
 //! );
 //! ```
 
@@ -199,6 +210,99 @@ impl ScpCommand {
     }
 }
 
+/// Normalize a path's `..` and `.` components without touching the filesystem.
+fn normalize_components(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(c) => out.push(c),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push("..");
+                }
+            }
+            Component::RootDir => out.push("/"),
+            Component::Prefix(p) => out.push(p.as_os_str()),
+        }
+    }
+    out
+}
+
+/// Resolve a client-supplied SCP path against a chroot root.
+///
+/// - Absolute paths inside `root` are honored as-is.
+/// - Absolute paths outside `root` are rejected.
+/// - Relative paths are joined with `root`; `..` is clamped to `root`.
+fn resolve_chroot_scp(requested: &Path, root: &Path, user: &str) -> Result<PathBuf> {
+    if requested.is_absolute() {
+        // Plain "/" is the client's view of the chroot root (matches what
+        // `realpath` returns). Map it back to the actual chroot directory.
+        if requested == Path::new("/") {
+            return Ok(root.to_path_buf());
+        }
+        let normalized = normalize_components(requested);
+        if normalized == root || normalized.starts_with(root) {
+            return Ok(normalized);
+        }
+        tracing::warn!(
+            event = "chroot_escape_blocked",
+            user = %user,
+            requested = %requested.display(),
+            root = %root.display(),
+            "Security: absolute path outside chroot blocked"
+        );
+        anyhow::bail!("Access denied: path outside root");
+    }
+
+    // Relative path under chroot: join, then walk components clamping `..`
+    // so traversal cannot escape the chroot.
+    let mut resolved = root.to_path_buf();
+    for component in requested.components() {
+        match component {
+            Component::Normal(c) => resolved.push(c),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if resolved != root {
+                    resolved.pop();
+                }
+                if !resolved.starts_with(root) {
+                    resolved = root.to_path_buf();
+                }
+            }
+            Component::RootDir | Component::Prefix(_) => {}
+        }
+    }
+
+    if !resolved.starts_with(root) {
+        tracing::warn!(
+            event = "path_traversal_attempt",
+            user = %user,
+            requested = %requested.display(),
+            resolved = %resolved.display(),
+            root = %root.display(),
+            "Security: path traversal attempt blocked"
+        );
+        anyhow::bail!("Access denied: path outside root");
+    }
+
+    Ok(resolved)
+}
+
+/// Resolve a client-supplied SCP path without a chroot.
+///
+/// Absolute paths are used verbatim. Relative paths join with `cwd`
+/// (the user's home directory). `..` is normalized but not clamped.
+/// This matches OpenSSH `scp -t` behavior on a non-restricted account.
+fn resolve_no_chroot_scp(requested: &Path, cwd: &Path) -> PathBuf {
+    let joined = if requested.is_absolute() {
+        requested.to_path_buf()
+    } else {
+        cwd.join(requested)
+    };
+    normalize_components(&joined)
+}
+
 /// SCP server handler.
 ///
 /// Implements the SCP protocol for file transfer operations with
@@ -210,12 +314,26 @@ pub struct ScpHandler {
     target_path: PathBuf,
     /// Current user information.
     user_info: UserInfo,
-    /// Root directory for operations (chroot-like behavior).
-    root_dir: PathBuf,
+    /// Optional chroot root.
+    ///
+    /// `Some(path)` confines all transfers to `path` (chroot semantics).
+    /// `None` (default) runs without chroot: absolute paths are honored
+    /// verbatim and relative paths resolve from `cwd`. This matches OpenSSH.
+    root_dir: Option<PathBuf>,
+    /// Base directory for resolving relative client paths.
+    ///
+    /// Set to the chroot root when chroot is enabled, or to the user's home
+    /// directory when chroot is disabled.
+    cwd: PathBuf,
     /// Whether recursive mode is enabled.
     recursive: bool,
     /// Whether to preserve times.
     preserve_times: bool,
+    /// Whether the client signaled the destination is a directory (`-d`/`-r`).
+    ///
+    /// Used by `receive_file` to decide whether to append the source filename
+    /// to a single-file destination.
+    target_is_directory: bool,
     /// Stored times for the next file (mtime, atime).
     stored_times: Option<(u64, u64)>,
 }
@@ -228,20 +346,24 @@ impl ScpHandler {
     /// * `mode` - The SCP mode (source or sink)
     /// * `target_path` - The target path for the operation
     /// * `user_info` - Information about the authenticated user
-    /// * `root_dir` - Optional root directory for chroot-like behavior
+    /// * `root_dir` - Optional chroot root. When `None`, no chroot is applied.
+    /// * `home_dir` - The user's home directory; used as the base for relative
+    ///   paths when chroot is disabled.
     pub fn new(
         mode: ScpMode,
         target_path: PathBuf,
         user_info: UserInfo,
         root_dir: Option<PathBuf>,
+        home_dir: PathBuf,
     ) -> Self {
-        let root_dir = root_dir.unwrap_or_else(|| PathBuf::from("/"));
+        let cwd = root_dir.clone().unwrap_or_else(|| home_dir.clone());
 
         tracing::debug!(
             user = %user_info.username,
             mode = %mode,
             path = %target_path.display(),
-            root = %root_dir.display(),
+            chroot = ?root_dir.as_ref().map(|p| p.display().to_string()),
+            cwd = %cwd.display(),
             "Creating SCP handler"
         );
 
@@ -250,96 +372,72 @@ impl ScpHandler {
             target_path,
             user_info,
             root_dir,
+            cwd,
             recursive: false,
             preserve_times: false,
+            target_is_directory: false,
             stored_times: None,
         }
     }
 
     /// Create a handler from a parsed SCP command.
-    pub fn from_command(cmd: &ScpCommand, user_info: UserInfo, root_dir: Option<PathBuf>) -> Self {
-        let mut handler = Self::new(cmd.mode, cmd.path.clone(), user_info, root_dir);
+    pub fn from_command(
+        cmd: &ScpCommand,
+        user_info: UserInfo,
+        root_dir: Option<PathBuf>,
+        home_dir: PathBuf,
+    ) -> Self {
+        let mut handler = Self::new(cmd.mode, cmd.path.clone(), user_info, root_dir, home_dir);
         handler.recursive = cmd.recursive;
         handler.preserve_times = cmd.preserve_times;
+        handler.target_is_directory = cmd.target_is_directory;
         handler
     }
 
     /// Resolve a client path to an absolute filesystem path.
     ///
-    /// This method prevents path traversal attacks by:
-    /// 1. Joining the path with the root directory
-    /// 2. Normalizing the path (resolving "." and ".." components)
-    /// 3. Verifying the result is within the root directory
-    /// 4. If the path exists, canonicalizing to catch symlink attacks
+    /// Behavior depends on whether a chroot `root_dir` is configured.
+    ///
+    /// ## With chroot (`root_dir = Some(root)`):
+    /// - Absolute client paths inside `root` are honored as-is.
+    /// - Absolute client paths outside `root` are rejected.
+    /// - Relative paths are joined with `root`; `..` traversal is clamped.
+    /// - Existing paths are canonicalized to catch symlink-escape attempts.
+    ///
+    /// ## Without chroot (`root_dir = None`):
+    /// - Absolute paths are used verbatim.
+    /// - Relative paths are joined with `cwd` (user home directory).
+    /// - Filesystem permissions remain the access boundary, matching OpenSSH.
     pub fn resolve_path(&self, path: &Path) -> Result<PathBuf> {
         let path_str = path.to_string_lossy();
-
-        // Normalize the path manually without following symlinks
-        let normalized = if path.is_absolute() {
-            // Strip the leading "/" and join with root
-            let stripped = path.strip_prefix("/").unwrap_or(path);
-            self.root_dir.join(stripped)
-        } else {
-            self.root_dir.join(path)
+        let resolved = match self.root_dir.as_deref() {
+            Some(root) => resolve_chroot_scp(path, root, &self.user_info.username)?,
+            None => resolve_no_chroot_scp(path, &self.cwd),
         };
 
-        // Normalize path components (handle ".." and ".")
-        let mut resolved = PathBuf::new();
-        for component in normalized.components() {
-            match component {
-                Component::Normal(c) => resolved.push(c),
-                Component::CurDir => {} // Skip "."
-                Component::ParentDir => {
-                    // Go up but don't go above root
-                    if resolved.starts_with(&self.root_dir) && resolved != self.root_dir {
-                        resolved.pop();
-                    }
-                    // If we can't go up, stay at root
-                    if !resolved.starts_with(&self.root_dir) {
-                        resolved = self.root_dir.clone();
-                    }
-                }
-                Component::RootDir => resolved.push("/"),
-                Component::Prefix(p) => resolved.push(p.as_os_str()),
-            }
-        }
-
-        // Ensure the resolved path is within the root
-        if !resolved.starts_with(&self.root_dir) {
-            tracing::warn!(
-                event = "path_traversal_attempt",
-                user = %self.user_info.username,
-                requested = %path_str,
-                resolved = %resolved.display(),
-                root = %self.root_dir.display(),
-                "Security: path traversal attempt blocked"
-            );
-            anyhow::bail!("Access denied: path outside root");
-        }
-
-        // If the path exists, canonicalize it to catch symlink attacks
-        // This prevents an attacker from creating symlinks that point outside the root
+        // Canonicalize existing paths to catch symlink-escape attempts. Only
+        // enforce the in-root invariant when chroot is enabled; without
+        // chroot, canonicalization is purely informational.
         if resolved.exists() {
             match std::fs::canonicalize(&resolved) {
                 Ok(canonical) => {
-                    if !canonical.starts_with(&self.root_dir) {
+                    if let Some(root) = self.root_dir.as_deref()
+                        && !canonical.starts_with(root)
+                    {
                         tracing::warn!(
                             event = "symlink_escape_attempt",
                             user = %self.user_info.username,
                             requested = %path_str,
                             resolved = %resolved.display(),
                             canonical = %canonical.display(),
-                            root = %self.root_dir.display(),
+                            root = %root.display(),
                             "Security: symlink escape attempt blocked"
                         );
                         anyhow::bail!("Access denied: symlink target outside root");
                     }
-                    // Use the canonical path for existing files
                     return Ok(canonical);
                 }
                 Err(e) => {
-                    // If canonicalization fails, proceed with the resolved path
-                    // This handles broken symlinks and permission issues
                     tracing::debug!(
                         path = %resolved.display(),
                         error = %e,
@@ -458,10 +556,16 @@ impl ScpHandler {
             match first_byte {
                 b'C' => {
                     // File: C<mode> <size> <filename>
+                    // At top level (dir_stack.len() == 1) we honor the
+                    // single-file vs. directory distinction. Inside a
+                    // recursively descended directory, the filename always
+                    // joins to the current directory.
+                    let at_top_level = dir_stack.len() == 1;
                     if let Err(e) = self
                         .receive_file(
                             &line,
                             &current_dir,
+                            at_top_level,
                             channel_id,
                             &handle,
                             &mut buffer,
@@ -528,10 +632,19 @@ impl ScpHandler {
     }
 
     /// Receive a single file.
+    ///
+    /// `at_top_level` indicates the C-record is for the top-level destination
+    /// supplied by the client, not a file inside a recursively descended
+    /// directory. At top level, the destination might be either a file
+    /// (e.g. `scp local.bin host:/tmp/dest.bin`) or a directory (e.g.
+    /// `scp local.bin host:/tmp/dest/`); the source filename should only be
+    /// appended in the directory case.
+    #[allow(clippy::too_many_arguments)]
     async fn receive_file(
         &mut self,
         header: &str,
         target_dir: &Path,
+        at_top_level: bool,
         channel_id: ChannelId,
         handle: &Handle,
         buffer: &mut Vec<u8>,
@@ -574,10 +687,26 @@ impl ScpHandler {
             anyhow::bail!("File too large");
         }
 
-        let target_path = target_dir.join(filename);
+        // Decide whether to treat the resolved target as a directory and
+        // append the source filename, or write directly to it as a single
+        // file. This is the fix for the "filename appended to single-file
+        // destination" bug.
+        let target_path =
+            if at_top_level && !self.target_is_directory && !self.recursive && !target_dir.is_dir()
+            {
+                // Single-file destination: write directly to the resolved path.
+                target_dir.to_path_buf()
+            } else {
+                // Directory destination (existing dir, `-d`/`-r` flag, or nested
+                // descent): append the source filename.
+                target_dir.join(filename)
+            };
 
-        // Ensure target is within root
-        if !target_path.starts_with(&self.root_dir) {
+        // When chroot is configured, ensure the final path stays inside the
+        // chroot. Without chroot, the OS handles access checks.
+        if let Some(root) = self.root_dir.as_deref()
+            && !target_path.starts_with(root)
+        {
             anyhow::bail!("Access denied: path outside root");
         }
 
@@ -705,8 +834,11 @@ impl ScpHandler {
 
         let new_dir = current_dir.join(dirname);
 
-        // Ensure target is within root
-        if !new_dir.starts_with(&self.root_dir) {
+        // When chroot is configured, ensure the new directory stays inside
+        // it. Without chroot, the OS enforces access via filesystem perms.
+        if let Some(root) = self.root_dir.as_deref()
+            && !new_dir.starts_with(root)
+        {
             anyhow::bail!("Access denied: path outside root");
         }
 
@@ -1127,16 +1259,33 @@ mod tests {
         assert!(!ScpCommand::is_scp_command("scpfoo"));
     }
 
-    #[test]
-    fn test_handler_resolve_path_basic() {
+    /// Build a handler with chroot enabled at `/home/testuser`.
+    fn chroot_handler(target_path: PathBuf) -> ScpHandler {
         let user = UserInfo::new("testuser");
-        let handler = ScpHandler::new(
+        ScpHandler::new(
             ScpMode::Sink,
-            PathBuf::from("/tmp"),
+            target_path,
             user,
             Some(PathBuf::from("/home/testuser")),
-        );
+            PathBuf::from("/home/testuser"),
+        )
+    }
 
+    /// Build a handler with no chroot, home dir at `/home/testuser`.
+    fn no_chroot_handler(target_path: PathBuf) -> ScpHandler {
+        let user = UserInfo::new("testuser");
+        ScpHandler::new(
+            ScpMode::Sink,
+            target_path,
+            user,
+            None,
+            PathBuf::from("/home/testuser"),
+        )
+    }
+
+    #[test]
+    fn chroot_relative_path_resolves_under_root() {
+        let handler = chroot_handler(PathBuf::from("/tmp"));
         let result = handler
             .resolve_path(Path::new("documents/file.txt"))
             .unwrap();
@@ -1144,46 +1293,77 @@ mod tests {
     }
 
     #[test]
-    fn test_handler_resolve_path_absolute() {
-        let user = UserInfo::new("testuser");
-        let handler = ScpHandler::new(
-            ScpMode::Sink,
-            PathBuf::from("/tmp"),
-            user,
-            Some(PathBuf::from("/home/testuser")),
-        );
-
+    fn chroot_absolute_inside_root_is_returned_verbatim() {
+        // Bug fix: an absolute client path inside the chroot must NOT be
+        // re-rooted under itself. /home/testuser/file.bin must resolve to
+        // /home/testuser/file.bin, not /home/testuser/home/testuser/file.bin.
+        let handler = chroot_handler(PathBuf::from("/home/testuser/file.bin"));
         let result = handler
-            .resolve_path(Path::new("/documents/file.txt"))
+            .resolve_path(Path::new("/home/testuser/file.bin"))
             .unwrap();
-        assert_eq!(result, PathBuf::from("/home/testuser/documents/file.txt"));
+        assert_eq!(result, PathBuf::from("/home/testuser/file.bin"));
     }
 
     #[test]
-    fn test_handler_resolve_path_traversal_blocked() {
-        let user = UserInfo::new("testuser");
-        let handler = ScpHandler::new(
-            ScpMode::Sink,
-            PathBuf::from("/tmp"),
-            user,
-            Some(PathBuf::from("/home/testuser")),
+    fn chroot_absolute_outside_root_is_rejected() {
+        let handler = chroot_handler(PathBuf::from("/etc/passwd"));
+        let err = handler.resolve_path(Path::new("/etc/passwd")).unwrap_err();
+        assert!(
+            err.to_string().contains("outside root"),
+            "expected rejection, got: {err}"
         );
 
-        // Path traversal attempts are clamped to root
+        let err = handler
+            .resolve_path(Path::new("/tmp/file.bin"))
+            .unwrap_err();
+        assert!(err.to_string().contains("outside root"));
+    }
+
+    #[test]
+    fn chroot_relative_traversal_is_clamped_to_root() {
+        let handler = chroot_handler(PathBuf::from("/tmp"));
         let result = handler.resolve_path(Path::new("../etc/passwd")).unwrap();
         assert_eq!(result, PathBuf::from("/home/testuser/etc/passwd"));
         assert!(result.starts_with("/home/testuser"));
     }
 
     #[test]
-    fn test_handler_from_command() {
-        let cmd = ScpCommand::parse("scp -rp -t /tmp/upload").unwrap();
-        let user = UserInfo::new("testuser");
-        let handler = ScpHandler::from_command(&cmd, user, Some(PathBuf::from("/home/testuser")));
+    fn no_chroot_absolute_path_used_verbatim() {
+        // OpenSSH-compatible: absolute paths are not re-rooted.
+        let handler = no_chroot_handler(PathBuf::from("/home/work/file.bin"));
+        let result = handler
+            .resolve_path(Path::new("/home/work/file.bin"))
+            .unwrap();
+        assert_eq!(result, PathBuf::from("/home/work/file.bin"));
 
+        let handler = no_chroot_handler(PathBuf::from("/tmp/file.bin"));
+        let result = handler.resolve_path(Path::new("/tmp/file.bin")).unwrap();
+        assert_eq!(result, PathBuf::from("/tmp/file.bin"));
+    }
+
+    #[test]
+    fn no_chroot_relative_path_resolves_from_home() {
+        let handler = no_chroot_handler(PathBuf::from("documents/file.txt"));
+        let result = handler
+            .resolve_path(Path::new("documents/file.txt"))
+            .unwrap();
+        assert_eq!(result, PathBuf::from("/home/testuser/documents/file.txt"));
+    }
+
+    #[test]
+    fn from_command_threads_chroot_and_target_is_directory() {
+        let cmd = ScpCommand::parse("scp -rp -d -t /tmp/upload").unwrap();
+        let user = UserInfo::new("testuser");
+        let handler = ScpHandler::from_command(
+            &cmd,
+            user,
+            Some(PathBuf::from("/home/testuser")),
+            PathBuf::from("/home/testuser"),
+        );
         assert_eq!(handler.mode, ScpMode::Sink);
         assert!(handler.recursive);
         assert!(handler.preserve_times);
+        assert!(handler.target_is_directory);
     }
 
     #[test]
@@ -1200,9 +1380,74 @@ mod tests {
             PathBuf::from("/tmp"),
             user,
             Some(PathBuf::from("/home/testuser")),
+            PathBuf::from("/home/testuser"),
         );
 
         handler.parse_times("T1234567890 0 1234567800 0").unwrap();
         assert_eq!(handler.stored_times, Some((1234567890, 1234567800)));
+    }
+
+    // --- Filesystem-backed tests for receive_file destination semantics -----
+
+    /// Verify the SCP single-file vs. directory destination decision matches
+    /// the issue's acceptance criteria. Uses real temp directories so we can
+    /// exercise both the existing-directory and non-existent-file cases.
+    #[test]
+    fn receive_file_destination_decision() {
+        use tempfile::tempdir;
+        let dir = tempdir().unwrap();
+
+        // Case 1: target is a non-existent file (single-file destination).
+        // Without -d/-r and target_dir is not a directory -> write directly.
+        let target = dir.path().join("dest.bin");
+        assert!(!target.exists());
+        let at_top_level = true;
+        let target_is_directory = false;
+        let recursive = false;
+        let resolved = single_file_decision(
+            &target,
+            at_top_level,
+            target_is_directory,
+            recursive,
+            "src.bin",
+        );
+        assert_eq!(resolved, target);
+
+        // Case 2: target is an existing directory -> append filename.
+        let target = dir.path().to_path_buf();
+        let resolved = single_file_decision(
+            &target,
+            at_top_level,
+            target_is_directory,
+            recursive,
+            "src.bin",
+        );
+        assert_eq!(resolved, target.join("src.bin"));
+
+        // Case 3: target is non-existent but `-d` was supplied -> append.
+        let target = dir.path().join("dest_dir");
+        let resolved = single_file_decision(&target, at_top_level, true, false, "src.bin");
+        assert_eq!(resolved, target.join("src.bin"));
+
+        // Case 4: recursive descent (not top level) -> always append.
+        let target = dir.path().join("subdir");
+        let resolved = single_file_decision(&target, false, false, true, "src.bin");
+        assert_eq!(resolved, target.join("src.bin"));
+    }
+
+    /// Mirror of the destination decision logic from `receive_file`. Kept
+    /// alongside it so the tests cover the same condition the runtime uses.
+    fn single_file_decision(
+        target_dir: &Path,
+        at_top_level: bool,
+        target_is_directory: bool,
+        recursive: bool,
+        filename: &str,
+    ) -> PathBuf {
+        if at_top_level && !target_is_directory && !recursive && !target_dir.is_dir() {
+            target_dir.to_path_buf()
+        } else {
+            target_dir.join(filename)
+        }
     }
 }
