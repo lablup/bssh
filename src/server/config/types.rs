@@ -247,10 +247,18 @@ pub struct SftpConfig {
     #[serde(default = "default_true")]
     pub enabled: bool,
 
-    /// Root directory for SFTP operations.
+    /// Optional chroot directory for SFTP operations.
     ///
-    /// If set, SFTP clients will be chrooted to this directory.
-    /// If None, users have access to the entire filesystem (subject to permissions).
+    /// When set, SFTP clients are confined to this directory:
+    /// - Absolute client paths inside `root` are honored as-is.
+    /// - Absolute client paths outside `root` are rejected with `permission_denied`.
+    /// - Relative client paths resolve under `root`.
+    /// - `..` traversal is clamped to `root`.
+    ///
+    /// When `None` (default), no chroot is applied. This matches OpenSSH
+    /// `sftp-server` behavior: absolute paths are used verbatim and relative
+    /// paths resolve from the user's home directory. Filesystem permissions
+    /// remain the only access control.
     pub root: Option<PathBuf>,
 }
 
@@ -263,6 +271,14 @@ pub struct ScpConfig {
     /// Default: true
     #[serde(default = "default_true")]
     pub enabled: bool,
+
+    /// Optional chroot directory for SCP transfers.
+    ///
+    /// Has the same semantics as [`SftpConfig::root`]. When `None`, SCP uses
+    /// `sftp.root` as a fallback so a single `root` setting controls both
+    /// subsystems. Set this explicitly only when SCP and SFTP need different
+    /// chroots.
+    pub root: Option<PathBuf>,
 }
 
 /// File transfer filtering configuration.
@@ -650,6 +666,7 @@ impl Default for ScpConfig {
     fn default() -> Self {
         Self {
             enabled: default_true(),
+            root: None,
         }
     }
 }
