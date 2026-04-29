@@ -154,6 +154,25 @@ pub struct ServerConfig {
     #[serde(default = "default_true")]
     pub scp_enabled: bool,
 
+    /// Optional chroot directory for SFTP operations.
+    ///
+    /// When `None` (default), SFTP runs without chroot: absolute client paths
+    /// are used verbatim and relative paths resolve from the user's home
+    /// directory, matching OpenSSH `sftp-server` semantics.
+    ///
+    /// When set, SFTP clients are confined to this directory; absolute paths
+    /// outside it are rejected with `permission_denied`.
+    #[serde(default)]
+    pub sftp_root: Option<PathBuf>,
+
+    /// Optional chroot directory for SCP transfers.
+    ///
+    /// Has the same semantics as [`Self::sftp_root`]. When `None` and
+    /// `sftp_root` is set, SCP falls back to `sftp_root`. Configure both
+    /// fields only if SCP and SFTP need different chroots.
+    #[serde(default)]
+    pub scp_root: Option<PathBuf>,
+
     /// Time window for counting authentication attempts in seconds.
     ///
     /// Default: 300 (5 minutes)
@@ -293,6 +312,8 @@ impl Default for ServerConfig {
             password_auth: PasswordAuthConfigSerde::default(),
             exec: ExecConfig::default(),
             scp_enabled: true,
+            sftp_root: None,
+            scp_root: None,
             auth_window_secs: default_auth_window_secs(),
             ban_time_secs: default_ban_time_secs(),
             whitelist_ips: Vec::new(),
@@ -564,6 +585,25 @@ impl ServerConfigBuilder {
         self
     }
 
+    /// Set the SFTP chroot directory.
+    ///
+    /// When `None`, SFTP runs without chroot (OpenSSH-compatible default).
+    /// When set, SFTP clients are confined to this directory.
+    pub fn sftp_root(mut self, root: Option<PathBuf>) -> Self {
+        self.config.sftp_root = root;
+        self
+    }
+
+    /// Set the SCP chroot directory.
+    ///
+    /// When `None`, SCP falls back to [`sftp_root`](Self::sftp_root) if set,
+    /// otherwise runs without chroot. Set both fields only when SCP and SFTP
+    /// need different chroots.
+    pub fn scp_root(mut self, root: Option<PathBuf>) -> Self {
+        self.config.scp_root = root;
+        self
+    }
+
     /// Set the maximum sessions per user.
     pub fn max_sessions_per_user(mut self, max: usize) -> Self {
         self.config.max_sessions_per_user = max;
@@ -635,6 +675,10 @@ impl ServerFileConfig {
                 blocked_commands: Vec::new(),
             },
             scp_enabled: self.scp.enabled,
+            // SCP falls back to sftp.root when scp.root is unset so a single
+            // top-level chroot setting governs both subsystems.
+            scp_root: self.scp.root.or_else(|| self.sftp.root.clone()),
+            sftp_root: self.sftp.root,
             auth_window_secs: self.security.auth_window,
             ban_time_secs: self.security.ban_time,
             whitelist_ips: self.security.whitelist_ips,
@@ -699,6 +743,49 @@ mod tests {
         assert_eq!(server_config.idle_timeout_secs, 600);
         assert!(server_config.allow_publickey_auth);
         assert!(server_config.allow_password_auth);
+    }
+
+    #[test]
+    fn sftp_root_threads_into_server_config() {
+        // Setting sftp.root should propagate to ServerConfig.sftp_root, and
+        // scp_root should fall back to it when scp.root is unset.
+        let mut file_config = ServerFileConfig::default();
+        file_config.server.host_keys = vec![PathBuf::from("/test/key")];
+        file_config.sftp.root = Some(PathBuf::from("/srv/sftp"));
+
+        let server_config = file_config.into_server_config();
+
+        assert_eq!(server_config.sftp_root, Some(PathBuf::from("/srv/sftp")));
+        assert_eq!(server_config.scp_root, Some(PathBuf::from("/srv/sftp")));
+    }
+
+    #[test]
+    fn scp_root_overrides_sftp_root_fallback() {
+        // When scp.root is explicitly set, it takes precedence over the
+        // sftp.root fallback so admins can split the two chroots.
+        let mut file_config = ServerFileConfig::default();
+        file_config.server.host_keys = vec![PathBuf::from("/test/key")];
+        file_config.sftp.root = Some(PathBuf::from("/srv/sftp"));
+        file_config.scp.root = Some(PathBuf::from("/srv/scp"));
+
+        let server_config = file_config.into_server_config();
+
+        assert_eq!(server_config.sftp_root, Some(PathBuf::from("/srv/sftp")));
+        assert_eq!(server_config.scp_root, Some(PathBuf::from("/srv/scp")));
+    }
+
+    #[test]
+    fn no_chroot_by_default() {
+        // The new default: both scp_root and sftp_root are None when no
+        // configuration is provided. This is the OpenSSH-compatible default
+        // documented for issue #186.
+        let mut file_config = ServerFileConfig::default();
+        file_config.server.host_keys = vec![PathBuf::from("/test/key")];
+
+        let server_config = file_config.into_server_config();
+
+        assert!(server_config.sftp_root.is_none());
+        assert!(server_config.scp_root.is_none());
     }
 
     #[test]

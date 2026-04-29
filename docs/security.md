@@ -229,11 +229,38 @@ sftp:
 scp:
   enabled: false
 
-# Or enable with restrictions
+# Or enable with chroot. SCP falls back to sftp.root when scp.root is unset,
+# so a single setting governs both subsystems.
 sftp:
   enabled: true
-  root: /data/sftp  # Chroot to this directory
+  root: /data/sftp  # Confine SFTP and SCP to this directory.
+
+# Use scp.root only when SCP and SFTP need separate chroots:
+scp:
+  enabled: true
+  root: /data/scp
 ```
+
+**Chroot semantics.** When `root` is set:
+
+- Absolute client paths inside `root` are honored as-is. No path doubling.
+- Absolute client paths outside `root` are rejected with `permission_denied`.
+- Relative client paths resolve under `root`, with `..` clamped at the
+  chroot boundary.
+- The pseudo-root `/` (returned by `realpath`) maps back to the chroot
+  directory so interactive SFTP clients (`cd /`, `pwd`) still work.
+- Path-traversal and symlink-escape protections continue to apply,
+  including for paths whose final component does not exist yet: the closest
+  existing ancestor is canonicalized and verified to stay inside `root`.
+  This blocks intermediate-directory symlinks pointing outside the chroot.
+
+When `root` is unset (default since v2.1.3, per #186), the handler runs
+without chroot. Absolute paths are honored verbatim and relative paths
+resolve from the user's home directory, matching OpenSSH `sftp-server`.
+This is the recommended default for Backend.AI session containers and any
+deployment whose clients submit absolute filesystem paths (such as the
+WebUI's "Download SSH key / SCP example" snippet, or `bssh upload
+/abs/remote.bin`).
 
 ### File Transfer Filtering
 

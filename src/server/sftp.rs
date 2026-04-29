@@ -30,7 +30,15 @@
 //! use std::path::PathBuf;
 //!
 //! let user = UserInfo::new("testuser");
-//! let handler = SftpHandler::new(user, Some(PathBuf::from("/home/testuser")));
+//! // Without chroot (OpenSSH-compatible behavior):
+//! let handler = SftpHandler::new(user.clone(), None, PathBuf::from("/home/testuser"));
+//!
+//! // With chroot:
+//! let handler = SftpHandler::new(
+//!     user,
+//!     Some(PathBuf::from("/srv/sftp")),
+//!     PathBuf::from("/home/testuser"),
+//! );
 //! ```
 
 use std::collections::HashMap;
@@ -159,6 +167,178 @@ const MAX_HANDLES: usize = 1000;
 /// Maximum read buffer size (64KB) to prevent memory exhaustion.
 const MAX_READ_SIZE: u32 = 65536;
 
+/// Normalize a path's `..` and `.` components without touching the filesystem.
+///
+/// This is a logical normalization that does not follow symlinks. Used as
+/// a building block for both chrooted and non-chrooted resolution.
+fn normalize_components(path: &Path) -> PathBuf {
+    use std::path::Component;
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::Normal(c) => out.push(c),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                // Pop only normal components; never above the root prefix.
+                if !out.pop() {
+                    out.push("..");
+                }
+            }
+            Component::RootDir => out.push("/"),
+            Component::Prefix(p) => out.push(p.as_os_str()),
+        }
+    }
+    out
+}
+
+/// Resolve a client-supplied path against a chroot root.
+///
+/// - Plain `/` (the chroot's pseudo-root in the client's view, also returned
+///   by `realpath`) maps to `root`.
+/// - Absolute paths inside `root` are honored as-is (no doubling).
+/// - Absolute paths outside `root` are rejected.
+/// - Relative paths are joined with `root` and normalized.
+/// - `..` traversal is clamped to `root`.
+fn resolve_chroot(requested: &Path, root: &Path) -> Result<PathBuf, SftpError> {
+    use std::path::Component;
+
+    // Treat empty path the same as "." to keep parity with no-chroot mode.
+    let requested = if requested.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        requested
+    };
+
+    if requested.is_absolute() {
+        // Plain "/" is the client's view of the chroot root (returned by
+        // `realpath`). Map it back to the actual chroot directory so the
+        // realpath-roundtrip stays consistent.
+        if requested == Path::new("/") {
+            return Ok(root.to_path_buf());
+        }
+
+        // Absolute paths inside the chroot are honored verbatim. Anything
+        // outside is rejected so the chroot enforces a containment boundary
+        // rather than silently re-rooting the path.
+        let normalized = normalize_components(requested);
+        if normalized == root || normalized.starts_with(root) {
+            tracing::trace!(
+                requested = %requested.display(),
+                resolved = %normalized.display(),
+                "Resolved absolute path inside chroot"
+            );
+            return Ok(normalized);
+        }
+        tracing::warn!(
+            event = "chroot_escape_blocked",
+            requested = %requested.display(),
+            root = %root.display(),
+            "Absolute path outside chroot rejected"
+        );
+        return Err(SftpError::permission_denied(
+            "Access denied: path outside root",
+        ));
+    }
+
+    // Relative path: join with root, then walk components clamping `..`
+    // so traversal cannot escape the chroot. This preserves the original
+    // security guarantee.
+    let mut resolved = root.to_path_buf();
+    for component in requested.components() {
+        match component {
+            Component::Normal(c) => resolved.push(c),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                // Refuse to pop past the chroot root so traversal cannot
+                // escape. `resolved` is always rooted at `root` (initialized
+                // to `root`, only extended via `Normal` pushes), so popping
+                // when `resolved != root` always stays inside or at `root`.
+                if resolved != root {
+                    resolved.pop();
+                }
+            }
+            // Relative paths shouldn't carry these, but ignore safely.
+            Component::RootDir | Component::Prefix(_) => {}
+        }
+    }
+
+    if !resolved.starts_with(root) {
+        tracing::warn!(
+            event = "path_traversal_blocked",
+            requested = %requested.display(),
+            resolved = %resolved.display(),
+            root = %root.display(),
+            "Resolved path escaped chroot"
+        );
+        return Err(SftpError::permission_denied(
+            "Access denied: path outside root",
+        ));
+    }
+
+    tracing::trace!(
+        requested = %requested.display(),
+        resolved = %resolved.display(),
+        "Resolved relative path under chroot"
+    );
+    Ok(resolved)
+}
+
+/// Find the closest existing ancestor of `path` and return both the ancestor
+/// and its canonicalized form.
+///
+/// Walks up `path` (popping one component at a time) until a path that exists
+/// on the filesystem is found, then canonicalizes it. Used by chroot
+/// resolution to detect intermediate-directory symlinks pointing outside the
+/// chroot — without this check, `open(...)` / `create_dir(...)` etc. on a
+/// non-existent final path would happily follow a parent-symlink and operate
+/// outside the chroot.
+///
+/// Returns `None` when no ancestor exists or canonicalization fails for every
+/// candidate.
+fn closest_existing_canonical(path: &Path) -> Option<(PathBuf, PathBuf)> {
+    let mut cur = path.to_path_buf();
+    loop {
+        if cur.exists() {
+            if let Ok(canonical) = std::fs::canonicalize(&cur) {
+                return Some((cur, canonical));
+            }
+            return None;
+        }
+        if !cur.pop() {
+            return None;
+        }
+    }
+}
+
+/// Resolve a client-supplied path without a chroot.
+///
+/// - Absolute paths are used verbatim, after normalizing `.` and `..`.
+/// - Relative paths join with `cwd` (the user's home directory by default)
+///   and are normalized the same way.
+///
+/// This matches OpenSSH `sftp-server` semantics: filesystem permissions are
+/// the only access boundary.
+fn resolve_no_chroot(requested: &Path, cwd: &Path) -> PathBuf {
+    let requested = if requested.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        requested
+    };
+
+    let joined = if requested.is_absolute() {
+        requested.to_path_buf()
+    } else {
+        cwd.join(requested)
+    };
+    let normalized = normalize_components(&joined);
+    tracing::trace!(
+        requested = %requested.display(),
+        resolved = %normalized.display(),
+        "Resolved path (no chroot)"
+    );
+    normalized
+}
+
 /// SFTP server handler.
 ///
 /// Implements the SFTP protocol for file transfer operations with
@@ -167,8 +347,20 @@ pub struct SftpHandler {
     /// Current user information.
     user_info: UserInfo,
 
-    /// Root directory for SFTP operations (chroot-like behavior).
-    root_dir: PathBuf,
+    /// Optional chroot root for SFTP operations.
+    ///
+    /// When `Some(path)`, all client paths are confined to this directory.
+    /// When `None`, the handler runs without chroot (OpenSSH-compatible),
+    /// using `cwd` as the base for relative paths and honoring absolute
+    /// client paths verbatim.
+    root_dir: Option<PathBuf>,
+
+    /// Base directory for resolving relative client paths.
+    ///
+    /// When `root_dir` is `Some(_)`, this is set to the chroot root.
+    /// When `root_dir` is `None`, this is the user's home directory and
+    /// matches OpenSSH's `chdir` behavior on session start.
+    cwd: PathBuf,
 
     /// Open file and directory handles (shared for async access).
     handles: Arc<Mutex<HashMap<String, OpenHandle>>>,
@@ -183,20 +375,23 @@ impl SftpHandler {
     /// # Arguments
     ///
     /// * `user_info` - Information about the authenticated user
-    /// * `root_dir` - Optional root directory for chroot-like behavior.
-    ///   If None, defaults to filesystem root ("/").
-    pub fn new(user_info: UserInfo, root_dir: Option<PathBuf>) -> Self {
-        let root_dir = root_dir.unwrap_or_else(|| PathBuf::from("/"));
+    /// * `root_dir` - Optional chroot root. When `None`, no chroot is applied.
+    /// * `home_dir` - The user's home directory; used as the base for relative
+    ///   paths when chroot is disabled.
+    pub fn new(user_info: UserInfo, root_dir: Option<PathBuf>, home_dir: PathBuf) -> Self {
+        let cwd = root_dir.clone().unwrap_or_else(|| home_dir.clone());
 
         tracing::debug!(
             user = %user_info.username,
-            root = %root_dir.display(),
+            chroot = ?root_dir.as_ref().map(|p| p.display().to_string()),
+            cwd = %cwd.display(),
             "Creating SFTP handler"
         );
 
         Self {
             user_info,
             root_dir,
+            cwd,
             handles: Arc::new(Mutex::new(HashMap::new())),
             handle_counter: 0,
         }
@@ -208,77 +403,94 @@ impl SftpHandler {
         format!("h{}", self.handle_counter)
     }
 
-    /// Static helper for path resolution (used in symlink validation).
-    fn resolve_path_static(path: &str, root_dir: &Path) -> Result<PathBuf, SftpError> {
-        let path = Path::new(path);
+    /// Resolve a client path to an absolute filesystem path.
+    ///
+    /// Behavior depends on whether a chroot `root_dir` is configured.
+    ///
+    /// ## With chroot (`root_dir = Some(root)`):
+    /// - Absolute client paths inside `root` are honored as-is.
+    /// - Absolute client paths outside `root` are rejected with
+    ///   `permission_denied` (matching OpenSSH `ChrootDirectory` semantics).
+    /// - Relative paths are joined with `root`.
+    /// - `..` traversal is clamped to `root` (cannot escape).
+    ///
+    /// ## Without chroot (`root_dir = None`):
+    /// - Absolute paths are used verbatim.
+    /// - Relative paths are joined with `cwd` (the user's home directory).
+    /// - `..` traversal is normalized but not clamped (filesystem permissions
+    ///   remain the access boundary, matching OpenSSH).
+    fn resolve_path_static(
+        path: &str,
+        root_dir: Option<&Path>,
+        cwd: &Path,
+    ) -> Result<PathBuf, SftpError> {
+        let requested = Path::new(path);
 
-        // Normalize the path manually without following symlinks
-        let normalized = if path.is_absolute() {
-            // Strip the leading "/" and join with root
-            let stripped = path.strip_prefix("/").unwrap_or(path);
-            root_dir.join(stripped)
-        } else {
-            root_dir.join(path)
+        let resolved = match root_dir {
+            Some(root) => resolve_chroot(requested, root)?,
+            None => return Ok(resolve_no_chroot(requested, cwd)),
         };
 
-        // Normalize path components (handle ".." and ".")
-        let mut resolved = PathBuf::new();
-        for component in normalized.components() {
-            use std::path::Component;
-            match component {
-                Component::Normal(c) => resolved.push(c),
-                Component::CurDir => {} // Skip "."
-                Component::ParentDir => {
-                    // Go up but don't go above root
-                    if resolved.starts_with(root_dir) && resolved != root_dir {
-                        resolved.pop();
-                    }
-                    // If we can't go up, stay at root
-                    if !resolved.starts_with(root_dir) {
-                        resolved = root_dir.to_path_buf();
-                    }
-                }
-                Component::RootDir => resolved.push("/"),
-                Component::Prefix(p) => resolved.push(p.as_os_str()),
-            }
-        }
-
-        // Ensure the resolved path is within the root
-        if !resolved.starts_with(root_dir) {
+        // Chroot mode: also verify the closest existing ancestor canonicalizes
+        // inside the chroot. This catches intermediate-directory symlinks
+        // pointing outside the chroot. Without this, a chroot-internal symlink
+        // such as `chroot/escape -> /etc` would let a client target
+        // `chroot/escape/passwd` and have `open(...)` follow the symlink to
+        // write `/etc/passwd`. Lexical `starts_with(root)` alone cannot
+        // detect this; we need filesystem-level canonicalization.
+        //
+        // Compare canonical-vs-canonical: an unresolved root might itself
+        // contain symlinks, so we canonicalize both sides. If the chroot
+        // root does not exist on disk, the operator config is bad and we
+        // can only fall back to the lexical check (skip enforcement here).
+        let root = root_dir.expect("chroot branch implies Some(root)");
+        if let Some(canonical_root) = std::fs::canonicalize(root).ok()
+            && let Some((ancestor, canonical_ancestor)) = closest_existing_canonical(&resolved)
+            && !canonical_ancestor.starts_with(&canonical_root)
+        {
             tracing::warn!(
-                requested = %path.display(),
+                event = "symlink_escape_attempt",
+                requested = %path,
                 resolved = %resolved.display(),
-                root = %root_dir.display(),
-                "Path traversal attempt detected"
+                ancestor = %ancestor.display(),
+                canonical_ancestor = %canonical_ancestor.display(),
+                canonical_root = %canonical_root.display(),
+                "Security: parent-directory symlink escape blocked"
             );
             return Err(SftpError::permission_denied(
                 "Access denied: path outside root",
             ));
         }
 
-        tracing::trace!(
-            requested = %path.display(),
-            resolved = %resolved.display(),
-            "Resolved path"
-        );
-
         Ok(resolved)
     }
 
     /// Resolve a client path to an absolute filesystem path.
     ///
-    /// This method prevents path traversal attacks by:
-    /// 1. Joining the path with the root directory
-    /// 2. Normalizing the path (resolving "." and ".." components)
-    /// 3. Verifying the result is within the root directory
-    ///
-    /// # Security
-    ///
-    /// This is critical for security. The resolved path must always
-    /// start with the root directory to prevent access to files
-    /// outside the allowed area.
+    /// See [`Self::resolve_path_static`] for the full semantics. This is the
+    /// instance-method wrapper used throughout the handler trait impl.
     pub fn resolve_path(&self, path: &str) -> Result<PathBuf, SftpError> {
-        Self::resolve_path_static(path, &self.root_dir)
+        Self::resolve_path_static(path, self.root_dir.as_deref(), &self.cwd)
+    }
+
+    /// Validate that a symlink's resolved target stays inside the chroot, if
+    /// chroot is enabled.
+    ///
+    /// Returns `Ok(())` when:
+    /// - chroot is disabled (no enforcement applies), or
+    /// - the resolved target lives under `root_dir`.
+    ///
+    /// Returns `permission_denied` when the target escapes a configured chroot.
+    fn ensure_target_in_root(
+        root_dir: Option<&Path>,
+        resolved_target: &Path,
+    ) -> Result<(), SftpError> {
+        match root_dir {
+            Some(root) if !resolved_target.starts_with(root) => Err(SftpError::permission_denied(
+                "Symlink target outside allowed directory",
+            )),
+            _ => Ok(()),
+        }
     }
 
     /// Convert file metadata to SFTP FileAttributes.
@@ -378,6 +590,7 @@ impl russh_sftp::server::Handler for SftpHandler {
         let handle_id = self.new_handle();
         let handles = Arc::clone(&self.handles);
         let root_dir = self.root_dir.clone();
+        let cwd = self.cwd.clone();
 
         tracing::debug!(
             user = %self.user_info.username,
@@ -403,27 +616,28 @@ impl russh_sftp::server::Handler for SftpHandler {
             if let Ok(meta) = metadata
                 && meta.is_symlink()
             {
-                // Follow the symlink and ensure target is within root
+                // Follow the symlink and ensure target is within root (if any)
                 let target = fs::read_link(&path).await?;
                 let resolved_target = if target.is_absolute() {
                     target
                 } else {
-                    // Resolve relative symlink from the symlink's directory
-                    let base = path.parent().unwrap_or(&root_dir);
+                    // Resolve relative symlink from the symlink's directory.
+                    // Fall back to cwd when the parent isn't accessible.
+                    let base = path.parent().unwrap_or(&cwd);
                     let joined = base.join(&target);
                     // Use tokio's canonicalize for async operation
                     tokio::fs::canonicalize(&joined).await.unwrap_or(target)
                 };
 
-                if !resolved_target.starts_with(&root_dir) {
+                if let Err(e) =
+                    SftpHandler::ensure_target_in_root(root_dir.as_deref(), &resolved_target)
+                {
                     tracing::warn!(
                         path = %path.display(),
                         target = %resolved_target.display(),
                         "Symlink target outside root directory"
                     );
-                    return Err(SftpError::permission_denied(
-                        "Symlink target outside allowed directory",
-                    ));
+                    return Err(e);
                 }
             }
 
@@ -636,17 +850,29 @@ impl russh_sftp::server::Handler for SftpHandler {
                 });
             }
 
-            // Add ".." entry only if parent is within root
+            // Add ".." entry. With chroot, only include the parent if it
+            // remains inside the chroot; otherwise reuse the directory's own
+            // metadata so the listing doesn't leak the chroot boundary.
+            // Without chroot, fall back to ordinary parent semantics.
             if let Some(parent) = resolved_path.parent() {
-                if parent.starts_with(&root_dir) {
+                let parent_inside_root = root_dir
+                    .as_ref()
+                    .map(|root| parent.starts_with(root))
+                    .unwrap_or(true);
+                let at_root_boundary = root_dir
+                    .as_ref()
+                    .map(|root| resolved_path == *root)
+                    .unwrap_or(false);
+
+                if parent_inside_root {
                     if let Ok(meta) = fs::symlink_metadata(parent).await {
                         entries.push(DirEntryInfo {
                             filename: "..".to_string(),
                             attrs: SftpHandler::metadata_to_attrs(&meta),
                         });
                     }
-                } else if resolved_path == root_dir {
-                    // At root boundary, use root's own metadata for ".."
+                } else if at_root_boundary {
+                    // At chroot boundary, mirror the directory's own metadata.
                     if let Ok(meta) = fs::symlink_metadata(&resolved_path).await {
                         entries.push(DirEntryInfo {
                             filename: "..".to_string(),
@@ -745,6 +971,7 @@ impl russh_sftp::server::Handler for SftpHandler {
     ) -> impl std::future::Future<Output = Result<Attrs, Self::Error>> + Send {
         let resolved = self.resolve_path(&path);
         let root_dir = self.root_dir.clone();
+        let cwd = self.cwd.clone();
 
         async move {
             let path = resolved?;
@@ -754,24 +981,25 @@ impl russh_sftp::server::Handler for SftpHandler {
 
             if symlink_meta.is_symlink() {
                 // Follow the symlink and validate the target is within root
+                // (when chroot is enabled).
                 let target = fs::read_link(&path).await?;
                 let resolved_target = if target.is_absolute() {
                     target
                 } else {
-                    let base = path.parent().unwrap_or(&root_dir);
+                    let base = path.parent().unwrap_or(&cwd);
                     let joined = base.join(&target);
                     tokio::fs::canonicalize(&joined).await.unwrap_or(target)
                 };
 
-                if !resolved_target.starts_with(&root_dir) {
+                if let Err(e) =
+                    SftpHandler::ensure_target_in_root(root_dir.as_deref(), &resolved_target)
+                {
                     tracing::warn!(
                         path = %path.display(),
                         target = %resolved_target.display(),
                         "stat: Symlink target outside root directory"
                     );
-                    return Err(SftpError::permission_denied(
-                        "Symlink target outside allowed directory",
-                    ));
+                    return Err(e);
                 }
             }
 
@@ -839,14 +1067,16 @@ impl russh_sftp::server::Handler for SftpHandler {
         async move {
             let full_path = resolved?;
 
-            // Return path relative to root (as client sees it)
-            let display_path = if full_path == root_dir {
-                "/".to_string()
-            } else {
-                full_path
-                    .strip_prefix(&root_dir)
+            // Return path the way the client should see it. With chroot,
+            // strip the root prefix so the client sees a path rooted at "/".
+            // Without chroot, expose the resolved absolute path verbatim.
+            let display_path = match root_dir.as_ref() {
+                Some(root) if full_path == *root => "/".to_string(),
+                Some(root) => full_path
+                    .strip_prefix(root)
                     .map(|p| format!("/{}", p.display()))
-                    .unwrap_or_else(|_| full_path.display().to_string())
+                    .unwrap_or_else(|_| full_path.display().to_string()),
+                None => full_path.display().to_string(),
             };
 
             // Get attributes if the path exists
@@ -1081,35 +1311,36 @@ impl russh_sftp::server::Handler for SftpHandler {
             let path = resolved?;
             let target = fs::read_link(&path).await?;
 
-            // If target is absolute and outside root, convert to safe relative path
-            let safe_target = if target.is_absolute() {
-                // Resolve the absolute target
-                let resolved_target = if let Ok(canonical) = tokio::fs::canonicalize(&target).await
-                {
-                    canonical
-                } else {
-                    target.clone()
-                };
+            // With chroot: redact targets outside the chroot and rewrite
+            // in-chroot targets to a chroot-relative path.
+            // Without chroot: pass the link target through verbatim, the same
+            // way OpenSSH does.
+            let safe_target = match (root_dir.as_ref(), target.is_absolute()) {
+                (Some(root), true) => {
+                    let resolved_target =
+                        if let Ok(canonical) = tokio::fs::canonicalize(&target).await {
+                            canonical
+                        } else {
+                            target.clone()
+                        };
 
-                // If target is outside root, redact it
-                if !resolved_target.starts_with(&root_dir) {
-                    tracing::warn!(
-                        symlink = %path.display(),
-                        target = %resolved_target.display(),
-                        "readlink: Symlink target outside root, redacting"
-                    );
-                    // Return a safe placeholder instead of exposing system paths
-                    PathBuf::from("[target outside root]")
-                } else {
-                    // Convert to path relative to root for safe display
-                    resolved_target
-                        .strip_prefix(&root_dir)
-                        .map(PathBuf::from)
-                        .unwrap_or(target)
+                    if !resolved_target.starts_with(root) {
+                        tracing::warn!(
+                            symlink = %path.display(),
+                            target = %resolved_target.display(),
+                            "readlink: Symlink target outside root, redacting"
+                        );
+                        PathBuf::from("[target outside root]")
+                    } else {
+                        resolved_target
+                            .strip_prefix(root)
+                            .map(PathBuf::from)
+                            .unwrap_or(target)
+                    }
                 }
-            } else {
-                // Relative targets are safe to expose as-is
-                target
+                // Without chroot, or for relative targets: pass the link
+                // target through unchanged (matches OpenSSH behavior).
+                _ => target,
             };
 
             let attrs = FileAttributes {
@@ -1144,85 +1375,82 @@ impl russh_sftp::server::Handler for SftpHandler {
         let link_resolved = self.resolve_path(&linkpath);
         let user = self.user_info.username.clone();
         let root_dir = self.root_dir.clone();
+        let cwd = self.cwd.clone();
 
         async move {
             let link_path = link_resolved?;
 
-            // Validate the target path to prevent symlink attacks
+            // Validate the symlink target. With chroot, both absolute and
+            // relative targets must resolve inside the chroot. Without chroot,
+            // mirror OpenSSH and let the kernel + filesystem permissions
+            // enforce access; we still create the link with the target as-is.
             let target = Path::new(&targetpath);
 
-            // If target is absolute, ensure it's within root
-            if target.is_absolute() {
-                // Resolve target through our path resolution to ensure it's within root
-                let target_str = target.to_string_lossy();
-                let resolved_target = match SftpHandler::resolve_path_static(&target_str, &root_dir)
-                {
-                    Ok(p) => p,
-                    Err(e) => {
+            if let Some(root) = root_dir.as_deref() {
+                if target.is_absolute() {
+                    let resolved_target = resolve_chroot(target, root).inspect_err(|_| {
                         tracing::warn!(
                             user = %user,
                             link = %link_path.display(),
                             target = %targetpath,
-                            "Rejected symlink with target outside root"
+                            "Rejected symlink with absolute target outside chroot"
                         );
-                        return Err(e);
+                    })?;
+                    if !resolved_target.starts_with(root) {
+                        tracing::warn!(
+                            user = %user,
+                            link = %link_path.display(),
+                            target = %targetpath,
+                            resolved = %resolved_target.display(),
+                            "Symlink target resolves outside chroot"
+                        );
+                        return Err(SftpError::permission_denied(
+                            "Symlink target must be within root directory",
+                        ));
                     }
-                };
-
-                if !resolved_target.starts_with(&root_dir) {
-                    tracing::warn!(
-                        user = %user,
-                        link = %link_path.display(),
-                        target = %targetpath,
-                        resolved = %resolved_target.display(),
-                        "Symlink target resolves outside root"
-                    );
-                    return Err(SftpError::permission_denied(
-                        "Symlink target must be within root directory",
-                    ));
-                }
-            } else {
-                // For relative targets, verify they resolve within root when combined with link parent
-                let link_parent = link_path.parent().unwrap_or(&root_dir);
-                let mut resolved = link_parent.to_path_buf();
-
-                for component in target.components() {
-                    use std::path::Component;
-                    match component {
-                        Component::Normal(c) => resolved.push(c),
-                        Component::CurDir => {}
-                        Component::ParentDir
-                            if (!resolved.pop() || !resolved.starts_with(&root_dir)) =>
-                        {
-                            tracing::warn!(
-                                user = %user,
-                                link = %link_path.display(),
-                                target = %targetpath,
-                                "Relative symlink target escapes root"
-                            );
-                            return Err(SftpError::permission_denied(
-                                "Symlink target must be within root directory",
-                            ));
+                } else {
+                    // Relative target: combine with the link's parent directory
+                    // (or fall back to cwd) and ensure the result stays in
+                    // the chroot.
+                    let link_parent = link_path.parent().unwrap_or(&cwd);
+                    let mut resolved = link_parent.to_path_buf();
+                    for component in target.components() {
+                        use std::path::Component;
+                        match component {
+                            Component::Normal(c) => resolved.push(c),
+                            Component::CurDir => {}
+                            Component::ParentDir
+                                if (!resolved.pop() || !resolved.starts_with(root)) =>
+                            {
+                                tracing::warn!(
+                                    user = %user,
+                                    link = %link_path.display(),
+                                    target = %targetpath,
+                                    "Relative symlink target escapes chroot"
+                                );
+                                return Err(SftpError::permission_denied(
+                                    "Symlink target must be within root directory",
+                                ));
+                            }
+                            _ => {}
                         }
-                        _ => {}
                     }
-                }
-
-                if !resolved.starts_with(&root_dir) {
-                    tracing::warn!(
-                        user = %user,
-                        link = %link_path.display(),
-                        target = %targetpath,
-                        resolved = %resolved.display(),
-                        "Relative symlink resolves outside root"
-                    );
-                    return Err(SftpError::permission_denied(
-                        "Symlink target must be within root directory",
-                    ));
+                    if !resolved.starts_with(root) {
+                        tracing::warn!(
+                            user = %user,
+                            link = %link_path.display(),
+                            target = %targetpath,
+                            resolved = %resolved.display(),
+                            "Relative symlink resolves outside chroot"
+                        );
+                        return Err(SftpError::permission_denied(
+                            "Symlink target must be within root directory",
+                        ));
+                    }
                 }
             }
 
-            // Create symbolic link (target is used as-is, but validated)
+            // Create symbolic link (target is stored as-is, validation above)
             #[cfg(unix)]
             tokio::fs::symlink(&targetpath, &link_path).await?;
 
@@ -1250,81 +1478,137 @@ impl russh_sftp::server::Handler for SftpHandler {
 mod tests {
     use super::*;
 
-    fn test_handler() -> SftpHandler {
+    /// Build a handler with chroot enabled at `/home/testuser`.
+    fn chroot_handler() -> SftpHandler {
         let user = UserInfo::new("testuser");
-        SftpHandler::new(user, Some(PathBuf::from("/home/testuser")))
+        SftpHandler::new(
+            user,
+            Some(PathBuf::from("/home/testuser")),
+            PathBuf::from("/home/testuser"),
+        )
     }
 
-    #[test]
-    fn test_resolve_path_basic() {
-        let handler = test_handler();
+    /// Build a handler with no chroot, home dir at `/home/testuser`.
+    fn no_chroot_handler() -> SftpHandler {
+        let user = UserInfo::new("testuser");
+        SftpHandler::new(user, None, PathBuf::from("/home/testuser"))
+    }
 
-        // Basic path resolution
+    // --- Chroot mode tests --------------------------------------------------
+
+    #[test]
+    fn chroot_relative_path_resolves_under_root() {
+        let handler = chroot_handler();
         let result = handler.resolve_path("documents/file.txt").unwrap();
         assert_eq!(result, PathBuf::from("/home/testuser/documents/file.txt"));
     }
 
     #[test]
-    fn test_resolve_path_absolute() {
-        let handler = test_handler();
-
-        // Absolute path should be relative to root
-        let result = handler.resolve_path("/documents/file.txt").unwrap();
-        assert_eq!(result, PathBuf::from("/home/testuser/documents/file.txt"));
+    fn chroot_absolute_inside_root_is_returned_verbatim() {
+        // The bug fix: an absolute client path inside the chroot must NOT be
+        // re-rooted (no path doubling). /home/testuser/file.bin must resolve
+        // to /home/testuser/file.bin, not /home/testuser/home/testuser/file.bin.
+        let handler = chroot_handler();
+        let result = handler.resolve_path("/home/testuser/file.bin").unwrap();
+        assert_eq!(result, PathBuf::from("/home/testuser/file.bin"));
     }
 
     #[test]
-    fn test_resolve_path_traversal_blocked() {
-        let handler = test_handler();
+    fn chroot_absolute_at_root_resolves_to_root() {
+        let handler = chroot_handler();
+        let result = handler.resolve_path("/home/testuser").unwrap();
+        assert_eq!(result, PathBuf::from("/home/testuser"));
+    }
 
-        // Path traversal attempts are clamped to root (security measure)
-        // "../etc/passwd" -> trying to escape, clamped to root, then "etc/passwd"
-        // Results in "/home/testuser/etc/passwd" - stays within jail
+    #[test]
+    fn chroot_absolute_outside_root_is_rejected() {
+        let handler = chroot_handler();
+        let err = handler.resolve_path("/etc/passwd").unwrap_err();
+        assert_eq!(err.code, StatusCode::PermissionDenied);
+
+        let err = handler.resolve_path("/tmp/file.bin").unwrap_err();
+        assert_eq!(err.code, StatusCode::PermissionDenied);
+    }
+
+    #[test]
+    fn chroot_relative_traversal_is_clamped_to_root() {
+        let handler = chroot_handler();
+        // "../etc/passwd" tries to escape, gets clamped at root, then etc/passwd
         let result = handler.resolve_path("../etc/passwd").unwrap();
         assert_eq!(result, PathBuf::from("/home/testuser/etc/passwd"));
+        assert!(result.starts_with("/home/testuser"));
 
-        // "documents/../../etc/passwd" -> go into docs, up twice (clamped at root), then etc/passwd
-        let result = handler.resolve_path("documents/../../etc/passwd").unwrap();
+        // Multiple parent refs all get clamped
+        let result = handler
+            .resolve_path("../../../../../../../etc/passwd")
+            .unwrap();
         assert_eq!(result, PathBuf::from("/home/testuser/etc/passwd"));
-
-        // All paths stay within the root directory (the security guarantee)
         assert!(result.starts_with("/home/testuser"));
     }
 
     #[test]
-    fn test_resolve_path_double_dots() {
-        let handler = test_handler();
-
-        // ".." that doesn't escape should work
+    fn chroot_relative_in_bounds_double_dots_work() {
+        let handler = chroot_handler();
         let result = handler.resolve_path("a/b/../c").unwrap();
         assert_eq!(result, PathBuf::from("/home/testuser/a/c"));
     }
 
     #[test]
-    fn test_resolve_path_root() {
-        let handler = test_handler();
-
-        // Root path
+    fn chroot_root_path_resolves_to_chroot() {
+        let handler = chroot_handler();
         let result = handler.resolve_path("/").unwrap();
         assert_eq!(result, PathBuf::from("/home/testuser"));
-
         let result = handler.resolve_path(".").unwrap();
         assert_eq!(result, PathBuf::from("/home/testuser"));
     }
 
+    // --- No-chroot mode tests -----------------------------------------------
+
     #[test]
-    fn test_resolve_path_many_parent_refs() {
-        let handler = test_handler();
+    fn no_chroot_absolute_path_used_verbatim() {
+        // OpenSSH-compatible: absolute paths are not re-rooted.
+        let handler = no_chroot_handler();
+        let result = handler.resolve_path("/etc/passwd").unwrap();
+        assert_eq!(result, PathBuf::from("/etc/passwd"));
 
-        // Many ".." are clamped to stay within root - security is maintained
-        let result = handler
-            .resolve_path("../../../../../../../etc/passwd")
-            .unwrap();
-        // All the ".." attempts are stopped at root, then "etc/passwd" is appended
-        assert_eq!(result, PathBuf::from("/home/testuser/etc/passwd"));
+        let result = handler.resolve_path("/tmp/file.bin").unwrap();
+        assert_eq!(result, PathBuf::from("/tmp/file.bin"));
 
-        // The security guarantee: path never escapes root
-        assert!(result.starts_with("/home/testuser"));
+        let result = handler.resolve_path("/home/testuser/file.bin").unwrap();
+        assert_eq!(result, PathBuf::from("/home/testuser/file.bin"));
+    }
+
+    #[test]
+    fn no_chroot_relative_path_resolves_from_home() {
+        let handler = no_chroot_handler();
+        let result = handler.resolve_path("documents/file.txt").unwrap();
+        assert_eq!(result, PathBuf::from("/home/testuser/documents/file.txt"));
+    }
+
+    #[test]
+    fn no_chroot_relative_double_dots_normalize() {
+        // Without chroot, `..` normalizes against the cwd (home directory)
+        // exactly as the kernel would. This matches OpenSSH's sftp-server.
+        let handler = no_chroot_handler();
+        let result = handler.resolve_path("../testuser/file.txt").unwrap();
+        assert_eq!(result, PathBuf::from("/home/testuser/file.txt"));
+    }
+
+    #[test]
+    fn no_chroot_dot_resolves_to_home() {
+        let handler = no_chroot_handler();
+        let result = handler.resolve_path(".").unwrap();
+        assert_eq!(result, PathBuf::from("/home/testuser"));
+        let result = handler.resolve_path("").unwrap();
+        assert_eq!(result, PathBuf::from("/home/testuser"));
+    }
+
+    #[test]
+    fn no_chroot_handler_creates_with_explicit_home() {
+        let user = UserInfo::new("alice");
+        let handler = SftpHandler::new(user, None, PathBuf::from("/home/alice"));
+        let result = handler.resolve_path("file.txt").unwrap();
+        assert_eq!(result, PathBuf::from("/home/alice/file.txt"));
     }
 
     #[test]
@@ -1340,7 +1624,7 @@ mod tests {
 
     #[test]
     fn test_new_handle_uniqueness() {
-        let mut handler = test_handler();
+        let mut handler = chroot_handler();
 
         let h1 = handler.new_handle();
         let h2 = handler.new_handle();
@@ -1428,7 +1712,7 @@ mod tests {
 
     #[test]
     fn test_resolve_path_empty_string() {
-        let handler = test_handler();
+        let handler = chroot_handler();
 
         // Empty string should resolve to root
         let result = handler.resolve_path("").unwrap();
@@ -1437,7 +1721,7 @@ mod tests {
 
     #[test]
     fn test_resolve_path_special_characters() {
-        let handler = test_handler();
+        let handler = chroot_handler();
 
         // Path with spaces
         let result = handler.resolve_path("my documents/file name.txt").unwrap();
@@ -1456,7 +1740,7 @@ mod tests {
 
     #[test]
     fn test_resolve_path_encoded_traversal() {
-        let handler = test_handler();
+        let handler = chroot_handler();
 
         // Encoded patterns should be treated as literal path components
         // (the path component itself is ".." not percent encoding)
@@ -1468,19 +1752,24 @@ mod tests {
 
     #[test]
     fn test_resolve_path_multiple_slashes() {
-        let handler = test_handler();
+        let handler = chroot_handler();
 
-        // Multiple consecutive slashes should be normalized
-        let result = handler.resolve_path("///documents///file.txt").unwrap();
-        // Path normalization in std collapses multiple slashes
+        // Relative path with consecutive slashes - normalization collapses them.
+        let result = handler.resolve_path("documents///file.txt").unwrap();
         assert!(result.starts_with("/home/testuser"));
         assert!(result.to_string_lossy().contains("documents"));
         assert!(result.to_string_lossy().contains("file.txt"));
+
+        // An absolute path with multiple slashes that lands inside the chroot.
+        let result = handler
+            .resolve_path("/home/testuser///documents///file.txt")
+            .unwrap();
+        assert_eq!(result, PathBuf::from("/home/testuser/documents/file.txt"));
     }
 
     #[test]
     fn test_resolve_path_dot_only() {
-        let handler = test_handler();
+        let handler = chroot_handler();
 
         // Single dot
         let result = handler.resolve_path(".").unwrap();
@@ -1493,7 +1782,7 @@ mod tests {
 
     #[test]
     fn test_resolve_path_alternating_dots() {
-        let handler = test_handler();
+        let handler = chroot_handler();
 
         // Alternating . and ..
         let result = handler.resolve_path("./a/../b/./c/../d").unwrap();
@@ -1555,29 +1844,74 @@ mod tests {
     }
 
     #[test]
-    fn test_handler_creation_with_default_root() {
+    fn no_chroot_handler_treats_relative_under_home() {
+        // With no chroot, relative paths resolve from the home directory.
         let user = UserInfo::new("testuser");
-        let handler = SftpHandler::new(user, None);
+        let handler = SftpHandler::new(user, None, PathBuf::from("/home/testuser"));
 
-        // Should default to filesystem root
         let result = handler.resolve_path("etc/passwd").unwrap();
+        assert_eq!(result, PathBuf::from("/home/testuser/etc/passwd"));
+
+        // Absolute paths are honored verbatim.
+        let result = handler.resolve_path("/etc/passwd").unwrap();
         assert_eq!(result, PathBuf::from("/etc/passwd"));
     }
 
     #[test]
-    fn test_resolve_path_static() {
-        // Test the static method directly
+    fn resolve_path_static_chroot_mode() {
         let root = PathBuf::from("/chroot/jail");
+        let cwd = root.clone();
 
-        let result = SftpHandler::resolve_path_static("test.txt", &root).unwrap();
+        // Relative path joined with chroot root.
+        let result = SftpHandler::resolve_path_static("test.txt", Some(&root), &cwd).unwrap();
         assert_eq!(result, PathBuf::from("/chroot/jail/test.txt"));
 
-        let result = SftpHandler::resolve_path_static("../escape", &root).unwrap();
-        // Escape attempt is clamped to root
+        // Relative `..` clamped to chroot root.
+        let result = SftpHandler::resolve_path_static("../escape", Some(&root), &cwd).unwrap();
         assert_eq!(result, PathBuf::from("/chroot/jail/escape"));
 
-        let result = SftpHandler::resolve_path_static("/absolute/path", &root).unwrap();
+        // Absolute inside chroot honored as-is.
+        let result =
+            SftpHandler::resolve_path_static("/chroot/jail/absolute/path", Some(&root), &cwd)
+                .unwrap();
         assert_eq!(result, PathBuf::from("/chroot/jail/absolute/path"));
+
+        // Absolute outside chroot rejected.
+        let err = SftpHandler::resolve_path_static("/etc/passwd", Some(&root), &cwd).unwrap_err();
+        assert_eq!(err.code, StatusCode::PermissionDenied);
+    }
+
+    #[test]
+    fn resolve_path_static_no_chroot_mode() {
+        let cwd = PathBuf::from("/home/alice");
+
+        // Relative path joined with cwd.
+        let result = SftpHandler::resolve_path_static("test.txt", None, &cwd).unwrap();
+        assert_eq!(result, PathBuf::from("/home/alice/test.txt"));
+
+        // Absolute path honored verbatim.
+        let result = SftpHandler::resolve_path_static("/etc/passwd", None, &cwd).unwrap();
+        assert_eq!(result, PathBuf::from("/etc/passwd"));
+    }
+
+    #[test]
+    fn ensure_target_in_root_allows_no_chroot() {
+        // No chroot: every target is allowed; filesystem permissions apply.
+        SftpHandler::ensure_target_in_root(None, Path::new("/anywhere/at/all")).unwrap();
+    }
+
+    #[test]
+    fn ensure_target_in_root_rejects_chroot_escape() {
+        let root = PathBuf::from("/chroot/jail");
+        let err =
+            SftpHandler::ensure_target_in_root(Some(&root), Path::new("/etc/passwd")).unwrap_err();
+        assert_eq!(err.code, StatusCode::PermissionDenied);
+    }
+
+    #[test]
+    fn ensure_target_in_root_allows_inside_chroot() {
+        let root = PathBuf::from("/chroot/jail");
+        SftpHandler::ensure_target_in_root(Some(&root), Path::new("/chroot/jail/file")).unwrap();
     }
 
     #[test]

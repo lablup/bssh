@@ -1001,11 +1001,14 @@ impl russh::server::Handler for SshHandler {
 
                 let handle_clone = handle.clone();
 
-                // Create SCP handler with user's home directory as root
+                // Honor the configured chroot. SCP falls back to sftp_root
+                // (already merged in into_server_config). When None, no
+                // chroot is applied, matching OpenSSH semantics.
                 let scp_handler = ScpHandler::from_command(
                     &scp_cmd,
                     user_info.clone(),
-                    Some(user_info.home_dir.clone()),
+                    self.config.scp_root.clone(),
+                    user_info.home_dir.clone(),
                 );
 
                 // Run SCP in a spawned task so the session loop can process incoming data
@@ -1335,8 +1338,13 @@ impl russh::server::Handler for SshHandler {
                     "Starting SFTP session"
                 );
 
-                // Create SFTP handler with user's home directory as root
-                let sftp_handler = SftpHandler::new(user_info.clone(), Some(user_info.home_dir));
+                // Honor the configured chroot. When `sftp_root` is None,
+                // run without chroot, matching OpenSSH `sftp-server` defaults.
+                let sftp_handler = SftpHandler::new(
+                    user_info.clone(),
+                    self.config.sftp_root.clone(),
+                    user_info.home_dir,
+                );
 
                 // Run SFTP server on the channel stream
                 russh_sftp::server::run(channel.into_stream(), sftp_handler).await;

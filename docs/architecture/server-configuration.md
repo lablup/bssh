@@ -140,12 +140,20 @@ shell:
 # SFTP subsystem configuration
 sftp:
   enabled: true                # Default: true
-  # Optional chroot directory
+  # Optional chroot directory.
+  # When unset (default), no chroot: absolute client paths are honored
+  # verbatim and relative paths resolve from the user's home directory.
+  # When set, clients are confined to this directory; absolute paths
+  # outside it are rejected with permission_denied.
   root: /data/sftp
 
 # SCP protocol configuration
 scp:
   enabled: true                # Default: true
+  # Optional chroot directory. Same semantics as sftp.root. When unset,
+  # falls back to sftp.root, so configure scp.root only when SCP and SFTP
+  # need separate chroots.
+  root: /data/scp
 
 # File transfer filtering
 filter:
