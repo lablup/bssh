@@ -263,11 +263,12 @@ fn resolve_chroot_scp(requested: &Path, root: &Path, user: &str) -> Result<PathB
             Component::Normal(c) => resolved.push(c),
             Component::CurDir => {}
             Component::ParentDir => {
+                // Refuse to pop past the chroot root so traversal cannot
+                // escape. `resolved` is always rooted at `root` (initialized
+                // to `root`, only extended via `Normal` pushes), so popping
+                // when `resolved != root` always stays inside or at `root`.
                 if resolved != root {
                     resolved.pop();
-                }
-                if !resolved.starts_with(root) {
-                    resolved = root.to_path_buf();
                 }
             }
             Component::RootDir | Component::Prefix(_) => {}

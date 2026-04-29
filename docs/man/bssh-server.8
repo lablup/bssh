@@ -1,6 +1,6 @@
 .\" Manpage for bssh-server
 .\" Contact the maintainers to correct errors or typos.
-.TH BSSH-SERVER 8 "April 2026" "v2.1.2" "System Administration Commands"
+.TH BSSH-SERVER 8 "April 2026" "v2.1.3" "System Administration Commands"
 
 .SH NAME
 bssh-server \- Backend.AI SSH Server for container environments
@@ -173,10 +173,15 @@ Authentication methods and settings (methods, publickey, password)
 Shell execution settings (default, command_timeout, env)
 .TP
 .B sftp
-SFTP subsystem settings (enabled, root)
+SFTP subsystem settings (\fBenabled\fR, \fBroot\fR). \fBroot\fR sets a chroot
+directory that confines SFTP transfers. When unset (default), absolute client
+paths are honored verbatim and relative paths resolve from the user's home
+directory, matching OpenSSH \fBsftp-server\fR behavior.
 .TP
 .B scp
-SCP protocol settings (enabled)
+SCP protocol settings (\fBenabled\fR, \fBroot\fR). \fBroot\fR has the same
+semantics as \fBsftp.root\fR. When \fBscp.root\fR is unset, it falls back to
+\fBsftp.root\fR so a single setting governs both subsystems.
 .TP
 .B filter
 File transfer filtering (enabled, rules)
@@ -271,6 +276,11 @@ Enable IP allowlists in production to restrict access to trusted networks
 Configure rate limiting to prevent brute-force attacks
 .IP \(bu 2
 Enable audit logging for security monitoring and compliance
+.IP \(bu 2
+When \fBsftp.root\fR or \fBscp.root\fR is set, the chroot resolver
+canonicalizes the closest existing ancestor of the requested path and verifies
+it stays inside the configured root. This blocks attacks that route writes
+outside the chroot through intermediate-directory symlinks inside it.
 
 .SH EXIT STATUS
 .TP

@@ -249,11 +249,12 @@ fn resolve_chroot(requested: &Path, root: &Path) -> Result<PathBuf, SftpError> {
             Component::Normal(c) => resolved.push(c),
             Component::CurDir => {}
             Component::ParentDir => {
+                // Refuse to pop past the chroot root so traversal cannot
+                // escape. `resolved` is always rooted at `root` (initialized
+                // to `root`, only extended via `Normal` pushes), so popping
+                // when `resolved != root` always stays inside or at `root`.
                 if resolved != root {
                     resolved.pop();
-                }
-                if !resolved.starts_with(root) {
-                    resolved = root.to_path_buf();
                 }
             }
             // Relative paths shouldn't carry these, but ignore safely.
