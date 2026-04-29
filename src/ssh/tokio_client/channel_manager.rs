@@ -266,7 +266,7 @@ impl Client {
                         }
                     }
                 }
-                russh::ChannelMsg::ExtendedData { ref data, ext } if ext == 1 => {
+                russh::ChannelMsg::ExtendedData { ref data, ext: 1 } => {
                     // Handle backpressure for stderr as well
                     match sender.try_send(CommandOutput::StdErr(data.clone())) {
                         Ok(_) => {}
@@ -446,7 +446,7 @@ impl Client {
                         return Ok(1);
                     }
                 }
-                russh::ChannelMsg::ExtendedData { ref data, ext } if ext == 1 => {
+                russh::ChannelMsg::ExtendedData { ref data, ext: 1 } => {
                     // Stderr - also check for sudo prompts
                     let text = String::from_utf8_lossy(data);
                     accumulated_output.push_str(&text);

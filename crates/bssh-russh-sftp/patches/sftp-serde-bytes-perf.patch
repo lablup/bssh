@@ -1,0 +1,193 @@
+diff -urN a/src/lib.rs src/lib.rs
+--- a/src/lib.rs	2026-04-21 17:00:59
++++ b/src/lib.rs	2026-04-21 17:05:30
+@@ -1,3 +1,6 @@
++// Lints tripped by vendored upstream source that we do not want to diverge from.
++#![allow(clippy::io_other_error)]
++
+ //! SFTP subsystem with client and server support for Russh and more!
+ //!
+ //! Crate can provide compatibility with anything that can provide the raw data
+diff -urN a/src/protocol/data.rs src/protocol/data.rs
+--- a/src/protocol/data.rs	2026-04-21 17:00:59
++++ b/src/protocol/data.rs	2026-04-21 17:00:36
+@@ -4,6 +4,7 @@
+ #[derive(Debug, Serialize, Deserialize)]
+ pub struct Data {
+     pub id: u32,
++    #[serde(with = "serde_bytes")]
+     pub data: Vec<u8>,
+ }
+
+diff -urN a/src/protocol/write.rs src/protocol/write.rs
+--- a/src/protocol/write.rs	2026-04-21 17:00:59
++++ b/src/protocol/write.rs	2026-04-21 17:00:36
+@@ -6,6 +6,7 @@
+     pub id: u32,
+     pub handle: String,
+     pub offset: u64,
++    #[serde(with = "serde_bytes")]
+     pub data: Vec<u8>,
+ }
+
+diff -urN a/src/de.rs src/de.rs
+--- a/src/de.rs	2026-04-21 17:00:59
++++ b/src/de.rs	2026-04-29 03:15:42
+@@ -170,7 +170,7 @@
+     where
+         V: serde::de::Visitor<'de>,
+     {
+-        self.deserialize_bytes(visitor)
++        visitor.visit_byte_buf(self.input.try_get_bytes()?)
+     }
+
+     fn deserialize_option<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+diff -urN a/src/protocol/mod.rs src/protocol/mod.rs
+--- a/src/protocol/mod.rs	2026-04-21 17:00:59
++++ b/src/protocol/mod.rs	2026-04-29 03:15:42
+@@ -270,11 +270,112 @@
+             Packet::ExtendedReply(reply) => (SSH_FXP_EXTENDED_REPLY, ser::to_bytes(&reply)?),
+         };
+ 
+-        let length = payload.len() as u32 + 1;
++        let length = payload
++            .len()
++            .checked_add(1)
++            .and_then(|len| u32::try_from(len).ok())
++            .ok_or_else(|| Error::BadMessage("packet length exceeds u32".to_owned()))?;
+         let mut bytes = BytesMut::new();
+         bytes.put_u32(length);
+         bytes.put_u8(r#type);
+         bytes.put_slice(&payload);
+         Ok(bytes.freeze())
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    #[test]
++    fn write_packet_uses_length_prefixed_bulk_data() {
++        let packet = Packet::Write(Write {
++            id: 7,
++            handle: "h".to_owned(),
++            offset: 9,
++            data: vec![0, 1, 2, 3],
++        });
++
++        let encoded = Bytes::try_from(packet).expect("serialize write packet");
++        assert_eq!(
++            encoded.as_ref(),
++            &[
++                0,
++                0,
++                0,
++                26, // packet length
++                SSH_FXP_WRITE,
++                0,
++                0,
++                0,
++                7, // request id
++                0,
++                0,
++                0,
++                1,
++                b'h', // handle
++                0,
++                0,
++                0,
++                0,
++                0,
++                0,
++                0,
++                9, // offset
++                0,
++                0,
++                0,
++                4,
++                0,
++                1,
++                2,
++                3, // data
++            ]
++        );
++
++        let mut payload = encoded.slice(4..);
++        let decoded = Packet::try_from(&mut payload).expect("deserialize write packet");
++        match decoded {
++            Packet::Write(write) => assert_eq!(write.data, [0, 1, 2, 3]),
++            _ => panic!("expected write packet"),
++        }
++    }
++
++    #[test]
++    fn data_packet_uses_length_prefixed_bulk_data() {
++        let packet = Packet::Data(Data {
++            id: 8,
++            data: vec![4, 5, 6],
++        });
++
++        let encoded = Bytes::try_from(packet).expect("serialize data packet");
++        assert_eq!(
++            encoded.as_ref(),
++            &[
++                0,
++                0,
++                0,
++                12, // packet length
++                SSH_FXP_DATA,
++                0,
++                0,
++                0,
++                8, // request id
++                0,
++                0,
++                0,
++                3,
++                4,
++                5,
++                6, // data
++            ]
++        );
++
++        let mut payload = encoded.slice(4..);
++        let decoded = Packet::try_from(&mut payload).expect("deserialize data packet");
++        match decoded {
++            Packet::Data(data) => assert_eq!(data.data, [4, 5, 6]),
++            _ => panic!("expected data packet"),
++        }
+     }
+ }
+diff -urN a/src/ser.rs src/ser.rs
+--- a/src/ser.rs	2026-04-21 17:00:59
++++ b/src/ser.rs	2026-04-21 17:00:36
+@@ -103,8 +103,12 @@
+         Ok(())
+     }
+ 
+-    fn serialize_bytes(self, _v: &[u8]) -> Result<Self::Ok, Self::Error> {
+-        Err(Error::BadMessage("bytes not supported".to_owned()))
++    fn serialize_bytes(self, v: &[u8]) -> Result<Self::Ok, Self::Error> {
++        let len = u32::try_from(v.len())
++            .map_err(|_| Error::BadMessage("bytes length exceeds u32".to_owned()))?;
++        self.output.put_u32(len);
++        self.output.put_slice(v);
++        Ok(())
+     }
+ 
+     fn serialize_none(self) -> Result<Self::Ok, Self::Error> {
+diff -urN a/src/utils.rs src/utils.rs
+--- a/src/utils.rs	2026-04-21 17:00:59
++++ b/src/utils.rs	2026-04-21 17:04:11
+@@ -9,9 +9,7 @@
+     DateTime::<Utc>::from(time).timestamp() as u32
+ }
+ 
+-pub async fn read_packet<S: AsyncRead + Unpin>(
+-    stream: &mut S,
+-) -> Result<Bytes, Error> {
++pub async fn read_packet<S: AsyncRead + Unpin>(stream: &mut S) -> Result<Bytes, Error> {
+     let length = stream.read_u32().await?;
+ 
+     let mut buf = vec![0; length as usize];
