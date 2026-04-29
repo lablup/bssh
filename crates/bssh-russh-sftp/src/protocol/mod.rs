@@ -270,11 +270,112 @@ impl TryFrom<Packet> for Bytes {
             Packet::ExtendedReply(reply) => (SSH_FXP_EXTENDED_REPLY, ser::to_bytes(&reply)?),
         };
 
-        let length = payload.len() as u32 + 1;
+        let length = payload
+            .len()
+            .checked_add(1)
+            .and_then(|len| u32::try_from(len).ok())
+            .ok_or_else(|| Error::BadMessage("packet length exceeds u32".to_owned()))?;
         let mut bytes = BytesMut::new();
         bytes.put_u32(length);
         bytes.put_u8(r#type);
         bytes.put_slice(&payload);
         Ok(bytes.freeze())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn write_packet_uses_length_prefixed_bulk_data() {
+        let packet = Packet::Write(Write {
+            id: 7,
+            handle: "h".to_owned(),
+            offset: 9,
+            data: vec![0, 1, 2, 3],
+        });
+
+        let encoded = Bytes::try_from(packet).expect("serialize write packet");
+        assert_eq!(
+            encoded.as_ref(),
+            &[
+                0,
+                0,
+                0,
+                26, // packet length
+                SSH_FXP_WRITE,
+                0,
+                0,
+                0,
+                7, // request id
+                0,
+                0,
+                0,
+                1,
+                b'h', // handle
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                0,
+                9, // offset
+                0,
+                0,
+                0,
+                4,
+                0,
+                1,
+                2,
+                3, // data
+            ]
+        );
+
+        let mut payload = encoded.slice(4..);
+        let decoded = Packet::try_from(&mut payload).expect("deserialize write packet");
+        match decoded {
+            Packet::Write(write) => assert_eq!(write.data, [0, 1, 2, 3]),
+            _ => panic!("expected write packet"),
+        }
+    }
+
+    #[test]
+    fn data_packet_uses_length_prefixed_bulk_data() {
+        let packet = Packet::Data(Data {
+            id: 8,
+            data: vec![4, 5, 6],
+        });
+
+        let encoded = Bytes::try_from(packet).expect("serialize data packet");
+        assert_eq!(
+            encoded.as_ref(),
+            &[
+                0,
+                0,
+                0,
+                12, // packet length
+                SSH_FXP_DATA,
+                0,
+                0,
+                0,
+                8, // request id
+                0,
+                0,
+                0,
+                3,
+                4,
+                5,
+                6, // data
+            ]
+        );
+
+        let mut payload = encoded.slice(4..);
+        let decoded = Packet::try_from(&mut payload).expect("deserialize data packet");
+        match decoded {
+            Packet::Data(data) => assert_eq!(data.data, [4, 5, 6]),
+            _ => panic!("expected data packet"),
+        }
     }
 }

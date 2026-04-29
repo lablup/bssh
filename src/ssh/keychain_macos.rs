@@ -368,6 +368,24 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    fn is_keychain_unavailable(err: &anyhow::Error) -> bool {
+        let err_msg = format!("{err:#}");
+        err_msg.contains("authorization was canceled")
+            || err_msg.contains("Keychain access is denied")
+            || err_msg.contains("Keychain is locked")
+    }
+
+    async fn store_passphrase_or_skip(key_path: impl AsRef<Path>, passphrase: &str) -> bool {
+        match store_passphrase(key_path, passphrase).await {
+            Ok(()) => true,
+            Err(err) if is_keychain_unavailable(&err) => {
+                eprintln!("skipping Keychain-backed test: {err:#}");
+                false
+            }
+            Err(err) => panic!("Failed to store passphrase: {err:#}"),
+        }
+    }
+
     #[tokio::test]
     async fn test_store_and_retrieve_passphrase() {
         // Create a temporary SSH key file
@@ -383,9 +401,9 @@ mod tests {
         let test_passphrase = "test-passphrase-12345";
 
         // Store passphrase
-        store_passphrase(&key_path, test_passphrase)
-            .await
-            .expect("Failed to store passphrase");
+        if !store_passphrase_or_skip(&key_path, test_passphrase).await {
+            return;
+        }
 
         // Retrieve passphrase
         let retrieved = retrieve_passphrase(&key_path)
@@ -464,7 +482,9 @@ mod tests {
         let second_passphrase = "second-passphrase";
 
         // Store first passphrase
-        store_passphrase(&key_path, first_passphrase).await.unwrap();
+        if !store_passphrase_or_skip(&key_path, first_passphrase).await {
+            return;
+        }
 
         // Update with second passphrase
         store_passphrase(&key_path, second_passphrase)
@@ -522,7 +542,9 @@ mod tests {
         let passphrase = "secret-passphrase";
 
         // Store and retrieve
-        store_passphrase(&key_path, passphrase).await.unwrap();
+        if !store_passphrase_or_skip(&key_path, passphrase).await {
+            return;
+        }
         let retrieved = retrieve_passphrase(&key_path).await.unwrap().unwrap();
 
         // Verify passphrase is correct

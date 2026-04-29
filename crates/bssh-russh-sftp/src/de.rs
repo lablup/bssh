@@ -170,7 +170,7 @@ impl<'de> serde::Deserializer<'de> for &mut Deserializer<'de> {
     where
         V: serde::de::Visitor<'de>,
     {
-        self.deserialize_bytes(visitor)
+        visitor.visit_byte_buf(self.input.try_get_bytes()?)
     }
 
     fn deserialize_option<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
