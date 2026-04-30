@@ -12,6 +12,7 @@ A high-performance SSH client with **SSH-compatible syntax** for both single-hos
 
 ## Recent Updates
 
+- **v2.1.3 (2026/04/30):** Fix SCP/SFTP path doubling on absolute paths and chroot dead config (#186); vendor `russh-sftp` with `serde_bytes` perf fix (+29% SFTP upload throughput); forward-port unreleased upstream russh fixes; standardize man page trailers
 - **v2.1.2 (2026/04/27):** Restore terminal mouse tracking state on PTY session disconnect (#190); release workflow fixes
 - **v2.1.1 (2026/04/17):** Fix server panic and auth rejection on every client connection
 - **v2.1.0 (2026/04/14):** Rust 2024 edition migration, EnvGuard for safe test env handling, bytes pin

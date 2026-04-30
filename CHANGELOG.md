@@ -7,19 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.3] - 2026-04-30
+
 ### Added
-- Internal fork of `russh-sftp` as `crates/bssh-russh-sftp` with a `serde_bytes` performance fix for `SSH_FXP_WRITE` and `SSH_FXP_DATA` packets. The upstream serde derive routes `Vec<u8>` through `deserialize_seq` (byte-by-byte), accounting for ~42% of server CPU during 1 GiB SFTP uploads in `perf` profiling. Annotating the `data` fields with `#[serde(with = "serde_bytes")]` and implementing wire-compatible `serialize_bytes` on the SFTP `Serializer` routes through the existing bulk `deserialize_byte_buf`/`try_get_bytes` path. Measured impact on a CPU-bound host (Xeon Silver 4214): 1 GiB SFTP upload throughput improves from 74.8 MiB/s to 96.4 MiB/s (+29%), closing the gap to OpenSSH `sftp-server` from ~26% to ~5%.
-- `scp.root` configuration field. SCP transfers now honor a chroot setting separate from SFTP. When unset, SCP falls back to `sftp.root`, so a single top-level chroot setting governs both subsystems unless an admin explicitly wants them split.
+- Internal fork of `russh-sftp` as `crates/bssh-russh-sftp` with a `serde_bytes` performance fix for `SSH_FXP_WRITE` and `SSH_FXP_DATA` packets. The upstream serde derive routes `Vec<u8>` through `deserialize_seq` (byte-by-byte), accounting for ~42% of server CPU during 1 GiB SFTP uploads in `perf` profiling. Annotating the `data` fields with `#[serde(with = "serde_bytes")]` and implementing wire-compatible `serialize_bytes` on the SFTP `Serializer` routes through the existing bulk `deserialize_byte_buf`/`try_get_bytes` path. Measured impact on a CPU-bound host (Xeon Silver 4214): 1 GiB SFTP upload throughput improves from 74.8 MiB/s to 96.4 MiB/s (+29%), closing the gap to OpenSSH `sftp-server` from ~26% to ~5%. (#188)
+- `scp.root` configuration field. SCP transfers now honor a chroot setting separate from SFTP. When unset, SCP falls back to `sftp.root`, so a single top-level chroot setting governs both subsystems unless an admin explicitly wants them split. (#186)
 
 ### Changed
-- Switched the top-level `russh-sftp` dependency from crates.io `russh-sftp = "2.1.1"` to `russh-sftp = { package = "bssh-russh-sftp", version = "2.1.1", path = "crates/bssh-russh-sftp" }`. All existing `use russh_sftp::...` imports continue to work unchanged.
+- Switched the top-level `russh-sftp` dependency from crates.io `russh-sftp = "2.1.1"` to `russh-sftp = { package = "bssh-russh-sftp", version = "2.1.1", path = "crates/bssh-russh-sftp" }`. All existing `use russh_sftp::...` imports continue to work unchanged. (#188)
 - **Default file-transfer behavior is no longer chrooted to the user's home directory.** With `sftp.root`/`scp.root` unset (the default), absolute client paths are honored verbatim and relative paths resolve from the user's home directory, matching OpenSSH `sftp-server`/`scp` defaults. Deployments that intentionally want chroot-at-home-dir must now set `sftp.root: <home dir>` (or equivalent) explicitly. (#186)
+- Forward-ported unreleased upstream `russh` fixes (#193): exclude SHA-1 MACs from `Preferred::DEFAULT`/`COMPRESSED` (upstream russh #690) and fix channel write ordering when `pending_data` is non-empty (upstream russh #693). Refactored `sync-upstream.sh` to iterate `patches/` and reverse-apply `--dry-run` first so already-merged patches are auto-skipped.
+- Bumped dependencies: `tokio` 1.52.1, `clap` 4.6.1, `tracing` 0.1.44, `lru` 0.17, `uuid` 1.23.1, `tokio-util` 0.7.18, `aws-lc-rs` 1.16.3, `ecdsa` rc.17, `elliptic-curve` rc.31, `p256`/`p384`/`p521` rc.9. Pinned `pkcs5="=0.8.0-rc.13"` because `pkcs8` 0.11.0-rc.11 still calls the rc.13-era `Parameters::recommended` API. (#193)
 
 ### Fixed
 - **bssh-server SCP/SFTP path doubling on absolute client paths** (#186). `ScpHandler::resolve_path` and `SftpHandler::resolve_path_static` previously re-rooted every absolute client path under the user's home directory, so `scp local user@host:/home/work/file.bin` wrote to `/home/work/home/work/file.bin` and `bssh upload local /abs/remote.bin` failed with `No such file`. The resolver now treats absolute client paths verbatim when no chroot is configured and rejects out-of-chroot absolute paths with `permission_denied` when one is. Path-traversal and symlink-escape protections continue to apply.
 - **SCP single-file destinations no longer have the source filename appended** (#186). `ScpHandler::receive_file` now consults `target_is_directory` (parsed from `-d`/`-r`) and the filesystem state of the resolved target. `scp local.bin user@host:/tmp/dest.bin` now writes to `/tmp/dest.bin` instead of `/tmp/dest.bin/local.bin`. Directory destinations (`/tmp/dir/`, existing directory, or `-d`/`-r` flag) keep the previous filename-appending behavior.
 - **Configured `sftp.root` is no longer dead code** (#186). The handler-construction sites in `SshHandler` previously hard-coded `user_info.home_dir` as the chroot root and ignored `config.sftp.root` entirely. Setting `sftp.root` in the YAML configuration now actually changes the SFTP chroot. The same plumbing now exists for `scp.root`.
 - **Chroot bypass via intermediate-directory symlink**. The chroot resolver previously checked only lexical containment for paths whose final component did not exist (typical for new-file creates and `mkdir`). A symlink inside the chroot pointing to a directory outside the chroot would let a client target `chroot/escape/newfile` and have `open(...)`/`create_dir(...)` follow the symlink, writing outside the chroot. Both `ScpHandler::resolve_path` and `SftpHandler::resolve_path_static` now canonicalize the closest existing ancestor of the target path and verify it stays inside the canonicalized chroot, blocking the parent-symlink escape. Found during PR #194 review.
+
+### Documentation
+- Standardize man page trailers across `bssh.1`, `bssh-keygen.1`, and `bssh-server.8` into a consistent BUGS / AUTHORS / COPYRIGHT / SEE ALSO order matching common Unix manual conventions. Author attribution, contact email, Apache-2.0 license notice, and project homepage link are now uniform across all three pages. (#192)
+- Document `sftp.root` and `scp.root` in `bssh-server.8` configuration sections, and add intermediate-directory-symlink chroot protection to SECURITY CONSIDERATIONS.
+
+### CI/CD
+- Bump GitHub Actions to Node.js 24-compatible versions to address Node.js 20 deprecation warnings: `actions/checkout` v4 -> v6, `actions/cache` v4 -> v5, `actions/upload-artifact` v4 -> v7, `apple-actions/import-codesign-certs` v3 -> v7. (#191)
 
 ## [2.1.2] - 2026-04-27
 
@@ -808,6 +819,7 @@ None
 - russh library for native SSH implementation
 - Cross-platform support (Linux and macOS)
 
+[2.1.3]: https://github.com/lablup/bssh/compare/v2.1.2...v2.1.3
 [2.1.2]: https://github.com/lablup/bssh/compare/v2.1.1...v2.1.2
 [2.1.1]: https://github.com/lablup/bssh/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/lablup/bssh/compare/v2.0.1...v2.1.0

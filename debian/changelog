@@ -1,3 +1,58 @@
+bssh (2.1.3-1~jammy1) jammy; urgency=medium
+
+  * v2.1.3
+  ### Bug Fixes
+  - Fix SCP/SFTP path doubling on absolute client paths (#186): `ScpHandler`
+    and `SftpHandler` no longer re-root every absolute client path under the
+    user's home directory. With no chroot configured, absolute paths are
+    honored verbatim and relative paths resolve from the user's home
+    directory, matching OpenSSH `sftp-server`/`scp` defaults.
+  - Fix SCP single-file destinations from appending source filename (#186):
+    `scp local.bin host:/tmp/dest.bin` now writes to `/tmp/dest.bin`
+    instead of `/tmp/dest.bin/local.bin`, by consulting `target_is_directory`
+    and the filesystem state of the resolved target.
+  - Make `sftp.root` configuration actually effective (#186): previously
+    dead code, the YAML setting now controls the SFTP chroot. Same plumbing
+    added for new `scp.root` field.
+  - Block chroot bypass via intermediate-directory symlinks: the resolver
+    now canonicalizes the closest existing ancestor of the target path and
+    verifies it stays inside the canonicalized chroot.
+
+  ### New Features
+  - Add `scp.root` configuration field for separate SCP chroot setting,
+    falling back to `sftp.root` when unset.
+
+  ### Improvements
+  - Vendor `russh-sftp` as `bssh-russh-sftp` with a `serde_bytes` performance
+    fix for `SSH_FXP_WRITE`/`SSH_FXP_DATA` packets (#188). Measured impact
+    on a CPU-bound host: 1 GiB SFTP upload throughput improves from
+    74.8 MiB/s to 96.4 MiB/s (+29%).
+  - Forward-port unreleased upstream russh fixes (#193): exclude SHA-1 MACs
+    from `Preferred::DEFAULT`/`COMPRESSED` (russh #690), fix channel write
+    ordering when `pending_data` is non-empty (russh #693).
+  - Upgrade dependencies: tokio 1.52.1, clap 4.6.1, tracing 0.1.44, lru 0.17,
+    uuid 1.23.1, tokio-util 0.7.18, aws-lc-rs 1.16.3.
+
+  ### Migration Notes
+  - **Default file-transfer behavior is no longer chrooted to the user's
+    home directory.** With `sftp.root`/`scp.root` unset (the default),
+    absolute client paths are honored verbatim and relative paths resolve
+    from the user's home directory. Deployments that intentionally want
+    chroot-at-home-dir must now set `sftp.root: <home dir>` explicitly.
+
+  ### Documentation
+  - Standardize man page trailers (bssh.1, bssh-keygen.1, bssh-server.8)
+    with consistent BUGS / AUTHORS / COPYRIGHT / SEE ALSO ordering and
+    Apache-2.0 license notice.
+
+  ### CI/CD Improvements
+  - Bump GitHub Actions to Node.js 24-compatible versions:
+    actions/checkout v4 -> v6, actions/cache v4 -> v5,
+    actions/upload-artifact v4 -> v7, apple-actions/import-codesign-certs
+    v3 -> v7.
+
+ -- Jeongkyu Shin <inureyes@gmail.com>  Thu, 30 Apr 2026 00:00:00 +0900
+
 bssh (2.1.2-1~jammy1) jammy; urgency=medium
 
   * v2.1.2
