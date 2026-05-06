@@ -21,10 +21,15 @@
 
 use russh_sftp::{client::SftpSession, protocol::OpenFlags};
 use std::path::Path;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncWriteExt;
 
 use super::connection::Client;
-use crate::utils::buffer_pool::global;
+
+/// Maximum number of concurrent SFTP `WRITE`/`READ` requests held in flight per
+/// transfer.  Mirrors OpenSSH `sftp(1)`'s default (`-R 64`) — large enough to
+/// hide per-request RTT on intra-DC and intercontinental links, small enough to
+/// keep peak buffer memory bounded (`MAX_INFLIGHT * MAX_WRITE_LENGTH ≈ 16 MiB`).
+const MAX_INFLIGHT_REQUESTS: usize = 64;
 
 impl Client {
     /// Upload a file with sftp to the remote server.
@@ -46,21 +51,20 @@ impl Client {
         channel.request_subsystem(true, "sftp").await?;
         let sftp = SftpSession::new(channel.into_stream()).await?;
 
-        // read file contents locally
-        let file_contents = tokio::fs::read(src_file_path)
+        // Stream local file with multiple SFTP WRITE requests in flight to
+        // hide per-request RTT and avoid loading the entire file in memory.
+        let mut local_file = tokio::fs::File::open(src_file_path)
             .await
             .map_err(super::Error::IoError)?;
 
-        // interaction with i/o
         let mut file = sftp
             .open_with_flags(
                 dest_file_path,
                 OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE | OpenFlags::READ,
             )
             .await?;
-        file.write_all(&file_contents)
-            .await
-            .map_err(super::Error::IoError)?;
+        file.write_all_pipelined(&mut local_file, MAX_INFLIGHT_REQUESTS)
+            .await?;
         file.flush().await.map_err(super::Error::IoError)?;
         file.shutdown().await.map_err(super::Error::IoError)?;
 
@@ -84,25 +88,18 @@ impl Client {
         channel.request_subsystem(true, "sftp").await?;
         let sftp = SftpSession::new(channel.into_stream()).await?;
 
-        // open remote file for reading
+        // Stream remote file with multiple SFTP READ requests in flight; chunks
+        // are reassembled in offset order before being written to disk.
         let mut remote_file = sftp
             .open_with_flags(remote_file_path, OpenFlags::READ)
             .await?;
 
-        // Use pooled buffer for reading file contents to reduce allocations
-        let mut pooled_buffer = global::get_large_buffer();
-        remote_file.read_to_end(pooled_buffer.as_mut_vec()).await?;
-        let contents = pooled_buffer.as_vec().clone(); // Clone to owned Vec for writing
-
-        // write contents to local file
         let mut local_file = tokio::fs::File::create(local_file_path.as_ref())
             .await
             .map_err(super::Error::IoError)?;
-
-        local_file
-            .write_all(&contents)
-            .await
-            .map_err(super::Error::IoError)?;
+        remote_file
+            .read_to_writer_pipelined(&mut local_file, MAX_INFLIGHT_REQUESTS)
+            .await?;
         local_file.flush().await.map_err(super::Error::IoError)?;
 
         Ok(())
@@ -173,8 +170,8 @@ impl Client {
                     let _ = sftp.create_dir(&remote_path).await; // Ignore error if already exists
                     self.upload_dir_recursive(sftp, &path, &remote_path).await?;
                 } else if metadata.is_file() {
-                    // Upload file
-                    let file_contents = tokio::fs::read(&path)
+                    // Stream local file with pipelined SFTP WRITEs.
+                    let mut local_file = tokio::fs::File::open(&path)
                         .await
                         .map_err(super::Error::IoError)?;
 
@@ -186,9 +183,8 @@ impl Client {
                         .await?;
 
                     remote_file
-                        .write_all(&file_contents)
-                        .await
-                        .map_err(super::Error::IoError)?;
+                        .write_all_pipelined(&mut local_file, MAX_INFLIGHT_REQUESTS)
+                        .await?;
                     remote_file.flush().await.map_err(super::Error::IoError)?;
                     remote_file
                         .shutdown()
@@ -265,17 +261,17 @@ impl Client {
                     self.download_dir_recursive(sftp, &remote_path, &local_path)
                         .await?;
                 } else if metadata.file_type().is_file() {
-                    // Download file using pooled buffer
+                    // Stream remote file with pipelined SFTP READs.
                     let mut remote_file =
                         sftp.open_with_flags(&remote_path, OpenFlags::READ).await?;
 
-                    let mut pooled_buffer = global::get_large_buffer();
-                    remote_file.read_to_end(pooled_buffer.as_mut_vec()).await?;
-                    let contents = pooled_buffer.as_vec().clone();
-
-                    tokio::fs::write(&local_path, contents)
+                    let mut local_file = tokio::fs::File::create(&local_path)
                         .await
                         .map_err(super::Error::IoError)?;
+                    remote_file
+                        .read_to_writer_pipelined(&mut local_file, MAX_INFLIGHT_REQUESTS)
+                        .await?;
+                    local_file.flush().await.map_err(super::Error::IoError)?;
                 }
             }
 

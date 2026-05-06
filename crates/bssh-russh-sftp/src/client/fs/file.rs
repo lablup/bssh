@@ -92,6 +92,183 @@ impl File {
 
         self.session.fsync(self.handle.as_str()).await.map(|_| ())
     }
+
+    /// Streams `reader` to this remote file with up to `max_inflight` concurrent
+    /// SFTP `WRITE` requests in flight. Each request carries up to the negotiated
+    /// `write_len` (or [`MAX_WRITE_LENGTH`] when no limit is advertised).
+    ///
+    /// The high-level [`AsyncWrite`] impl issues one `WRITE` at a time and waits
+    /// for its `STATUS` reply before sending the next, so sustained throughput is
+    /// bounded by `chunk_size / RTT`.  This helper hides the per-request RTT by
+    /// keeping multiple in-flight, mirroring how OpenSSH's `sftp` client behaves
+    /// (~64 outstanding requests by default).
+    ///
+    /// On success returns the number of bytes streamed.  Updates `self.pos` to
+    /// the new write offset.  Reading from `reader` and dispatching writes are
+    /// interleaved, so memory usage is bounded by `max_inflight * chunk_size`.
+    pub async fn write_all_pipelined<R>(
+        &mut self,
+        reader: &mut R,
+        max_inflight: usize,
+    ) -> SftpResult<u64>
+    where
+        R: tokio::io::AsyncRead + Unpin,
+    {
+        use futures::stream::{FuturesUnordered, StreamExt};
+        use tokio::io::AsyncReadExt;
+
+        if max_inflight == 0 {
+            return Err(Error::UnexpectedBehavior(
+                "max_inflight must be at least 1".to_owned(),
+            ));
+        }
+
+        let chunk_size = self
+            .extensions
+            .limits
+            .as_ref()
+            .and_then(|l| l.write_len)
+            .map(|n| n as usize)
+            .unwrap_or(MAX_WRITE_LENGTH as usize);
+
+        let mut total: u64 = 0;
+        let mut offset = self.pos;
+        let mut in_flight = FuturesUnordered::new();
+        let mut eof = false;
+
+        loop {
+            // Top up the pipeline with new chunks until we hit the cap or EOF.
+            while !eof && in_flight.len() < max_inflight {
+                let mut buf = vec![0u8; chunk_size];
+                let n = reader.read(&mut buf).await.map_err(io::Error::from)?;
+                if n == 0 {
+                    eof = true;
+                    break;
+                }
+                buf.truncate(n);
+
+                let session = self.session.clone();
+                let handle = self.handle.clone();
+                let off = offset;
+
+                in_flight.push(async move {
+                    session.write(handle, off, buf).await?;
+                    SftpResult::Ok(n as u64)
+                });
+
+                offset += n as u64;
+                total += n as u64;
+            }
+
+            // Drain at least one in-flight write before reading more, otherwise
+            // we busy-loop the read path while writes never get a chance to make
+            // progress.
+            match in_flight.next().await {
+                Some(Ok(_)) => {}
+                Some(Err(e)) => return Err(e),
+                None => break, // pipeline drained and no more data → done
+            }
+        }
+
+        self.pos = offset;
+        Ok(total)
+    }
+
+    /// Streams the remote file from the current position to `writer` using up to
+    /// `max_inflight` concurrent SFTP `READ` requests.  Each request asks for up
+    /// to the negotiated `read_len` (or [`MAX_READ_LENGTH`] when no limit is
+    /// advertised).
+    ///
+    /// Like [`Self::write_all_pipelined`], this hides per-request RTT.  Chunks
+    /// are reassembled in offset order before being written to `writer`, so the
+    /// output is identical to a sequential read.  Stops on the first server
+    /// short read (server signalled EOF).
+    ///
+    /// Returns the number of bytes streamed.  Updates `self.pos`.
+    pub async fn read_to_writer_pipelined<W>(
+        &mut self,
+        writer: &mut W,
+        max_inflight: usize,
+    ) -> SftpResult<u64>
+    where
+        W: tokio::io::AsyncWrite + Unpin,
+    {
+        use futures::stream::{FuturesUnordered, StreamExt};
+        use std::collections::BTreeMap;
+        use tokio::io::AsyncWriteExt;
+
+        if max_inflight == 0 {
+            return Err(Error::UnexpectedBehavior(
+                "max_inflight must be at least 1".to_owned(),
+            ));
+        }
+
+        let chunk_size = self
+            .extensions
+            .limits
+            .as_ref()
+            .and_then(|l| l.read_len)
+            .map(|n| n as usize)
+            .unwrap_or(MAX_READ_LENGTH as usize);
+
+        let mut total: u64 = 0;
+        let mut next_offset = self.pos;
+        let mut next_to_write = self.pos;
+        let mut pending: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
+        let mut in_flight = FuturesUnordered::new();
+        let mut eof = false;
+
+        loop {
+            // Schedule new read requests until we hit the cap or have observed EOF.
+            while !eof && in_flight.len() < max_inflight {
+                let session = self.session.clone();
+                let handle = self.handle.clone();
+                let off = next_offset;
+                let len = chunk_size as u32;
+
+                in_flight.push(async move {
+                    match session.read(handle, off, len).await {
+                        Ok(data) => SftpResult::Ok((off, Some(data.data))),
+                        Err(Error::Status(s)) if s.status_code == StatusCode::Eof => {
+                            SftpResult::Ok((off, None))
+                        }
+                        Err(e) => Err(e),
+                    }
+                });
+
+                next_offset += chunk_size as u64;
+            }
+
+            match in_flight.next().await {
+                Some(Ok((off, Some(data)))) => {
+                    if data.is_empty() {
+                        eof = true;
+                    } else {
+                        pending.insert(off, data);
+                    }
+                }
+                Some(Ok((_, None))) => {
+                    eof = true;
+                }
+                Some(Err(e)) => return Err(e),
+                None => break,
+            }
+
+            // Flush in-order chunks to writer as they become available.
+            while let Some(chunk) = pending.remove(&next_to_write) {
+                let n = chunk.len() as u64;
+                writer
+                    .write_all(&chunk)
+                    .await
+                    .map_err(io::Error::from)?;
+                next_to_write += n;
+                total += n;
+            }
+        }
+
+        self.pos = next_to_write;
+        Ok(total)
+    }
 }
 
 impl Drop for File {
