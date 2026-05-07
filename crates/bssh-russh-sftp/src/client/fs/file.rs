@@ -257,10 +257,7 @@ impl File {
             // Flush in-order chunks to writer as they become available.
             while let Some(chunk) = pending.remove(&next_to_write) {
                 let n = chunk.len() as u64;
-                writer
-                    .write_all(&chunk)
-                    .await
-                    .map_err(io::Error::from)?;
+                writer.write_all(&chunk).await.map_err(io::Error::from)?;
                 next_to_write += n;
                 total += n;
             }
