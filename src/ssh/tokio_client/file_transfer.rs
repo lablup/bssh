@@ -25,28 +25,26 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// Chunk size used for streaming SFTP uploads/downloads.
 ///
-/// Sized to match SFTP's standard MAX_WRITE_LENGTH (255 KiB) so each chunk maps
-/// to a single SFTP WRITE/READ packet without further fragmentation.
-const STREAM_CHUNK_SIZE: usize = 256 * 1024;
+/// Sized to match russh-sftp's default MAX_WRITE_LENGTH (255 KiB) so each
+/// chunk maps to a single SFTP WRITE/READ packet without further fragmentation.
+const STREAM_CHUNK_SIZE: usize = 255 * 1024;
 
 /// Stream `reader` to `writer` in fixed-size chunks so a single transfer never
 /// holds more than `STREAM_CHUNK_SIZE` of file payload in memory at once.
-async fn stream_copy<R, W>(reader: &mut R, writer: &mut W) -> std::io::Result<u64>
+async fn stream_copy<R, W>(reader: &mut R, writer: &mut W) -> std::io::Result<()>
 where
     R: tokio::io::AsyncRead + Unpin,
     W: tokio::io::AsyncWrite + Unpin,
 {
     let mut buf = vec![0u8; STREAM_CHUNK_SIZE];
-    let mut total: u64 = 0;
     loop {
         let n = reader.read(&mut buf).await?;
         if n == 0 {
             break;
         }
         writer.write_all(&buf[..n]).await?;
-        total += n as u64;
     }
-    Ok(total)
+    Ok(())
 }
 
 use super::connection::Client;
@@ -119,6 +117,10 @@ impl Client {
             .await
             .map_err(super::Error::IoError)?;
         stream_copy(&mut remote_file, &mut local_file)
+            .await
+            .map_err(super::Error::IoError)?;
+        remote_file
+            .shutdown()
             .await
             .map_err(super::Error::IoError)?;
         local_file.flush().await.map_err(super::Error::IoError)?;
@@ -293,11 +295,67 @@ impl Client {
                     stream_copy(&mut remote_file, &mut local_file)
                         .await
                         .map_err(super::Error::IoError)?;
+                    remote_file
+                        .shutdown()
+                        .await
+                        .map_err(super::Error::IoError)?;
                     local_file.flush().await.map_err(super::Error::IoError)?;
                 }
             }
 
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{
+        io::Cursor,
+        pin::Pin,
+        task::{Context, Poll},
+    };
+    use tokio::io::AsyncWrite;
+
+    #[derive(Default)]
+    struct RecordingWriter {
+        bytes: Vec<u8>,
+        write_lengths: Vec<usize>,
+    }
+
+    impl AsyncWrite for RecordingWriter {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            self.write_lengths.push(buf.len());
+            self.bytes.extend_from_slice(buf);
+            Poll::Ready(Ok(buf.len()))
+        }
+
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_copy_writes_sftp_sized_chunks() {
+        let input = vec![0xAB; STREAM_CHUNK_SIZE * 2 + 17];
+        let mut reader = Cursor::new(input.clone());
+        let mut writer = RecordingWriter::default();
+
+        stream_copy(&mut reader, &mut writer).await.unwrap();
+
+        assert_eq!(writer.bytes, input);
+        assert_eq!(
+            writer.write_lengths,
+            vec![STREAM_CHUNK_SIZE, STREAM_CHUNK_SIZE, 17]
+        );
     }
 }
