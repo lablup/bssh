@@ -29,6 +29,8 @@
 - Support for SSH agent, key-based, and password authentication
 - Configurable timeouts and retry logic
 - Full SFTP support for file transfers
+- SFTP uploads/downloads stream file payloads in 255 KiB chunks, matching the
+  default russh-sftp read/write packet limit and avoiding whole-file buffering
 - SSH keepalive support via `SshConnectionConfig`:
   - `keepalive_interval`: Interval between keepalive packets (default: 60s, 0 to disable)
   - `keepalive_max`: Maximum unanswered keepalive packets before disconnect (default: 3)
