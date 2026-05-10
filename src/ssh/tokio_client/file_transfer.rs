@@ -100,6 +100,10 @@ impl Client {
         remote_file
             .read_to_writer_pipelined(&mut local_file, MAX_INFLIGHT_REQUESTS)
             .await?;
+        remote_file
+            .shutdown()
+            .await
+            .map_err(super::Error::IoError)?;
         local_file.flush().await.map_err(super::Error::IoError)?;
 
         Ok(())
@@ -271,6 +275,10 @@ impl Client {
                     remote_file
                         .read_to_writer_pipelined(&mut local_file, MAX_INFLIGHT_REQUESTS)
                         .await?;
+                    remote_file
+                        .shutdown()
+                        .await
+                        .map_err(super::Error::IoError)?;
                     local_file.flush().await.map_err(super::Error::IoError)?;
                 }
             }

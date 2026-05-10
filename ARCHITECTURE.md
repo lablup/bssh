@@ -12,7 +12,7 @@ bssh (Backend.AI SSH / Broadcast SSH) is a high-performance parallel SSH command
 - SSH jump host support (-J)
 - SSH configuration file parsing (-F)
 - Interactive PTY sessions with single/multiplex modes
-- SFTP file transfers (upload/download)
+- SFTP file transfers (upload/download) with bounded pipelined streaming
 - Backend.AI cluster auto-detection
 - pdsh compatibility mode
 
