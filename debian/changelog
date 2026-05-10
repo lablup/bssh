@@ -1,3 +1,24 @@
+bssh (2.1.4-1~jammy1) jammy; urgency=medium
+
+  * v2.1.4
+  ### Improvements
+  - Stream SFTP uploads/downloads in 255 KiB chunks instead of buffering
+    the whole file in memory (#195). On a 1 GiB transfer over loopback,
+    upload peak RSS drops from ~3.23 GB to ~20 MB and wall time from
+    38.6 s to 3.5 s; download peak RSS drops from ~2.17 GB to ~16 MB.
+    Multi-GB transfers no longer OOM the client.
+  - Pipeline up to 64 concurrent SFTP requests for upload and download
+    (#196). The server-advertised read/write lengths are also capped
+    against local maxima to avoid oversized allocations from untrusted
+    SFTP metadata, the download reorder queue is bounded across both
+    in-flight and pending out-of-order responses, and `fstat` size info
+    is used where available to avoid reads past EOF.
+  - Raise the bssh-server SFTP `MAX_READ_SIZE` from 64 KiB to the
+    255 KiB SFTP standard (#197). Combined with client-side pipelining,
+    this cuts the per-MiB request count on downloads from 16 to 4.
+
+ -- Jeongkyu Shin <inureyes@gmail.com>  Sun, 10 May 2026 00:00:00 +0900
+
 bssh (2.1.3-1~jammy1) jammy; urgency=medium
 
   * v2.1.3

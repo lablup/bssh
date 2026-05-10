@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.4] - 2026-05-10
+
+### Performance
+- **Stream SFTP uploads/downloads instead of buffering whole files in memory** (#195). Previously `upload_file`/`upload_dir_recursive` loaded the entire local file into a `Vec<u8>` via `tokio::fs::read` before calling `write_all`, and `download_file`/`download_dir_recursive` called `read_to_end` into a pooled buffer plus a `clone()` to a separate `Vec` before writing locally. Multi-GB transfers therefore had peak RSS that scaled with file size and large files OOM'd the client. Each path now uses a small `stream_copy()` helper looping on 255 KiB reads/writes through the existing `AsyncRead`/`AsyncWrite` impls on `tokio::fs::File` and `russh_sftp::client::fs::File`. Buffer size matches the SFTP `MAX_WRITE_LENGTH` so each chunk maps to a single SFTP packet without further fragmentation. Verified locally on macOS arm64 against `bssh-server` v2.1.3 over loopback with a 1 GiB file: upload peak RSS drops from ~3.23 GB to ~20 MB and wall time from 38.6 s to 3.5 s; download peak RSS drops from ~2.17 GB to ~16 MB and wall time from 3.93 s to 3.41 s.
+- **Pipeline up to 64 concurrent SFTP requests for upload and download** (#196). Bounded pipelined SFTP upload/download helpers replace the previous strictly-sequential request/response loop. Review follow-ups also: cap server-advertised read/write lengths against local maxima to avoid oversized allocations from untrusted SFTP metadata, bound the download reorder queue across both in-flight and pending out-of-order responses, use `fstat` size information where available to avoid reads past EOF and validate unexpected short reads, and preserve remote download handle shutdown after syncing with main. Added SFTP crate tests for chunk-size capping and in-memory pipelined upload/download behavior.
+- **Raise bssh-server SFTP `MAX_READ_SIZE` to the 255 KiB SFTP standard** (#197). The server previously hard-capped every SFTP `READ` reply at 64 KiB regardless of what the client requested, while `bssh-russh-sftp` and OpenSSH's `sftp-server` both use the SFTP standard `MAX_READ_LENGTH = 261120` (255 KiB) for request sizing. A client asking for a 256 KiB chunk only ever got 64 KiB back, forcing four extra requests per byte stream. Bumped to 261120 so server replies match the chunk size used by the rest of the stack. Combined with client-side pipelining (#196), this directly cuts the per-MiB request count on downloads from 16 to 4. Memory exposure stays bounded: handles are still capped at `MAX_HANDLES = 1000` per session and each in-flight read still uses a single per-request buffer of this size.
+
 ## [2.1.3] - 2026-04-30
 
 ### Added
@@ -819,6 +826,7 @@ None
 - russh library for native SSH implementation
 - Cross-platform support (Linux and macOS)
 
+[2.1.4]: https://github.com/lablup/bssh/compare/v2.1.3...v2.1.4
 [2.1.3]: https://github.com/lablup/bssh/compare/v2.1.2...v2.1.3
 [2.1.2]: https://github.com/lablup/bssh/compare/v2.1.1...v2.1.2
 [2.1.1]: https://github.com/lablup/bssh/compare/v2.1.0...v2.1.1

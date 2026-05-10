@@ -12,6 +12,7 @@ A high-performance SSH client with **SSH-compatible syntax** for both single-hos
 
 ## Recent Updates
 
+- **v2.1.4 (2026/05/10):** SFTP transfer perf — stream uploads/downloads in 255 KiB chunks instead of buffering whole files (~160x lower RSS, ~11x faster 1 GiB upload), pipeline up to 64 concurrent SFTP requests, raise server `MAX_READ_SIZE` to the 255 KiB SFTP standard (#195, #196, #197)
 - **v2.1.3 (2026/04/30):** Fix SCP/SFTP path doubling on absolute paths and chroot dead config (#186); vendor `russh-sftp` with `serde_bytes` perf fix (+29% SFTP upload throughput); forward-port unreleased upstream russh fixes; standardize man page trailers
 - **v2.1.2 (2026/04/27):** Restore terminal mouse tracking state on PTY session disconnect (#190); release workflow fixes
 - **v2.1.1 (2026/04/17):** Fix server panic and auth rejection on every client connection
