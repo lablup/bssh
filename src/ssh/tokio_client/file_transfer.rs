@@ -21,33 +21,15 @@
 
 use russh_sftp::{client::SftpSession, protocol::OpenFlags};
 use std::path::Path;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-/// Chunk size used for streaming SFTP uploads/downloads.
-///
-/// Sized to match russh-sftp's default MAX_WRITE_LENGTH (255 KiB) so each
-/// chunk maps to a single SFTP WRITE/READ packet without further fragmentation.
-const STREAM_CHUNK_SIZE: usize = 255 * 1024;
-
-/// Stream `reader` to `writer` in fixed-size chunks so a single transfer never
-/// holds more than `STREAM_CHUNK_SIZE` of file payload in memory at once.
-async fn stream_copy<R, W>(reader: &mut R, writer: &mut W) -> std::io::Result<()>
-where
-    R: tokio::io::AsyncRead + Unpin,
-    W: tokio::io::AsyncWrite + Unpin,
-{
-    let mut buf = vec![0u8; STREAM_CHUNK_SIZE];
-    loop {
-        let n = reader.read(&mut buf).await?;
-        if n == 0 {
-            break;
-        }
-        writer.write_all(&buf[..n]).await?;
-    }
-    Ok(())
-}
+use tokio::io::AsyncWriteExt;
 
 use super::connection::Client;
+
+/// Maximum number of concurrent SFTP `WRITE`/`READ` requests held in flight per
+/// transfer.  Mirrors OpenSSH `sftp(1)`'s default (`-R 64`) — large enough to
+/// hide per-request RTT on intra-DC and intercontinental links, small enough to
+/// keep peak buffer memory bounded (`MAX_INFLIGHT * MAX_WRITE_LENGTH ≈ 16 MiB`).
+const MAX_INFLIGHT_REQUESTS: usize = 64;
 
 impl Client {
     /// Upload a file with sftp to the remote server.
@@ -69,7 +51,8 @@ impl Client {
         channel.request_subsystem(true, "sftp").await?;
         let sftp = SftpSession::new(channel.into_stream()).await?;
 
-        // Open local file for streaming reads (avoids loading whole file in memory).
+        // Stream local file with multiple SFTP WRITE requests in flight to
+        // hide per-request RTT and avoid loading the entire file in memory.
         let mut local_file = tokio::fs::File::open(src_file_path)
             .await
             .map_err(super::Error::IoError)?;
@@ -80,9 +63,8 @@ impl Client {
                 OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE | OpenFlags::READ,
             )
             .await?;
-        stream_copy(&mut local_file, &mut file)
-            .await
-            .map_err(super::Error::IoError)?;
+        file.write_all_pipelined(&mut local_file, MAX_INFLIGHT_REQUESTS)
+            .await?;
         file.flush().await.map_err(super::Error::IoError)?;
         file.shutdown().await.map_err(super::Error::IoError)?;
 
@@ -106,19 +88,18 @@ impl Client {
         channel.request_subsystem(true, "sftp").await?;
         let sftp = SftpSession::new(channel.into_stream()).await?;
 
-        // open remote file for reading
+        // Stream remote file with multiple SFTP READ requests in flight; chunks
+        // are reassembled in offset order before being written to disk.
         let mut remote_file = sftp
             .open_with_flags(remote_file_path, OpenFlags::READ)
             .await?;
 
-        // Stream remote file directly to local disk to avoid buffering the
-        // whole file in memory.
         let mut local_file = tokio::fs::File::create(local_file_path.as_ref())
             .await
             .map_err(super::Error::IoError)?;
-        stream_copy(&mut remote_file, &mut local_file)
-            .await
-            .map_err(super::Error::IoError)?;
+        remote_file
+            .read_to_writer_pipelined(&mut local_file, MAX_INFLIGHT_REQUESTS)
+            .await?;
         remote_file
             .shutdown()
             .await
@@ -193,8 +174,7 @@ impl Client {
                     let _ = sftp.create_dir(&remote_path).await; // Ignore error if already exists
                     self.upload_dir_recursive(sftp, &path, &remote_path).await?;
                 } else if metadata.is_file() {
-                    // Stream local file to remote in chunks instead of loading
-                    // the entire file in memory before send.
+                    // Stream local file with pipelined SFTP WRITEs.
                     let mut local_file = tokio::fs::File::open(&path)
                         .await
                         .map_err(super::Error::IoError)?;
@@ -206,9 +186,9 @@ impl Client {
                         )
                         .await?;
 
-                    stream_copy(&mut local_file, &mut remote_file)
-                        .await
-                        .map_err(super::Error::IoError)?;
+                    remote_file
+                        .write_all_pipelined(&mut local_file, MAX_INFLIGHT_REQUESTS)
+                        .await?;
                     remote_file.flush().await.map_err(super::Error::IoError)?;
                     remote_file
                         .shutdown()
@@ -285,16 +265,16 @@ impl Client {
                     self.download_dir_recursive(sftp, &remote_path, &local_path)
                         .await?;
                 } else if metadata.file_type().is_file() {
-                    // Stream remote file directly to local disk in chunks.
+                    // Stream remote file with pipelined SFTP READs.
                     let mut remote_file =
                         sftp.open_with_flags(&remote_path, OpenFlags::READ).await?;
 
                     let mut local_file = tokio::fs::File::create(&local_path)
                         .await
                         .map_err(super::Error::IoError)?;
-                    stream_copy(&mut remote_file, &mut local_file)
-                        .await
-                        .map_err(super::Error::IoError)?;
+                    remote_file
+                        .read_to_writer_pipelined(&mut local_file, MAX_INFLIGHT_REQUESTS)
+                        .await?;
                     remote_file
                         .shutdown()
                         .await
@@ -305,57 +285,5 @@ impl Client {
 
             Ok(())
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::{
-        io::Cursor,
-        pin::Pin,
-        task::{Context, Poll},
-    };
-    use tokio::io::AsyncWrite;
-
-    #[derive(Default)]
-    struct RecordingWriter {
-        bytes: Vec<u8>,
-        write_lengths: Vec<usize>,
-    }
-
-    impl AsyncWrite for RecordingWriter {
-        fn poll_write(
-            mut self: Pin<&mut Self>,
-            _cx: &mut Context<'_>,
-            buf: &[u8],
-        ) -> Poll<std::io::Result<usize>> {
-            self.write_lengths.push(buf.len());
-            self.bytes.extend_from_slice(buf);
-            Poll::Ready(Ok(buf.len()))
-        }
-
-        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-            Poll::Ready(Ok(()))
-        }
-
-        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
-            Poll::Ready(Ok(()))
-        }
-    }
-
-    #[tokio::test]
-    async fn stream_copy_writes_sftp_sized_chunks() {
-        let input = vec![0xAB; STREAM_CHUNK_SIZE * 2 + 17];
-        let mut reader = Cursor::new(input.clone());
-        let mut writer = RecordingWriter::default();
-
-        stream_copy(&mut reader, &mut writer).await.unwrap();
-
-        assert_eq!(writer.bytes, input);
-        assert_eq!(
-            writer.write_lengths,
-            vec![STREAM_CHUNK_SIZE, STREAM_CHUNK_SIZE, 17]
-        );
     }
 }
