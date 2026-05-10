@@ -21,6 +21,10 @@ type StateFn<T> = Option<Pin<Box<dyn Future<Output = io::Result<T>> + Send + Syn
 const MAX_READ_LENGTH: u64 = 261120;
 const MAX_WRITE_LENGTH: u64 = 261120;
 
+fn bounded_chunk_size(limit: Option<u64>, default_limit: u64) -> usize {
+    limit.map_or(default_limit, |n| n.min(default_limit)) as usize
+}
+
 struct FileState {
     f_read: StateFn<Option<Vec<u8>>>,
     f_seek: StateFn<u64>,
@@ -123,13 +127,10 @@ impl File {
             ));
         }
 
-        let chunk_size = self
-            .extensions
-            .limits
-            .as_ref()
-            .and_then(|l| l.write_len)
-            .map(|n| n as usize)
-            .unwrap_or(MAX_WRITE_LENGTH as usize);
+        let chunk_size = bounded_chunk_size(
+            self.extensions.limits.as_ref().and_then(|l| l.write_len),
+            MAX_WRITE_LENGTH,
+        );
 
         let mut total: u64 = 0;
         let mut offset = self.pos;
@@ -140,7 +141,7 @@ impl File {
             // Top up the pipeline with new chunks until we hit the cap or EOF.
             while !eof && in_flight.len() < max_inflight {
                 let mut buf = vec![0u8; chunk_size];
-                let n = reader.read(&mut buf).await.map_err(io::Error::from)?;
+                let n = reader.read(&mut buf).await?;
                 if n == 0 {
                     eof = true;
                     break;
@@ -166,7 +167,7 @@ impl File {
             match in_flight.next().await {
                 Some(Ok(_)) => {}
                 Some(Err(e)) => return Err(e),
-                None => break, // pipeline drained and no more data → done
+                None => break, // pipeline drained and no more data -> done
             }
         }
 
@@ -176,13 +177,13 @@ impl File {
 
     /// Streams the remote file from the current position to `writer` using up to
     /// `max_inflight` concurrent SFTP `READ` requests.  Each request asks for up
-    /// to the negotiated `read_len` (or [`MAX_READ_LENGTH`] when no limit is
-    /// advertised).
+    /// to the negotiated `read_len`, capped at [`MAX_READ_LENGTH`].
     ///
     /// Like [`Self::write_all_pipelined`], this hides per-request RTT.  Chunks
     /// are reassembled in offset order before being written to `writer`, so the
-    /// output is identical to a sequential read.  Stops on the first server
-    /// short read (server signalled EOF).
+    /// output is identical to a sequential read.  For regular files, the current
+    /// file size is used to avoid speculative reads beyond EOF; if the size is
+    /// unavailable, the transfer stops on EOF or the first short read.
     ///
     /// Returns the number of bytes streamed.  Updates `self.pos`.
     pub async fn read_to_writer_pipelined<W>(
@@ -203,13 +204,16 @@ impl File {
             ));
         }
 
-        let chunk_size = self
-            .extensions
-            .limits
-            .as_ref()
-            .and_then(|l| l.read_len)
-            .map(|n| n as usize)
-            .unwrap_or(MAX_READ_LENGTH as usize);
+        let chunk_size = bounded_chunk_size(
+            self.extensions.limits.as_ref().and_then(|l| l.read_len),
+            MAX_READ_LENGTH,
+        );
+        let file_end = self
+            .metadata()
+            .await
+            .ok()
+            .and_then(|m| m.size)
+            .filter(|&size| size >= self.pos);
 
         let mut total: u64 = 0;
         let mut next_offset = self.pos;
@@ -219,35 +223,59 @@ impl File {
         let mut eof = false;
 
         loop {
-            // Schedule new read requests until we hit the cap or have observed EOF.
-            while !eof && in_flight.len() < max_inflight {
+            // Keep the total reorder buffer bounded. A slow early read can make
+            // later replies arrive first; counting both pending and in-flight
+            // chunks prevents unbounded memory growth in that case.
+            while !eof
+                && in_flight.len() + pending.len() < max_inflight
+                && file_end.is_none_or(|end| next_offset < end)
+            {
                 let session = self.session.clone();
                 let handle = self.handle.clone();
                 let off = next_offset;
-                let len = chunk_size as u32;
+                let len = file_end.map_or(chunk_size as u64, |end| {
+                    (end - next_offset).min(chunk_size as u64)
+                }) as u32;
 
                 in_flight.push(async move {
                     match session.read(handle, off, len).await {
-                        Ok(data) => SftpResult::Ok((off, Some(data.data))),
+                        Ok(data) => SftpResult::Ok((off, len, Some(data.data))),
                         Err(Error::Status(s)) if s.status_code == StatusCode::Eof => {
-                            SftpResult::Ok((off, None))
+                            SftpResult::Ok((off, len, None))
                         }
                         Err(e) => Err(e),
                     }
                 });
 
-                next_offset += chunk_size as u64;
+                next_offset += u64::from(len);
             }
 
             match in_flight.next().await {
-                Some(Ok((off, Some(data)))) => {
+                Some(Ok((off, len, Some(data)))) => {
                     if data.is_empty() {
                         eof = true;
                     } else {
+                        if let Some(end) = file_end {
+                            let got_end = off.saturating_add(data.len() as u64);
+                            if data.len() != len as usize || got_end > end {
+                                return Err(Error::UnexpectedBehavior(format!(
+                                    "short read before EOF at offset {off}: requested {len} bytes, received {} bytes",
+                                    data.len()
+                                )));
+                            }
+                        } else if data.len() < len as usize {
+                            eof = true;
+                        }
+
                         pending.insert(off, data);
                     }
                 }
-                Some(Ok((_, None))) => {
+                Some(Ok((off, _, None))) => {
+                    if file_end.is_some_and(|end| off < end) {
+                        return Err(Error::UnexpectedBehavior(format!(
+                            "unexpected EOF before file size at offset {off}"
+                        )));
+                    }
                     eof = true;
                 }
                 Some(Err(e)) => return Err(e),
@@ -257,7 +285,7 @@ impl File {
             // Flush in-order chunks to writer as they become available.
             while let Some(chunk) = pending.remove(&next_to_write) {
                 let n = chunk.len() as u64;
-                writer.write_all(&chunk).await.map_err(io::Error::from)?;
+                writer.write_all(&chunk).await?;
                 next_to_write += n;
                 total += n;
             }
@@ -265,6 +293,204 @@ impl File {
 
         self.pos = next_to_write;
         Ok(total)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        future::Future,
+        sync::{Arc, Mutex},
+    };
+
+    use tokio::io::duplex;
+
+    use super::*;
+    use crate::{
+        client::SftpSession,
+        protocol::{Attrs, Data, FileAttributes, Handle, OpenFlags, Status, Version},
+        server,
+        server::Handler,
+    };
+
+    struct MemoryHandler {
+        data: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl MemoryHandler {
+        fn ok_status(id: u32) -> Status {
+            Status {
+                id,
+                status_code: StatusCode::Ok,
+                error_message: String::new(),
+                language_tag: String::new(),
+            }
+        }
+    }
+
+    impl Handler for MemoryHandler {
+        type Error = StatusCode;
+
+        fn unimplemented(&self) -> Self::Error {
+            StatusCode::OpUnsupported
+        }
+
+        fn init(
+            &mut self,
+            _version: u32,
+            _extensions: std::collections::HashMap<String, String>,
+        ) -> impl Future<Output = Result<Version, Self::Error>> + Send {
+            async { Ok(Version::new()) }
+        }
+
+        fn open(
+            &mut self,
+            id: u32,
+            _filename: String,
+            _pflags: OpenFlags,
+            _attrs: FileAttributes,
+        ) -> impl Future<Output = Result<Handle, Self::Error>> + Send {
+            async move {
+                Ok(Handle {
+                    id,
+                    handle: "memory".to_owned(),
+                })
+            }
+        }
+
+        fn close(
+            &mut self,
+            id: u32,
+            _handle: String,
+        ) -> impl Future<Output = Result<Status, Self::Error>> + Send {
+            async move { Ok(Self::ok_status(id)) }
+        }
+
+        fn fstat(
+            &mut self,
+            id: u32,
+            _handle: String,
+        ) -> impl Future<Output = Result<Attrs, Self::Error>> + Send {
+            let data = self.data.clone();
+
+            async move {
+                let mut attrs = FileAttributes::empty();
+                attrs.size = Some(data.lock().expect("memory file lock poisoned").len() as u64);
+                Ok(Attrs { id, attrs })
+            }
+        }
+
+        fn read(
+            &mut self,
+            id: u32,
+            _handle: String,
+            offset: u64,
+            len: u32,
+        ) -> impl Future<Output = Result<Data, Self::Error>> + Send {
+            let data = self.data.clone();
+
+            async move {
+                let data = data.lock().expect("memory file lock poisoned");
+                let offset = usize::try_from(offset).map_err(|_| StatusCode::Failure)?;
+                if offset >= data.len() {
+                    return Err(StatusCode::Eof);
+                }
+                let end = offset.saturating_add(len as usize).min(data.len());
+
+                Ok(Data {
+                    id,
+                    data: data[offset..end].to_vec(),
+                })
+            }
+        }
+
+        fn write(
+            &mut self,
+            id: u32,
+            _handle: String,
+            offset: u64,
+            bytes: Vec<u8>,
+        ) -> impl Future<Output = Result<Status, Self::Error>> + Send {
+            let data = self.data.clone();
+
+            async move {
+                let mut data = data.lock().expect("memory file lock poisoned");
+                let offset = usize::try_from(offset).map_err(|_| StatusCode::Failure)?;
+                let end = offset.checked_add(bytes.len()).ok_or(StatusCode::Failure)?;
+                if data.len() < end {
+                    data.resize(end, 0);
+                }
+                data[offset..end].copy_from_slice(&bytes);
+
+                Ok(Self::ok_status(id))
+            }
+        }
+    }
+
+    async fn memory_session(data: Arc<Mutex<Vec<u8>>>) -> SftpSession {
+        let (client, server_stream) = duplex(64 * 1024);
+        server::run(server_stream, MemoryHandler { data }).await;
+        SftpSession::new(client).await.expect("memory SFTP init")
+    }
+
+    #[test]
+    fn advertised_chunk_sizes_are_capped() {
+        assert_eq!(
+            bounded_chunk_size(None, MAX_READ_LENGTH),
+            MAX_READ_LENGTH as usize
+        );
+        assert_eq!(bounded_chunk_size(Some(1024), MAX_READ_LENGTH), 1024);
+        assert_eq!(
+            bounded_chunk_size(Some(MAX_READ_LENGTH * 4), MAX_READ_LENGTH),
+            MAX_READ_LENGTH as usize
+        );
+    }
+
+    #[tokio::test]
+    async fn write_all_pipelined_streams_all_bytes() {
+        let remote_data = Arc::new(Mutex::new(Vec::new()));
+        let sftp = memory_session(remote_data.clone()).await;
+        let input: Vec<u8> = (0..(MAX_WRITE_LENGTH as usize * 2 + 123))
+            .map(|n| (n % 251) as u8)
+            .collect();
+        let mut reader = &input[..];
+        let mut file = sftp
+            .open_with_flags(
+                "ignored",
+                OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE,
+            )
+            .await
+            .expect("open memory file");
+
+        let written = file
+            .write_all_pipelined(&mut reader, 4)
+            .await
+            .expect("pipelined write");
+
+        assert_eq!(written as usize, input.len());
+        assert_eq!(
+            *remote_data.lock().expect("memory file lock poisoned"),
+            input
+        );
+    }
+
+    #[tokio::test]
+    async fn read_to_writer_pipelined_streams_all_bytes() {
+        let input: Vec<u8> = (0..(MAX_READ_LENGTH as usize * 2 + 123))
+            .map(|n| (n % 251) as u8)
+            .collect();
+        let remote_data = Arc::new(Mutex::new(input.clone()));
+        let sftp = memory_session(remote_data).await;
+        let mut file = sftp.open("ignored").await.expect("open memory file");
+        let mut output = Vec::new();
+
+        let read = file
+            .read_to_writer_pipelined(&mut output, 4)
+            .await
+            .expect("pipelined read");
+
+        assert_eq!(read as usize, input.len());
+        assert_eq!(output, input);
     }
 }
 
