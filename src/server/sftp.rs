@@ -164,8 +164,15 @@ struct DirEntryInfo {
 /// Maximum number of open handles per session to prevent resource exhaustion.
 const MAX_HANDLES: usize = 1000;
 
-/// Maximum read buffer size (64KB) to prevent memory exhaustion.
-const MAX_READ_SIZE: u32 = 65536;
+/// Maximum read buffer size per request.  Matches the SFTP standard
+/// `MAX_READ_LENGTH` (255 KiB) used by `bssh-russh-sftp` and OpenSSH
+/// `sftp-server`.  The previous 64 KiB cap silently truncated client `READ`
+/// requests for 256 KiB chunks down to 64 KiB, multiplying request count 4×
+/// for the same byte stream and dragging down sustained download throughput.
+/// Memory exposure remains bounded because handles are capped at
+/// [`MAX_HANDLES`] per session and each in-flight read uses a single
+/// per-request buffer of this size.
+const MAX_READ_SIZE: u32 = 261120;
 
 /// Normalize a path's `..` and `.` components without touching the filesystem.
 ///
