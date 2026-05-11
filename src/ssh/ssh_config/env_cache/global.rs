@@ -14,15 +14,14 @@
 
 //! Global environment cache instance management
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use std::time::Duration;
 
 use super::cache::EnvironmentCache;
 use super::config::EnvCacheConfig;
 
-// Global environment cache instance using once_cell for thread-safe lazy initialization
-/// Global environment variable cache instance
-pub static GLOBAL_ENV_CACHE: Lazy<EnvironmentCache> = Lazy::new(|| {
+/// Global environment variable cache instance (thread-safe lazy init via `LazyLock`).
+pub static GLOBAL_ENV_CACHE: LazyLock<EnvironmentCache> = LazyLock::new(|| {
     let config = EnvCacheConfig {
         ttl: Duration::from_secs(
             std::env::var("BSSH_ENV_CACHE_TTL")

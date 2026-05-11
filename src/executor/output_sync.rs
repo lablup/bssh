@@ -15,15 +15,14 @@
 //! Thread-safe output synchronization for preventing race conditions
 //! when multiple nodes write to stdout/stderr simultaneously.
 
-use once_cell::sync::Lazy;
 use std::io::{self, Write};
-use std::sync::Mutex;
+use std::sync::{LazyLock, Mutex};
 
 /// Global stdout mutex to prevent interleaved output
-static STDOUT_MUTEX: Lazy<Mutex<io::Stdout>> = Lazy::new(|| Mutex::new(io::stdout()));
+static STDOUT_MUTEX: LazyLock<Mutex<io::Stdout>> = LazyLock::new(|| Mutex::new(io::stdout()));
 
 /// Global stderr mutex to prevent interleaved output
-static STDERR_MUTEX: Lazy<Mutex<io::Stderr>> = Lazy::new(|| Mutex::new(io::stderr()));
+static STDERR_MUTEX: LazyLock<Mutex<io::Stderr>> = LazyLock::new(|| Mutex::new(io::stderr()));
 
 /// Thread-safe println! that prevents output interleaving
 ///

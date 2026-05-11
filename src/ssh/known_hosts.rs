@@ -13,13 +13,12 @@
 // limitations under the License.
 
 use super::tokio_client::ServerCheckMethod;
-use directories::BaseDirs;
 use std::path::PathBuf;
 use std::str::FromStr;
 
 /// Get the default known_hosts file path
 pub fn get_default_known_hosts_path() -> Option<PathBuf> {
-    BaseDirs::new().map(|dirs| dirs.home_dir().join(".ssh").join("known_hosts"))
+    dirs::home_dir().map(|home| home.join(".ssh").join("known_hosts"))
 }
 
 /// Create a ServerCheckMethod based on strict host key checking mode

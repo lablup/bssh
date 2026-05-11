@@ -17,19 +17,21 @@
 //! This module provides heuristics to parse progress information from command output,
 //! detecting patterns like "78%", "23/100", or common progress bar formats.
 
-use lazy_static::lazy_static;
 use regex::Regex;
+use std::sync::LazyLock;
 
-lazy_static! {
-    /// Matches percentage patterns like "78%", "100.0%"
-    static ref PERCENT_PATTERN: Regex = Regex::new(r"(\d+(?:\.\d+)?)\s*%").unwrap();
+/// Matches percentage patterns like "78%", "100.0%"
+static PERCENT_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(\d+(?:\.\d+)?)\s*%").unwrap());
 
-    /// Matches fraction patterns like "23/100", "45/50"
-    static ref FRACTION_PATTERN: Regex = Regex::new(r"(\d+)\s*/\s*(\d+)").unwrap();
+/// Matches fraction patterns like "23/100", "45/50"
+static FRACTION_PATTERN: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(\d+)\s*/\s*(\d+)").unwrap());
 
-    /// Matches apt/dpkg progress patterns like "Reading package lists... 78%"
-    static ref APT_PROGRESS: Regex = Regex::new(r"(?:Reading|Building|Preparing|Unpacking|Setting up|Processing).*?(\d+)%").unwrap();
-}
+/// Matches apt/dpkg progress patterns like "Reading package lists... 78%"
+static APT_PROGRESS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?:Reading|Building|Preparing|Unpacking|Setting up|Processing).*?(\d+)%").unwrap()
+});
 
 /// Parse progress from a text string
 ///
@@ -38,7 +40,7 @@ lazy_static! {
 /// # Safety
 ///
 /// This function is safe from ReDoS attacks because:
-/// - All regex patterns are pre-compiled with lazy_static
+/// - All regex patterns are pre-compiled with LazyLock
 /// - Patterns have no catastrophic backtracking (no nested quantifiers)
 /// - Input is limited to reasonable line lengths
 ///

@@ -232,7 +232,7 @@ impl LocalForwarder {
                     );
 
                     // Add jitter to avoid thundering herd
-                    let jitter = Duration::from_millis(fastrand::u64(
+                    let jitter = Duration::from_millis(rand::random_range(
                         0..=retry_delay.as_millis() as u64 / 4,
                     ));
                     retry_delay += jitter;

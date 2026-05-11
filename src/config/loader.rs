@@ -15,7 +15,6 @@
 //! Configuration loading and priority management.
 
 use anyhow::{Context, Result};
-use directories::ProjectDirs;
 use std::env;
 use std::path::{Path, PathBuf};
 use tokio::fs;
@@ -222,8 +221,8 @@ impl Config {
                 .join("bssh")
                 .join("config.yaml");
             return Ok(xdg_config);
-        } else if let Some(proj_dirs) = ProjectDirs::from("", "", "bssh") {
-            let xdg_config = proj_dirs.config_dir().join("config.yaml");
+        } else if let Some(config_dir) = dirs::config_dir() {
+            let xdg_config = config_dir.join("bssh").join("config.yaml");
             return Ok(xdg_config);
         }
 

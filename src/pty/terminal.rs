@@ -16,7 +16,7 @@
 
 use std::io::Write;
 use std::sync::{
-    Arc, Mutex,
+    Arc, LazyLock, Mutex,
     atomic::{AtomicBool, Ordering},
 };
 
@@ -26,11 +26,10 @@ use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode},
 };
-use once_cell::sync::Lazy;
 
 /// Global terminal cleanup synchronization
 /// Ensures only one cleanup attempt happens even with multiple guards
-static TERMINAL_MUTEX: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
+static TERMINAL_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 static RAW_MODE_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// Terminal state information that needs to be preserved and restored
