@@ -22,6 +22,7 @@ use anyhow::{Context, Result};
 use russh::{Channel, client::Msg};
 use signal_hook::{consts::SIGWINCH, iterator::Signals};
 use smallvec::SmallVec;
+use std::io::IsTerminal;
 use terminal_size::{Height, Width, terminal_size};
 use tokio::sync::{mpsc, watch};
 use tokio::time::Duration;
@@ -288,7 +289,7 @@ pub mod utils {
         }
 
         // Auto-detect if we're in an interactive terminal
-        Ok(atty::is(atty::Stream::Stdin) && atty::is(atty::Stream::Stdout))
+        Ok(std::io::stdin().is_terminal() && std::io::stdout().is_terminal())
     }
 
     /// Get current terminal size
@@ -310,7 +311,7 @@ pub mod utils {
 
     /// Check if the current process has controlling terminal
     pub fn has_controlling_terminal() -> bool {
-        atty::is(atty::Stream::Stdin) && atty::is(atty::Stream::Stdout)
+        std::io::stdin().is_terminal() && std::io::stdout().is_terminal()
     }
 }
 
