@@ -14,11 +14,11 @@
 
 use super::config::CacheConfig;
 use super::manager::SshConfigCache;
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
 use tracing::debug;
 
 /// Global SSH config cache instance
-pub static GLOBAL_CACHE: Lazy<SshConfigCache> = Lazy::new(|| {
+pub static GLOBAL_CACHE: LazyLock<SshConfigCache> = LazyLock::new(|| {
     let config = CacheConfig::from_env();
 
     debug!(

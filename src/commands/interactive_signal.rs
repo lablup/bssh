@@ -33,21 +33,29 @@ pub fn reset_interrupt() {
     INTERRUPTED.store(false, Ordering::Relaxed);
 }
 
-/// Set up signal handlers for interactive mode
+/// Set up signal handlers for interactive mode.
+///
+/// Spawns a tokio task that waits for a Ctrl+C signal and flips both the
+/// global interrupt flag and the returned shutdown flag. Callers must invoke
+/// this from within a tokio runtime; without one the spawn is skipped and the
+/// shutdown flag is returned unarmed (matching the prior best-effort semantics).
 pub fn setup_signal_handlers() -> Result<Arc<AtomicBool>> {
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_clone = Arc::clone(&shutdown);
 
-    // Handle Ctrl+C
-    // Note: set_handler can only be called once per process, so we ignore errors in tests
-    if let Err(e) = ctrlc::set_handler(move || {
-        info!("Received Ctrl+C signal");
-        INTERRUPTED.store(true, Ordering::Relaxed);
-        shutdown_clone.store(true, Ordering::Relaxed);
-    }) {
-        // In tests, this might already be registered
-        debug!("Could not set Ctrl-C handler: {}", e);
-        // Return the shutdown flag anyway for use in the code
+    if tokio::runtime::Handle::try_current().is_ok() {
+        tokio::spawn(async move {
+            match signal::ctrl_c().await {
+                Ok(()) => {
+                    info!("Received Ctrl+C signal");
+                    INTERRUPTED.store(true, Ordering::Relaxed);
+                    shutdown_clone.store(true, Ordering::Relaxed);
+                }
+                Err(e) => debug!("Failed to install Ctrl-C handler: {}", e),
+            }
+        });
+    } else {
+        debug!("No tokio runtime active; Ctrl-C handler not installed");
     }
 
     Ok(shutdown)

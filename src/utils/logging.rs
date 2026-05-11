@@ -14,13 +14,12 @@
 
 use crate::ui::tui::log_buffer::LogBuffer;
 use crate::ui::tui::log_layer::TuiLogLayer;
-use once_cell::sync::OnceCell;
 use std::io::IsTerminal;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use tracing_subscriber::{EnvFilter, prelude::*};
 
 /// Global log buffer for TUI mode
-static LOG_BUFFER: OnceCell<Arc<Mutex<LogBuffer>>> = OnceCell::new();
+static LOG_BUFFER: OnceLock<Arc<Mutex<LogBuffer>>> = OnceLock::new();
 
 /// Create an environment filter based on verbosity level
 pub fn create_env_filter(verbosity: u8) -> EnvFilter {
