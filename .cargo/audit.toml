@@ -1,0 +1,21 @@
+# cargo-audit configuration
+#
+# https://docs.rs/cargo-audit/latest/cargo_audit/
+
+[advisories]
+ignore = [
+    # RUSTSEC-2023-0071: Marvin Attack — potential RSA key recovery via timing sidechannel.
+    #
+    # No fixed upgrade is available for any version of the `rsa` crate. The vulnerability
+    # is inherent to the current RustCrypto RSA implementation, which lacks constant-time
+    # primitives. Both `rsa 0.9.x` (via ssh-key 0.6.x) and `rsa 0.10.0-rc.x` (via the
+    # vendored bssh-russh fork) are affected.
+    #
+    # Mitigation: users should prefer Ed25519 or ECDSA host/user keys over RSA where
+    # possible. The Marvin Attack requires precise timing measurements over many
+    # observed decryptions; SSH session establishment is a high-noise channel that
+    # makes practical exploitation against bssh extremely difficult.
+    #
+    # Tracking: https://github.com/RustCrypto/RSA/issues/19
+    "RUSTSEC-2023-0071",
+]

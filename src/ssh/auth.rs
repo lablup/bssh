@@ -25,6 +25,7 @@
 //! - Error messages do not leak sensitive information
 
 use anyhow::{Context, Result};
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::time::timeout;
@@ -286,7 +287,7 @@ impl AuthContext {
             Err(_) => {
                 // Priority 6: Fallback to password authentication
                 // Check if we're in an interactive terminal
-                if atty::is(atty::Stream::Stdin) {
+                if std::io::stdin().is_terminal() {
                     // If allow_password_fallback is set (interactive mode), skip consent prompt
                     // Otherwise, ask for explicit user consent for security
                     let should_attempt_password = if self.allow_password_fallback {

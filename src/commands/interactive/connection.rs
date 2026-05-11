@@ -18,7 +18,7 @@ use anyhow::{Context, Result};
 use crossterm::terminal;
 use russh::Channel;
 use russh::client::Msg;
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use tokio::time::{Duration, timeout};
 use zeroize::Zeroizing;
 
@@ -82,7 +82,7 @@ impl InteractiveCommand {
         let result = match result {
             Err(ref err)
                 if allow_password_fallback
-                    && atty::is(atty::Stream::Stdin)
+                    && io::stdin().is_terminal()
                     && is_auth_error_for_password_fallback(err) =>
             {
                 tracing::debug!(

@@ -15,6 +15,7 @@
 use crate::ui::tui::log_buffer::LogBuffer;
 use crate::ui::tui::log_layer::TuiLogLayer;
 use once_cell::sync::OnceCell;
+use std::io::IsTerminal;
 use std::sync::{Arc, Mutex};
 use tracing_subscriber::{EnvFilter, prelude::*};
 
@@ -46,7 +47,7 @@ pub fn create_env_filter(verbosity: u8) -> EnvFilter {
 /// - CI environment variable is not set
 fn is_tui_likely() -> bool {
     // Check if stdout is a TTY
-    let is_tty = atty::is(atty::Stream::Stdout);
+    let is_tty = std::io::stdout().is_terminal();
 
     // Check if we're in a CI environment
     let in_ci = std::env::var("CI").is_ok();
