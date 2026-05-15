@@ -27,11 +27,13 @@
 use anyhow::{Context, Result};
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::time::timeout;
 use zeroize::Zeroizing;
 
 use super::tokio_client::AuthMethod;
+use crate::security::Password;
 
 /// Maximum time to wait for password/passphrase input
 const AUTH_PROMPT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -112,6 +114,14 @@ pub struct AuthContext {
     pub username: String,
     /// Host for authentication prompts (validated)
     pub host: String,
+    /// Pre-collected SSH password shared across all per-node connection tasks.
+    ///
+    /// When set, `password_auth()` consumes this value instead of prompting,
+    /// so the user is asked exactly once per command (in the dispatcher) and
+    /// the same password is reused for every node and for the password
+    /// fallback path. Wrapped in `Arc` so cloning the context across tasks
+    /// does not duplicate the underlying secret.
+    pub password: Option<Arc<Password>>,
 }
 
 impl AuthContext {
@@ -151,6 +161,7 @@ impl AuthContext {
             use_keychain: false,
             username,
             host,
+            password: None,
         })
     }
 
@@ -205,6 +216,19 @@ impl AuthContext {
     #[cfg(target_os = "macos")]
     pub fn with_keychain(mut self, use_keychain: bool) -> Self {
         self.use_keychain = use_keychain;
+        self
+    }
+
+    /// Provide a pre-collected SSH password.
+    ///
+    /// Used by callers (the dispatcher) that prompt for the password once,
+    /// up-front, before fanning out parallel SSH connections. When set,
+    /// `password_auth()` consumes this value instead of prompting interactively.
+    ///
+    /// The password is shared via `Arc`, so cloning this context (e.g.,
+    /// per-node) does not duplicate the underlying secret material.
+    pub fn with_pre_collected_password(mut self, password: Option<Arc<Password>>) -> Self {
+        self.password = password;
         self
     }
 
@@ -408,16 +432,35 @@ impl AuthContext {
             .context("Consent prompt task failed")?
     }
 
-    /// Attempt password authentication with timeout.
+    /// Build an `AuthMethod` from the pre-collected password.
+    ///
+    /// `AuthMethod::with_password` internally wraps the value in `Zeroizing`,
+    /// so the borrowed slice from `Password::as_str()` is only used to build
+    /// a securely-stored copy; no plaintext is retained outside the secrets
+    /// machinery.
     async fn password_auth(&self) -> Result<AuthMethod> {
         tracing::debug!("Using password authentication");
 
-        // Run password prompt with timeout to prevent hanging
+        // Priority 1: Use the pre-collected password if the dispatcher provided one.
+        // This is the expected path for `--password`: the dispatcher prompts once
+        // before any per-node connection task starts (and before the indicatif
+        // progress UI is initialized), then shares the same value with every node.
+        if let Some(ref password) = self.password {
+            return Ok(AuthMethod::with_password(password.as_str()));
+        }
+
+        // Priority 2: Fallback prompt (only reached when no pre-collected password
+        // is available — e.g., the OpenSSH-style "all key-based methods failed,
+        // prompt for password" path triggered by `determine_method` itself, never
+        // by an explicit `--password` flag if the dispatcher behaves correctly).
+        //
+        // This branch keeps the historical behavior so the password-fallback
+        // path (interactive only) still works; it is the only remaining caller
+        // that legitimately needs an in-task prompt.
         let prompt_future = tokio::task::spawn_blocking({
             let username = self.username.clone();
             let host = self.host.clone();
             move || -> Result<Zeroizing<String>> {
-                // Use Zeroizing to ensure password is cleared from memory when dropped
                 let password = Zeroizing::new(
                     rpassword::prompt_password(format!("Enter password for {username}@{host}: "))
                         .with_context(|| "Failed to read password")?,
@@ -750,6 +793,44 @@ mod tests {
         assert_eq!(ctx.key_path, None);
         assert!(!ctx.use_agent);
         assert!(!ctx.use_password);
+        assert!(ctx.password.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_auth_context_with_pre_collected_password() {
+        let password = Arc::new(Password::new("test123".to_string()).unwrap());
+        let ctx = AuthContext::new("user".to_string(), "host".to_string())
+            .unwrap()
+            .with_password(true)
+            .with_pre_collected_password(Some(Arc::clone(&password)));
+
+        assert!(ctx.use_password);
+        assert!(ctx.password.is_some());
+        assert_eq!(ctx.password.as_ref().unwrap().as_str(), "test123");
+        // Both the test holder and the AuthContext share the same Arc.
+        assert_eq!(Arc::strong_count(&password), 2);
+    }
+
+    #[tokio::test]
+    async fn test_password_auth_uses_pre_collected_password() {
+        // Verifies that when a pre-collected password is provided, password_auth()
+        // returns immediately with AuthMethod::Password(...) instead of prompting.
+        // Critically, this means it never blocks on stdin — even in a non-interactive
+        // test environment.
+        let password = Arc::new(Password::new("pre_collected_secret".to_string()).unwrap());
+        let ctx = AuthContext::new("user".to_string(), "host".to_string())
+            .unwrap()
+            .with_password(true)
+            .with_pre_collected_password(Some(password));
+
+        let auth = ctx.password_auth().await.expect("should not prompt");
+
+        match auth {
+            AuthMethod::Password(stored) => {
+                assert_eq!(stored.as_str(), "pre_collected_secret");
+            }
+            other => panic!("Expected AuthMethod::Password, got {other:?}"),
+        }
     }
 
     #[tokio::test]

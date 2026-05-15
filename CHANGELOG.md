@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.5] - Unreleased
+
+### Fixed
+- **`--password` prompt is now collected once up-front and shared across all parallel connection tasks** (#201, closes #200). Previously each per-node SSH task prompted for the password independently, racing each other for stdin and interleaving with the progress UI. The dispatcher now collects the password before any executor or `indicatif` UI is initialized and threads an `Arc<Password>` to every per-node auth task — matching the existing `-S` (`SudoPassword`) pattern. The `BSSH_PASSWORD` environment variable is supported for automation scenarios (discouraged; see security notes below).
+- **`-S` / `--sudo-password` warning now routes to stderr** when passed to subcommands where it has no effect (`ping`, `upload`, `download`, `list`), keeping stdout clean for scripts that consume bssh output (#201).
+
 ## [2.1.4] - 2026-05-10
 
 ### Performance

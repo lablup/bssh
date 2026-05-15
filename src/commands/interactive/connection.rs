@@ -161,7 +161,8 @@ impl InteractiveCommand {
         auth_ctx = auth_ctx
             .with_agent(self.use_agent)
             .with_password(self.use_password)
-            .with_password_fallback(!self.use_password); // Enable fallback only if not using explicit password
+            .with_password_fallback(!self.use_password) // Enable fallback only if not using explicit password
+            .with_pre_collected_password(self.ssh_password.clone());
 
         // Set macOS Keychain integration if available
         #[cfg(target_os = "macos")]
@@ -262,11 +263,14 @@ impl InteractiveCommand {
                         .min(MAX_TIMEOUT_SECS),
                 );
 
-                // Pass SSH connection config to jump host chain for keepalive settings
+                // Pass SSH connection config to jump host chain for keepalive settings.
+                // Also pass the dispatcher's pre-collected password so jump-host
+                // authentication consumes it instead of re-prompting per call. See #200.
                 let chain = JumpHostChain::new(jump_hosts)
                     .with_connect_timeout(adjusted_timeout)
                     .with_command_timeout(Duration::from_secs(300))
-                    .with_ssh_connection_config(self.ssh_connection_config.clone());
+                    .with_ssh_connection_config(self.ssh_connection_config.clone())
+                    .with_ssh_password(self.ssh_password.clone());
 
                 // Connect through the chain
                 let connection = timeout(
@@ -406,11 +410,14 @@ impl InteractiveCommand {
                         .min(MAX_TIMEOUT_SECS),
                 );
 
-                // Pass SSH connection config to jump host chain for keepalive settings
+                // Pass SSH connection config to jump host chain for keepalive settings.
+                // Also pass the dispatcher's pre-collected password so jump-host
+                // authentication consumes it instead of re-prompting per call. See #200.
                 let chain = JumpHostChain::new(jump_hosts)
                     .with_connect_timeout(adjusted_timeout)
                     .with_command_timeout(Duration::from_secs(300))
-                    .with_ssh_connection_config(self.ssh_connection_config.clone());
+                    .with_ssh_connection_config(self.ssh_connection_config.clone())
+                    .with_ssh_password(self.ssh_password.clone());
 
                 // Connect through the chain
                 let connection = timeout(

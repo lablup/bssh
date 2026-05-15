@@ -13,10 +13,12 @@
 // limitations under the License.
 
 use super::core::SshClient;
+use crate::security::Password;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
 use crate::ssh::tokio_client::Client;
 use anyhow::{Context, Result};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 // File upload timeout design:
@@ -72,6 +74,7 @@ impl SshClient {
                 use_password,
                 "file copy",
                 connect_timeout_seconds,
+                None,
             )
             .await?;
 
@@ -140,6 +143,7 @@ impl SshClient {
                 use_password,
                 "file download",
                 connect_timeout_seconds,
+                None,
             )
             .await?;
 
@@ -204,6 +208,7 @@ impl SshClient {
                 use_password,
                 "directory upload",
                 connect_timeout_seconds,
+                None,
             )
             .await?;
 
@@ -270,6 +275,7 @@ impl SshClient {
                 use_password,
                 "directory download",
                 connect_timeout_seconds,
+                None,
             )
             .await?;
 
@@ -326,6 +332,7 @@ impl SshClient {
         use_password: bool,
         jump_hosts_spec: Option<&str>,
         connect_timeout_seconds: Option<u64>,
+        pre_collected_password: Option<Arc<Password>>,
     ) -> Result<()> {
         tracing::debug!(
             "Uploading file to {}:{} (jump hosts: {:?})",
@@ -342,6 +349,7 @@ impl SshClient {
                 use_password,
                 jump_hosts_spec,
                 connect_timeout_seconds,
+                pre_collected_password,
             )
             .await?;
 
@@ -402,6 +410,7 @@ impl SshClient {
         use_password: bool,
         jump_hosts_spec: Option<&str>,
         connect_timeout_seconds: Option<u64>,
+        pre_collected_password: Option<Arc<Password>>,
     ) -> Result<()> {
         tracing::debug!(
             "Downloading file from {}:{} (jump hosts: {:?})",
@@ -418,6 +427,7 @@ impl SshClient {
                 use_password,
                 jump_hosts_spec,
                 connect_timeout_seconds,
+                pre_collected_password,
             )
             .await?;
 
@@ -474,6 +484,7 @@ impl SshClient {
         use_password: bool,
         jump_hosts_spec: Option<&str>,
         connect_timeout_seconds: Option<u64>,
+        pre_collected_password: Option<Arc<Password>>,
     ) -> Result<()> {
         tracing::debug!(
             "Uploading directory to {}:{} (jump hosts: {:?})",
@@ -490,6 +501,7 @@ impl SshClient {
                 use_password,
                 jump_hosts_spec,
                 connect_timeout_seconds,
+                pre_collected_password,
             )
             .await?;
 
@@ -548,6 +560,7 @@ impl SshClient {
         use_password: bool,
         jump_hosts_spec: Option<&str>,
         connect_timeout_seconds: Option<u64>,
+        pre_collected_password: Option<Arc<Password>>,
     ) -> Result<()> {
         tracing::debug!(
             "Downloading directory from {}:{} (jump hosts: {:?})",
@@ -564,6 +577,7 @@ impl SshClient {
                 use_password,
                 jump_hosts_spec,
                 connect_timeout_seconds,
+                pre_collected_password,
             )
             .await?;
 
@@ -609,6 +623,7 @@ impl SshClient {
     }
 
     /// Helper function to connect for file transfer operations (without jump hosts)
+    #[allow(clippy::too_many_arguments)]
     async fn connect_for_file_transfer(
         &self,
         key_path: Option<&Path>,
@@ -617,6 +632,7 @@ impl SshClient {
         use_password: bool,
         operation_desc: &str,
         connect_timeout_seconds: Option<u64>,
+        pre_collected_password: Option<Arc<Password>>,
     ) -> Result<Client> {
         let addr = (self.host.as_str(), self.port);
         tracing::debug!(
@@ -635,6 +651,7 @@ impl SshClient {
                 use_password,
                 #[cfg(target_os = "macos")]
                 false,
+                pre_collected_password,
             )
             .await?;
 
@@ -676,6 +693,7 @@ impl SshClient {
         use_password: bool,
         jump_hosts_spec: Option<&str>,
         connect_timeout_seconds: Option<u64>,
+        pre_collected_password: Option<Arc<Password>>,
     ) -> Result<Client> {
         // Determine authentication method
         // Note: use_keychain is set to false for file transfers to avoid prompts
@@ -686,12 +704,16 @@ impl SshClient {
                 use_password,
                 #[cfg(target_os = "macos")]
                 false,
+                pre_collected_password.clone(),
             )
             .await?;
 
         let strict_mode = strict_mode.unwrap_or(StrictHostKeyChecking::AcceptNew);
 
-        // Create client connection - either direct or through jump hosts
+        // Create client connection - either direct or through jump hosts.
+        // Threading `pre_collected_password` here ensures jump-host auth
+        // (when `--password` is combined with `-J`) consumes the dispatcher's
+        // single up-front prompt instead of re-prompting per jump. See #200.
         self.establish_connection(
             &auth_method,
             strict_mode,
@@ -701,6 +723,7 @@ impl SshClient {
             use_password,
             connect_timeout_seconds,
             None,
+            pre_collected_password,
         )
         .await
     }

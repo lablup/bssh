@@ -57,7 +57,8 @@ pub async fn download_file(
         params.use_agent,
         params.use_password,
     )
-    .with_jump_hosts(params.jump_hosts.clone());
+    .with_jump_hosts(params.jump_hosts.clone())
+    .with_ssh_password(params.ssh_password.clone());
     if let Some(ssh_config) = params.ssh_config {
         executor = executor.with_ssh_config(Some(ssh_config.clone()));
     }
@@ -121,6 +122,7 @@ pub async fn download_file(
                 params.jump_hosts.as_deref(), // Pass jump hosts from params
                 None,                         // Use default connect timeout
                 params.ssh_config,            // Pass ssh_config for ProxyJump resolution
+                params.ssh_password.clone(),
             )
             .await;
 
@@ -185,6 +187,10 @@ pub async fn download_file(
                 params.use_agent,
                 params.use_password,
                 None, // Use default timeout for ls command
+                // Issue #200 (C2): forward the dispatcher's pre-collected
+                // password so this glob-resolution step does NOT re-prompt
+                // after the dispatcher already asked once.
+                params.ssh_password.clone(),
             )
             .await?;
 

@@ -15,9 +15,11 @@
 use anyhow::Result;
 use owo_colors::OwoColorize;
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::executor::ParallelExecutor;
 use crate::node::Node;
+use crate::security::Password;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
 use crate::ui::OutputFormatter;
 
@@ -33,6 +35,7 @@ pub async fn ping_nodes(
     timeout: Option<u64>,
     connect_timeout: Option<u64>,
     jump_hosts: Option<String>,
+    ssh_password: Option<Arc<Password>>,
 ) -> Result<()> {
     println!(
         "{}",
@@ -55,7 +58,8 @@ pub async fn ping_nodes(
     )
     .with_timeout(ping_timeout)
     .with_connect_timeout(connect_timeout)
-    .with_jump_hosts(jump_hosts);
+    .with_jump_hosts(jump_hosts)
+    .with_ssh_password(ssh_password);
 
     #[cfg(target_os = "macos")]
     let executor = executor.with_keychain(use_keychain);

@@ -47,6 +47,7 @@ fn test_interactive_command_builder() {
         key_path: None,
         use_agent: false,
         use_password: false,
+        ssh_password: None,
         #[cfg(target_os = "macos")]
         use_keychain: false,
         strict_mode: StrictHostKeyChecking::AcceptNew,
@@ -82,6 +83,7 @@ fn test_history_file_handling() {
         key_path: None,
         use_agent: false,
         use_password: false,
+        ssh_password: None,
         #[cfg(target_os = "macos")]
         use_keychain: false,
         strict_mode: StrictHostKeyChecking::AcceptNew,
@@ -180,6 +182,7 @@ async fn test_interactive_with_unreachable_nodes() {
         key_path: None,
         use_agent: false,
         use_password: false,
+        ssh_password: None,
         #[cfg(target_os = "macos")]
         use_keychain: false,
         strict_mode: StrictHostKeyChecking::AcceptNew,
@@ -215,6 +218,7 @@ async fn test_interactive_with_no_nodes() {
         key_path: None,
         use_agent: false,
         use_password: false,
+        ssh_password: None,
         #[cfg(target_os = "macos")]
         use_keychain: false,
         strict_mode: StrictHostKeyChecking::AcceptNew,
@@ -260,6 +264,7 @@ fn test_mode_configuration() {
         key_path: None,
         use_agent: false,
         use_password: false,
+        ssh_password: None,
         #[cfg(target_os = "macos")]
         use_keychain: false,
         strict_mode: StrictHostKeyChecking::AcceptNew,
@@ -286,6 +291,7 @@ fn test_mode_configuration() {
         key_path: None,
         use_agent: false,
         use_password: false,
+        ssh_password: None,
         #[cfg(target_os = "macos")]
         use_keychain: false,
         strict_mode: StrictHostKeyChecking::AcceptNew,
@@ -315,6 +321,7 @@ fn test_working_directory_config() {
         key_path: None,
         use_agent: false,
         use_password: false,
+        ssh_password: None,
         #[cfg(target_os = "macos")]
         use_keychain: false,
         strict_mode: StrictHostKeyChecking::AcceptNew,
@@ -339,6 +346,7 @@ fn test_working_directory_config() {
         key_path: None,
         use_agent: false,
         use_password: false,
+        ssh_password: None,
         #[cfg(target_os = "macos")]
         use_keychain: false,
         strict_mode: StrictHostKeyChecking::AcceptNew,
@@ -375,6 +383,7 @@ fn test_prompt_format() {
             key_path: None,
             use_agent: false,
             use_password: false,
+            ssh_password: None,
             #[cfg(target_os = "macos")]
             use_keychain: false,
             strict_mode: StrictHostKeyChecking::AcceptNew,

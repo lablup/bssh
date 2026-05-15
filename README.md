@@ -574,8 +574,10 @@ bssh supports multiple authentication methods:
 - **Explicit**: Use `-A` flag to force SSH agent authentication
 
 ### Password Authentication
-- Use `-P` flag to enable password authentication
+- Use `-P` / `--password` flag to enable password authentication
+- The password is prompted **once up-front**, before any parallel connection tasks start, and is shared securely across all nodes — the prompt appears exactly once regardless of how many hosts are targeted
 - Password is prompted securely without echo
+- For automation, set `BSSH_PASSWORD` in the environment (not recommended; see security notes in the Sudo Password section)
 
 ### Examples
 ```bash
@@ -655,6 +657,15 @@ bssh supports configuration via environment variables:
 ### SSH Authentication Variables
 
 - **`SSH_AUTH_SOCK`**: SSH agent socket path (Unix-like systems)
+
+### SSH Password Variable
+
+- **`BSSH_PASSWORD`**: SSH password for automated password authentication
+  - Used when `--password` / `-P` is set and `BSSH_PASSWORD` is non-empty; skips the interactive prompt
+  - **WARNING**: Not recommended for security reasons
+  - Environment variables may be visible in process listings and shell history
+  - Use the interactive `-P` prompt instead for security-sensitive operations
+  - Example: `BSSH_PASSWORD=secret bssh -P -H "user@host" "uptime"`
 
 ### Sudo Password Variable
 

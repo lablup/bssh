@@ -19,7 +19,7 @@ use std::sync::Arc;
 use crate::executor::{ExitCodeStrategy, OutputMode, ParallelExecutor, RankDetector};
 use crate::forwarding::ForwardingType;
 use crate::node::Node;
-use crate::security::SudoPassword;
+use crate::security::{Password, SudoPassword};
 use crate::ssh::SshConfig;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
 use crate::ssh::tokio_client::SshConnectionConfig;
@@ -35,6 +35,10 @@ pub struct ExecuteCommandParams<'a> {
     pub strict_mode: StrictHostKeyChecking,
     pub use_agent: bool,
     pub use_password: bool,
+    /// Pre-collected SSH password collected once by the dispatcher and shared
+    /// (via `Arc::clone`) with every per-node SSH connection task. When
+    /// `use_password` is `true`, this should be `Some(_)`.
+    pub ssh_password: Option<Arc<Password>>,
     #[cfg(target_os = "macos")]
     pub use_keychain: bool,
     pub output_dir: Option<&'a Path>,
@@ -109,10 +113,21 @@ async fn execute_command_with_forwarding(params: ExecuteCommandParams<'_>) -> Re
             return Err(anyhow::anyhow!("SSH agent not supported on Windows"));
         }
     } else if params.use_password {
-        // For password auth, we'd need to prompt - for now return error
-        return Err(anyhow::anyhow!(
-            "Password authentication not yet supported with port forwarding"
-        ));
+        // Issue #200 (M1): consume the dispatcher's pre-collected password
+        // instead of erroring out. Previously this branch returned
+        // "Password authentication not yet supported with port forwarding"
+        // even though the dispatcher had already prompted the user — a
+        // confusing UX regression. The dispatcher collects unconditionally
+        // for `exec`, so when `use_password` is true we always have one.
+        let Some(password) = params.ssh_password.as_ref() else {
+            anyhow::bail!(
+                "--password was requested for port-forwarding exec but no \
+                 password was collected up-front (programmer error in dispatcher: \
+                 the `exec` arm must populate `ExecuteCommandParams::ssh_password` \
+                 when `use_password` is true)."
+            );
+        };
+        AuthMethod::with_password(password.as_str())
     } else {
         // Use default key file authentication
         let key_path = params
@@ -218,6 +233,7 @@ async fn execute_command_without_forwarding(params: ExecuteCommandParams<'_>) ->
     .with_connect_timeout(params.connect_timeout)
     .with_jump_hosts(params.jump_hosts.map(|s| s.to_string()))
     .with_sudo_password(params.sudo_password)
+    .with_ssh_password(params.ssh_password)
     .with_batch_mode(params.batch)
     .with_fail_fast(params.fail_fast)
     .with_ssh_config(params.ssh_config.cloned())

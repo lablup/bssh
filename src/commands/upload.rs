@@ -15,9 +15,11 @@
 use anyhow::{Context, Result};
 use owo_colors::OwoColorize;
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::executor::ParallelExecutor;
 use crate::node::Node;
+use crate::security::Password;
 use crate::ssh::SshConfig;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
 use crate::ui::OutputFormatter;
@@ -30,6 +32,10 @@ pub struct FileTransferParams<'a> {
     pub strict_mode: StrictHostKeyChecking,
     pub use_agent: bool,
     pub use_password: bool,
+    /// Pre-collected SSH password (collected once by the dispatcher and shared
+    /// with every per-node SFTP task). Honors the same single-prompt invariant
+    /// as the `exec` path.
+    pub ssh_password: Option<Arc<Password>>,
     pub recursive: bool,
     pub ssh_config: Option<&'a SshConfig>,
     /// Jump hosts specification for connections.
@@ -88,7 +94,8 @@ pub async fn upload_file(
         params.use_agent,
         params.use_password,
     )
-    .with_jump_hosts(params.jump_hosts.clone());
+    .with_jump_hosts(params.jump_hosts.clone())
+    .with_ssh_password(params.ssh_password.clone());
     if let Some(ssh_config) = params.ssh_config {
         executor = executor.with_ssh_config(Some(ssh_config.clone()));
     }

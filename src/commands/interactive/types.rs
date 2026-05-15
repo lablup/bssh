@@ -18,11 +18,13 @@ use anyhow::Result;
 use russh::Channel;
 use russh::client::Msg;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tokio::time::Duration;
 
 use crate::config::{Config, InteractiveConfig};
 use crate::node::Node;
 use crate::pty::PtyConfig;
+use crate::security::Password;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
 use crate::ssh::tokio_client::{Client, SshConnectionConfig};
 
@@ -53,6 +55,9 @@ pub struct InteractiveCommand {
     pub key_path: Option<PathBuf>,
     pub use_agent: bool,
     pub use_password: bool,
+    /// Pre-collected SSH password (collected once by the dispatcher and shared
+    /// with each node's interactive session). Mirrors the exec/ping path.
+    pub ssh_password: Option<Arc<Password>>,
     #[cfg(target_os = "macos")]
     pub use_keychain: bool,
     pub strict_mode: StrictHostKeyChecking,

@@ -37,6 +37,7 @@ async fn test_interactive_command_creation() {
         key_path: None,
         use_agent: false,
         use_password: false,
+        ssh_password: None,
         #[cfg(target_os = "macos")]
         use_keychain: false,
         strict_mode: StrictHostKeyChecking::AcceptNew,
@@ -66,6 +67,7 @@ async fn test_interactive_with_no_nodes() {
         key_path: None,
         use_agent: false,
         use_password: false,
+        ssh_password: None,
         #[cfg(target_os = "macos")]
         use_keychain: false,
         strict_mode: StrictHostKeyChecking::AcceptNew,

@@ -12,9 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::security::Password;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
 use crate::ssh::tokio_client::SshConnectionConfig;
 use std::path::Path;
+use std::sync::Arc;
 
 /// Configuration for SSH connection and command execution
 #[derive(Clone)]
@@ -30,4 +32,12 @@ pub struct ConnectionConfig<'a> {
     pub jump_hosts_spec: Option<&'a str>,
     /// SSH keepalive / inactivity settings. `None` falls back to defaults.
     pub ssh_connection_config: Option<&'a SshConnectionConfig>,
+    /// Pre-collected SSH password shared with every per-node auth task.
+    ///
+    /// When `use_password` is `true`, this MUST be `Some(_)`; the dispatcher
+    /// is responsible for prompting once up-front and threading the value
+    /// through. `None` means "no pre-collected password" — `auth.rs` then
+    /// falls back to its in-task prompt (used for the OpenSSH-style
+    /// password-fallback path only).
+    pub ssh_password: Option<Arc<Password>>,
 }

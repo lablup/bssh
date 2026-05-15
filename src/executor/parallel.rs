@@ -22,7 +22,7 @@ use std::sync::Arc;
 use tokio::sync::Semaphore;
 
 use crate::node::Node;
-use crate::security::SudoPassword;
+use crate::security::{Password, SudoPassword};
 use crate::ssh::SshConfig;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
 use crate::ssh::tokio_client::SshConnectionConfig;
@@ -49,6 +49,11 @@ pub struct ParallelExecutor {
     pub(crate) connect_timeout: Option<u64>,
     pub(crate) jump_hosts: Option<String>,
     pub(crate) sudo_password: Option<Arc<SudoPassword>>,
+    /// SSH password collected once up-front by the dispatcher.
+    ///
+    /// When set, this is shared (via `Arc::clone`) with every per-node SSH
+    /// connection task so a single prompt is reused across the whole cluster.
+    pub(crate) ssh_password: Option<Arc<Password>>,
     pub(crate) batch: bool,
     pub(crate) fail_fast: bool,
     pub(crate) ssh_config: Option<SshConfig>,
@@ -87,6 +92,7 @@ impl ParallelExecutor {
             connect_timeout: None,
             jump_hosts: None,
             sudo_password: None,
+            ssh_password: None,
             batch: false,
             fail_fast: false,
             ssh_config: None,
@@ -115,6 +121,7 @@ impl ParallelExecutor {
             connect_timeout: None,
             jump_hosts: None,
             sudo_password: None,
+            ssh_password: None,
             batch: false,
             fail_fast: false,
             ssh_config: None,
@@ -144,6 +151,7 @@ impl ParallelExecutor {
             connect_timeout: None,
             jump_hosts: None,
             sudo_password: None,
+            ssh_password: None,
             batch: false,
             fail_fast: false,
             ssh_config: None,
@@ -188,6 +196,17 @@ impl ParallelExecutor {
     /// and inject the password when commands require sudo privileges.
     pub fn with_sudo_password(mut self, sudo_password: Option<Arc<SudoPassword>>) -> Self {
         self.sudo_password = sudo_password;
+        self
+    }
+
+    /// Set the pre-collected SSH password.
+    ///
+    /// The dispatcher prompts for the password once (before any progress UI is
+    /// initialized) and threads the result through here. Every per-node SSH
+    /// connection task then shares this same `Arc<Password>` instead of
+    /// prompting on its own — matching how `with_sudo_password` works.
+    pub fn with_ssh_password(mut self, ssh_password: Option<Arc<Password>>) -> Self {
+        self.ssh_password = ssh_password;
         self
     }
 
@@ -268,6 +287,7 @@ impl ParallelExecutor {
                 let connect_timeout = self.connect_timeout;
                 let jump_hosts = self.jump_hosts.clone();
                 let sudo_password = self.sudo_password.clone();
+                let ssh_password = self.ssh_password.clone();
                 let semaphore = Arc::clone(&semaphore);
                 let pb = setup_progress_bar(&multi_progress, &node, style.clone(), "Connecting...");
 
@@ -286,6 +306,7 @@ impl ParallelExecutor {
                         connect_timeout,
                         jump_hosts: jump_hosts.as_deref(),
                         sudo_password: sudo_password.clone(),
+                        ssh_password: ssh_password.clone(),
                         ssh_config: ssh_config_ref.as_ref(),
                         ssh_connection_config: Some(&ssh_connection_config),
                     };
@@ -396,6 +417,7 @@ impl ParallelExecutor {
             let connect_timeout = self.connect_timeout;
             let jump_hosts = self.jump_hosts.clone();
             let sudo_password = self.sudo_password.clone();
+            let ssh_password = self.ssh_password.clone();
             let semaphore = Arc::clone(&semaphore);
             let pb = setup_progress_bar(&multi_progress, &node, style.clone(), "Connecting...");
             let mut cancel_rx = cancel_rx.clone();
@@ -463,6 +485,7 @@ impl ParallelExecutor {
                     connect_timeout,
                     jump_hosts: jump_hosts.as_deref(),
                     sudo_password: sudo_password.clone(),
+                    ssh_password: ssh_password.clone(),
                     ssh_config: ssh_config_ref.as_ref(),
                     ssh_connection_config: Some(&ssh_connection_config_ref),
                 };
@@ -632,6 +655,7 @@ impl ParallelExecutor {
                 let use_password = self.use_password;
                 let jump_hosts = self.jump_hosts.clone();
                 let connect_timeout = self.connect_timeout;
+                let ssh_password = self.ssh_password.clone();
                 let semaphore = Arc::clone(&semaphore);
                 let pb = setup_progress_bar(&multi_progress, &node, style.clone(), "Connecting...");
 
@@ -648,6 +672,7 @@ impl ParallelExecutor {
                     jump_hosts,
                     connect_timeout,
                     ssh_config_ref,
+                    ssh_password,
                     semaphore,
                     pb,
                 ))
@@ -745,6 +770,7 @@ impl ParallelExecutor {
                 let use_password = self.use_password;
                 let jump_hosts = self.jump_hosts.clone();
                 let connect_timeout = self.connect_timeout;
+                let ssh_password = self.ssh_password.clone();
                 let semaphore = Arc::clone(&semaphore);
                 let pb = setup_progress_bar(&multi_progress, &node, style.clone(), "Connecting...");
                 let ssh_config_ref = self.ssh_config.clone();
@@ -760,6 +786,7 @@ impl ParallelExecutor {
                     jump_hosts,
                     connect_timeout,
                     ssh_config_ref,
+                    ssh_password,
                     semaphore,
                     pb,
                 ))
@@ -881,6 +908,7 @@ impl ParallelExecutor {
                     let jump_hosts = self.jump_hosts.clone();
                     let connect_timeout = self.connect_timeout;
                     let ssh_config_ref = self.ssh_config.clone();
+                    let ssh_password = self.ssh_password.clone();
 
                     tokio::spawn(async move {
                         let _permit = match semaphore.acquire().await {
@@ -907,6 +935,7 @@ impl ParallelExecutor {
                             jump_hosts.as_deref(),
                             connect_timeout,
                             ssh_config_ref.as_ref(),
+                            ssh_password,
                         )
                         .await;
 
@@ -1131,6 +1160,7 @@ impl ParallelExecutor {
             let connect_timeout = self.connect_timeout;
             let jump_hosts = self.jump_hosts.clone();
             let sudo_password = self.sudo_password.clone();
+            let ssh_password = self.ssh_password.clone();
             let semaphore = Arc::clone(&semaphore);
             let ssh_connection_config = self.ssh_connection_config.clone();
 
@@ -1179,6 +1209,7 @@ impl ParallelExecutor {
                     connect_timeout_seconds: connect_timeout,
                     jump_hosts_spec: jump_hosts.as_deref(),
                     ssh_connection_config: Some(&ssh_connection_config),
+                    ssh_password: ssh_password.clone(),
                 };
 
                 // Execute with or without sudo password support

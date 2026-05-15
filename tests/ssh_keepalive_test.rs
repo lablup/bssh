@@ -667,6 +667,7 @@ fn test_interactive_mode_ssh_connection_config_default() {
         key_path: None,
         use_agent: false,
         use_password: false,
+        ssh_password: None,
         #[cfg(target_os = "macos")]
         use_keychain: false,
         strict_mode: StrictHostKeyChecking::AcceptNew,
@@ -714,6 +715,7 @@ fn test_interactive_mode_ssh_connection_config_custom() {
         key_path: None,
         use_agent: false,
         use_password: false,
+        ssh_password: None,
         #[cfg(target_os = "macos")]
         use_keychain: false,
         strict_mode: StrictHostKeyChecking::AcceptNew,
@@ -759,6 +761,7 @@ fn test_interactive_mode_ssh_connection_config_disabled_keepalive() {
         key_path: None,
         use_agent: false,
         use_password: false,
+        ssh_password: None,
         #[cfg(target_os = "macos")]
         use_keychain: false,
         strict_mode: StrictHostKeyChecking::AcceptNew,
