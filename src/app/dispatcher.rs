@@ -137,8 +137,8 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
     // that happen to pass -S to `ping` or `upload` keep working, but the user
     // gets visible feedback that the flag is being ignored.
     if cli.sudo_password && !sudo_password_is_applicable(&cli.command) {
-        tracing::warn!(
-            "--sudo-password (-S) has no effect for the `{}` subcommand and will be ignored",
+        eprintln!(
+            "Warning: --sudo-password (-S) has no effect for the `{}` subcommand and will be ignored",
             subcommand_name(&cli.command)
         );
     }
