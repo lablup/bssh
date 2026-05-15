@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::node::Node;
-use crate::security::SudoPassword;
+use crate::security::{Password, SudoPassword};
 use crate::ssh::{
     SshClient, SshConfig,
     client::{CommandResult, ConnectionConfig},
@@ -40,6 +40,10 @@ pub(crate) struct ExecutionConfig<'a> {
     pub connect_timeout: Option<u64>,
     pub jump_hosts: Option<&'a str>,
     pub sudo_password: Option<Arc<SudoPassword>>,
+    /// Pre-collected SSH password (collected once by the dispatcher and shared
+    /// across every per-node task). When `use_password` is true, this MUST be
+    /// `Some(_)`; auth.rs consumes it instead of prompting per node.
+    pub ssh_password: Option<Arc<Password>>,
     pub ssh_config: Option<&'a SshConfig>,
     /// SSH connection configuration (keepalive settings).
     /// Threaded through to `Client::connect_with_ssh_config` so user-configured
@@ -82,6 +86,7 @@ pub(crate) async fn execute_on_node_with_jump_hosts(
         connect_timeout_seconds: config.connect_timeout,
         jump_hosts_spec: effective_jump_hosts,
         ssh_connection_config: config.ssh_connection_config,
+        ssh_password: config.ssh_password.clone(),
     };
 
     // If sudo password is provided, use streaming execution to handle prompts
@@ -134,6 +139,7 @@ pub(crate) async fn upload_to_node(
     jump_hosts: Option<&str>,
     connect_timeout_seconds: Option<u64>,
     ssh_config: Option<&SshConfig>,
+    pre_collected_password: Option<Arc<Password>>,
 ) -> Result<()> {
     let mut client = SshClient::new(node.host.clone(), node.port, node.username.clone());
 
@@ -161,6 +167,7 @@ pub(crate) async fn upload_to_node(
                 use_password,
                 effective_jump_hosts,
                 connect_timeout_seconds,
+                pre_collected_password,
             )
             .await
     } else {
@@ -174,6 +181,7 @@ pub(crate) async fn upload_to_node(
                 use_password,
                 effective_jump_hosts,
                 connect_timeout_seconds,
+                pre_collected_password,
             )
             .await
     }
@@ -192,6 +200,7 @@ pub(crate) async fn download_from_node(
     jump_hosts: Option<&str>,
     connect_timeout_seconds: Option<u64>,
     ssh_config: Option<&SshConfig>,
+    pre_collected_password: Option<Arc<Password>>,
 ) -> Result<PathBuf> {
     let mut client = SshClient::new(node.host.clone(), node.port, node.username.clone());
 
@@ -219,6 +228,7 @@ pub(crate) async fn download_from_node(
             use_password,
             effective_jump_hosts,
             connect_timeout_seconds,
+            pre_collected_password,
         )
         .await?;
 
@@ -238,6 +248,7 @@ pub async fn download_dir_from_node(
     jump_hosts: Option<&str>,
     connect_timeout_seconds: Option<u64>,
     ssh_config: Option<&SshConfig>,
+    pre_collected_password: Option<Arc<Password>>,
 ) -> Result<PathBuf> {
     let mut client = SshClient::new(node.host.clone(), node.port, node.username.clone());
 
@@ -263,6 +274,7 @@ pub async fn download_dir_from_node(
             use_password,
             effective_jump_hosts,
             connect_timeout_seconds,
+            pre_collected_password,
         )
         .await?;
 

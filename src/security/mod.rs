@@ -21,6 +21,7 @@
 //! backward compatibility. New code should prefer importing directly from
 //! `crate::shared::validation`.
 
+mod password;
 mod sudo;
 
 // Keep the validation module for backward compatibility but it now re-exports
@@ -32,6 +33,9 @@ pub use crate::shared::validation::{
     sanitize_error_message, validate_hostname, validate_local_path, validate_remote_path,
     validate_username,
 };
+
+// Re-export SSH password handling (collected once up-front by the dispatcher)
+pub use password::{Password, get_password, get_password_from_env, prompt_password};
 
 // Re-export sudo password handling
 pub use sudo::{

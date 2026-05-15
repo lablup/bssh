@@ -161,7 +161,8 @@ impl InteractiveCommand {
         auth_ctx = auth_ctx
             .with_agent(self.use_agent)
             .with_password(self.use_password)
-            .with_password_fallback(!self.use_password); // Enable fallback only if not using explicit password
+            .with_password_fallback(!self.use_password) // Enable fallback only if not using explicit password
+            .with_pre_collected_password(self.ssh_password.clone());
 
         // Set macOS Keychain integration if available
         #[cfg(target_os = "macos")]

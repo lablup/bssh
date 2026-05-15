@@ -27,7 +27,7 @@ use bssh::{
     },
     config::InteractiveMode,
     pty::PtyConfig,
-    security::get_sudo_password,
+    security::{Password, get_password, get_sudo_password},
     ssh::tokio_client::{DEFAULT_KEEPALIVE_INTERVAL, DEFAULT_KEEPALIVE_MAX, SshConnectionConfig},
 };
 use std::path::{Path, PathBuf};
@@ -83,6 +83,38 @@ fn build_ssh_connection_config(
     ssh_connection_config
 }
 
+/// Decide whether `-S` (sudo-password) is meaningful for the given subcommand.
+///
+/// `exec` and the interactive paths legitimately need a sudo password; the
+/// other subcommands run either no command (`ping` just runs `true`) or operate
+/// over SFTP (`upload`, `download`, `list`), so sudo is never relevant.
+fn sudo_password_is_applicable(command: &Option<Commands>) -> bool {
+    match command {
+        Some(Commands::Ping)
+        | Some(Commands::Upload { .. })
+        | Some(Commands::Download { .. })
+        | Some(Commands::List)
+        | Some(Commands::CacheStats { .. }) => false,
+        // exec (None), Interactive, and unknown future subcommands default to
+        // "applicable" — better to over-accept than silently strip a flag the
+        // user explicitly passed.
+        _ => true,
+    }
+}
+
+/// Human-readable name of the currently-dispatched subcommand for diagnostics.
+fn subcommand_name(command: &Option<Commands>) -> &'static str {
+    match command {
+        Some(Commands::List) => "list",
+        Some(Commands::Ping) => "ping",
+        Some(Commands::Upload { .. }) => "upload",
+        Some(Commands::Download { .. }) => "download",
+        Some(Commands::Interactive { .. }) => "interactive",
+        Some(Commands::CacheStats { .. }) => "cache-stats",
+        None => "exec",
+    }
+}
+
 /// Dispatch commands to their appropriate handlers
 pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
     // Get command to execute
@@ -99,6 +131,36 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
             Example: bssh -H host1,host2 'ls -la'"
         );
     }
+
+    // Warn if -S is passed to subcommands where it has no effect. We choose
+    // a warning (not a hard reject) to match typical CLI UX: existing scripts
+    // that happen to pass -S to `ping` or `upload` keep working, but the user
+    // gets visible feedback that the flag is being ignored.
+    if cli.sudo_password && !sudo_password_is_applicable(&cli.command) {
+        tracing::warn!(
+            "--sudo-password (-S) has no effect for the `{}` subcommand and will be ignored",
+            subcommand_name(&cli.command)
+        );
+    }
+
+    // Hoist `--password` collection: prompt ONCE here, before any per-node
+    // SSH connection task is spawned and before the indicatif progress UI is
+    // rendered. Previously this prompt was issued inside each parallel auth
+    // task (see `ssh/auth.rs::password_auth()`), which interleaved with the
+    // progress bar and could fan out N concurrent stdin reads. Collecting
+    // here mirrors what `-S` (`SudoPassword`) does and is the entire point
+    // of issue #200.
+    //
+    // The returned value is wrapped in `Arc<Password>` so cloning across
+    // per-node tasks does not duplicate the underlying secret; on drop, the
+    // memory is zeroized by `secrecy::SecretString`.
+    let ssh_password: Option<Arc<Password>> = if cli.password {
+        Some(Arc::new(get_password(true).map_err(|e| {
+            anyhow::anyhow!("Failed to collect SSH password: {e}")
+        })?))
+    } else {
+        None
+    };
 
     // Calculate hostname for SSH config integration
     let hostname_for_ssh_config = if cli.is_ssh_mode() {
@@ -143,6 +205,7 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
                 cli.timeout,
                 Some(cli.connect_timeout),
                 jump_hosts,
+                ssh_password.clone(),
             )
             .await
         }
@@ -172,6 +235,7 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
                 strict_mode: ctx.strict_mode,
                 use_agent: cli.use_agent,
                 use_password: cli.password,
+                ssh_password: ssh_password.clone(),
                 recursive: *recursive,
                 ssh_config: Some(&ctx.ssh_config),
                 jump_hosts,
@@ -204,6 +268,7 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
                 strict_mode: ctx.strict_mode,
                 use_agent: cli.use_agent,
                 use_password: cli.password,
+                ssh_password: ssh_password.clone(),
                 recursive: *recursive,
                 ssh_config: Some(&ctx.ssh_config),
                 jump_hosts,
@@ -225,6 +290,7 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
                 prompt_format,
                 history_file,
                 work_dir.as_deref(),
+                ssh_password.clone(),
             )
             .await
         }
@@ -234,12 +300,13 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
         }
         None => {
             // Execute command (auto-exec or interactive shell)
-            handle_exec_command(cli, ctx, &command).await
+            handle_exec_command(cli, ctx, &command, ssh_password.clone()).await
         }
     }
 }
 
 /// Handle interactive command execution
+#[allow(clippy::too_many_arguments)]
 async fn handle_interactive_command(
     cli: &Cli,
     ctx: &AppContext,
@@ -248,6 +315,7 @@ async fn handle_interactive_command(
     prompt_format: &str,
     history_file: &Path,
     work_dir: Option<&str>,
+    ssh_password: Option<Arc<Password>>,
 ) -> Result<()> {
     // Get interactive config from configuration file (with cluster-specific overrides)
     let cluster_name = cli.cluster.as_deref();
@@ -340,6 +408,7 @@ async fn handle_interactive_command(
         key_path,
         use_agent: cli.use_agent,
         use_password: cli.password,
+        ssh_password,
         #[cfg(target_os = "macos")]
         use_keychain,
         strict_mode: ctx.strict_mode,
@@ -358,7 +427,12 @@ async fn handle_interactive_command(
 }
 
 /// Handle exec command or SSH mode interactive session
-async fn handle_exec_command(cli: &Cli, ctx: &AppContext, command: &str) -> Result<()> {
+async fn handle_exec_command(
+    cli: &Cli,
+    ctx: &AppContext,
+    command: &str,
+    ssh_password: Option<Arc<Password>>,
+) -> Result<()> {
     // In SSH mode without command, start interactive session
     if cli.is_ssh_mode() && command.is_empty() {
         // SSH mode interactive session (like ssh user@host)
@@ -414,6 +488,7 @@ async fn handle_exec_command(cli: &Cli, ctx: &AppContext, command: &str) -> Resu
             key_path,
             use_agent: cli.use_agent,
             use_password: cli.password,
+            ssh_password,
             #[cfg(target_os = "macos")]
             use_keychain,
             strict_mode: ctx.strict_mode,
@@ -504,6 +579,7 @@ async fn handle_exec_command(cli: &Cli, ctx: &AppContext, command: &str) -> Resu
             strict_mode: ctx.strict_mode,
             use_agent: cli.use_agent,
             use_password: cli.password,
+            ssh_password,
             #[cfg(target_os = "macos")]
             use_keychain,
             output_dir: cli.output_dir.as_deref(),

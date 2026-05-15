@@ -19,7 +19,7 @@ use std::sync::Arc;
 use crate::executor::{ExitCodeStrategy, OutputMode, ParallelExecutor, RankDetector};
 use crate::forwarding::ForwardingType;
 use crate::node::Node;
-use crate::security::SudoPassword;
+use crate::security::{Password, SudoPassword};
 use crate::ssh::SshConfig;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
 use crate::ssh::tokio_client::SshConnectionConfig;
@@ -35,6 +35,10 @@ pub struct ExecuteCommandParams<'a> {
     pub strict_mode: StrictHostKeyChecking,
     pub use_agent: bool,
     pub use_password: bool,
+    /// Pre-collected SSH password collected once by the dispatcher and shared
+    /// (via `Arc::clone`) with every per-node SSH connection task. When
+    /// `use_password` is `true`, this should be `Some(_)`.
+    pub ssh_password: Option<Arc<Password>>,
     #[cfg(target_os = "macos")]
     pub use_keychain: bool,
     pub output_dir: Option<&'a Path>,
@@ -218,6 +222,7 @@ async fn execute_command_without_forwarding(params: ExecuteCommandParams<'_>) ->
     .with_connect_timeout(params.connect_timeout)
     .with_jump_hosts(params.jump_hosts.map(|s| s.to_string()))
     .with_sudo_password(params.sudo_password)
+    .with_ssh_password(params.ssh_password)
     .with_batch_mode(params.batch)
     .with_fail_fast(params.fail_fast)
     .with_ssh_config(params.ssh_config.cloned())

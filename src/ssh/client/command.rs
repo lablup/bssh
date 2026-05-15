@@ -63,6 +63,7 @@ impl SshClient {
             connect_timeout_seconds: None, // Use default
             jump_hosts_spec: None,         // No jump hosts
             ssh_connection_config: None,
+            ssh_password: None, // Legacy API path: no pre-collected password
         };
 
         self.connect_and_execute_with_jump_hosts(command, &config)
@@ -85,6 +86,7 @@ impl SshClient {
                 config.use_password,
                 #[cfg(target_os = "macos")]
                 config.use_keychain,
+                config.ssh_password.clone(),
             )
             .await?;
 
@@ -196,6 +198,7 @@ impl SshClient {
                 config.use_password,
                 #[cfg(target_os = "macos")]
                 config.use_keychain,
+                config.ssh_password.clone(),
             )
             .await?;
 
@@ -308,6 +311,7 @@ impl SshClient {
                 config.use_password,
                 #[cfg(target_os = "macos")]
                 config.use_keychain,
+                config.ssh_password.clone(),
             )
             .await?;
 

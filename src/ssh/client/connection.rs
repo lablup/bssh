@@ -14,10 +14,12 @@
 
 use super::core::SshClient;
 use crate::jump::{JumpHostChain, parse_jump_hosts};
+use crate::security::Password;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
 use crate::ssh::tokio_client::{AuthMethod, Client, SshConnectionConfig};
 use anyhow::{Context, Result};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 // SSH connection timeout design:
@@ -27,13 +29,19 @@ use std::time::Duration;
 const SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
 
 impl SshClient {
-    /// Determine the authentication method based on provided parameters
+    /// Determine the authentication method based on provided parameters.
+    ///
+    /// The `pre_collected_password` argument carries the password the dispatcher
+    /// collected once up-front (via `--password`). When `use_password` is `true`
+    /// and a pre-collected value is provided, `AuthContext::password_auth()`
+    /// consumes it directly instead of prompting in the per-node task.
     pub(super) async fn determine_auth_method(
         &self,
         key_path: Option<&Path>,
         use_agent: bool,
         use_password: bool,
         #[cfg(target_os = "macos")] use_keychain: bool,
+        pre_collected_password: Option<Arc<Password>>,
     ) -> Result<AuthMethod> {
         // Use centralized authentication logic from auth module
         let mut auth_ctx =
@@ -49,7 +57,10 @@ impl SshClient {
                 .with_context(|| format!("Invalid SSH key path: {path:?}"))?;
         }
 
-        auth_ctx = auth_ctx.with_agent(use_agent).with_password(use_password);
+        auth_ctx = auth_ctx
+            .with_agent(use_agent)
+            .with_password(use_password)
+            .with_pre_collected_password(pre_collected_password);
 
         #[cfg(target_os = "macos")]
         {
@@ -292,6 +303,7 @@ mod tests {
                 false,
                 #[cfg(target_os = "macos")]
                 false,
+                None,
             )
             .await
             .unwrap();
@@ -338,6 +350,7 @@ mod tests {
                 false,
                 #[cfg(target_os = "macos")]
                 false,
+                None,
             )
             .await
             .unwrap();
@@ -382,7 +395,7 @@ mod tests {
 
         let client = SshClient::new("test.com".to_string(), 22, "user".to_string());
         let auth = client
-            .determine_auth_method(None, true, false)
+            .determine_auth_method(None, true, false, None)
             .await
             .unwrap();
 
@@ -430,6 +443,7 @@ mod tests {
                 false,
                 #[cfg(target_os = "macos")]
                 false,
+                None,
             )
             .await
             .unwrap();
