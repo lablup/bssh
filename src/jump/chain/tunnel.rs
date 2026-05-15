@@ -15,6 +15,7 @@
 use super::auth::authenticate_connection;
 use crate::jump::parser::JumpHost;
 use crate::jump::rate_limiter::ConnectionRateLimiter;
+use crate::security::Password;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
 use crate::ssh::tokio_client::{AuthMethod, Client, ClientHandler, SshConnectionConfig};
 use anyhow::{Context, Result};
@@ -31,6 +32,7 @@ pub(super) async fn connect_through_tunnel(
     key_path: Option<&Path>,
     use_agent: bool,
     use_password: bool,
+    pre_collected_password: Option<Arc<Password>>,
     strict_mode: StrictHostKeyChecking,
     connect_timeout: std::time::Duration,
     rate_limiter: &ConnectionRateLimiter,
@@ -82,6 +84,7 @@ pub(super) async fn connect_through_tunnel(
         key_path,
         use_agent,
         use_password,
+        pre_collected_password,
         auth_mutex,
     )
     .await?;

@@ -13,9 +13,11 @@
 // limitations under the License.
 
 use crate::jump::parser::JumpHost;
+use crate::security::Password;
 use crate::ssh::tokio_client::{AuthMethod, ClientHandler};
 use anyhow::{Context, Result};
 use std::path::Path;
+use std::sync::Arc;
 use tokio::sync::Mutex;
 use tracing::{debug, warn};
 use zeroize::Zeroizing;
@@ -72,11 +74,18 @@ async fn agent_has_identities() -> bool {
 /// 2. Cluster/defaults `key_path` (fallback, passed as parameter)
 /// 3. SSH agent (if use_agent=true and agent has keys)
 /// 4. Default key files (~/.ssh/id_*)
+///
+/// When `use_password` is `true`, the `pre_collected_password` argument MUST
+/// carry the password the dispatcher collected once up-front via
+/// `prompt_password()` (issue #200). Per-call password prompts here would race
+/// across parallel jump-host auth tasks and produce N prompts for N nodes —
+/// the very bug `--password` was supposed to fix.
 pub(super) async fn determine_auth_method(
     jump_host: &JumpHost,
     key_path: Option<&Path>,
     use_agent: bool,
     use_password: bool,
+    pre_collected_password: Option<Arc<Password>>,
     auth_mutex: &Mutex<()>,
 ) -> Result<AuthMethod> {
     // Priority 1: Use jump host's own ssh_key if provided
@@ -121,22 +130,27 @@ pub(super) async fn determine_auth_method(
     let agent_available = false;
 
     if use_password {
-        // SECURITY: Acquire mutex to serialize password prompts
-        // This prevents multiple simultaneous prompts that could confuse users
-        let _guard = auth_mutex.lock().await;
-
-        // Display which jump host we're authenticating to
-        let prompt = format!(
-            "Enter password for jump host {} ({}@{}): ",
-            jump_host.to_connection_string(),
-            jump_host.effective_user(),
-            jump_host.host
-        );
-
-        let password = Zeroizing::new(
-            rpassword::prompt_password(prompt).with_context(|| "Failed to read password")?,
-        );
-        return Ok(AuthMethod::with_password(&password));
+        // Issue #200: consume the dispatcher's single up-front password instead
+        // of prompting per-call. Per-call prompts here race across parallel
+        // jump-host auth tasks (even with auth_mutex, they serialize into N
+        // sequential prompts for N nodes) and contradict the entire point of
+        // `--password`. The dispatcher MUST have collected this value before
+        // any per-node task was spawned; if it didn't, fail loudly rather than
+        // silently fall back to prompting.
+        let Some(password) = pre_collected_password.as_ref() else {
+            anyhow::bail!(
+                "SSH password authentication was requested for jump host {} but no \
+                 password was collected up-front. This is a programmer error: the \
+                 dispatcher must call `prompt_password()` once before spawning \
+                 per-node connection tasks and thread the resulting `Arc<Password>` \
+                 through to this jump-host authentication context.",
+                jump_host.to_connection_string(),
+            );
+        };
+        // Note: `auth_mutex` is intentionally NOT acquired here — no prompt is
+        // issued, so there is no I/O to serialize. The mutex remains needed
+        // for the key passphrase prompts below.
+        return Ok(AuthMethod::with_password(password.as_str()));
     }
 
     if use_agent && agent_available {
@@ -536,6 +550,7 @@ dGVzdHMgLSBub3QgcmVhbAECAwQ=
             Some(key_path.as_path()),
             true,  // use_agent
             false, // use_password
+            None,  // pre_collected_password
             &auth_mutex,
         )
         .await;
@@ -587,6 +602,7 @@ dGVzdHMgLSBub3QgcmVhbAECAwQ=
             Some(key_path.as_path()),
             true,  // use_agent
             false, // use_password
+            None,  // pre_collected_password
             &auth_mutex,
         )
         .await;
@@ -642,6 +658,7 @@ dGVzdHMgLSBub3QgcmVhbAECAwQ=
             None,  // No key_path
             false, // use_agent
             false, // use_password
+            None,  // pre_collected_password
             &auth_mutex,
         )
         .await;
@@ -696,6 +713,7 @@ dGVzdHMgLSBub3QgcmVhbAECAwQ=
             None,  // No key_path
             false, // use_agent=false means don't try agent first
             false, // use_password
+            None,  // pre_collected_password
             &auth_mutex,
         )
         .await;
@@ -800,6 +818,7 @@ dGVzdHMgLSBub3QgcmVhbAECAwQ=
             Some(cluster_key_path.as_path()), // Cluster key
             false,                            // use_agent
             false,                            // use_password
+            None,                             // pre_collected_password
             &auth_mutex,
         )
         .await;
@@ -850,6 +869,7 @@ dGVzdHMgLSBub3QgcmVhbAECAwQ=
             Some(cluster_key_path.as_path()),
             false,
             false,
+            None, // pre_collected_password
             &auth_mutex,
         )
         .await;

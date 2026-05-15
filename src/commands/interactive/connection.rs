@@ -263,11 +263,14 @@ impl InteractiveCommand {
                         .min(MAX_TIMEOUT_SECS),
                 );
 
-                // Pass SSH connection config to jump host chain for keepalive settings
+                // Pass SSH connection config to jump host chain for keepalive settings.
+                // Also pass the dispatcher's pre-collected password so jump-host
+                // authentication consumes it instead of re-prompting per call. See #200.
                 let chain = JumpHostChain::new(jump_hosts)
                     .with_connect_timeout(adjusted_timeout)
                     .with_command_timeout(Duration::from_secs(300))
-                    .with_ssh_connection_config(self.ssh_connection_config.clone());
+                    .with_ssh_connection_config(self.ssh_connection_config.clone())
+                    .with_ssh_password(self.ssh_password.clone());
 
                 // Connect through the chain
                 let connection = timeout(
@@ -407,11 +410,14 @@ impl InteractiveCommand {
                         .min(MAX_TIMEOUT_SECS),
                 );
 
-                // Pass SSH connection config to jump host chain for keepalive settings
+                // Pass SSH connection config to jump host chain for keepalive settings.
+                // Also pass the dispatcher's pre-collected password so jump-host
+                // authentication consumes it instead of re-prompting per call. See #200.
                 let chain = JumpHostChain::new(jump_hosts)
                     .with_connect_timeout(adjusted_timeout)
                     .with_command_timeout(Duration::from_secs(300))
-                    .with_ssh_connection_config(self.ssh_connection_config.clone());
+                    .with_ssh_connection_config(self.ssh_connection_config.clone())
+                    .with_ssh_password(self.ssh_password.clone());
 
                 // Connect through the chain
                 let connection = timeout(

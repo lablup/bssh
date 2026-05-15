@@ -113,10 +113,21 @@ async fn execute_command_with_forwarding(params: ExecuteCommandParams<'_>) -> Re
             return Err(anyhow::anyhow!("SSH agent not supported on Windows"));
         }
     } else if params.use_password {
-        // For password auth, we'd need to prompt - for now return error
-        return Err(anyhow::anyhow!(
-            "Password authentication not yet supported with port forwarding"
-        ));
+        // Issue #200 (M1): consume the dispatcher's pre-collected password
+        // instead of erroring out. Previously this branch returned
+        // "Password authentication not yet supported with port forwarding"
+        // even though the dispatcher had already prompted the user — a
+        // confusing UX regression. The dispatcher collects unconditionally
+        // for `exec`, so when `use_password` is true we always have one.
+        let Some(password) = params.ssh_password.as_ref() else {
+            anyhow::bail!(
+                "--password was requested for port-forwarding exec but no \
+                 password was collected up-front (programmer error in dispatcher: \
+                 the `exec` arm must populate `ExecuteCommandParams::ssh_password` \
+                 when `use_password` is true)."
+            );
+        };
+        AuthMethod::with_password(password.as_str())
     } else {
         // Use default key file authentication
         let key_path = params

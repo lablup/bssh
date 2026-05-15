@@ -176,13 +176,15 @@ impl SshClient {
         use_password: bool,
         connect_timeout_seconds: Option<u64>,
         ssh_connection_config: Option<&SshConnectionConfig>,
+        pre_collected_password: Option<Arc<Password>>,
     ) -> Result<Client> {
         // Create jump host chain with user-specified or default connect timeout
         let connect_timeout =
             Duration::from_secs(connect_timeout_seconds.unwrap_or(SSH_CONNECT_TIMEOUT_SECS));
         let mut chain = JumpHostChain::new(jump_hosts.to_vec())
             .with_connect_timeout(connect_timeout)
-            .with_command_timeout(Duration::from_secs(300));
+            .with_command_timeout(Duration::from_secs(300))
+            .with_ssh_password(pre_collected_password);
         if let Some(cfg) = ssh_connection_config {
             chain = chain.with_ssh_connection_config(cfg.clone());
         }
@@ -227,6 +229,7 @@ impl SshClient {
         use_password: bool,
         connect_timeout_seconds: Option<u64>,
         ssh_connection_config: Option<&SshConnectionConfig>,
+        pre_collected_password: Option<Arc<Password>>,
     ) -> Result<Client> {
         if let Some(jump_spec) = jump_hosts_spec {
             // Parse jump hosts
@@ -265,6 +268,7 @@ impl SshClient {
                     use_password,
                     connect_timeout_seconds,
                     ssh_connection_config,
+                    pre_collected_password,
                 )
                 .await
             }

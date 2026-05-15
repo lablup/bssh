@@ -187,6 +187,10 @@ pub async fn download_file(
                 params.use_agent,
                 params.use_password,
                 None, // Use default timeout for ls command
+                // Issue #200 (C2): forward the dispatcher's pre-collected
+                // password so this glob-resolution step does NOT re-prompt
+                // after the dispatcher already asked once.
+                params.ssh_password.clone(),
             )
             .await?;
 

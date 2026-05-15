@@ -704,13 +704,16 @@ impl SshClient {
                 use_password,
                 #[cfg(target_os = "macos")]
                 false,
-                pre_collected_password,
+                pre_collected_password.clone(),
             )
             .await?;
 
         let strict_mode = strict_mode.unwrap_or(StrictHostKeyChecking::AcceptNew);
 
-        // Create client connection - either direct or through jump hosts
+        // Create client connection - either direct or through jump hosts.
+        // Threading `pre_collected_password` here ensures jump-host auth
+        // (when `--password` is combined with `-J`) consumes the dispatcher's
+        // single up-front prompt instead of re-prompting per jump. See #200.
         self.establish_connection(
             &auth_method,
             strict_mode,
@@ -720,6 +723,7 @@ impl SshClient {
             use_password,
             connect_timeout_seconds,
             None,
+            pre_collected_password,
         )
         .await
     }

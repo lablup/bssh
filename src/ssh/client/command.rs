@@ -15,11 +15,12 @@
 use super::config::ConnectionConfig;
 use super::core::SshClient;
 use super::result::CommandResult;
-use crate::security::SudoPassword;
+use crate::security::{Password, SudoPassword};
 use crate::ssh::known_hosts::StrictHostKeyChecking;
 use crate::ssh::tokio_client::CommandOutput;
 use anyhow::{Context, Result};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc::Sender;
 
@@ -38,11 +39,22 @@ impl SshClient {
         key_path: Option<&Path>,
         use_agent: bool,
     ) -> Result<CommandResult> {
-        self.connect_and_execute_with_host_check(command, key_path, None, use_agent, false, None)
-            .await
+        // Trivial-call shim used only by the default-key path; no `--password`
+        // flag is in scope here so the pre-collected password is `None`.
+        self.connect_and_execute_with_host_check(
+            command, key_path, None, use_agent, false, None, None,
+        )
+        .await
     }
 
-    /// Execute a command with host key checking configuration
+    /// Execute a command with host key checking configuration.
+    ///
+    /// The `ssh_password` argument carries the dispatcher's single up-front
+    /// password (when `--password` is used). Callers in the `download`
+    /// glob-resolution path MUST forward `FileTransferParams::ssh_password`
+    /// here — otherwise the user is prompted twice (once by the dispatcher,
+    /// once by this connection). See issue #200.
+    #[allow(clippy::too_many_arguments)]
     pub async fn connect_and_execute_with_host_check(
         &mut self,
         command: &str,
@@ -51,6 +63,7 @@ impl SshClient {
         use_agent: bool,
         use_password: bool,
         timeout_seconds: Option<u64>,
+        ssh_password: Option<Arc<Password>>,
     ) -> Result<CommandResult> {
         let config = ConnectionConfig {
             key_path,
@@ -63,7 +76,7 @@ impl SshClient {
             connect_timeout_seconds: None, // Use default
             jump_hosts_spec: None,         // No jump hosts
             ssh_connection_config: None,
-            ssh_password: None, // Legacy API path: no pre-collected password
+            ssh_password,
         };
 
         self.connect_and_execute_with_jump_hosts(command, &config)
@@ -105,6 +118,7 @@ impl SshClient {
                 config.use_password,
                 config.connect_timeout_seconds,
                 config.ssh_connection_config,
+                config.ssh_password.clone(),
             )
             .await?;
 
@@ -217,6 +231,7 @@ impl SshClient {
                 config.use_password,
                 config.connect_timeout_seconds,
                 config.ssh_connection_config,
+                config.ssh_password.clone(),
             )
             .await?;
 
@@ -330,6 +345,7 @@ impl SshClient {
                 config.use_password,
                 config.connect_timeout_seconds,
                 config.ssh_connection_config,
+                config.ssh_password.clone(),
             )
             .await?;
 

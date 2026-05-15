@@ -24,6 +24,7 @@ pub use types::{JumpConnection, JumpInfo};
 use super::connection::JumpHostConnection;
 use super::parser::{JumpHost, get_max_jump_hosts};
 use super::rate_limiter::ConnectionRateLimiter;
+use crate::security::Password;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
 use crate::ssh::tokio_client::{AuthMethod, SshConnectionConfig};
 use anyhow::{Context, Result};
@@ -68,6 +69,12 @@ pub struct JumpHostChain {
     auth_mutex: Arc<Mutex<()>>,
     /// SSH connection configuration (keepalive settings)
     ssh_connection_config: SshConnectionConfig,
+    /// Pre-collected SSH password (from the dispatcher's single up-front prompt).
+    /// When `use_password` is set on a per-call basis, this is consumed by every
+    /// jump-host auth step instead of prompting per-call, which would otherwise
+    /// race N parallel auth tasks (serialized by `auth_mutex`) into N separate
+    /// prompts. See issue #200.
+    ssh_password: Option<Arc<Password>>,
 }
 
 impl JumpHostChain {
@@ -104,7 +111,17 @@ impl JumpHostChain {
             max_connection_age: Duration::from_secs(1800), // 30 minutes
             auth_mutex: Arc::new(Mutex::new(())),
             ssh_connection_config: SshConnectionConfig::default(),
+            ssh_password: None,
         }
+    }
+
+    /// Provide the pre-collected SSH password (collected once up-front by the
+    /// dispatcher). When `--password` is used together with `-J <jump>`, every
+    /// jump-host auth step consumes this shared secret instead of prompting
+    /// per-call. See issue #200.
+    pub fn with_ssh_password(mut self, password: Option<Arc<Password>>) -> Self {
+        self.ssh_password = password;
+        self
     }
 
     /// Set SSH connection configuration (keepalive settings)
@@ -276,6 +293,7 @@ impl JumpHostChain {
                 dest_key_path,
                 dest_use_agent,
                 dest_use_password,
+                self.ssh_password.clone(),
                 dest_strict_mode.unwrap_or(StrictHostKeyChecking::AcceptNew),
                 self.connect_timeout,
                 &self.rate_limiter,
@@ -381,6 +399,7 @@ impl JumpHostChain {
             key_path,
             use_agent,
             use_password,
+            self.ssh_password.clone(),
             &self.auth_mutex,
         )
         .await?;
