@@ -83,23 +83,38 @@ fn build_ssh_connection_config(
     ssh_connection_config
 }
 
-/// Decide whether `-S` (sudo-password) is meaningful for the given subcommand.
+/// Decide whether `-S` (sudo-password) is meaningful for the given dispatch path.
 ///
-/// `exec` and the interactive paths legitimately need a sudo password; the
-/// other subcommands run either no command (`ping` just runs `true`) or operate
-/// over SFTP (`upload`, `download`, `list`), so sudo is never relevant.
-fn sudo_password_is_applicable(command: &Option<Commands>) -> bool {
+/// Only command execution can consume `SudoPassword`, because it monitors
+/// command output for sudo prompts and injects the password into the remote
+/// process. Interactive shells handle their own terminal input, while ping,
+/// SFTP, list, and cache-stat paths never inspect remote sudo prompts.
+fn sudo_password_is_applicable(command: &Option<Commands>, command_text: &str) -> bool {
     match command {
         Some(Commands::Ping)
         | Some(Commands::Upload { .. })
         | Some(Commands::Download { .. })
         | Some(Commands::List)
+        | Some(Commands::Interactive { .. })
         | Some(Commands::CacheStats { .. }) => false,
-        // exec (None), Interactive, and unknown future subcommands default to
-        // "applicable" — better to over-accept than silently strip a flag the
-        // user explicitly passed.
-        _ => true,
+        // `None` is the exec/SSH-compatibility path. A non-empty command can
+        // use sudo injection; an empty command is an interactive SSH shell and
+        // has no sudo-injection hook.
+        None => !command_text.is_empty(),
     }
+}
+
+/// Decide whether `--password` should be collected for this dispatcher path.
+///
+/// Most paths create SSH connections and can use an SSH password. List and
+/// cache-stat paths do not connect to a remote host, so prompting would be a
+/// surprising no-op if `dispatch_command()` is called directly in tests or
+/// library-like contexts (the binary entry point handles those paths earlier).
+fn ssh_password_is_applicable(command: &Option<Commands>) -> bool {
+    !matches!(
+        command,
+        Some(Commands::List) | Some(Commands::CacheStats { .. })
+    )
 }
 
 /// Human-readable name of the currently-dispatched subcommand for diagnostics.
@@ -132,13 +147,20 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
         );
     }
 
-    // Warn if -S is passed to subcommands where it has no effect. We choose
+    // Warn if -S is passed to dispatch paths where it has no effect. We choose
     // a warning (not a hard reject) to match typical CLI UX: existing scripts
     // that happen to pass -S to `ping` or `upload` keep working, but the user
     // gets visible feedback that the flag is being ignored.
-    if cli.sudo_password && !sudo_password_is_applicable(&cli.command) {
+    if cli.sudo_password && !sudo_password_is_applicable(&cli.command, &command) {
         eprintln!(
             "Warning: --sudo-password (-S) has no effect for the `{}` subcommand and will be ignored",
+            subcommand_name(&cli.command)
+        );
+    }
+
+    if cli.password && !ssh_password_is_applicable(&cli.command) {
+        eprintln!(
+            "Warning: --password has no effect for the `{}` subcommand and will be ignored",
             subcommand_name(&cli.command)
         );
     }
@@ -154,13 +176,14 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
     // The returned value is wrapped in `Arc<Password>` so cloning across
     // per-node tasks does not duplicate the underlying secret; on drop, the
     // memory is zeroized by `secrecy::SecretString`.
-    let ssh_password: Option<Arc<Password>> = if cli.password {
-        Some(Arc::new(get_password(true).map_err(|e| {
-            anyhow::anyhow!("Failed to collect SSH password: {e}")
-        })?))
-    } else {
-        None
-    };
+    let ssh_password: Option<Arc<Password>> =
+        if cli.password && ssh_password_is_applicable(&cli.command) {
+            Some(Arc::new(get_password(true).map_err(|e| {
+                anyhow::anyhow!("Failed to collect SSH password: {e}")
+            })?))
+        } else {
+            None
+        };
 
     // Calculate hostname for SSH config integration
     let hostname_for_ssh_config = if cli.is_ssh_mode() {
@@ -602,5 +625,51 @@ async fn handle_exec_command(
             ssh_connection_config,
         };
         execute_command(params).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn interactive_command() -> Option<Commands> {
+        Some(Commands::Interactive {
+            single_node: false,
+            multiplex: true,
+            prompt_format: "[{node}:{user}@{host}:{pwd}]$ ".to_string(),
+            history_file: PathBuf::from("~/.bssh_history"),
+            work_dir: None,
+        })
+    }
+
+    #[test]
+    fn sudo_password_applies_only_to_exec_commands() {
+        assert!(sudo_password_is_applicable(&None, "uptime"));
+
+        assert!(!sudo_password_is_applicable(&None, ""));
+        assert!(!sudo_password_is_applicable(&Some(Commands::Ping), "true"));
+        assert!(!sudo_password_is_applicable(&interactive_command(), ""));
+        assert!(!sudo_password_is_applicable(
+            &Some(Commands::CacheStats {
+                detailed: false,
+                clear: false,
+                maintain: false,
+            }),
+            "",
+        ));
+    }
+
+    #[test]
+    fn ssh_password_is_not_collected_for_local_only_subcommands() {
+        assert!(ssh_password_is_applicable(&None));
+        assert!(ssh_password_is_applicable(&Some(Commands::Ping)));
+        assert!(ssh_password_is_applicable(&interactive_command()));
+
+        assert!(!ssh_password_is_applicable(&Some(Commands::List)));
+        assert!(!ssh_password_is_applicable(&Some(Commands::CacheStats {
+            detailed: false,
+            clear: false,
+            maintain: false,
+        })));
     }
 }
