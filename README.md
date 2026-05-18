@@ -12,7 +12,8 @@ A high-performance SSH client with **SSH-compatible syntax** for both single-hos
 
 ## Recent Updates
 
-- **v2.1.4 (2026/05/10):** SFTP transfer perf — stream uploads/downloads in 255 KiB chunks instead of buffering whole files (~160x lower RSS, ~11x faster 1 GiB upload), pipeline up to 64 concurrent SFTP requests, raise server `MAX_READ_SIZE` to the 255 KiB SFTP standard (#195, #196, #197)
+- **v2.2.0 (2026/05/18):** Collect `--password` once up-front and share the secret across all parallel SSH tasks via `Arc<Password>`, fixing per-node stdin races and progress-UI interleaving; add `BSSH_PASSWORD` env support; warn (on stderr) when `-S`/`--sudo-password` is passed to subcommands where it has no effect (`ping`, `upload`, `download`, `list`, `cache-stats`) (#200, #201). Resolve all cargo-audit findings by replacing `atty` with `std::io::IsTerminal` and acknowledging the unfixable rsa Marvin Attack advisory in `.cargo/audit.toml` (#198). Drop five stale or redundant direct dependencies (`arrayvec`, `ctrlc`, `directories`, `signal-hook 0.4`, plus the macOS objc2/block2/dispatch2 chain) by migrating to `std::sync::LazyLock`/`OnceLock`, `tokio::signal::ctrl_c`, and `dirs` (#199).
+- **v2.1.4 (2026/05/10):** SFTP transfer perf: stream uploads/downloads in 255 KiB chunks instead of buffering whole files (~160x lower RSS, ~11x faster 1 GiB upload), pipeline up to 64 concurrent SFTP requests, raise server `MAX_READ_SIZE` to the 255 KiB SFTP standard (#195, #196, #197)
 - **v2.1.3 (2026/04/30):** Fix SCP/SFTP path doubling on absolute paths and chroot dead config (#186); vendor `russh-sftp` with `serde_bytes` perf fix (+29% SFTP upload throughput); forward-port unreleased upstream russh fixes; standardize man page trailers
 - **v2.1.2 (2026/04/27):** Restore terminal mouse tracking state on PTY session disconnect (#190); release workflow fixes
 - **v2.1.1 (2026/04/17):** Fix server panic and auth rejection on every client connection

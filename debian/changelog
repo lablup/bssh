@@ -1,3 +1,69 @@
+bssh (2.2.0-1~jammy1) jammy; urgency=medium
+
+  * v2.2.0
+  ### New Features
+  - Add `BSSH_PASSWORD` environment variable for non-interactive password
+    auth (#201). Discouraged for production; documented in the man page
+    and README environment-variables section.
+
+  ### Improvements
+  - Collect `--password` once up-front in the dispatcher and share the
+    secret across all parallel SSH tasks via `Arc<Password>` (#201,
+    closes #200). Each per-node auth task previously prompted via
+    `rpassword::prompt_password()`, racing for stdin and interleaving
+    with the indicatif progress UI. The new flow mirrors the existing
+    `Arc<SudoPassword>` pattern: prompt once before any executor or
+    `MultiProgress` is initialized, then thread a shared `Arc<Password>`
+    through `ParallelExecutor`, `ExecutionConfig`, `ConnectionConfig`,
+    `FileTransferParams`, the SFTP `*_with_jump_hosts` helpers, the
+    jump-host `determine_auth_method` path, and the legacy
+    `execute_command_with_forwarding` path.
+  - Warn on stderr when `-S` / `--sudo-password` is passed to subcommands
+    where it has no effect (`ping`, `upload`, `download`, `list`,
+    `cache-stats`, and interactive shells) (#201, follow-up #200). The
+    warning routes to stderr via `eprintln!` so `bssh ... ping | grep ...`
+    pipelines stay clean. `exec` and the SSH-mode interactive path
+    continue to honor `-S` as before.
+
+  ### Bug Fixes
+  - Fix `--password` race across parallel SSH connections (#200, #201).
+    Multiple per-node tasks previously raced for stdin: the prompt could
+    be missed, repeated per node, or interleaved with the progress UI.
+  - Fix `-S` being silently dropped by `ping`, `upload`, and `download`
+    (#201, closes #200). The dispatcher only read `cli.sudo_password`
+    in the `exec` and interactive branches, so users could pass `-S` to
+    other subcommands without any feedback that the flag had no effect.
+
+  ### Dependencies
+  - Drop five stale or redundant direct dependencies (#199): `arrayvec`
+    (unused), `ctrlc` (replaced by `tokio::signal::ctrl_c`), `directories`
+    (replaced by `dirs`, already used in 16 other sites), `signal-hook`
+    0.4.4 (downgraded to 0.3 to share the crate `crossterm` already
+    pulls in via `signal-hook-mio`), plus the macOS `objc2`/`block2`/
+    `dispatch2` chain that `ctrlc` brought in. Three more crates
+    (`lazy_static`, `once_cell`, `fastrand`) are no longer directly
+    referenced after migrating to `std::sync::LazyLock`/`OnceLock` and
+    `rand::random_range`.
+  - Replace the unmaintained `atty` crate with `std::io::IsTerminal`
+    (stdlib since Rust 1.70) across PTY, logging, ssh::auth, and the
+    interactive connection (#198). Drops RUSTSEC-2024-0375 (unmaintained)
+    and RUSTSEC-2021-0145 (unsound unaligned read) at once.
+  - Pick up 33 transitive patch bumps from `cargo update` within current
+    semver constraints (#198): tokio 1.52.1 to 1.52.3, rustls 0.23.39
+    to 0.23.40, h2 0.4.13 to 0.4.14, digest 0.11.2 to 0.11.3, rpassword
+    7.4.0 to 7.5.2, and others.
+
+  ### Known Issues
+  - RUSTSEC-2023-0071 (RSA Marvin Attack) acknowledged via
+    `.cargo/audit.toml` ignore with an explanatory comment (#198). Both
+    `rsa` 0.9.10 (via `ssh-key` 0.6.x) and `rsa` 0.10.0-rc.17 (via the
+    vendored `bssh-russh` fork) are affected, and no fixed upstream
+    `rsa` release exists. Bumping to 0.10.0-rc.18 conflicts with the
+    `bssh-russh` `pkcs5 = "=0.8.0-rc.13"` pin. Users handling
+    untrusted hosts should prefer Ed25519 or ECDSA keys instead of RSA.
+
+ -- Jeongkyu Shin <inureyes@gmail.com>  Mon, 18 May 2026 00:00:00 +0900
+
 bssh (2.1.4-1~jammy1) jammy; urgency=medium
 
   * v2.1.4

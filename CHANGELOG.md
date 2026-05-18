@@ -7,11 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2.1.5] - Unreleased
+## [2.2.0] - 2026-05-18
+
+### Added
+- `BSSH_PASSWORD` environment variable for non-interactive password authentication (#201). Documented in the man page and the README environment-variables section. Discouraged for production deployments; recommended for automated test pipelines and CI scenarios where SSH agent or key-based auth is not feasible.
 
 ### Fixed
-- **`--password` prompt is now collected once up-front and shared across all parallel connection tasks** (#201, closes #200). Previously each per-node SSH task prompted for the password independently, racing each other for stdin and interleaving with the progress UI. The dispatcher now collects the password before any executor or `indicatif` UI is initialized and threads an `Arc<Password>` to every per-node auth task — matching the existing `-S` (`SudoPassword`) pattern. The `BSSH_PASSWORD` environment variable is supported for automation scenarios (discouraged; see security notes below).
-- **`-S` / `--sudo-password` warning now routes to stderr** when passed to subcommands where it has no effect (`ping`, `upload`, `download`, `list`, `cache-stats`, and interactive shells), keeping stdout clean for scripts that consume bssh output (#201, follow-up to #200).
+- **`--password` prompt is now collected once up-front and shared across all parallel connection tasks** (#201, closes #200). Previously each per-node SSH task prompted for the password independently via `rpassword::prompt_password()` inside `password_auth()`, racing each other for stdin and interleaving with the indicatif progress UI rendering. The dispatcher now collects the password before any executor or `MultiProgress` is initialized and threads an `Arc<Password>` (backed by `secrecy::SecretString`, auto-zeroized on drop) to every per-node auth task, matching the existing `-S` (`SudoPassword`) pattern. The pre-collected password is also threaded through the jump-host chain (`jump::chain::auth::determine_auth_method`), the SFTP `*_with_jump_hosts` helpers, the download glob-resolution path (`SshClient::connect_and_execute_with_host_check`), and the legacy `execute_command_with_forwarding` path. The in-task `rpassword::prompt_password()` call remains only as the fallback for the OpenSSH-style "all key methods failed" opportunistic prompt path, which has no dispatcher-side collection.
+- **`-S` was silently dropped by `ping`, `upload`, and `download`** (#201, closes #200). The dispatcher only read `cli.sudo_password` in the `exec` and interactive branches, so users could pass `-S` to `ping`/`upload`/`download`/`list`/`cache-stats` without any error or feedback. These subcommands now emit a stderr warning explaining that `-S` has no effect, while `exec` and the SSH-mode interactive path continue to honor `-S` as before.
+- **`-S` ignored-warning routes to stderr instead of stdout** (#201, follow-up). The previous `tracing::warn!` landed on stdout under the default tracing subscriber, breaking `bssh ... ping | grep ...` pipelines. Switched to `eprintln!` to match the existing pattern used for the `BSSH_PASSWORD` env warning.
+
+### Changed
+- Tightened sudo-password collection so it only applies to exec paths that can inject sudo responses, and avoid unused SSH password collection for local-only dispatcher paths.
+
+### Dependencies
+- **Drop five stale or redundant direct dependencies** (#199). After auditing the full direct dependency set: `arrayvec` (declared but unused anywhere in the source tree), `ctrlc` (replaced with `tokio::signal::ctrl_c` inside a `tokio::spawn`, guarded by `Handle::try_current` to preserve best-effort semantics outside a runtime), `directories::ProjectDirs`/`BaseDirs` (replaced with `dirs::config_dir`/`dirs::home_dir`, unifying on `dirs` which was already used in 16 other sites and produces equivalent platform paths), `signal-hook` 0.4.4 (downgraded to 0.3 so the project shares the same instance `crossterm` already pulls in via `signal-hook-mio`; usage signatures are identical across both major lines), plus the macOS `objc2`/`block2`/`dispatch2` chain pulled in by `ctrlc`. Three more crates (`lazy_static`, `once_cell`, `fastrand`) remain transitively but are no longer directly referenced after migrating to `std::sync::LazyLock`/`OnceLock` and `rand::random_range`. `Cargo.lock` loses 76 lines including the entire `signal-hook` 0.4.4 subtree.
+- **Replace the unmaintained `atty` crate with `std::io::IsTerminal`** (stdlib since Rust 1.70) across PTY, logging, ssh::auth, and the interactive connection (#198). Drops RUSTSEC-2024-0375 (unmaintained) and RUSTSEC-2021-0145 (unsound unaligned read) advisories at once.
+- Pick up 33 transitive patch bumps from `cargo update` within current semver constraints (#198): tokio 1.52.1 to 1.52.3, rustls 0.23.39 to 0.23.40, h2 0.4.13 to 0.4.14, digest 0.11.2 to 0.11.3, rpassword 7.4.0 to 7.5.2, and others.
+
+### Documentation
+- Document `BSSH_PASSWORD` env var and the new single-prompt password-collection behavior in the README and `bssh.1` man page, including the updated `--password` flag description.
+
+### Security
+- Add `.cargo/audit.toml` ignoring RUSTSEC-2023-0071 (RSA Marvin Attack) with an explanatory comment (#198). Both `rsa` 0.9.10 (via `ssh-key` 0.6.x) and `rsa` 0.10.0-rc.17 (via the vendored `bssh-russh` fork) are affected, and no fixed upstream `rsa` release exists. Bumping to 0.10.0-rc.18 conflicts with the `bssh-russh` `pkcs5 = "=0.8.0-rc.13"` pin, so the project accepts the advisory at the audit layer and documents Ed25519/ECDSA as the recommended mitigation for users handling untrusted hosts.
 
 ## [2.1.4] - 2026-05-10
 
@@ -832,6 +850,7 @@ None
 - russh library for native SSH implementation
 - Cross-platform support (Linux and macOS)
 
+[2.2.0]: https://github.com/lablup/bssh/compare/v2.1.4...v2.2.0
 [2.1.4]: https://github.com/lablup/bssh/compare/v2.1.3...v2.1.4
 [2.1.3]: https://github.com/lablup/bssh/compare/v2.1.2...v2.1.3
 [2.1.2]: https://github.com/lablup/bssh/compare/v2.1.1...v2.1.2
