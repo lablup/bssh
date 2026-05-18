@@ -191,7 +191,7 @@ impl SftpSession {
                         .files
                         .into_iter()
                         .map(|f| (f.filename, f.attrs))
-                        .chain(files.into_iter())
+                        .chain(files)
                         .collect();
                 }
                 Err(Error::Status(status)) if status.status_code == StatusCode::Eof => break,
