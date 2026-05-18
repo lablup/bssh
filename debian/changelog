@@ -1,3 +1,43 @@
+bssh (2.2.1-1~jammy1) jammy; urgency=medium
+
+  * v2.2.1
+  ### Security
+  - Forward-port the SSH-agent half of CVE-2026-46673 (compression
+    ZIP-bomb DoS) into the bssh-russh fork (#203). Upstream russh v0.60.3
+    has the fix but our fork was based on v0.60.1. Adds
+    MAX_AGENT_FRAME_LEN = 256 KiB and a read_frame() helper in
+    src/keys/agent/{client,server}.rs that rejects oversized peer frame
+    lengths with Error::AgentProtocolError before allocating. The
+    matching russh-cryptovec 0.59.0 to 0.60.3 bump carries the cryptovec
+    hardening half of the same CVE. cargo audit reports 0
+    vulnerabilities / 0 warnings post-bump.
+
+  ### Dependencies
+  - Bump workspace deps and sync russh forks to upstream stable (#203).
+    lru 0.17 to 0.18, signal-hook 0.3 to 0.4, opentelemetry family 0.31
+    to 0.32, nix 0.31.3. bssh-russh 0.60.1 to 0.60.3 (picks up
+    aws-lc-rs 1.17.0 and the upstream v0.60.2 fixes our PR #193 already
+    forward-ported). bssh-russh-sftp 2.1.1 to 2.1.2 full source sync:
+    upstream absorbed the original serde_bytes perf patch (now moved to
+    patches/historical/); the fork's remaining value-add (two pipelined
+    File I/O helpers) is re-ported on top of the new Features API.
+    Cargo.toml swaps flurry for dashmap 6.1.0 and adds serde_bytes as a
+    direct dep.
+
+  ### Bug Fixes
+  - Add the missing [dev-dependencies] block to the bssh-russh fork so
+    its 75 inline tests compile for the first time since the initial
+    sync at commit 508aa3f0 (#204). Imports were copied from upstream
+    russh, dev-deps were not. Adds env_logger 0.11, tempfile 3, and
+    tokio with process/macros features. Workspace test aggregate climbs
+    from 1796 to 1871 passed / 0 failed / 10 ignored.
+  - Drop a redundant .into_iter() in the synced SFTP session loop to
+    satisfy rustc 1.95's stricter clippy::useless_conversion lint
+    (#205). The line was imported verbatim from upstream russh-sftp
+    2.1.2 in PR #203 and broke CI after the toolchain bump.
+
+ -- Jeongkyu Shin <inureyes@gmail.com>  Tue, 19 May 2026 00:30:00 +0900
+
 bssh (2.2.0-1~jammy1) jammy; urgency=medium
 
   * v2.2.0

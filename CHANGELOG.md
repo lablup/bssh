@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-05-19
+
+### Security
+- **Forward-port the SSH-agent half of CVE-2026-46673 (compression ZIP-bomb DoS) into the bssh-russh fork** (#203). Upstream russh v0.60.3 includes the fix as commit `a2d48a7`, but our fork was based on v0.60.1 and did not. Adds `MAX_AGENT_FRAME_LEN = 256 * 1024` and a new `read_frame()` helper in `src/keys/agent/{client,server}.rs` that rejects peer-supplied frame lengths above the cap with `Error::AgentProtocolError` before resizing the receive buffer, blocking the OOM-via-oversized-length-prefix vector. Recorded as `crates/bssh-russh/patches/agent-frame-length-cap.patch` so the next `sync-upstream.sh` run will auto-skip via the reverse-apply dry-run check. The matching `russh-cryptovec` 0.59.0 to 0.60.3 bump in the same PR brings in the cryptovec hardening half of the same CVE (checked-capacity allocation paths, mlock null-pointer guard).
+- `cargo audit` against the latest 1090-advisory RustSec database reports **0 vulnerabilities and 0 unmaintained/yanked warnings** after the bumps.
+
+### Dependencies
+- **Bump workspace dependencies and sync both russh forks to upstream stable** (#203). Main bssh: `lru` 0.17 to 0.18 (lifetime fix in `get_or_insert_mut_ref`), `signal-hook` 0.3 to 0.4 (only the unused `low_level::pipe` API changed), `opentelemetry` / `opentelemetry_sdk` / `opentelemetry-otlp` 0.31 to 0.32 (`ExportConfig` / `HasExportConfig` removal does not touch our LogExporter / SdkLoggerProvider / Resource / LogRecord call sites), `nix` 0.31.2 to 0.31.3, plus transitive `pin-project`, `tower-http`, `zerofrom` patches. The `bssh-russh` fork advances 0.60.1 to 0.60.3, picking up `aws-lc-rs` 1.16.3 to 1.17.0 and the upstream v0.60.2 unreleased fixes our PR #193 had already forward-ported (#690 SHA-1 MAC exclusion, #693 channel write ordering). The `bssh-russh-sftp` fork does a full source sync from upstream 2.1.1 to 2.1.2: upstream absorbed the original `serde_bytes` perf annotations on `protocol::{Write,Data}.data` plus the matching `serialize_bytes` implementation, so the patch is moved to `patches/historical/` for provenance; the fork's remaining value-add is the two pipelined File I/O helpers (`write_all_pipelined` / `read_to_writer_pipelined`), now re-ported on top of upstream 2.1.2's new `Features` API with chunk sizing derived from `features.limits.{write,read}_len` or `features.max_packet_len.saturating_sub({WRITE,READ}_OVERHEAD_LENGTH)` instead of the removed `MAX_*_LENGTH` constants. `crates/bssh-russh-sftp/Cargo.toml` swaps `flurry` for `dashmap` 6.1.0 and adds `serde_bytes` as a direct dep to match upstream.
+
+### Fixed
+- **Add the missing `[dev-dependencies]` block to the bssh-russh fork so its inline test target actually compiles** (#204). The fork's `src/client/test.rs`, `src/keys/mod.rs`, and `src/tests.rs` were imported verbatim from upstream russh during the initial sync (commit `508aa3f0`, "Sync bssh-russh fork with upstream russh 0.60.0"), but the matching `[dev-dependencies]` were never copied across, so `cargo test -p bssh-russh` has failed with E0433 on `env_logger` / `tempfile` and cascading E0282 type-inference errors from day one. PR #203 first surfaced this via `cargo clippy -p bssh-russh --all-targets`. Adds a minimal block covering exactly what the imported tests reference: `env_logger = "0.11"`, `tempfile = "3"`, and `tokio = { version = "1.52.1", features = ["process", "macros"] }` as an additive merge with the main tokio dep (the `process` feature is needed by the spawn-ssh-agent helpers, `macros` by `#[tokio::test]`). 75 tests now run, covering the agent client/server round-trip, PKCS#8 / OpenSSH key decoding, channel lifecycle, GEX, compression, future certificate auth, and server kex junk handling. The agent tests directly exercise the new frame-length cap from PR #203 (the CVE-2026-46673 mitigation) by spawning a real `ssh-agent` over a Unix-domain socket. Workspace aggregate climbs from 1796 to 1871 passed / 0 failed / 10 ignored.
+- **Drop a redundant `.into_iter()` in the synced SFTP session loop to satisfy rustc 1.95's stricter `clippy::useless_conversion` lint** (#205). `Iterator::chain` already accepts any `IntoIterator`, so `.chain(files.into_iter())` at `crates/bssh-russh-sftp/src/client/session.rs:194` was redundant. The lint became more aggressive in rustc 1.95.0, breaking CI after the PR #203 sync (the line was imported verbatim from upstream russh-sftp 2.1.2). PR #203 was developed on rustc 1.93.1 where this case did not lint-fire. One-line fix: `.chain(files)` instead of `.chain(files.into_iter())`, functionally identical. Worth filing upstream against `AspectUnk/russh-sftp` so future syncs do not have to re-port this.
+
 ## [2.2.0] - 2026-05-18
 
 ### Added
@@ -850,6 +863,7 @@ None
 - russh library for native SSH implementation
 - Cross-platform support (Linux and macOS)
 
+[2.2.1]: https://github.com/lablup/bssh/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/lablup/bssh/compare/v2.1.4...v2.2.0
 [2.1.4]: https://github.com/lablup/bssh/compare/v2.1.3...v2.1.4
 [2.1.3]: https://github.com/lablup/bssh/compare/v2.1.2...v2.1.3
