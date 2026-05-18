@@ -20,6 +20,21 @@ macro_rules! into_wrap {
     };
 }
 
+/// Configuration for the SFTP server.
+#[derive(Clone, Debug)]
+pub struct Config {
+    /// Maximum allowed size of SFTP packets sent by clients. Default: 256 KiB.
+    pub max_client_packet_len: u32,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            max_client_packet_len: 262144,
+        }
+    }
+}
+
 async fn process_request<H>(packet: Packet, handler: &mut H) -> Packet
 where
     H: Handler + Send,
@@ -51,12 +66,12 @@ where
     }
 }
 
-async fn process_handler<H, S>(stream: &mut S, handler: &mut H) -> Result<(), Error>
+async fn process_handler<H, S>(stream: &mut S, handler: &mut H, cfg: &Config) -> Result<(), Error>
 where
     H: Handler + Send,
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let mut bytes = read_packet(stream).await?;
+    let mut bytes = read_packet(stream, cfg.max_client_packet_len).await?;
 
     let response = match Packet::try_from(&mut bytes) {
         Ok(request) => process_request(request, handler).await,
@@ -71,14 +86,23 @@ where
 }
 
 /// Run processing stream as SFTP
-pub async fn run<S, H>(mut stream: S, mut handler: H)
+pub async fn run<S, H>(stream: S, handler: H)
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    H: Handler + Send + 'static,
+{
+    run_with_config(stream, handler, Config::default()).await
+}
+
+/// Run processing stream as SFTP with custom configuration
+pub async fn run_with_config<S, H>(mut stream: S, mut handler: H, cfg: Config)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     H: Handler + Send + 'static,
 {
     tokio::spawn(async move {
         loop {
-            match process_handler(&mut stream, &mut handler).await {
+            match process_handler(&mut stream, &mut handler, &cfg).await {
                 Err(Error::UnexpectedEof) => break,
                 Err(err) => warn!("{}", err),
                 Ok(_) => (),
