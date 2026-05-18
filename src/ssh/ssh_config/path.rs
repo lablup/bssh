@@ -210,7 +210,7 @@ fn secure_expand_environment_variables(input: &str) -> Result<String> {
         }
 
         // Sort by position (descending) to replace from end to start
-        vars_to_expand.sort_by(|a, b| b.0.cmp(&a.0));
+        vars_to_expand.sort_by_key(|v| std::cmp::Reverse(v.0));
 
         // Process each variable
         for (start_pos, end_pos, var_name, is_braced) in vars_to_expand {
