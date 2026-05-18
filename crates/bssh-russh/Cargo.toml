@@ -101,3 +101,13 @@ ssh-key = { version = "=0.6.18", features = [
     "ppk",
     "hazmat-allow-insecure-rsa-keys",
 ], package = "internal-russh-forked-ssh-key" }
+
+[dev-dependencies]
+# Dev-deps required by the inline test modules imported from upstream russh
+# (src/client/test.rs, src/keys/mod.rs, src/tests.rs). Without these, the fork's
+# test target never compiles.
+env_logger = "0.11"
+tempfile = "3"
+# Additive: merges with the main tokio dep to add the `process` and `macros`
+# features needed by the spawn-ssh-agent helpers and #[tokio::test].
+tokio = { version = "1.52.1", features = ["process", "macros"] }
