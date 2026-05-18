@@ -104,9 +104,7 @@ impl<'a> serde::Serializer for &'a mut Serializer {
     }
 
     fn serialize_bytes(self, v: &[u8]) -> Result<Self::Ok, Self::Error> {
-        let len = u32::try_from(v.len())
-            .map_err(|_| Error::BadMessage("bytes length exceeds u32".to_owned()))?;
-        self.output.put_u32(len);
+        self.output.put_u32(v.len() as u32);
         self.output.put_slice(v);
         Ok(())
     }

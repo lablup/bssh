@@ -1,8 +1,8 @@
 [package]
 name = "bssh-russh-sftp"
-version = "2.1.1"
+version = "2.1.2"
 authors = ["Jeongkyu Shin <inureyes@gmail.com>"]
-description = "Temporary fork of russh-sftp with a serde_bytes performance fix for SFTP Write/Data packets"
+description = "Temporary fork of russh-sftp 2.1.2 adding pipelined SFTP File I/O (write_all_pipelined / read_to_writer_pipelined). Note: the serde_bytes perf fix that originally motivated this fork is now upstreamed in russh-sftp 2.1.2; only the pipelined helpers remain as fork value-add."
 documentation = "https://docs.rs/bssh-russh-sftp"
 edition = "2021"
 homepage = "https://github.com/lablup/bssh"
@@ -19,18 +19,22 @@ tokio = { version = "1", default-features = false, features = [
     "time",
     "macros",
 ] }
-tokio-util = "0.7"
-futures = { version = "0.3", default-features = false, features = ["std", "async-await"] }
-serde = { version = "1.0", features = ["derive"] }
+tokio-util = "0.7.18"
+serde = { version = "1.0.228", features = ["derive"] }
 serde_bytes = "0.11"
-bitflags = { version = "2.9", features = ["serde"] }
-async-trait = { version = "0.1", optional = true }
+bitflags = { version = "2.11.1", features = ["serde"] }
+async-trait = { version = "0.1.89", optional = true }
 
-thiserror = "2.0"
-chrono = "0.4"
-bytes = "1.10"
-log = "0.4"
-flurry = "0.5"
+# futures: required by our forward-ported pipelined helpers
+# (write_all_pipelined / read_to_writer_pipelined use FuturesUnordered).
+# Upstream russh-sftp 2.1.2 does not need this dependency.
+futures = { version = "0.3.32", default-features = false, features = ["std", "async-await"] }
+
+thiserror = "2.0.18"
+chrono = "0.4.44"
+bytes = "1.11.1"
+log = "0.4.29"
+dashmap = "6.1.0"
 
 [features]
 async-trait = ["dep:async-trait"]

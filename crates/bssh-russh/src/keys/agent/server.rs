@@ -19,6 +19,8 @@ use crate::keys::key::PrivateKeyWithHashAlg;
 use crate::keys::Error;
 use crate::CryptoVec;
 
+const MAX_AGENT_FRAME_LEN: usize = 256 * 1024;
+
 #[derive(Clone)]
 #[allow(clippy::type_complexity)]
 struct KeyStore(Arc<RwLock<HashMap<Vec<u8>, (Arc<PrivateKey>, SystemTime, Vec<Constraint>)>>>);
@@ -97,18 +99,26 @@ struct Connection<S: AsyncRead + AsyncWrite + Send + 'static, A: Agent> {
 impl<S: AsyncRead + AsyncWrite + Send + Unpin + 'static, A: Agent + Send + Sync + 'static>
     Connection<S, A>
 {
+    async fn read_frame(&mut self) -> Result<(), Error> {
+        self.buf.clear();
+        self.buf.resize(4, 0);
+        self.s.read_exact(&mut self.buf).await?;
+
+        let len = BigEndian::read_u32(&self.buf) as usize;
+        if len > MAX_AGENT_FRAME_LEN {
+            return Err(Error::AgentProtocolError);
+        }
+
+        self.buf.clear();
+        self.buf.resize(len, 0);
+        self.s.read_exact(&mut self.buf).await?;
+        Ok(())
+    }
+
     async fn run(mut self) -> Result<(), Error> {
         let mut writebuf = Vec::new();
         loop {
-            // Reading the length
-            self.buf.clear();
-            self.buf.resize(4, 0);
-            self.s.read_exact(&mut self.buf).await?;
-            // Reading the rest of the buffer
-            let len = BigEndian::read_u32(&self.buf) as usize;
-            self.buf.clear();
-            self.buf.resize(len, 0);
-            self.s.read_exact(&mut self.buf).await?;
+            self.read_frame().await?;
             // respond
             writebuf.clear();
             self.respond(&mut writebuf).await?;

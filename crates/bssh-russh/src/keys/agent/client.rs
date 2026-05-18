@@ -17,6 +17,8 @@ pub trait AgentStream: AsyncRead + AsyncWrite {}
 
 impl<S: AsyncRead + AsyncWrite> AgentStream for S {}
 
+const MAX_AGENT_FRAME_LEN: usize = 256 * 1024;
+
 /// SSH agent client.
 pub struct AgentClient<S: AgentStream> {
     stream: S,
@@ -112,23 +114,27 @@ impl AgentClient<tokio::net::windows::named_pipe::NamedPipeClient> {
 }
 
 impl<S: AgentStream + Unpin> AgentClient<S> {
-    async fn read_response(&mut self) -> Result<(), Error> {
-        // Writing the message
-        self.stream.write_all(&self.buf).await?;
-        self.stream.flush().await?;
-
-        // Reading the length
+    async fn read_frame(&mut self) -> Result<(), Error> {
         self.buf.clear();
         self.buf.resize(4, 0);
         self.stream.read_exact(&mut self.buf).await?;
 
-        // Reading the rest of the buffer
         let len = BigEndian::read_u32(&self.buf) as usize;
+        if len > MAX_AGENT_FRAME_LEN {
+            return Err(Error::AgentProtocolError);
+        }
+
         self.buf.clear();
         self.buf.resize(len, 0);
         self.stream.read_exact(&mut self.buf).await?;
-
         Ok(())
+    }
+
+    async fn read_response(&mut self) -> Result<(), Error> {
+        // Writing the message
+        self.stream.write_all(&self.buf).await?;
+        self.stream.flush().await?;
+        self.read_frame().await
     }
 
     async fn read_success(&mut self) -> Result<(), Error> {
