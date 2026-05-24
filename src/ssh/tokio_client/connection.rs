@@ -26,11 +26,16 @@ use std::{fmt::Debug, io};
 use super::authentication::{AuthMethod, ServerCheckMethod};
 
 /// Default keepalive interval in seconds.
-/// Sends keepalive packets every 60 seconds to detect dead connections.
-pub const DEFAULT_KEEPALIVE_INTERVAL: u64 = 60;
+///
+/// This is intentionally below common 60-second idle reapers so the client
+/// sends traffic before the remote side or an intermediate gateway decides the
+/// session is idle.
+pub const DEFAULT_KEEPALIVE_INTERVAL: u64 = 30;
 
 /// Default maximum keepalive attempts before considering connection dead.
-/// With 60s interval and 3 max, connection failure is detected within 180s.
+/// With the default interval and max, connection failure is detected within
+/// about 120s: three unanswered probes plus the next timer tick that observes
+/// they were missed.
 pub const DEFAULT_KEEPALIVE_MAX: usize = 3;
 
 /// SSH connection configuration for keepalive and timeout settings.
@@ -44,12 +49,12 @@ pub const DEFAULT_KEEPALIVE_MAX: usize = 3;
 /// ```no_run
 /// use bssh::ssh::tokio_client::SshConnectionConfig;
 ///
-/// // Use defaults (60s interval, 3 max attempts)
+/// // Use defaults (30s interval, 3 max attempts)
 /// let config = SshConnectionConfig::default();
 ///
 /// // Custom configuration
 /// let config = SshConnectionConfig::new()
-///     .with_keepalive_interval(Some(30))
+///     .with_keepalive_interval(Some(15))
 ///     .with_keepalive_max(5);
 ///
 /// // Disable keepalive
@@ -60,7 +65,7 @@ pub const DEFAULT_KEEPALIVE_MAX: usize = 3;
 pub struct SshConnectionConfig {
     /// Interval in seconds between keepalive packets.
     /// None disables keepalive.
-    /// Default: 60 seconds
+    /// Default: 30 seconds
     pub keepalive_interval: Option<u64>,
 
     /// Maximum number of keepalive packets to send without response
@@ -85,10 +90,10 @@ impl SshConnectionConfig {
     }
 
     /// Set the keepalive interval in seconds.
-    /// Pass None to disable keepalive.
+    /// Pass None, or Some(0), to disable keepalive.
     #[must_use]
     pub fn with_keepalive_interval(mut self, interval: Option<u64>) -> Self {
-        self.keepalive_interval = interval;
+        self.keepalive_interval = interval.filter(|seconds| *seconds > 0);
         self
     }
 
@@ -101,22 +106,16 @@ impl SshConnectionConfig {
 
     /// Convert this configuration to a russh client Config.
     ///
-    /// When keepalive is enabled, `inactivity_timeout` is set to `None` so the
-    /// keepalive mechanism is the sole dead-peer detector. russh's default
-    /// `inactivity_timeout` is 10 minutes and would otherwise tear down an
-    /// otherwise-healthy idle session at that mark regardless of keepalive
-    /// liveness. When keepalive is disabled, we preserve a generous
-    /// inactivity timeout so truly dead sockets are still reaped.
+    /// `inactivity_timeout` stays disabled for client sessions. A healthy
+    /// interactive SSH session can legitimately produce no inbound data for a
+    /// long time, so inactivity must not be treated as a local reason to close
+    /// it. When keepalive is enabled, russh's keepalive counter is the liveness
+    /// detector; when it is disabled, the client leaves idle sessions alone.
     pub fn to_russh_config(&self) -> Config {
-        let inactivity_timeout = if self.keepalive_interval.is_some() {
-            None
-        } else {
-            Some(Duration::from_secs(3600))
-        };
         Config {
             keepalive_interval: self.keepalive_interval.map(Duration::from_secs),
             keepalive_max: self.keepalive_max,
-            inactivity_timeout,
+            inactivity_timeout: None,
             ..Default::default()
         }
     }
@@ -128,7 +127,7 @@ impl SshConnectionConfig {
     /// detect a broken TCP path even when no application data is flowing and
     /// even if SSH-level keepalive replies are dropped by a middlebox.
     pub fn to_tcp_keepalive(&self) -> Option<socket2::TcpKeepalive> {
-        let interval = self.keepalive_interval?;
+        let interval = self.keepalive_interval.filter(|seconds| *seconds > 0)?;
         // Start probing after `interval` seconds of idleness, probe every
         // half-interval, up to keepalive_max retries.
         let probe_interval = (interval / 2).max(1);
@@ -200,7 +199,7 @@ impl Client {
     /// Authentification is tried on the first successful connection and the whole
     /// process aborted if this fails.
     ///
-    /// This method uses default keepalive settings (60s interval, 3 max attempts)
+    /// This method uses default keepalive settings (30s interval, 3 max attempts)
     /// to prevent idle connection timeouts.
     pub async fn connect(
         addr: impl ToSocketAddrsWithHostname,
@@ -231,7 +230,7 @@ impl Client {
     /// #[tokio::main]
     /// async fn main() -> Result<(), bssh::ssh::tokio_client::Error> {
     ///     let ssh_config = SshConnectionConfig::new()
-    ///         .with_keepalive_interval(Some(30))
+    ///         .with_keepalive_interval(Some(15))
     ///         .with_keepalive_max(5);
     ///
     ///     let client = Client::connect_with_ssh_config(

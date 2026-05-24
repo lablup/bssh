@@ -192,7 +192,7 @@ pub struct Cli {
     #[arg(
         long = "server-alive-interval",
         value_name = "SECONDS",
-        help = "Keepalive interval in seconds (default: 60, 0 to disable)\nSends keepalive packets to prevent idle connection timeouts.\nMatches OpenSSH ServerAliveInterval option."
+        help = "Keepalive interval in seconds (default: 30, 0 to disable)\nSends keepalive packets to prevent idle connection timeouts.\nMatches OpenSSH ServerAliveInterval option."
     )]
     pub server_alive_interval: Option<u64>,
 
