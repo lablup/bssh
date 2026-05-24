@@ -77,7 +77,7 @@ pub struct Defaults {
     pub jump_host: Option<JumpHostConfig>,
     /// SSH keepalive interval in seconds.
     /// Sends keepalive packets to prevent idle connection timeouts.
-    /// Default: 60 seconds. Set to 0 to disable.
+    /// Default: 30 seconds. Set to 0 to disable.
     pub server_alive_interval: Option<u64>,
     /// Maximum keepalive messages without response before disconnect.
     /// Default: 3
@@ -167,7 +167,7 @@ pub struct ClusterDefaults {
     pub jump_host: Option<JumpHostConfig>,
     /// SSH keepalive interval in seconds.
     /// Sends keepalive packets to prevent idle connection timeouts.
-    /// Default: 60 seconds. Set to 0 to disable.
+    /// Default: 30 seconds. Set to 0 to disable.
     pub server_alive_interval: Option<u64>,
     /// Maximum keepalive messages without response before disconnect.
     /// Default: 3

@@ -39,6 +39,11 @@ fn test_ssh_connection_config_default_values() {
         Some(DEFAULT_KEEPALIVE_INTERVAL),
         "Default keepalive interval should be {DEFAULT_KEEPALIVE_INTERVAL}"
     );
+    let interval = config.keepalive_interval.unwrap_or(u64::MAX);
+    assert!(
+        interval < 60,
+        "Default keepalive interval should beat common 60-second idle reapers"
+    );
     assert_eq!(
         config.keepalive_max, DEFAULT_KEEPALIVE_MAX,
         "Default keepalive max should be {DEFAULT_KEEPALIVE_MAX}"
@@ -134,6 +139,18 @@ fn test_ssh_connection_config_to_russh_config() {
 }
 
 #[test]
+fn test_ssh_connection_config_to_russh_config_never_closes_healthy_idle_client() {
+    let config = SshConnectionConfig::default();
+
+    let russh_config = config.to_russh_config();
+
+    assert_eq!(
+        russh_config.inactivity_timeout, None,
+        "client-side inactivity timeout should not close healthy idle interactive sessions"
+    );
+}
+
+#[test]
 fn test_ssh_connection_config_to_russh_config_disabled() {
     let config = SshConnectionConfig::new().with_keepalive_interval(None);
 
@@ -142,6 +159,10 @@ fn test_ssh_connection_config_to_russh_config_disabled() {
     assert_eq!(
         russh_config.keepalive_interval, None,
         "russh config should have disabled keepalive"
+    );
+    assert_eq!(
+        russh_config.inactivity_timeout, None,
+        "disabling keepalive should not install a hidden idle-session timeout"
     );
 }
 
@@ -152,11 +173,13 @@ fn test_ssh_connection_config_zero_interval() {
 
     let russh_config = config.to_russh_config();
 
-    // russh will interpret Duration::from_secs(0) as disabled
     assert_eq!(
-        russh_config.keepalive_interval,
-        Some(std::time::Duration::from_secs(0)),
-        "Zero interval should be passed through (russh interprets as disabled)"
+        config.keepalive_interval, None,
+        "Zero interval should be normalized to disabled"
+    );
+    assert_eq!(
+        russh_config.keepalive_interval, None,
+        "Zero interval must not create an immediately-ready keepalive timer"
     );
 }
 
