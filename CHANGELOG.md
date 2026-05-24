@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.2] - 2026-05-25
+
+### Fixed
+- **Keep idle SSH sessions alive** (#206). Lower the default keepalive interval (`--server-alive-interval`) from 60s to 30s so bssh sends keepalive traffic before common one-minute idle reapers (load balancers, NAT gateways, sshd `ClientAliveInterval`) close otherwise-healthy sessions. Normalize `--server-alive-interval 0` to fully disabled keepalive instead of constructing a zero-duration russh timer, treating `Some(0)` the same as `None` in both the russh client config and the TCP `SO_KEEPALIVE` path. Leave the client-side `inactivity_timeout` disabled unconditionally so a healthy interactive session that legitimately produces no inbound data for a long time (tmux, an idle shell, a long-running REPL) is never torn down locally by bssh; russh's keepalive counter remains the sole liveness detector when keepalive is enabled. Dead-peer detection now resolves in about 120s (three unanswered 30s probes plus the next timer tick that observes them) rather than the previous 180s.
+
 ## [2.2.1] - 2026-05-19
 
 ### Security
@@ -863,6 +868,7 @@ None
 - russh library for native SSH implementation
 - Cross-platform support (Linux and macOS)
 
+[2.2.2]: https://github.com/lablup/bssh/compare/v2.2.1...v2.2.2
 [2.2.1]: https://github.com/lablup/bssh/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/lablup/bssh/compare/v2.1.4...v2.2.0
 [2.1.4]: https://github.com/lablup/bssh/compare/v2.1.3...v2.1.4

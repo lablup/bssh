@@ -1,3 +1,21 @@
+bssh (2.2.2-1~jammy1) jammy; urgency=medium
+
+  * v2.2.2
+  ### Bug Fixes
+  - Keep idle SSH sessions alive (#206). Lower the default keepalive
+    interval (--server-alive-interval) from 60s to 30s so bssh sends
+    keepalive traffic before common one-minute idle reapers (load
+    balancers, NAT gateways, sshd ClientAliveInterval) close otherwise
+    healthy sessions. Normalize --server-alive-interval 0 to fully
+    disabled keepalive instead of a zero-duration russh timer, in both
+    the russh client config and the TCP SO_KEEPALIVE path. Leave the
+    client inactivity_timeout disabled so a healthy interactive session
+    that produces no inbound data for a long time (tmux, idle shell,
+    REPL) is never torn down locally by bssh. Dead-peer detection now
+    resolves in about 120s instead of 180s.
+
+ -- Jeongkyu Shin <inureyes@gmail.com>  Mon, 25 May 2026 00:00:00 +0900
+
 bssh (2.2.1-1~jammy1) jammy; urgency=medium
 
   * v2.2.1
