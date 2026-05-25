@@ -1,8 +1,8 @@
 [package]
 name = "bssh-russh-sftp"
-version = "2.1.2"
+version = "2.3.0"
 authors = ["Jeongkyu Shin <inureyes@gmail.com>"]
-description = "Temporary fork of russh-sftp 2.1.2 adding pipelined SFTP File I/O (write_all_pipelined / read_to_writer_pipelined). Note: the serde_bytes perf fix that originally motivated this fork is now upstreamed in russh-sftp 2.1.2; only the pipelined helpers remain as fork value-add."
+description = "Temporary fork of russh-sftp 2.3.0 adding pipelined SFTP File I/O (write_all_pipelined / read_to_writer_pipelined). These helpers hide per-request RTT for fast bulk transfers and are the only value-add over upstream russh-sftp."
 documentation = "https://docs.rs/bssh-russh-sftp"
 edition = "2021"
 homepage = "https://github.com/lablup/bssh"
@@ -11,23 +11,26 @@ license = "Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/lablup/bssh"
 
+# Dependency versions mirror upstream russh-sftp 2.3.0 (AspectUnk/russh-sftp).
+# Update via ./sync-upstream.sh; the only fork addition is the `futures` dep,
+# needed by the forward-ported pipelined helpers in src/client/fs/file.rs.
 [dependencies]
-tokio = { version = "1", default-features = false, features = [
+tokio = { version = "1.52.3", default-features = false, features = [
     "io-util",
     "rt",
     "sync",
     "time",
     "macros",
 ] }
-tokio-util = "0.7.18"
+tokio-util = { version = "0.7.18", default-features = false, features = ["rt"] }
 serde = { version = "1.0.228", features = ["derive"] }
-serde_bytes = "0.11"
+serde_bytes = "0.11.19"
 bitflags = { version = "2.11.1", features = ["serde"] }
 async-trait = { version = "0.1.89", optional = true }
 
 # futures: required by our forward-ported pipelined helpers
 # (write_all_pipelined / read_to_writer_pipelined use FuturesUnordered).
-# Upstream russh-sftp 2.1.2 does not need this dependency.
+# Upstream russh-sftp only needs this as a dev-dependency.
 futures = { version = "0.3.32", default-features = false, features = ["std", "async-await"] }
 
 thiserror = "2.0.18"
@@ -35,6 +38,10 @@ chrono = "0.4.44"
 bytes = "1.11.1"
 log = "0.4.29"
 dashmap = "6.1.0"
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures = "0.4.71"
+gloo-timers = { version = "0.4.0", features = ["futures"] }
 
 [features]
 async-trait = ["dep:async-trait"]

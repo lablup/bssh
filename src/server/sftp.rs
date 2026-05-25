@@ -138,6 +138,15 @@ impl From<SftpError> for StatusCode {
     }
 }
 
+// russh-sftp 2.3.0 changed `server::Handler::Error` to require `Into<StatusReply>`
+// (was `Into<StatusCode>`). StatusReply carries an error message, so this also
+// surfaces our human-readable message in the SSH_FXP_STATUS reply.
+impl From<SftpError> for russh_sftp::server::StatusReply {
+    fn from(err: SftpError) -> Self {
+        russh_sftp::server::StatusReply::new(err.code).with_message(err.message)
+    }
+}
+
 /// An open file or directory handle.
 enum OpenHandle {
     /// An open file.

@@ -1,8 +1,8 @@
 [package]
 name = "bssh-russh"
-version = "0.60.3"
+version = "0.61.1"
 authors = ["Jeongkyu Shin <inureyes@gmail.com>"]
-description = "Temporary fork of russh with high-frequency PTY output fix (Handle::data from spawned tasks)"
+description = "Temporary fork of russh 0.61.1 with high-frequency PTY output fix (Handle::data from spawned tasks)"
 documentation = "https://docs.rs/bssh-russh"
 edition = "2024"
 homepage = "https://github.com/lablup/bssh"
@@ -10,6 +10,24 @@ keywords = ["ssh"]
 license = "Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/lablup/bssh"
+rust-version = "1.85"
+
+# Internal lib name matches upstream (`russh`) so vendored source and the
+# regression test in tests/ reference it as `russh::...`; the crate is still
+# consumed as `bssh-russh` via the package alias in the workspace root manifest.
+# doctest = false: the vendored upstream doctests need russh's repo test fixtures
+# and extra dev-deps we don't carry (src/ only), so we skip them — the 143 unit
+# tests + tests/pty_handle_data.rs cover this fork.
+[lib]
+name = "russh"
+doctest = false
+
+# This crate vendors upstream russh source verbatim (+ the PTY fix). Don't hold
+# that code to bssh's workspace `-D warnings` for purely stylistic clippy lints
+# upstream itself doesn't fix. `[lints]` lives in Cargo.toml, which
+# ./sync-upstream.sh preserves, so this survives future syncs.
+[lints.clippy]
+manual_saturating_arithmetic = "allow"
 
 [features]
 default = ["flate2", "aws-lc-rs", "rsa"]
@@ -20,87 +38,98 @@ legacy-ed25519-pkcs8-parser = ["yasna"]
 des = ["dep:des"]
 dsa = ["ssh-key/dsa"]
 ring = ["dep:ring"]
-rsa = ["dep:rsa", "dep:pkcs1", "ssh-key/rsa", "ssh-key/rsa-sha1"]
+rsa = ["dep:rsa", "dep:pkcs1", "ssh-key/rsa"]
 serde = ["ssh-key/serde"]
 
+# Dependency versions mirror upstream russh 0.61.1 (warp-tech/russh, tag v0.61.1)
+# so this fork stays a clean "upstream + PTY fix". Update via ./sync-upstream.sh.
 [dependencies]
-aes = "0.8"
+aes = "0.9"
 async-trait = { version = "0.1.50", optional = true }
-aws-lc-rs = { version = "1.17.0", optional = true }
+aws-lc-rs = { version = "1.16.2", optional = true }
 bitflags = "2.0"
-block-padding = { version = "0.3", features = ["std"] }
+block-padding = { version = "0.4" }
 byteorder = "1.4"
 bytes = "1.7"
-cbc = { version = "0.1" }
-cipher = "0.5.1"
-ctr = "0.9"
-curve25519-dalek = "5.0.0-pre.6"
-crypto-bigint = { version = "0.7.0-rc.28", features = ["alloc"] }
+cbc = { version = "0.2" }
+cipher = "0.5.1" # only pinned due to a cargo-minimal-versions failure in 0.5.0
+ctr = "0.10"
+curve25519-dalek = "=5.0.0-pre.6"
+crypto-bigint = { version = "0.7.3", features = ["alloc"] }
 data-encoding = "2.3"
 delegate = "0.13"
-digest = "0.10"
+digest = "0.11.0-rc.5"
 der = "0.8"
-des = { version = "0.8.1", optional = true }
-ecdsa = "0.17.0-rc.17"
-ed25519-dalek = { version = "3.0.0-pre.6", features = ["alloc", "rand_core", "pkcs8"] }
-elliptic-curve = { version = "0.14.0-rc.31", features = ["ecdh"] }
+des = { version = "0.9", optional = true }
+ecdsa = "=0.17.0-rc.18"
+ed25519-dalek = { version = "=3.0.0-pre.7", features = ["alloc", "rand_core", "pkcs8"] }
+elliptic-curve = { version = "=0.14.0-rc.32", features = ["ecdh"] }
 enum_dispatch = "0.3.13"
 flate2 = { version = "1.0.15", optional = true }
 futures = "0.3"
 generic-array = { version = "1.3.3", features = ["compat-0_14"] }
 getrandom = { version = "0.2.15", features = ["js"] }
+ghash = "0.6.0" # only pinned due to a cargo-minimal-versions failure in 0.6.0-rc.3
 hex-literal = "1"
-hmac = "0.12"
+hkdf = "0.13.0"
+hmac = "0.13"
 inout = { version = "0.1", features = ["std"] }
-log = "0.4"
+keccak = "0.2.0"
+log = "0.4.11"
 md5 = "0.7"
-ml-kem = "0.3.0-rc.2"
+ml-kem = "0.3"
 module-lattice = "0.2"
-# num-bigint 0.4.x only supports rand 0.8; upstream russh ships a fork that
-# adds rand 0.10 support via the `rand_0_10` feature flag.
+# num-bigint 0.4.x only supports rand 0.8. The internal-russh-num-bigint fork
+# adds rand 0.10 support via the `rand_0_10` feature flag (matches upstream russh).
 num-bigint = { package = "internal-russh-num-bigint", version = "=0.5.0", features = ["rand_0_10"] }
-p256 = { version = "0.14.0-rc.9", features = ["ecdh"] }
-p384 = { version = "0.14.0-rc.9", features = ["ecdh"] }
-p521 = { version = "0.14.0-rc.9", features = ["ecdh"] }
-pbkdf2 = "0.12"
-pkcs1 = { version = "0.8.0-rc.4", optional = true }
-# Pinned: pkcs8 0.11.0-rc.11 still calls the rc.13-era `Parameters::recommended` API.
-# Stable 0.8.0 renamed it to `generate_recommended` and breaks pkcs8.
-pkcs5 = "=0.8.0-rc.13"
-pkcs8 = { version = "0.11.0-rc.11", features = ["encryption", "std"] }
-polyval = "0.7.1"
+num_bigint_0_4 = { package = "num-bigint", version = "0.4.6" }
+p256 = { version = "=0.14.0-rc.9", features = ["ecdh"] }
+p384 = { version = "=0.14.0-rc.9", features = ["ecdh"] }
+p521 = { version = "=0.14.0-rc.9", features = ["ecdh"] }
+pbkdf2 = "0.13"
+pkcs1 = { version = "=0.8.0-rc.4", optional = true }
+pkcs5 = "0.8"
+pkcs8 = { version = "0.11", features = ["encryption", "std"] }
+polyval = "0.7.1" # only pinned due to a cargo-minimal-versions failure in 0.7.0
 rand_core = { version = "0.10.0" }
 rand = { version = "0.10", features = ["thread_rng"] }
 ring = { version = "0.17.14", optional = true }
-rsa = { version = "0.10.0-rc.17", optional = true }
+rsa = { version = "=0.10.0-rc.18", optional = true }
+salsa20 = "0.11.0"
+scrypt = "0.12.0"
 sec1 = { version = "0.8", features = ["der"] }
-sha1 = { version = "0.10.5", features = ["oid"] }
-sha2 = { version = "0.10.6", features = ["oid"] }
+sha1 = { version = "0.11", features = ["oid"] }
+sha2 = { version = "0.11", features = ["oid"] }
+sha3 = "0.11.0"
 signature = "3.0.0-rc.10"
-spki = "0.8.0"
-ssh-encoding = { version = "0.2", features = ["bytes"] }
+spki = "0.8"
+ssh-encoding = { version = "=0.3.0-rc.9", features = ["bytes"] }
 subtle = "2.4"
 thiserror = "2.0.18"
-tokio = { version = "1.52.1", features = ["io-util", "sync", "time", "rt-multi-thread", "net"] }
+tokio = { version = "1.52.3", features = ["io-util", "sync", "time", "rt-multi-thread", "net"] }
 typenum = "1.17"
-universal-hash = "0.6.1"
+universal-hash = "0.6.1" # only pinned due to a cargo-minimal-versions failure in 0.6.0
 yasna = { version = "0.5.0", features = ["bit-vec", "num-bigint"], optional = true }
 zeroize = "1.7"
 
-# Public russh crates (no modifications needed)
-russh-cryptovec = { version = "0.60.3", features = ["ssh-encoding"] }
+# Public russh crates (no modifications needed) — pinned to the 0.61.x line.
+russh-cryptovec = { version = "0.61.0", features = ["ssh-encoding"] }
 russh-util = "0.52.0"
 
-# Use the forked ssh-key from russh
-ssh-key = { version = "=0.6.18", features = [
+# ssh-key: upstream russh 0.61.x switched from the internal-russh-forked-ssh-key
+# fork back to the real crate at 0.7.0-rc.10 (the fork's changes are upstreamed).
+ssh-key = { version = "=0.7.0-rc.10", features = [
     "ed25519",
     "p256",
     "p384",
     "p521",
     "encryption",
     "ppk",
-    "hazmat-allow-insecure-rsa-keys",
-], package = "internal-russh-forked-ssh-key" }
+    "sha1",
+] }
+
+[target.'cfg(windows)'.dependencies]
+pageant = "0.2"
 
 [dev-dependencies]
 # Dev-deps required by the inline test modules imported from upstream russh
@@ -110,4 +139,7 @@ env_logger = "0.11"
 tempfile = "3"
 # Additive: merges with the main tokio dep to add the `process` and `macros`
 # features needed by the spawn-ssh-agent helpers and #[tokio::test].
-tokio = { version = "1.52.1", features = ["process", "macros"] }
+tokio = { version = "1.52.3", features = ["process", "macros"] }
+# Needed by the PTY-fix regression test (tests/pty_handle_data.rs) to generate
+# ephemeral host/client keys; the lib's own `rand` dep isn't visible to test crates.
+rand = { version = "0.10", features = ["thread_rng"] }

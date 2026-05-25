@@ -448,9 +448,16 @@ impl<S: AgentStream + Unpin> AgentClient<S> {
         let t = String::decode(&mut resp)?;
         if (hash == 2 && t == "rsa-sha2-256") || (hash == 4 && t == "rsa-sha2-512") || hash == 0 {
             let sig = Bytes::decode(&mut resp)?;
-            (t.len() + sig.len() + 8).encode(data)?;
+            let is_sk_signature = t.starts_with("sk-");
+            (t.len() + sig.len() + 8 + if is_sk_signature { 5 } else { 0 }).encode(data)?;
             t.encode(data)?;
             sig.encode(data)?;
+            if is_sk_signature {
+                let flags = u8::decode(&mut resp)?;
+                let counter = u32::decode(&mut resp)?;
+                flags.encode(data)?;
+                counter.encode(data)?;
+            }
             Ok(())
         } else {
             error!("unexpected agent signature type: {t:?}");
@@ -574,5 +581,44 @@ impl<S: AgentStream + Unpin> AgentClient<S> {
             }
             _ => Ok(false),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use byteorder::{BigEndian, ByteOrder};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    use super::{AgentClient, MAX_AGENT_FRAME_LEN};
+    use crate::keys::Error;
+
+    #[test]
+    fn oversized_agent_response_is_rejected_before_allocation() -> std::io::Result<()> {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+
+        runtime.block_on(async {
+            let (mut writer, reader) = tokio::io::duplex(64);
+            let server = tokio::spawn(async move {
+                let mut frame = [0u8; 4];
+                writer.read_exact(&mut frame).await?;
+                let len = BigEndian::read_u32(&frame) as usize;
+                let mut body = vec![0; len];
+                writer.read_exact(&mut body).await?;
+
+                BigEndian::write_u32(&mut frame, (MAX_AGENT_FRAME_LEN + 1) as u32);
+                writer.write_all(&frame).await?;
+                Ok::<(), std::io::Error>(())
+            });
+
+            let mut client = AgentClient::connect(reader);
+            let err = client.request_identities().await.unwrap_err();
+            assert!(matches!(err, Error::AgentProtocolError));
+            server.await.expect("server task")?;
+            Ok::<(), std::io::Error>(())
+        })?;
+
+        Ok(())
     }
 }

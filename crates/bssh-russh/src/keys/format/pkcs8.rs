@@ -123,13 +123,13 @@ pub fn encode_pkcs8_encrypted(
 
     use rand_core::Rng;
     let mut rng = safe_rng();
-    let mut salt = [0; 64];
+    let mut salt = [0; 32];
     rng.fill_bytes(&mut salt);
     let mut iv = [0; 16];
     rng.fill_bytes(&mut iv);
 
     let doc = pvi.encrypt_with_params(
-        pkcs5::pbes2::Parameters::pbkdf2_sha256_aes256cbc(rounds, &salt, iv)
+        pkcs5::pbes2::Parameters::generate_pbkdf2_sha256_aes256cbc(rounds, &salt, iv)
             .map_err(|_| Error::InvalidParameters)?,
         pass,
     )?;

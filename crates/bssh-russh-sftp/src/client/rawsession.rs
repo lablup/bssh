@@ -10,10 +10,9 @@ use std::{
 use tokio::{
     io::{AsyncRead, AsyncWrite},
     sync::{mpsc, oneshot},
-    time,
 };
 
-use super::{error::Error, Handler};
+use super::{error::Error, runtime, Handler};
 use crate::{
     client::{run, Config},
     de,
@@ -213,12 +212,12 @@ impl RawSftpSession {
         let rx = self.send(id, packet)?;
         let timeout = self.timeout.load(Ordering::Relaxed);
 
-        match time::timeout(Duration::from_secs(timeout), rx).await {
+        match runtime::timeout(Duration::from_secs(timeout), rx).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err(Error::UnexpectedBehavior("sender dropped".into())),
             Err(error) => {
                 self.requests.remove(&id);
-                Err(error.into())
+                Err(error)
             }
         }
     }
@@ -311,6 +310,15 @@ impl RawSftpSession {
         }
 
         into_status!(result)
+    }
+
+    /// Sends a close packet without awaiting the server's acknowledgement.
+    pub(crate) fn close_nowait(
+        &self,
+        handle: String,
+    ) -> SftpResult<oneshot::Receiver<SftpResult<Packet>>> {
+        let id = self.use_next_id();
+        self.send(Some(id), Close { id, handle }.into())
     }
 
     pub async fn read<H: Into<String>>(
