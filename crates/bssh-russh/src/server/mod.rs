@@ -879,10 +879,11 @@ pub trait Server {
                                 let error_tx = error_tx.clone();
 
                                 russh_util::runtime::spawn(async move {
-                                    if config.nodelay
-                                        && let Err(e) = socket.set_nodelay(true) {
+                                    if config.nodelay {
+                                        if let Err(e) = socket.set_nodelay(true) {
                                             warn!("set_nodelay() failed: {e:?}");
                                         }
+                                    }
 
                                     let session = match run_stream(config, socket, handler).await {
                                         Ok(s) => s,
@@ -1040,9 +1041,9 @@ async fn read_ssh_id<R: AsyncRead + Unpin>(
     read: &mut SshRead<R>,
 ) -> Result<CommonSession<Arc<Config>>, Error> {
     let sshid = if let Some(t) = config.inactivity_timeout {
-        tokio::time::timeout(t, read.read_ssh_id()).await??
+        tokio::time::timeout(t, read.read_client_ssh_id()).await??
     } else {
-        read.read_ssh_id().await?
+        read.read_client_ssh_id().await?
     };
 
     let session = CommonSession {
@@ -1095,8 +1096,8 @@ async fn reply<H: Handler + Send>(
 
     let is_kex_msg = pkt.buffer.first().cloned().map(is_kex_msg).unwrap_or(false);
 
-    if is_kex_msg
-        && let SessionKexState::InProgress(kex) = session.kex.take() {
+    if is_kex_msg {
+        if let SessionKexState::InProgress(kex) = session.kex.take() {
             let progress = kex
                 .step(Some(pkt), &mut session.common.packet_writer, handler)
                 .await?;
@@ -1115,11 +1116,17 @@ async fn reply<H: Handler + Send>(
                     session.common.strict_kex =
                         session.common.strict_kex || newkeys.names.strict_kex();
 
-                    if let Some(ref mut enc) = session.common.encrypted {
+                    if session.common.encrypted.is_some() {
                         // This is a rekey
-                        enc.last_rekey = Instant::now();
-                        session.common.packet_writer.buffer().bytes = 0;
-                        enc.flush_all_pending()?;
+                        {
+                            let common = &mut session.common;
+                            common.newkeys(newkeys);
+                            common.packet_writer.buffer().bytes = 0;
+                            if let Some(enc) = common.encrypted.as_mut() {
+                                enc.last_rekey = Instant::now();
+                                enc.flush_all_pending_with_writer(&mut common.packet_writer)?;
+                            }
+                        }
 
                         let mut pending = std::mem::take(&mut session.pending_reads);
                         for p in pending.drain(..) {
@@ -1127,7 +1134,6 @@ async fn reply<H: Handler + Send>(
                         }
                         session.pending_reads = pending;
                         session.pending_len = 0;
-                        session.common.newkeys(newkeys);
                         session.flush()?;
                     } else {
                         // This is the initial kex
@@ -1157,6 +1163,7 @@ async fn reply<H: Handler + Send>(
 
             return Ok(());
         }
+    }
 
     // Handle key exchange/re-exchange.
     session.server_read_encrypted(handler, pkt).await

@@ -10,7 +10,7 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UPSTREAM_URL="https://github.com/AspectUnk/russh-sftp.git"
 TEMP_DIR="/tmp/russh-sftp-sync-$$"
-PATCH_FILE="$SCRIPT_DIR/patches/sftp-serde-bytes-perf.patch"
+PATCH_DIR="$SCRIPT_DIR/patches"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -74,27 +74,45 @@ if [ "$VERSION" != "master" ]; then
     log_info "Updated version to $CLEAN_VERSION"
 fi
 
+# Apply every *.patch directly under patches/ (patches/historical/ is excluded:
+# those are forward-ports already merged upstream, kept only for reference).
+# If a patch reverse-applies cleanly the change is already upstream, so we skip
+# it and flag it as obsolete.
 log_info "Applying patches..."
 
-if [ -f "$PATCH_FILE" ]; then
-    if patch -p1 --dry-run < "$PATCH_FILE" > /dev/null 2>&1; then
-        patch -p1 < "$PATCH_FILE"
-        log_info "Applied sftp-serde-bytes-perf.patch"
+shopt -s nullglob
+PATCH_FILES=("$PATCH_DIR"/*.patch)
+shopt -u nullglob
+
+if [ ${#PATCH_FILES[@]} -eq 0 ]; then
+    log_warn "No patch files found in $PATCH_DIR/"
+fi
+
+OBSOLETE_PATCHES=()
+
+for PATCH_FILE in "${PATCH_FILES[@]}"; do
+    PATCH_NAME=$(basename "$PATCH_FILE")
+
+    if patch -p1 -R --dry-run --silent < "$PATCH_FILE" > /dev/null 2>&1; then
+        log_info "Skipping $PATCH_NAME — already present in upstream (consider moving to patches/historical/)"
+        OBSOLETE_PATCHES+=("$PATCH_NAME")
+        continue
+    fi
+
+    if patch -p1 --dry-run --silent < "$PATCH_FILE" > /dev/null 2>&1; then
+        patch -p1 --silent < "$PATCH_FILE"
+        log_info "Applied $PATCH_NAME"
     else
-        log_warn "Patch may not apply cleanly, attempting with fuzz..."
+        log_warn "$PATCH_NAME may not apply cleanly, attempting with fuzz..."
         if patch -p1 --fuzz=3 < "$PATCH_FILE"; then
-            log_warn "Patch applied with fuzz - please verify manually"
+            log_warn "$PATCH_NAME applied with fuzz - please verify manually"
         else
-            log_error "Failed to apply patch. Manual intervention required."
+            log_error "Failed to apply $PATCH_NAME. Manual intervention required."
             log_error "Patch file: $PATCH_FILE"
             exit 1
         fi
     fi
-else
-    log_error "Patch file not found: $PATCH_FILE"
-    log_error "Please create the patch file first using: ./create-patch.sh"
-    exit 1
-fi
+done
 
 log_info "Verifying build..."
 cd "$SCRIPT_DIR/../.."

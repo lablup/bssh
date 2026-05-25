@@ -111,8 +111,8 @@ impl Session {
         pix_height: u32,
         terminal_modes: &[(Pty, u32)],
     ) -> Result<(), crate::Error> {
-        if let Some(ref mut enc) = self.common.encrypted
-            && let Some(channel) = enc.channels.get(&channel) {
+        if let Some(ref mut enc) = self.common.encrypted {
+            if let Some(channel) = enc.channels.get(&channel) {
                 push_packet!(enc.write, {
                     map_err!(msg::CHANNEL_REQUEST.encode(&mut enc.write))?;
 
@@ -137,6 +137,7 @@ impl Session {
                     (Pty::TTY_OP_END as u8).encode(&mut enc.write)?;
                 });
             }
+        }
         Ok(())
     }
 
@@ -149,8 +150,8 @@ impl Session {
         x11_authentication_cookie: &str,
         x11_screen_number: u32,
     ) -> Result<(), crate::Error> {
-        if let Some(ref mut enc) = self.common.encrypted
-            && let Some(channel) = enc.channels.get(&channel) {
+        if let Some(ref mut enc) = self.common.encrypted {
+            if let Some(channel) = enc.channels.get(&channel) {
                 push_packet!(enc.write, {
                     msg::CHANNEL_REQUEST.encode(&mut enc.write)?;
 
@@ -163,6 +164,7 @@ impl Session {
                     x11_screen_number.encode(&mut enc.write)?;
                 });
             }
+        }
         Ok(())
     }
 
@@ -173,8 +175,8 @@ impl Session {
         variable_name: &str,
         variable_value: &str,
     ) -> Result<(), crate::Error> {
-        if let Some(ref mut enc) = self.common.encrypted
-            && let Some(channel) = enc.channels.get(&channel) {
+        if let Some(ref mut enc) = self.common.encrypted {
+            if let Some(channel) = enc.channels.get(&channel) {
                 push_packet!(enc.write, {
                     msg::CHANNEL_REQUEST.encode(&mut enc.write)?;
 
@@ -185,6 +187,7 @@ impl Session {
                     variable_value.encode(&mut enc.write)?;
                 });
             }
+        }
         Ok(())
     }
 
@@ -193,8 +196,8 @@ impl Session {
         want_reply: bool,
         channel: ChannelId,
     ) -> Result<(), crate::Error> {
-        if let Some(ref mut enc) = self.common.encrypted
-            && let Some(channel) = enc.channels.get(&channel) {
+        if let Some(ref mut enc) = self.common.encrypted {
+            if let Some(channel) = enc.channels.get(&channel) {
                 push_packet!(enc.write, {
                     msg::CHANNEL_REQUEST.encode(&mut enc.write)?;
 
@@ -203,6 +206,7 @@ impl Session {
                     (want_reply as u8).encode(&mut enc.write)?;
                 });
             }
+        }
         Ok(())
     }
 
@@ -212,8 +216,8 @@ impl Session {
         want_reply: bool,
         command: &[u8],
     ) -> Result<(), crate::Error> {
-        if let Some(ref mut enc) = self.common.encrypted
-            && let Some(channel) = enc.channels.get(&channel) {
+        if let Some(ref mut enc) = self.common.encrypted {
+            if let Some(channel) = enc.channels.get(&channel) {
                 push_packet!(enc.write, {
                     msg::CHANNEL_REQUEST.encode(&mut enc.write)?;
 
@@ -224,13 +228,14 @@ impl Session {
                 });
                 return Ok(());
             }
+        }
         error!("exec");
         Ok(())
     }
 
     pub fn signal(&mut self, channel: ChannelId, signal: Sig) -> Result<(), crate::Error> {
-        if let Some(ref mut enc) = self.common.encrypted
-            && let Some(channel) = enc.channels.get(&channel) {
+        if let Some(ref mut enc) = self.common.encrypted {
+            if let Some(channel) = enc.channels.get(&channel) {
                 push_packet!(enc.write, {
                     msg::CHANNEL_REQUEST.encode(&mut enc.write)?;
                     channel.recipient_channel.encode(&mut enc.write)?;
@@ -239,6 +244,7 @@ impl Session {
                     signal.name().encode(&mut enc.write)?;
                 });
             }
+        }
         Ok(())
     }
 
@@ -248,8 +254,8 @@ impl Session {
         channel: ChannelId,
         name: &str,
     ) -> Result<(), crate::Error> {
-        if let Some(ref mut enc) = self.common.encrypted
-            && let Some(channel) = enc.channels.get(&channel) {
+        if let Some(ref mut enc) = self.common.encrypted {
+            if let Some(channel) = enc.channels.get(&channel) {
                 push_packet!(enc.write, {
                     msg::CHANNEL_REQUEST.encode(&mut enc.write)?;
 
@@ -259,6 +265,7 @@ impl Session {
                     name.encode(&mut enc.write)?;
                 });
             }
+        }
         Ok(())
     }
 
@@ -270,8 +277,8 @@ impl Session {
         pix_width: u32,
         pix_height: u32,
     ) -> Result<(), crate::Error> {
-        if let Some(ref mut enc) = self.common.encrypted
-            && let Some(channel) = enc.channels.get(&channel) {
+        if let Some(ref mut enc) = self.common.encrypted {
+            if let Some(channel) = enc.channels.get(&channel) {
                 push_packet!(enc.write, {
                     msg::CHANNEL_REQUEST.encode(&mut enc.write)?;
 
@@ -284,6 +291,7 @@ impl Session {
                     pix_height.encode(&mut enc.write)?;
                 });
             }
+        }
         Ok(())
     }
 
@@ -435,8 +443,10 @@ impl Session {
     }
 
     pub fn data(&mut self, channel: ChannelId, data: impl Into<bytes::Bytes>) -> Result<(), crate::Error> {
-        if let Some(ref mut enc) = self.common.encrypted {
-            enc.data(channel, data, self.kex.active())
+        let is_rekeying = self.kex.active();
+        let common = &mut self.common;
+        if let Some(enc) = common.encrypted.as_mut() {
+            enc.data_with_writer(&mut common.packet_writer, channel, data, is_rekeying)
         } else {
             unreachable!()
         }
@@ -464,8 +474,10 @@ impl Session {
         ext: u32,
         data: impl Into<bytes::Bytes>,
     ) -> Result<(), crate::Error> {
-        if let Some(ref mut enc) = self.common.encrypted {
-            enc.extended_data(channel, ext, data, self.kex.active())
+        let is_rekeying = self.kex.active();
+        let common = &mut self.common;
+        if let Some(enc) = common.encrypted.as_mut() {
+            enc.extended_data_with_writer(&mut common.packet_writer, channel, ext, data, is_rekeying)
         } else {
             unreachable!()
         }
@@ -476,8 +488,8 @@ impl Session {
         channel: ChannelId,
         want_reply: bool,
     ) -> Result<(), crate::Error> {
-        if let Some(ref mut enc) = self.common.encrypted
-            && let Some(channel) = enc.channels.get(&channel) {
+        if let Some(ref mut enc) = self.common.encrypted {
+            if let Some(channel) = enc.channels.get(&channel) {
                 push_packet!(enc.write, {
                     msg::CHANNEL_REQUEST.encode(&mut enc.write)?;
                     channel.recipient_channel.encode(&mut enc.write)?;
@@ -485,6 +497,7 @@ impl Session {
                     (want_reply as u8).encode(&mut enc.write)?;
                 });
             }
+        }
         Ok(())
     }
 
