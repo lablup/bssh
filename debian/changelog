@@ -1,3 +1,22 @@
+bssh (2.2.3-1~jammy1) jammy; urgency=medium
+
+  * v2.2.3
+  ### Dependencies
+  - Sync both internal russh forks to upstream stable (#207). Advance
+    bssh-russh to russh 0.61.1 and bssh-russh-sftp to russh-sftp 2.3.0,
+    bringing the current RustCrypto generation (sha2/sha1 0.11, hmac
+    0.13, aes 0.9, digest 0.11, pbkdf2 0.13) and unifying ssh-key on a
+    single 0.7.0-rc.10. Re-port the high-frequency PTY Handle::data
+    drain fix onto the new server session loop, add a regression test,
+    and retire three patches now merged upstream.
+  ### Security
+  - Patch RUSTSEC-2026-0009 (#208), a stack-exhaustion denial of
+    service in time 0.3.45 pulled transitively via ratatui. Bump time
+    to 0.3.47 (lockfile only); cargo audit now reports zero
+    vulnerabilities.
+
+ -- Jeongkyu Shin <inureyes@gmail.com>  Mon, 25 May 2026 12:00:00 +0900
+
 bssh (2.2.2-1~jammy1) jammy; urgency=medium
 
   * v2.2.2

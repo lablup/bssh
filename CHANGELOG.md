@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.3] - 2026-05-25
+
+### Security
+- **Patch RUSTSEC-2026-0009, a stack-exhaustion denial of service in `time`** (#208). `cargo audit` flagged `time` 0.3.45 (medium, 6.8), pulled transitively via `ratatui` 0.30 to `ratatui-widgets` to `time`. Bumped `time` to 0.3.47 (with `num-conv` 0.1.0 to 0.2.2 and `time-core` 0.1.7 to 0.1.8), a lockfile-only change since `ratatui`'s requirement already permits it; `cargo audit` now reports 0 vulnerabilities. Note `time` 0.3.47 is held with a precise lockfile pin because its MSRV is above the workspace's declared `rust-version = 1.85`, so a plain MSRV-aware `cargo update` will otherwise revert it to the vulnerable 0.3.45.
+
+### Dependencies
+- **Sync both internal russh forks to their latest upstream releases and unify `ssh-key`** (#207). `bssh-russh` advances from a russh 0.60.3 base to **0.61.1**, adopting the new RustCrypto generation upstream migrated to: `sha2` / `sha1` 0.10 to 0.11, `hmac` 0.12 to 0.13, `aes` 0.8 to 0.9, `cbc` 0.1 to 0.2, `ctr` 0.9 to 0.10, `digest` 0.10 to 0.11, `pbkdf2` 0.12 to 0.13, `ssh-key` to 0.7.0-rc.10, and `ssh-encoding` to 0.3.0-rc.9. These cannot be bumped standalone because russh's source targets the old `cipher` 0.4 / `digest` 0.10 API; upstream moved the whole cohort together in 0.61. The high-frequency PTY `Handle::data()` drain fix is re-ported onto the new `server/session.rs` (confirmed still absent upstream in 0.61.1, so the fork remains necessary), three patches now merged upstream are removed (`channel-write-ordering`, `agent-frame-length-cap`, `sha1-mac-exclude`) leaving only `handle-data-fix.patch`, and a PTY regression test is added at `crates/bssh-russh/tests/pty_handle_data.rs`. `bssh-russh-sftp` does a full source sync from upstream 2.1.2 to **2.3.0** with the two pipelined File I/O helpers (`write_all_pipelined` / `read_to_writer_pipelined`) re-applied on top; the bssh SFTP server is adapted to the 2.3.0 `server::Handler::Error` change (now `Into<StatusReply>`, which also surfaces the human-readable error message in `SSH_FXP_STATUS`). In the main crate, `ssh-key` is unified to `=0.7.0-rc.10` so the workspace resolves a single `ssh-key` version instead of 0.6 and 0.7-rc side by side, `argon2` gains its `std` feature (restoring `rand_core`'s `OsRng` after the generation shift), and transitive deps are refreshed via `cargo update`. Both fork crates are published to crates.io at `bssh-russh` 0.61.1 and `bssh-russh-sftp` 2.3.0.
+
+### Changed
+- **Fork maintenance tooling and docs refreshed** (#207). Both forks' `create-patch.sh` are now self-contained: they clone the relevant upstream into a temp directory instead of relying on a gitignored `references/` checkout, write the correct current patch names, and fall back to the default branch where upstream publishes no git tags. `sync-upstream.sh` applies every `patches/*.patch` with reverse-apply upstream detection, and both fork READMEs are rewritten for the new versions.
+
+### CI/CD
+- Bump `action-gh-release` to v3 for the Node 24 runtime, and adjust the download shield badge.
+
 ## [2.2.2] - 2026-05-25
 
 ### Fixed
@@ -868,6 +882,7 @@ None
 - russh library for native SSH implementation
 - Cross-platform support (Linux and macOS)
 
+[2.2.3]: https://github.com/lablup/bssh/compare/v2.2.2...v2.2.3
 [2.2.2]: https://github.com/lablup/bssh/compare/v2.2.1...v2.2.2
 [2.2.1]: https://github.com/lablup/bssh/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/lablup/bssh/compare/v2.1.4...v2.2.0
