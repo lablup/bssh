@@ -12,8 +12,8 @@ bssh (2.2.3-1~jammy1) jammy; urgency=medium
   ### Security
   - Patch RUSTSEC-2026-0009 (#208), a stack-exhaustion denial of
     service in time 0.3.45 pulled transitively via ratatui. Bump time
-    to 0.3.47 (lockfile only); cargo audit now reports zero
-    vulnerabilities.
+    to 0.3.47 and raise the minimum supported Rust to 1.88, which time
+    0.3.47 requires; cargo audit now reports zero vulnerabilities.
 
  -- Jeongkyu Shin <inureyes@gmail.com>  Mon, 25 May 2026 12:00:00 +0900
 

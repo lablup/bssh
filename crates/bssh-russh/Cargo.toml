@@ -10,7 +10,7 @@ keywords = ["ssh"]
 license = "Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/lablup/bssh"
-rust-version = "1.85"
+rust-version = "1.88"
 
 # Internal lib name matches upstream (`russh`) so vendored source and the
 # regression test in tests/ reference it as `russh::...`; the crate is still

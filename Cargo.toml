@@ -16,6 +16,9 @@ readme = "README.md"
 keywords = ["cli", "rust"]
 categories = ["command-line-utilities"]
 edition = "2024"
+# 1.88 is required by `time` 0.3.47 (the RUSTSEC-2026-0009 fix). Keeping this
+# declared keeps the MSRV-aware resolver from reverting `time` to 0.3.45.
+rust-version = "1.88"
 
 [dependencies]
 bytes = "1.11.1"
