@@ -1,8 +1,8 @@
 # bssh - Broadcast SSH
 
 [![Crates.io version](https://img.shields.io/crates/v/bssh.svg?style=flat-square)](https://crates.io/crates/bssh)
-[![Crates.io downloads](https://img.shields.io/crates/d/bssh.svg?style=flat-square)](https://crates.io/crates/bssh)
-![GitHub Downloads](https://img.shields.io/github/downloads/lablup/bssh/total?style=flat-square&label=downloads)
+[![Crates.io downloads](https://img.shields.io/crates/d/bssh.svg?style=flat-square&label=Downloads%20(crates.io))](https://crates.io/crates/bssh)
+![GitHub Downloads](https://img.shields.io/github/downloads/lablup/bssh/total?style=flat-square&label=Downloads%20(GitHub))
 ![CI](https://github.com/lablup/bssh/workflows/CI/badge.svg)
 [![dependency status](https://deps.rs/repo/github/lablup/bssh/status.svg)](https://deps.rs/repo/github/lablup/bssh)
 
