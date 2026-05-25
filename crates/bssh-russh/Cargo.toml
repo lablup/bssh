@@ -28,6 +28,9 @@ doctest = false
 # ./sync-upstream.sh preserves, so this survives future syncs.
 [lints.clippy]
 manual_saturating_arithmetic = "allow"
+# collapsible_if fires across upstream's nested `if`s now that rust-version 1.88
+# tells clippy let-chains are stable; upstream russh has not collapsed them.
+collapsible_if = "allow"
 
 [features]
 default = ["flate2", "aws-lc-rs", "rsa"]
