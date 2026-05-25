@@ -10,7 +10,7 @@ keywords = ["ssh"]
 license = "Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/lablup/bssh"
-rust-version = "1.88"
+rust-version = "1.93"
 
 # Internal lib name matches upstream (`russh`) so vendored source and the
 # regression test in tests/ reference it as `russh::...`; the crate is still
@@ -28,8 +28,8 @@ doctest = false
 # ./sync-upstream.sh preserves, so this survives future syncs.
 [lints.clippy]
 manual_saturating_arithmetic = "allow"
-# collapsible_if fires across upstream's nested `if`s now that rust-version 1.88
-# tells clippy let-chains are stable; upstream russh has not collapsed them.
+# collapsible_if fires across upstream's nested `if`s because rust-version >= 1.88
+# makes clippy treat let-chains as stable; upstream russh has not collapsed them.
 collapsible_if = "allow"
 
 [features]

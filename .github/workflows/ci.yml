@@ -39,3 +39,40 @@ jobs:
         run: |
           cargo test --lib --verbose
           cargo test --tests --verbose -- --skip integration_test
+
+  msrv:
+    name: MSRV (cargo check on declared rust-version)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      # Read the MSRV from Cargo.toml so this job never drifts from the
+      # declared rust-version. The hard floor is 1.89 (rustyline 18 uses
+      # File::lock, stabilized in 1.89); the declared value tracks the
+      # Launchpad PPA build toolchain.
+      - name: Read MSRV from Cargo.toml
+        id: msrv
+        run: |
+          version=$(grep -m1 '^rust-version' Cargo.toml | sed -E 's/.*"([0-9.]+)".*/\1/')
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Declared MSRV: $version"
+
+      - name: Install Rust ${{ steps.msrv.outputs.version }} (declared MSRV)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.msrv.outputs.version }}
+
+      - name: Cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-msrv-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-msrv-
+
+      - name: Verify workspace builds on MSRV
+        run: cargo check --workspace --locked
