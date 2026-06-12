@@ -2,7 +2,7 @@
 
 ## Overview
 
-bssh (Backend.AI SSH / Broadcast SSH) is a high-performance parallel SSH command execution tool with SSH-compatible interface. This document provides a high-level architecture overview. For detailed component documentation, see [docs/architecture/](./docs/architecture/).
+bssh (Broadcast SSH / Backend.AI SSH) is a high-performance parallel SSH command execution tool with SSH-compatible interface. This document provides a high-level architecture overview. For detailed component documentation, see [docs/architecture/](./docs/architecture/).
 
 ### Core Capabilities
 
