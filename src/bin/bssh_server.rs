@@ -25,11 +25,11 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::PathBuf;
 
-/// Backend.AI SSH Server - A lightweight SSH server for containers
+/// Broadcast SSH Server - A lightweight SSH server for containers
 #[derive(Parser, Debug)]
 #[command(name = "bssh-server")]
 #[command(version)]
-#[command(about = "Backend.AI SSH Server - A lightweight SSH server for containers", long_about = None)]
+#[command(about = "Broadcast SSH Server - A lightweight SSH server for containers", long_about = None)]
 struct Cli {
     /// Subcommand to execute
     #[command(subcommand)]
@@ -426,7 +426,7 @@ fn gen_host_key(key_type: &str, output: &PathBuf, _bits: u32) -> Result<()> {
 /// Show version and build information
 fn show_version() -> Result<()> {
     println!("bssh-server {}", env!("CARGO_PKG_VERSION"));
-    println!("Backend.AI SSH Server");
+    println!("Broadcast SSH Server");
     println!();
     println!("A lightweight SSH server for containers");
     println!();

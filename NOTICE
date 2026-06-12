@@ -1,0 +1,59 @@
+bssh (Broadcast SSH)
+Copyright 2024-2026 Jeongkyu Shin
+
+Licensed under the Apache License, Version 2.0 (the "License"). You may not use
+this product except in compliance with the License. A copy of the License is
+provided in the LICENSE file and is also available at
+http://www.apache.org/licenses/LICENSE-2.0.
+
+bssh is part of the Backend.AI project family developed by Lablup Inc.
+(https://www.lablup.com).
+
+================================================================================
+Bundled third-party source
+================================================================================
+
+This product vendors modified source code from the projects below. Each lives
+under crates/ as a thin fork that tracks an upstream release verbatim and adds
+the bssh-specific patches noted here. Both upstream projects are licensed under
+the Apache License, Version 2.0.
+
+--------------------------------------------------------------------------------
+russh  (vendored as crates/bssh-russh, Cargo package "bssh-russh")
+--------------------------------------------------------------------------------
+
+Upstream : https://github.com/Eugeny/russh  (tracking release 0.61.1)
+License  : Apache-2.0
+
+    Copyright 2016 Pierre-Étienne Meunier
+    Copyright the russh authors and contributors
+
+russh began as Thrussh by Pierre-Étienne Meunier and is currently maintained by
+Eugeny Pankov and the russh contributors. The vendored copy is unmodified
+upstream source plus a single change that drains pending Handle::data() messages
+before the server session select loop (patches/handle-data-fix.patch), so
+high-frequency PTY output is delivered reliably.
+
+--------------------------------------------------------------------------------
+russh-sftp  (vendored as crates/bssh-russh-sftp, Cargo package "bssh-russh-sftp")
+--------------------------------------------------------------------------------
+
+Upstream : https://github.com/AspectUnk/russh-sftp  (tracking release 2.3.0)
+License  : Apache-2.0
+
+    Copyright the russh-sftp authors and contributors (AspectUnk)
+
+The vendored copy is unmodified upstream source plus pipelined SFTP file I/O
+helpers (write_all_pipelined / read_to_writer_pipelined) that keep multiple
+requests in flight to hide per-request round-trip latency
+(patches/pipelined-file-io.patch).
+
+================================================================================
+Linked third-party crates
+================================================================================
+
+bssh also links many third-party Rust crates at build time (see Cargo.toml and
+Cargo.lock). Those crates are distributed under their own permissive licenses
+(Apache-2.0, MIT, BSD, and similar); their license texts are available through
+their respective source repositories and the Rust crate registry at
+https://crates.io.

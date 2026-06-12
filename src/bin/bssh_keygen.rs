@@ -40,7 +40,7 @@ use clap::{ArgAction, Parser};
 use std::io::{self, Write};
 use std::path::PathBuf;
 
-/// Backend.AI SSH Key Generator - Generate SSH key pairs in OpenSSH format
+/// Broadcast SSH Key Generator - Generate SSH key pairs in OpenSSH format
 #[derive(Parser, Debug)]
 #[command(name = "bssh-keygen")]
 #[command(version)]
