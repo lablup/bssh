@@ -10,7 +10,6 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 UPSTREAM_URL="https://github.com/AspectUnk/russh-sftp.git"
 TEMP_DIR="/tmp/russh-sftp-sync-$$"
-PATCH_FILE="$SCRIPT_DIR/patches/sftp-serde-bytes-perf.patch"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -74,27 +73,7 @@ if [ "$VERSION" != "master" ]; then
     log_info "Updated version to $CLEAN_VERSION"
 fi
 
-log_info "Applying patches..."
-
-if [ -f "$PATCH_FILE" ]; then
-    if patch -p1 --dry-run < "$PATCH_FILE" > /dev/null 2>&1; then
-        patch -p1 < "$PATCH_FILE"
-        log_info "Applied sftp-serde-bytes-perf.patch"
-    else
-        log_warn "Patch may not apply cleanly, attempting with fuzz..."
-        if patch -p1 --fuzz=3 < "$PATCH_FILE"; then
-            log_warn "Patch applied with fuzz - please verify manually"
-        else
-            log_error "Failed to apply patch. Manual intervention required."
-            log_error "Patch file: $PATCH_FILE"
-            exit 1
-        fi
-    fi
-else
-    log_error "Patch file not found: $PATCH_FILE"
-    log_error "Please create the patch file first using: ./create-patch.sh"
-    exit 1
-fi
+log_info "No local patches to apply (the read_to_writer_pipelined helper lives directly in src/client/fs/file.rs until upstream PR #91 merges)."
 
 log_info "Verifying build..."
 cd "$SCRIPT_DIR/../.."

@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use flurry::HashMap;
+use dashmap::DashMap as HashMap;
 use std::{
     sync::{
         atomic::{AtomicU32, AtomicU64, Ordering},
@@ -9,12 +9,12 @@ use std::{
 };
 use tokio::{
     io::{AsyncRead, AsyncWrite},
-    sync::{mpsc, RwLock},
-    time,
+    sync::{mpsc, oneshot},
 };
 
-use super::{error::Error, run, Handler};
+use super::{error::Error, runtime, Handler};
 use crate::{
+    client::{run, Config},
     de,
     extensions::{
         self, FsyncExtension, HardlinkExtension, LimitsExtension, Statvfs, StatvfsExtension,
@@ -27,7 +27,7 @@ use crate::{
 };
 
 pub type SftpResult<T> = Result<T, Error>;
-type SharedRequests = HashMap<Option<u32>, mpsc::Sender<SftpResult<Packet>>>;
+type SharedRequests = HashMap<Option<u32>, oneshot::Sender<SftpResult<Packet>>>;
 
 pub(crate) struct SessionInner {
     version: Option<u32>,
@@ -35,8 +35,8 @@ pub(crate) struct SessionInner {
 }
 
 impl SessionInner {
-    pub async fn reply(&mut self, id: Option<u32>, packet: Packet) -> SftpResult<()> {
-        if let Some(sender) = self.requests.pin().remove(&id) {
+    pub fn reply(&mut self, id: Option<u32>, packet: Packet) -> SftpResult<()> {
+        if let Some((_, sender)) = self.requests.remove(&id) {
             let validate = if id.is_some() && self.version.is_none() {
                 Err(Error::UnexpectedPacket)
             } else if id.is_none() && self.version.is_some() {
@@ -45,9 +45,8 @@ impl SessionInner {
                 Ok(())
             };
 
-            sender
-                .try_send(validate.clone().map(|_| packet))
-                .map_err(|e| Error::UnexpectedBehavior(e.to_string()))?;
+            // Ignore send error: receiver was dropped (request timed out).
+            let _ = sender.send(validate.clone().map(|_| packet));
 
             return validate;
         }
@@ -59,46 +58,44 @@ impl SessionInner {
     }
 }
 
-#[cfg_attr(feature = "async-trait", async_trait::async_trait)]
 impl Handler for SessionInner {
     type Error = Error;
 
     async fn version(&mut self, packet: Version) -> Result<(), Self::Error> {
         let version = packet.version;
-        self.reply(None, packet.into()).await?;
+        self.reply(None, packet.into())?;
         self.version = Some(version);
         Ok(())
     }
 
     async fn name(&mut self, name: Name) -> Result<(), Self::Error> {
-        self.reply(Some(name.id), name.into()).await
+        self.reply(Some(name.id), name.into())
     }
 
     async fn status(&mut self, status: Status) -> Result<(), Self::Error> {
-        self.reply(Some(status.id), status.into()).await
+        self.reply(Some(status.id), status.into())
     }
 
     async fn handle(&mut self, handle: Handle) -> Result<(), Self::Error> {
-        self.reply(Some(handle.id), handle.into()).await
+        self.reply(Some(handle.id), handle.into())
     }
 
     async fn data(&mut self, data: Data) -> Result<(), Self::Error> {
-        self.reply(Some(data.id), data.into()).await
+        self.reply(Some(data.id), data.into())
     }
 
     async fn attrs(&mut self, attrs: Attrs) -> Result<(), Self::Error> {
-        self.reply(Some(attrs.id), attrs.into()).await
+        self.reply(Some(attrs.id), attrs.into())
     }
 
     async fn extended_reply(&mut self, reply: ExtendedReply) -> Result<(), Self::Error> {
-        self.reply(Some(reply.id), reply.into()).await
+        self.reply(Some(reply.id), reply.into())
     }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Limits {
-    // todo: implement
-    //pub packet_len: Option<u64>,
+    pub packet_len: Option<u64>,
     pub read_len: Option<u64>,
     pub write_len: Option<u64>,
     pub open_handles: Option<u64>,
@@ -107,28 +104,12 @@ pub struct Limits {
 impl From<LimitsExtension> for Limits {
     fn from(limits: LimitsExtension) -> Self {
         Self {
-            read_len: if limits.max_read_len > 0 {
-                Some(limits.max_read_len)
-            } else {
-                None
-            },
-            write_len: if limits.max_write_len > 0 {
-                Some(limits.max_write_len)
-            } else {
-                None
-            },
-            open_handles: if limits.max_open_handles > 0 {
-                Some(limits.max_open_handles)
-            } else {
-                None
-            },
+            packet_len: (limits.max_packet_len > 0).then_some(limits.max_packet_len),
+            read_len: (limits.max_read_len > 0).then_some(limits.max_read_len),
+            write_len: (limits.max_write_len > 0).then_some(limits.max_write_len),
+            open_handles: (limits.max_open_handles > 0).then_some(limits.max_open_handles),
         }
     }
-}
-
-pub(crate) struct Options {
-    timeout: RwLock<u64>,
-    limits: Arc<Limits>,
 }
 
 /// Implements raw work with the protocol in request-response format.
@@ -140,7 +121,8 @@ pub struct RawSftpSession {
     requests: Arc<SharedRequests>,
     next_req_id: AtomicU32,
     handles: AtomicU64,
-    options: Options,
+    timeout: AtomicU64,
+    limits: Limits,
 }
 
 macro_rules! into_with_status {
@@ -168,6 +150,13 @@ impl RawSftpSession {
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
+        Self::new_with_config(stream, Config::default())
+    }
+
+    pub fn new_with_config<S>(stream: S, cfg: Config) -> Self
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
         let req_map = Arc::new(HashMap::new());
         let inner = SessionInner {
             version: None,
@@ -179,51 +168,62 @@ impl RawSftpSession {
             requests: req_map,
             next_req_id: AtomicU32::new(1),
             handles: AtomicU64::new(0),
-            options: Options {
-                timeout: RwLock::new(10),
-                limits: Arc::new(Limits::default()),
-            },
+            timeout: AtomicU64::new(cfg.request_timeout_secs),
+            limits: Limits::default(),
         }
     }
 
     /// Set the maximum response time in seconds.
     /// Default: 10 seconds
-    pub async fn set_timeout(&self, secs: u64) {
-        *self.options.timeout.write().await = secs;
+    pub fn set_timeout(&self, secs: u64) {
+        self.timeout.store(secs, Ordering::Relaxed);
     }
 
     /// Setting limits. For the `limits@openssh.com` extension
-    pub fn set_limits(&mut self, limits: Arc<Limits>) {
-        self.options.limits = limits;
+    pub fn set_limits(&mut self, limits: Limits) {
+        self.limits = limits;
     }
 
-    async fn send(&self, id: Option<u32>, packet: Packet) -> SftpResult<Packet> {
+    fn send(
+        &self,
+        id: Option<u32>,
+        packet: Packet,
+    ) -> SftpResult<oneshot::Receiver<SftpResult<Packet>>> {
         if self.tx.is_closed() {
             return Err(Error::UnexpectedBehavior("session closed".into()));
         }
 
-        let (tx, mut rx) = mpsc::channel(1);
+        let bytes = Bytes::try_from(packet)?;
 
-        self.requests.pin().insert(id, tx);
-        self.tx.send(Bytes::try_from(packet)?)?;
-
-        let timeout = *self.options.timeout.read().await;
-
-        match time::timeout(Duration::from_secs(timeout), rx.recv()).await {
-            Ok(Some(result)) => result,
-            Ok(None) => {
-                self.requests.pin().remove(&id);
-                Err(Error::UnexpectedBehavior("recv none message".into()))
+        if let Some(max_len) = self.limits.packet_len {
+            if bytes.len() as u64 > max_len {
+                return Err(Error::Limited("packet exceeds server limit".to_owned()));
             }
+        }
+
+        let (tx, rx) = oneshot::channel();
+        self.requests.insert(id, tx);
+        self.tx.send(bytes)?;
+
+        Ok(rx)
+    }
+
+    async fn request(&self, id: Option<u32>, packet: Packet) -> SftpResult<Packet> {
+        let rx = self.send(id, packet)?;
+        let timeout = self.timeout.load(Ordering::Relaxed);
+
+        match runtime::timeout(Duration::from_secs(timeout), rx).await {
+            Ok(Ok(result)) => result,
+            Ok(Err(_)) => Err(Error::UnexpectedBehavior("sender dropped".into())),
             Err(error) => {
-                self.requests.pin().remove(&id);
-                Err(error.into())
+                self.requests.remove(&id);
+                Err(error)
             }
         }
     }
 
     fn use_next_id(&self) -> u32 {
-        self.next_req_id.fetch_add(1, Ordering::SeqCst)
+        self.next_req_id.fetch_add(1, Ordering::Relaxed)
     }
 
     /// Closes the inner channel stream. Called by [`Drop`]
@@ -236,7 +236,7 @@ impl RawSftpSession {
     }
 
     pub async fn init(&self) -> SftpResult<Version> {
-        let result = self.send(None, Init::default().into()).await?;
+        let result = self.request(None, Init::default().into()).await?;
         if let Packet::Version(version) = result {
             Ok(version)
         } else {
@@ -251,7 +251,6 @@ impl RawSftpSession {
         attrs: FileAttributes,
     ) -> SftpResult<Handle> {
         if self
-            .options
             .limits
             .open_handles
             .is_some_and(|h| self.handles.load(Ordering::SeqCst) >= h)
@@ -261,7 +260,7 @@ impl RawSftpSession {
 
         let id = self.use_next_id();
         let result = self
-            .send(
+            .request(
                 Some(id),
                 Open {
                     id,
@@ -283,7 +282,7 @@ impl RawSftpSession {
     pub async fn close<H: Into<String>>(&self, handle: H) -> SftpResult<Status> {
         let id = self.use_next_id();
         let result = self
-            .send(
+            .request(
                 Some(id),
                 Close {
                     id,
@@ -313,19 +312,28 @@ impl RawSftpSession {
         into_status!(result)
     }
 
+    /// Sends a close packet without awaiting the server's acknowledgement.
+    pub(crate) fn close_nowait(
+        &self,
+        handle: String,
+    ) -> SftpResult<oneshot::Receiver<SftpResult<Packet>>> {
+        let id = self.use_next_id();
+        self.send(Some(id), Close { id, handle }.into())
+    }
+
     pub async fn read<H: Into<String>>(
         &self,
         handle: H,
         offset: u64,
         len: u32,
     ) -> SftpResult<Data> {
-        if self.options.limits.read_len.is_some_and(|r| len as u64 > r) {
+        if self.limits.read_len.is_some_and(|r| len as u64 > r) {
             return Err(Error::Limited("read limit reached".to_owned()));
         }
 
         let id = self.use_next_id();
         let result = self
-            .send(
+            .request(
                 Some(id),
                 Read {
                     id,
@@ -346,18 +354,13 @@ impl RawSftpSession {
         offset: u64,
         data: Vec<u8>,
     ) -> SftpResult<Status> {
-        if self
-            .options
-            .limits
-            .write_len
-            .is_some_and(|w| data.len() as u64 > w)
-        {
+        if self.limits.write_len.is_some_and(|w| data.len() as u64 > w) {
             return Err(Error::Limited("write limit reached".to_owned()));
         }
 
         let id = self.use_next_id();
         let result = self
-            .send(
+            .request(
                 Some(id),
                 Write {
                     id,
@@ -372,10 +375,34 @@ impl RawSftpSession {
         into_status!(result)
     }
 
+    /// Sends a write packet without awaiting the server's acknowledgement.
+    pub(crate) fn write_nowait(
+        &self,
+        handle: String,
+        offset: u64,
+        data: Vec<u8>,
+    ) -> SftpResult<oneshot::Receiver<SftpResult<Packet>>> {
+        if self.limits.write_len.is_some_and(|w| data.len() as u64 > w) {
+            return Err(Error::Limited("write limit reached".to_owned()));
+        }
+
+        let id = self.use_next_id();
+        self.send(
+            Some(id),
+            Write {
+                id,
+                handle,
+                offset,
+                data,
+            }
+            .into(),
+        )
+    }
+
     pub async fn lstat<P: Into<String>>(&self, path: P) -> SftpResult<Attrs> {
         let id = self.use_next_id();
         let result = self
-            .send(
+            .request(
                 Some(id),
                 Lstat {
                     id,
@@ -391,7 +418,7 @@ impl RawSftpSession {
     pub async fn fstat<H: Into<String>>(&self, handle: H) -> SftpResult<Attrs> {
         let id = self.use_next_id();
         let result = self
-            .send(
+            .request(
                 Some(id),
                 Fstat {
                     id,
@@ -411,7 +438,7 @@ impl RawSftpSession {
     ) -> SftpResult<Status> {
         let id = self.use_next_id();
         let result = self
-            .send(
+            .request(
                 Some(id),
                 SetStat {
                     id,
@@ -432,7 +459,7 @@ impl RawSftpSession {
     ) -> SftpResult<Status> {
         let id = self.use_next_id();
         let result = self
-            .send(
+            .request(
                 Some(id),
                 FSetStat {
                     id,
@@ -448,7 +475,6 @@ impl RawSftpSession {
 
     pub async fn opendir<P: Into<String>>(&self, path: P) -> SftpResult<Handle> {
         if self
-            .options
             .limits
             .open_handles
             .is_some_and(|h| self.handles.load(Ordering::SeqCst) >= h)
@@ -458,7 +484,7 @@ impl RawSftpSession {
 
         let id = self.use_next_id();
         let result = self
-            .send(
+            .request(
                 Some(id),
                 OpenDir {
                     id,
@@ -478,7 +504,7 @@ impl RawSftpSession {
     pub async fn readdir<H: Into<String>>(&self, handle: H) -> SftpResult<Name> {
         let id = self.use_next_id();
         let result = self
-            .send(
+            .request(
                 Some(id),
                 ReadDir {
                     id,
@@ -494,7 +520,7 @@ impl RawSftpSession {
     pub async fn remove<T: Into<String>>(&self, filename: T) -> SftpResult<Status> {
         let id = self.use_next_id();
         let result = self
-            .send(
+            .request(
                 Some(id),
                 Remove {
                     id,
@@ -514,7 +540,7 @@ impl RawSftpSession {
     ) -> SftpResult<Status> {
         let id = self.use_next_id();
         let result = self
-            .send(
+            .request(
                 Some(id),
                 MkDir {
                     id,
@@ -531,7 +557,7 @@ impl RawSftpSession {
     pub async fn rmdir<P: Into<String>>(&self, path: P) -> SftpResult<Status> {
         let id = self.use_next_id();
         let result = self
-            .send(
+            .request(
                 Some(id),
                 RmDir {
                     id,
@@ -547,7 +573,7 @@ impl RawSftpSession {
     pub async fn realpath<P: Into<String>>(&self, path: P) -> SftpResult<Name> {
         let id = self.use_next_id();
         let result = self
-            .send(
+            .request(
                 Some(id),
                 RealPath {
                     id,
@@ -563,7 +589,7 @@ impl RawSftpSession {
     pub async fn stat<P: Into<String>>(&self, path: P) -> SftpResult<Attrs> {
         let id = self.use_next_id();
         let result = self
-            .send(
+            .request(
                 Some(id),
                 Stat {
                     id,
@@ -583,7 +609,7 @@ impl RawSftpSession {
     {
         let id = self.use_next_id();
         let result = self
-            .send(
+            .request(
                 Some(id),
                 Rename {
                     id,
@@ -600,7 +626,7 @@ impl RawSftpSession {
     pub async fn readlink<P: Into<String>>(&self, path: P) -> SftpResult<Name> {
         let id = self.use_next_id();
         let result = self
-            .send(
+            .request(
                 Some(id),
                 ReadLink {
                     id,
@@ -620,7 +646,7 @@ impl RawSftpSession {
     {
         let id = self.use_next_id();
         let result = self
-            .send(
+            .request(
                 Some(id),
                 Symlink {
                     id,
@@ -638,7 +664,7 @@ impl RawSftpSession {
     /// The extension can return any packet, so it's not specific
     pub async fn extended<R: Into<String>>(&self, request: R, data: Vec<u8>) -> SftpResult<Packet> {
         let id = self.use_next_id();
-        self.send(
+        self.request(
             Some(id),
             Extended {
                 id,

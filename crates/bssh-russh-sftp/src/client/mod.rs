@@ -2,6 +2,7 @@ pub mod error;
 pub mod fs;
 mod handler;
 pub mod rawsession;
+pub(crate) mod runtime;
 mod session;
 
 pub use handler::Handler;
@@ -27,6 +28,26 @@ macro_rules! into_wrap {
     };
 }
 
+#[derive(Clone, Debug)]
+pub struct Config {
+    /// Maximum size of a single packet in bytes. Default: 256 KiB.
+    pub max_packet_len: u32,
+    /// Maximum number of concurrent in-flight write requests. Default: 8.
+    pub max_concurrent_writes: usize,
+    /// Timeout in seconds for each request. Default: 10.
+    pub request_timeout_secs: u64,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            max_packet_len: 262144,
+            max_concurrent_writes: 8,
+            request_timeout_secs: 10,
+        }
+    }
+}
+
 async fn execute_handler<H>(bytes: &mut Bytes, handler: &mut H) -> Result<(), error::Error>
 where
     H: Handler + Send,
@@ -50,7 +71,7 @@ where
     S: AsyncRead + Unpin,
     H: Handler + Send,
 {
-    let mut bytes = read_packet(stream).await?;
+    let mut bytes = read_packet(stream, u32::MAX).await?;
     Ok(execute_handler(&mut bytes, handler).await?)
 }
 
@@ -67,7 +88,7 @@ where
     let rc = CancellationToken::new();
     let wc = rc.clone();
     {
-        tokio::spawn(async move {
+        runtime::spawn(async move {
             loop {
                 select! {
                     result = process_handler(&mut rd, &mut handler) => {
@@ -86,7 +107,7 @@ where
         });
     }
 
-    tokio::spawn(async move {
+    runtime::spawn(async move {
         loop {
             select! {
                 Some(data) = rx.recv() => {

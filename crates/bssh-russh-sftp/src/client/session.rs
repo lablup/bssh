@@ -8,23 +8,26 @@ use super::{
     RawSftpSession,
 };
 use crate::{
+    client::Config,
     extensions::{self, Statvfs},
     protocol::{FileAttributes, OpenFlags, StatusCode},
 };
 
-#[derive(Debug, Default)]
-pub(crate) struct Extensions {
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Features {
     pub hardlink: bool,
     pub fsync: bool,
     pub statvfs: bool,
-    pub limits: Option<Arc<Limits>>,
+    pub limits: Option<Limits>,
+    pub max_concurrent_writes: usize,
+    pub max_packet_len: u32,
 }
 
 /// High-level SFTP implementation for easy interaction with a remote file system.
 /// Contains most methods similar to the native [filesystem](std::fs)
 pub struct SftpSession {
     session: Arc<RawSftpSession>,
-    extensions: Arc<Extensions>,
+    features: Features,
 }
 
 impl SftpSession {
@@ -33,60 +36,49 @@ impl SftpSession {
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        Self::new_opts(stream, None).await
+        Self::new_with_config(stream, Config::default()).await
     }
 
-    /// Creates a new session with timeout opt before the first request
-    pub async fn new_opts<S>(stream: S, timeout: Option<u64>) -> SftpResult<Self>
+    /// Creates a new session with custom configuration
+    pub async fn new_with_config<S>(stream: S, cfg: Config) -> SftpResult<Self>
     where
         S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
-        let mut session = RawSftpSession::new(stream);
-
-        // todo: for new options we need builder
-        if let Some(timeout) = timeout {
-            session.set_timeout(timeout).await;
-        }
+        let max_concurrent_writes = cfg.max_concurrent_writes;
+        let max_packet_len = cfg.max_packet_len;
+        let mut session = RawSftpSession::new_with_config(stream, cfg);
 
         let version = session.init().await?;
-        let mut extensions = Extensions {
-            hardlink: version
-                .extensions
-                .get(extensions::HARDLINK)
-                .is_some_and(|e| e == "1"),
-            fsync: version
-                .extensions
-                .get(extensions::FSYNC)
-                .is_some_and(|e| e == "1"),
-            statvfs: version
-                .extensions
-                .get(extensions::STATVFS)
-                .is_some_and(|e| e == "2"),
+        let has_extension = |name, ver| version.extensions.get(name).is_some_and(|v| v == ver);
+
+        let mut features = Features {
+            hardlink: has_extension(extensions::HARDLINK, "1"),
+            fsync: has_extension(extensions::FSYNC, "1"),
+            statvfs: has_extension(extensions::STATVFS, "2"),
             limits: None,
+            max_concurrent_writes,
+            max_packet_len,
         };
 
-        if version
-            .extensions
-            .get(extensions::LIMITS)
-            .is_some_and(|e| e == "1")
-        {
-            let limits = session.limits().await?;
-            let limits = Arc::new(Limits::from(limits));
-
-            session.set_limits(limits.clone());
-            extensions.limits = Some(limits);
+        if has_extension(extensions::LIMITS, "1") {
+            let limits = Limits::from(session.limits().await?);
+            session.set_limits(limits);
+            features.limits = Some(limits);
+            if let Some(plen) = limits.packet_len {
+                features.max_packet_len = (plen as u32).min(max_packet_len);
+            }
         }
 
         Ok(Self {
             session: Arc::new(session),
-            extensions: Arc::new(extensions),
+            features,
         })
     }
 
     /// Set the maximum response time in seconds.
     /// Default: 10 seconds
-    pub async fn set_timeout(&self, secs: u64) {
-        self.session.set_timeout(secs).await;
+    pub fn set_timeout(&self, secs: u64) {
+        self.session.set_timeout(secs);
     }
 
     /// Closes the inner channel stream.
@@ -128,11 +120,7 @@ impl SftpSession {
         attributes: FileAttributes,
     ) -> SftpResult<File> {
         let handle = self.session.open(filename, flags, attributes).await?.handle;
-        Ok(File::new(
-            self.session.clone(),
-            handle,
-            self.extensions.clone(),
-        ))
+        Ok(File::new(self.session.clone(), handle, self.features))
     }
 
     /// Requests the remote party for the absolute from the relative path.
@@ -180,8 +168,11 @@ impl SftpSession {
 
     /// Returns an iterator over the entries within a directory.
     pub async fn read_dir<P: Into<String>>(&self, path: P) -> SftpResult<ReadDir> {
-        let mut files = vec![];
+        let path: String = path.into();
+        let parent = Arc::from(path.as_str());
+
         let handle = self.session.opendir(path).await?.handle;
+        let mut files = vec![];
 
         loop {
             match self.session.readdir(handle.as_str()).await {
@@ -190,7 +181,7 @@ impl SftpSession {
                         .files
                         .into_iter()
                         .map(|f| (f.filename, f.attrs))
-                        .chain(files.into_iter())
+                        .chain(files)
                         .collect();
                 }
                 Err(Error::Status(status)) if status.status_code == StatusCode::Eof => break,
@@ -201,6 +192,7 @@ impl SftpSession {
         self.session.close(handle).await?;
 
         Ok(ReadDir {
+            parent,
             entries: files.into(),
         })
     }
@@ -265,7 +257,7 @@ impl SftpSession {
         O: Into<String>,
         N: Into<String>,
     {
-        if !self.extensions.hardlink {
+        if !self.features.hardlink {
             return Ok(false);
         }
 
@@ -275,7 +267,7 @@ impl SftpSession {
     /// Performs a statvfs on the remote file system path.
     /// Returns [`Ok(None)`] if the remote SFTP server does not support `statvfs@openssh.com` extension v2.
     pub async fn fs_info<P: Into<String>>(&self, path: P) -> SftpResult<Option<Statvfs>> {
-        if !self.extensions.statvfs {
+        if !self.features.statvfs {
             return Ok(None);
         }
 

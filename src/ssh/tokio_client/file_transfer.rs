@@ -19,17 +19,29 @@
 //! - Recursive directory upload/download
 //! - Support for glob patterns
 
-use russh_sftp::{client::SftpSession, protocol::OpenFlags};
+use russh_sftp::{client::{Config, SftpSession}, protocol::OpenFlags};
 use std::path::Path;
 use tokio::io::AsyncWriteExt;
 
 use super::connection::Client;
 
-/// Maximum number of concurrent SFTP `WRITE`/`READ` requests held in flight per
-/// transfer.  Mirrors OpenSSH `sftp(1)`'s default (`-R 64`) — large enough to
+/// Maximum number of concurrent SFTP `READ`/`WRITE` requests held in flight per
+/// transfer. Mirrors OpenSSH `sftp(1)`'s default (`-R 64`) — large enough to
 /// hide per-request RTT on intra-DC and intercontinental links, small enough to
 /// keep peak buffer memory bounded (`MAX_INFLIGHT * MAX_WRITE_LENGTH ≈ 16 MiB`).
+///
+/// `READ` uses this through `File::read_to_writer_pipelined`. `WRITE` is
+/// pipelined natively by `AsyncWrite for File` (upstream russh-sftp 2.3.0+,
+/// PR #85), so we plumb the same depth through `Config::max_concurrent_writes`
+/// when opening the SFTP session.
 const MAX_INFLIGHT_REQUESTS: usize = 64;
+
+fn sftp_config() -> Config {
+    Config {
+        max_concurrent_writes: MAX_INFLIGHT_REQUESTS,
+        ..Default::default()
+    }
+}
 
 impl Client {
     /// Upload a file with sftp to the remote server.
@@ -49,7 +61,7 @@ impl Client {
         // start sftp session
         let channel = self.get_channel().await?;
         channel.request_subsystem(true, "sftp").await?;
-        let sftp = SftpSession::new(channel.into_stream()).await?;
+        let sftp = SftpSession::new_with_config(channel.into_stream(), sftp_config()).await?;
 
         // Stream local file with multiple SFTP WRITE requests in flight to
         // hide per-request RTT and avoid loading the entire file in memory.
@@ -63,8 +75,9 @@ impl Client {
                 OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE | OpenFlags::READ,
             )
             .await?;
-        file.write_all_pipelined(&mut local_file, MAX_INFLIGHT_REQUESTS)
-            .await?;
+        tokio::io::copy(&mut local_file, &mut file)
+            .await
+            .map_err(super::Error::IoError)?;
         file.flush().await.map_err(super::Error::IoError)?;
         file.shutdown().await.map_err(super::Error::IoError)?;
 
@@ -86,7 +99,7 @@ impl Client {
         // start sftp session
         let channel = self.get_channel().await?;
         channel.request_subsystem(true, "sftp").await?;
-        let sftp = SftpSession::new(channel.into_stream()).await?;
+        let sftp = SftpSession::new_with_config(channel.into_stream(), sftp_config()).await?;
 
         // Stream remote file with multiple SFTP READ requests in flight; chunks
         // are reassembled in offset order before being written to disk.
@@ -129,7 +142,7 @@ impl Client {
         // Start SFTP session
         let channel = self.get_channel().await?;
         channel.request_subsystem(true, "sftp").await?;
-        let sftp = SftpSession::new(channel.into_stream()).await?;
+        let sftp = SftpSession::new_with_config(channel.into_stream(), sftp_config()).await?;
 
         // Create remote directory if it doesn't exist
         let _ = sftp.create_dir(&remote_dir).await; // Ignore error if already exists
@@ -182,9 +195,9 @@ impl Client {
                         )
                         .await?;
 
-                    remote_file
-                        .write_all_pipelined(&mut local_file, MAX_INFLIGHT_REQUESTS)
-                        .await?;
+                    tokio::io::copy(&mut local_file, &mut remote_file)
+                        .await
+                        .map_err(super::Error::IoError)?;
                     remote_file.flush().await.map_err(super::Error::IoError)?;
                     remote_file
                         .shutdown()
@@ -213,7 +226,7 @@ impl Client {
         // Start SFTP session
         let channel = self.get_channel().await?;
         channel.request_subsystem(true, "sftp").await?;
-        let sftp = SftpSession::new(channel.into_stream()).await?;
+        let sftp = SftpSession::new_with_config(channel.into_stream(), sftp_config()).await?;
 
         // Create local directory if it doesn't exist
         tokio::fs::create_dir_all(local_dir)

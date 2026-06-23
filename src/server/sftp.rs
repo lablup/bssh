@@ -50,6 +50,7 @@ use std::sync::Arc;
 use russh_sftp::protocol::{
     Attrs, Data, FileAttributes, Handle, Name, OpenFlags, Status, StatusCode, Version,
 };
+use russh_sftp::server::StatusReply;
 use tokio::fs::{self, File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::sync::Mutex;
@@ -135,6 +136,12 @@ impl From<std::io::Error> for SftpError {
 impl From<SftpError> for StatusCode {
     fn from(err: SftpError) -> Self {
         err.code
+    }
+}
+
+impl From<SftpError> for StatusReply {
+    fn from(err: SftpError) -> Self {
+        StatusReply::new(err.code).with_message(err.message)
     }
 }
 

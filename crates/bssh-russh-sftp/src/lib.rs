@@ -1,6 +1,3 @@
-// Lints tripped by vendored upstream source that we do not want to diverge from.
-#![allow(clippy::io_other_error)]
-
 //! SFTP subsystem with client and server support for Russh and more!
 //!
 //! Crate can provide compatibility with anything that can provide the raw data
@@ -34,5 +31,6 @@ pub mod extensions;
 pub mod protocol;
 pub mod ser;
 /// Server side
+#[cfg(not(target_arch = "wasm32"))]
 pub mod server;
 mod utils;
