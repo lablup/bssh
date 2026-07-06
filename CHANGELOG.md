@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Make `sftp.root` chroot actually usable — resolve client absolute paths relative to the chroot root** (#214). With `sftp.root` configured, directory listing worked but every path resolution failed: `cd subdir`, `get file`, and even `get` of a file sitting directly at the chroot root were rejected as `path outside root` or `not found`, so only bare `/` and `readdir` functioned. Root cause: under chroot the client's coordinate space is rooted at `/` (this is what `realpath` reports and what the client sends back), but `resolve_chroot` treated a client absolute path such as `/subdir` as a *host* path and rejected anything not starting with the host root — so `/subdir` (meaning `<root>/subdir`) never matched. A prior change had introduced this to avoid "path doubling", but real SFTP clients never send the host path; they send chroot-relative absolute paths, so the guard broke the normal case. `resolve_chroot` now interprets both absolute and relative client paths relative to `root`, ignoring a leading `/`, dropping `.`, and clamping `..` so traversal still cannot escape. Containment is unchanged and verified: `..` stays pinned at the root and a client `/etc/passwd` maps to `<root>/etc/passwd` (a likely-nonexistent path inside the jail), never the host's `/etc/passwd`. Verified end-to-end with the OpenSSH `sftp` client (`cd`/`get`/root-level files/Unicode names all work; escape attempts stay confined) and covered by updated unit tests.
+
 ## [2.2.3] - 2026-05-25
 
 ### Security
