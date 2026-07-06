@@ -1310,6 +1310,9 @@ impl russh::server::Handler for SshHandler {
             // Clone what we need for the async block
             let auth_provider = Arc::clone(&self.auth_provider);
             let peer_addr = self.peer_addr;
+            let sftp_root = self.config.sftp_root.clone();
+            // Handle used to close the channel once the SFTP session ends.
+            let handle = session.handle();
 
             // Signal success before spawning the SFTP handler
             let _ = session.channel_success(channel_id);
@@ -1323,6 +1326,8 @@ impl russh::server::Handler for SshHandler {
                             user = %username,
                             "User not found after authentication for SFTP"
                         );
+                        let _ = handle.eof(channel_id).await;
+                        let _ = handle.close(channel_id).await;
                         return Ok(());
                     }
                     Err(e) => {
@@ -1331,6 +1336,8 @@ impl russh::server::Handler for SshHandler {
                             error = %e,
                             "Failed to get user info for SFTP"
                         );
+                        let _ = handle.eof(channel_id).await;
+                        let _ = handle.close(channel_id).await;
                         return Ok(());
                     }
                 };
@@ -1346,18 +1353,27 @@ impl russh::server::Handler for SshHandler {
                 // run without chroot, matching OpenSSH `sftp-server` defaults.
                 let sftp_handler = SftpHandler::new(
                     user_info.clone(),
-                    self.config.sftp_root.clone(),
+                    sftp_root,
                     user_info.home_dir,
                 );
 
-                // Run SFTP server on the channel stream
-                russh_sftp::server::run(channel.into_stream(), sftp_handler).await;
-
-                tracing::info!(
-                    user = %username,
-                    peer = ?peer_addr,
-                    "SFTP session ended"
-                );
+                // `run` spawns the SFTP request loop and hands back a
+                // JoinHandle that resolves when the client closes the stream.
+                // Await it on a detached task and then send EOF + CLOSE, so
+                // clients that block on the server's channel-close handshake
+                // (e.g. sshj/JSch, as used by Cyberduck/PyCharm) don't hang
+                // waiting ~30s for a close that never arrives.
+                let sftp_done = russh_sftp::server::run(channel.into_stream(), sftp_handler).await;
+                tokio::spawn(async move {
+                    let _ = sftp_done.await;
+                    let _ = handle.eof(channel_id).await;
+                    let _ = handle.close(channel_id).await;
+                    tracing::info!(
+                        user = %username,
+                        peer = ?peer_addr,
+                        "SFTP session ended"
+                    );
+                });
 
                 Ok(())
             }
