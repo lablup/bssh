@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Advertise only `none` SSH compression so clients that negotiate `zlib@openssh.com` no longer drop mid-session** (#215). Cyberduck — and OpenSSH `sftp -C`, or any client that prefers delayed zlib — completed the SFTP handshake (`INIT` / `REALPATH` / `STAT` all succeeded) and then the connection died, with the server logging `SshEncoding: length invalid` on the next inbound packet. Root cause is russh's delayed-zlib (`zlib@openssh.com`) transport: the flate2 stream desyncs a few packets after compression activates post-auth, so russh decodes the following packet's length prefix out of corrupted plaintext. It reproduces on both russh 0.61.1 and 0.62.1, which rules out the channel-close path and pins it to compression rather than the SFTP layer (OpenSSH's default `sftp`, FileZilla, and paramiko all negotiate `none` and were unaffected). `build_russh_config` now sets `russh::Preferred { compression: Cow::Borrowed(&[compression::NONE]), ..DEFAULT }`, so the server advertises only `none` and every client falls back to the uncompressed transport — matching the Dropbear / OpenSSH `sftp-server` defaults used in Backend.AI kernel containers, where compression was never in play. Verified with `sftp -C` (now negotiates `compression: none` and lists/downloads cleanly) and a live Cyberduck 9.5 session. The underlying russh delayed-zlib desync is left to be fixed upstream.
+
 ## [2.2.3] - 2026-05-25
 
 ### Security

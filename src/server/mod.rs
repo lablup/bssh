@@ -193,8 +193,23 @@ impl BsshServer {
 
         tracing::info!(key_count = keys.len(), "Loaded host keys");
 
+        // russh's delayed zlib (`zlib@openssh.com`) compression desyncs and
+        // corrupts the channel stream after a few packets, so any client that
+        // negotiates compression — Cyberduck, `sftp -C` — fails mid-session
+        // with "SshEncoding: length invalid" (reproducible in russh 0.61.1 and
+        // 0.62.1). Until the upstream russh bug is fixed, advertise only "none"
+        // so clients fall back to the uncompressed transport, matching the
+        // Dropbear/OpenSSH sftp-server defaults used in Backend.AI containers.
+        // See https://github.com/lablup/bssh/issues/215.
+        const NO_COMPRESSION: &[russh::compression::Name] = &[russh::compression::NONE];
+        let preferred = russh::Preferred {
+            compression: std::borrow::Cow::Borrowed(NO_COMPRESSION),
+            ..russh::Preferred::DEFAULT
+        };
+
         Ok(russh::server::Config {
             keys,
+            preferred,
             auth_rejection_time: Duration::from_secs(3),
             auth_rejection_time_initial: Some(Duration::from_secs(0)),
             max_auth_attempts: self.config.max_auth_attempts as usize,
