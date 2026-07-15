@@ -20,15 +20,19 @@ use std::path::PathBuf;
 #[command(
     name = "bssh",
     version,
-    before_help = "\n\nBroadcast SSH - Parallel command execution across cluster nodes",
     about = "Broadcast SSH - SSH-compatible parallel command execution tool",
     long_about = "bssh is a high-performance SSH client with parallel execution capabilities.\nIt can be used as a drop-in replacement for SSH (single host) or as a powerful cluster management tool (multiple hosts).\n\nThe tool provides secure file transfer using SFTP and supports SSH keys, SSH agent, and password authentication.\nIt automatically detects Backend.AI multi-node session environments.\n\nOutput Modes:\n- TUI Mode (default): Interactive terminal UI with real-time monitoring (auto-enabled in terminals)\n- Stream Mode (--stream): Real-time output with [node] prefixes\n- File Mode (--output-dir): Save per-node output to timestamped files\n- Normal Mode: Traditional output after all nodes complete\n\nSSH Configuration Support:\n- Reads standard SSH config files (defaulting to ~/.ssh/config)\n- Supports Host patterns, HostName, User, Port, IdentityFile, StrictHostKeyChecking\n- ProxyJump, and many other SSH configuration directives\n- CLI arguments override SSH config values following SSH precedence rules",
-    after_help = "EXAMPLES:\n  SSH Mode:\n    bssh user@host                         # Interactive shell\n    bssh admin@server.com \"uptime\"         # Execute command\n    bssh -p 2222 -i ~/.ssh/key user@host   # Custom port and key\n    bssh -F ~/.ssh/myconfig webserver      # Use custom SSH config\n\n  Port Forwarding:\n    bssh -L 8080:example.com:80 user@host  # Local forward: localhost:8080 -> example.com:80\n    bssh -R 8080:localhost:80 user@host    # Remote forward: remote:8080 -> localhost:80\n    bssh -D 1080 user@host                 # SOCKS5 proxy on localhost:1080\n    bssh -L 3306:db:3306 -R 80:web:80 user@host  # Multiple forwards\n    bssh -D *:1080/4 user@host             # SOCKS4 proxy on all interfaces\n\n  Multi-Server Mode:\n    bssh -C production \"systemctl status\"  # Execute on cluster (TUI mode auto-enabled)\n    bssh -H \"web1,web2,web3\" \"df -h\"      # Execute on multiple hosts\n    bssh -H \"web1,web2,web3\" -f \"web1\" \"df -h\"  # Filter to web1 only\n    bssh -C production -f \"web*\" \"uptime\"  # Filter cluster nodes\n    bssh --parallel 20 -H web* \"apt update\" # Increase parallelism\n\n  Hostlist Expression (pdsh-style range expansion):\n    bssh -H \"node[1-5]\" \"uptime\"           # Expands to node1, node2, node3, node4, node5\n    bssh -H \"node[01-03]\" \"df -h\"          # Zero-padded: node01, node02, node03\n    bssh -H \"node[1,3,5]\" \"ps aux\"         # Specific values: node1, node3, node5\n    bssh -H \"node[1-3,7,9-10]\" \"uptime\"    # Mixed: node1-3, node7, node9-10\n    bssh -H \"rack[1-2]-node[1-3]\" \"uptime\" # Cartesian product: 6 hosts\n    bssh -H \"web[1-3].example.com\" \"uptime\" # With domain suffix\n    bssh -H \"admin@db[01-03]:5432\" \"psql\"  # With user and port\n    bssh -H \"^/etc/hosts.cluster\" \"uptime\" # Read hosts from file\n\n  Host Exclusion (--exclude):\n    bssh -H \"node1,node2,node3\" --exclude \"node2\" \"uptime\"  # Exclude single host\n    bssh -C production --exclude \"web1,web2\" \"apt update\"  # Exclude multiple hosts\n    bssh -C production --exclude \"db*\" \"systemctl restart\" # Exclude with wildcard pattern\n    bssh -H \"node[1-10]\" --exclude \"node[3-5]\" \"uptime\"    # Exclude with hostlist expression\n\n  Fail-Fast Mode (pdsh -k compatible):\n    bssh -k -H \"web[1-3]\" \"deploy.sh\"      # Stop on first failure\n    bssh --fail-fast -C prod \"apt upgrade\" # Critical deployment - stop if any node fails\n    bssh -k --require-all-success -C prod cmd # Fail-fast + require all success\n\n  Output Modes:\n    bssh -C prod \"apt-get update\"          # TUI mode (default, interactive monitoring)\n    bssh -C prod --stream \"tail -f log\"    # Stream mode (real-time with [node] prefixes)\n    bssh -C prod --output-dir ./logs \"ps\" # File mode (save to timestamped files)\n    bssh -C prod \"uptime\" | tee log.txt    # Normal mode (auto-detected when piped)\n\n  Batch Mode (Ctrl+C Handling):\n    bssh -C prod \"long-running-command\"    # Default: first Ctrl+C shows status, second terminates\n    bssh -C prod -b \"long-command\"         # Batch mode: single Ctrl+C terminates immediately\n    bssh -H nodes --batch --stream \"cmd\"   # Useful for CI/CD and non-interactive scripts\n\n  TUI Mode Controls (when in TUI):\n    1-9         Jump to node detail view\n    s           Enter split view (2-4 nodes)\n    d           Enter diff view (compare nodes)\n    f           Toggle auto-scroll\n    Up/Down     Scroll output\n    Left/Right  Switch nodes\n    Esc         Return to summary\n    ?           Show help\n    q           Quit\n\n  File Operations:\n    bssh -C staging upload file.txt /tmp/  # Upload to cluster\n    bssh -H host1,host2 download /etc/hosts ./backups/\n\n  Other Commands:\n    bssh list                              # List configured clusters\n    bssh -C production ping                # Test connectivity\n    bssh -H hosts interactive              # Interactive mode\n\n  SSH Config Example (~/.ssh/config):\n    Host web*\n        HostName web.example.com\n        User webuser\n        Port 2222\n        IdentityFile ~/.ssh/web_key\n        StrictHostKeyChecking yes\n\nDeveloped and maintained as part of the Backend.AI project.\nFor more information: https://github.com/lablup/bssh"
+    subcommand_help_heading = "Available Commands",
+    help_template = "{about-with-newline}\nUsage:\n  {usage}\n\n{all-args}{after-help}",
+    after_help = "\nUse \"bssh <command> --help\" for more information about a command.\nUse \"bssh --help\" for the full flag reference and examples.",
+    after_long_help = "EXAMPLES:\n  SSH Mode:\n    bssh user@host                         # Interactive shell\n    bssh admin@server.com \"uptime\"         # Execute command\n    bssh -p 2222 -i ~/.ssh/key user@host   # Custom port and key\n    bssh -F ~/.ssh/myconfig webserver      # Use custom SSH config\n\n  Port Forwarding:\n    bssh -L 8080:example.com:80 user@host  # Local forward: localhost:8080 -> example.com:80\n    bssh -R 8080:localhost:80 user@host    # Remote forward: remote:8080 -> localhost:80\n    bssh -D 1080 user@host                 # SOCKS5 proxy on localhost:1080\n    bssh -L 3306:db:3306 -R 80:web:80 user@host  # Multiple forwards\n    bssh -D *:1080/4 user@host             # SOCKS4 proxy on all interfaces\n\n  Multi-Server Mode:\n    bssh -C production \"systemctl status\"  # Execute on cluster (TUI mode auto-enabled)\n    bssh -H \"web1,web2,web3\" \"df -h\"      # Execute on multiple hosts\n    bssh -H \"web1,web2,web3\" -f \"web1\" \"df -h\"  # Filter to web1 only\n    bssh -C production -f \"web*\" \"uptime\"  # Filter cluster nodes\n    bssh --parallel 20 -H web* \"apt update\" # Increase parallelism\n\n  Hostlist Expression (pdsh-style range expansion):\n    bssh -H \"node[1-5]\" \"uptime\"           # Expands to node1, node2, node3, node4, node5\n    bssh -H \"node[01-03]\" \"df -h\"          # Zero-padded: node01, node02, node03\n    bssh -H \"node[1,3,5]\" \"ps aux\"         # Specific values: node1, node3, node5\n    bssh -H \"node[1-3,7,9-10]\" \"uptime\"    # Mixed: node1-3, node7, node9-10\n    bssh -H \"rack[1-2]-node[1-3]\" \"uptime\" # Cartesian product: 6 hosts\n    bssh -H \"web[1-3].example.com\" \"uptime\" # With domain suffix\n    bssh -H \"admin@db[01-03]:5432\" \"psql\"  # With user and port\n    bssh -H \"^/etc/hosts.cluster\" \"uptime\" # Read hosts from file\n\n  Host Exclusion (--exclude):\n    bssh -H \"node1,node2,node3\" --exclude \"node2\" \"uptime\"  # Exclude single host\n    bssh -C production --exclude \"web1,web2\" \"apt update\"  # Exclude multiple hosts\n    bssh -C production --exclude \"db*\" \"systemctl restart\" # Exclude with wildcard pattern\n    bssh -H \"node[1-10]\" --exclude \"node[3-5]\" \"uptime\"    # Exclude with hostlist expression\n\n  Fail-Fast Mode (pdsh -k compatible):\n    bssh -k -H \"web[1-3]\" \"deploy.sh\"      # Stop on first failure\n    bssh --fail-fast -C prod \"apt upgrade\" # Critical deployment - stop if any node fails\n    bssh -k --require-all-success -C prod cmd # Fail-fast + require all success\n\n  Output Modes:\n    bssh -C prod \"apt-get update\"          # TUI mode (default, interactive monitoring)\n    bssh -C prod --stream \"tail -f log\"    # Stream mode (real-time with [node] prefixes)\n    bssh -C prod --output-dir ./logs \"ps\" # File mode (save to timestamped files)\n    bssh -C prod \"uptime\" | tee log.txt    # Normal mode (auto-detected when piped)\n\n  Batch Mode (Ctrl+C Handling):\n    bssh -C prod \"long-running-command\"    # Default: first Ctrl+C shows status, second terminates\n    bssh -C prod -b \"long-command\"         # Batch mode: single Ctrl+C terminates immediately\n    bssh -H nodes --batch --stream \"cmd\"   # Useful for CI/CD and non-interactive scripts\n\n  TUI Mode Controls (when in TUI):\n    1-9         Jump to node detail view\n    s           Enter split view (2-4 nodes)\n    d           Enter diff view (compare nodes)\n    f           Toggle auto-scroll\n    Up/Down     Scroll output\n    Left/Right  Switch nodes\n    Esc         Return to summary\n    ?           Show help\n    q           Quit\n\n  File Operations:\n    bssh -C staging upload file.txt /tmp/  # Upload to cluster\n    bssh -H host1,host2 download /etc/hosts ./backups/\n\n  Other Commands:\n    bssh list                              # List configured clusters\n    bssh -C production ping                # Test connectivity\n    bssh -H hosts interactive              # Interactive mode\n\n  SSH Config Example (~/.ssh/config):\n    Host web*\n        HostName web.example.com\n        User webuser\n        Port 2222\n        IdentityFile ~/.ssh/web_key\n        StrictHostKeyChecking yes\n\nDeveloped and maintained as part of the Backend.AI project.\nFor more information: https://github.com/lablup/bssh\n\nUse \"bssh <command> --help\" for more information about a command."
 )]
 pub struct Cli {
-    /// SSH destination in format: [user@]hostname[:port] or ssh://[user@]hostname[:port]
-    /// Used for SSH compatibility mode (single host connection)
-    #[arg(value_name = "destination")]
+    #[arg(
+        value_name = "destination",
+        help = "SSH destination [user@]hostname[:port] (single-host SSH mode)",
+        long_help = "SSH destination in format: [user@]hostname[:port] or ssh://[user@]hostname[:port]\nUsed for SSH compatibility mode (single host connection)"
+    )]
     pub destination: Option<String>,
 
     #[command(subcommand)]
@@ -38,27 +42,34 @@ pub struct Cli {
         short = 'H',
         long,
         value_delimiter = ',',
-        help = "Comma-separated list of hosts with hostlist expansion support\nFormat: [user@]hostname[:port] with optional range expressions\nRange expressions:\n  node[1-5]        -> node1, node2, node3, node4, node5\n  node[01-03]      -> node01, node02, node03 (zero-padded)\n  node[1,3,5]      -> node1, node3, node5\n  rack[1-2]-node[1-3] -> 6 hosts (cartesian product)\n  ^/path/to/file   -> read hosts from file\nExamples:\n  'web[1-3].example.com' for web1-web3\n  'admin@db[01-03]:5432' for db01-db03 with user and port"
+        help_heading = "Target Selection",
+        help = "Comma-separated hosts with hostlist expansion (e.g. node[1-5])",
+        long_help = "Comma-separated list of hosts with hostlist expansion support\nFormat: [user@]hostname[:port] with optional range expressions\nRange expressions:\n  node[1-5]        -> node1, node2, node3, node4, node5\n  node[01-03]      -> node01, node02, node03 (zero-padded)\n  node[1,3,5]      -> node1, node3, node5\n  rack[1-2]-node[1-3] -> 6 hosts (cartesian product)\n  ^/path/to/file   -> read hosts from file\nExamples:\n  'web[1-3].example.com' for web1-web3\n  'admin@db[01-03]:5432' for db01-db03 with user and port"
     )]
     pub hosts: Option<Vec<String>>,
 
     #[arg(
         short = 'f',
         long = "filter",
-        help = "Filter hosts by pattern (supports wildcards and hostlist expressions)\nUse with -H or -C to execute on a subset of hosts\nExamples:\n  'web*'       -> matches web01, web02, etc. (glob)\n  'node[1-3]'  -> matches node1, node2, node3 (hostlist)"
+        help_heading = "Target Selection",
+        help = "Filter target hosts by pattern (glob or hostlist)",
+        long_help = "Filter hosts by pattern (supports wildcards and hostlist expressions)\nUse with -H or -C to execute on a subset of hosts\nExamples:\n  'web*'       -> matches web01, web02, etc. (glob)\n  'node[1-3]'  -> matches node1, node2, node3 (hostlist)"
     )]
     pub filter: Option<String>,
 
     #[arg(
         long = "exclude",
         value_delimiter = ',',
-        help = "Exclude hosts from target list (comma-separated)\nSupports wildcards and hostlist expressions:\n  Wildcards: '*' (any chars), '?' (single char), '[abc]' (char set)\n  Hostlist: 'node[1-5]', 'node[1,3,5]', 'rack[1-2]-node[1-3]'\nMatching: glob for wildcards, exact for hostlist expansions\nApplied after --filter option"
+        help_heading = "Target Selection",
+        help = "Exclude hosts from target list (glob or hostlist)",
+        long_help = "Exclude hosts from target list (comma-separated)\nSupports wildcards and hostlist expressions:\n  Wildcards: '*' (any chars), '?' (single char), '[abc]' (char set)\n  Hostlist: 'node[1-5]', 'node[1,3,5]', 'rack[1-2]-node[1-3]'\nMatching: glob for wildcards, exact for hostlist expansions\nApplied after --filter option"
     )]
     pub exclude: Option<Vec<String>>,
 
     #[arg(
         short = 'C',
         long = "cluster",
+        help_heading = "Target Selection",
         help = "Cluster name from configuration file (multi-server mode)"
     )]
     pub cluster: Option<String>,
@@ -66,33 +77,41 @@ pub struct Cli {
     #[arg(
         long,
         default_value = "~/.config/bssh/config.yaml",
-        help = "Configuration file path [default: ~/.config/bssh/config.yaml]\nConfig loading priority:\n  1. Backend.AI env vars (auto-detected)\n  2. Current directory (./config.yaml)\n  3. User config (~/.config/bssh/config.yaml)\n  4. This flag's value"
+        help_heading = "Configuration",
+        help = "Configuration file path",
+        long_help = "Configuration file path [default: ~/.config/bssh/config.yaml]\nConfig loading priority:\n  1. Backend.AI env vars (auto-detected)\n  2. Current directory (./config.yaml)\n  3. User config (~/.config/bssh/config.yaml)\n  4. This flag's value"
     )]
     pub config: PathBuf,
 
     #[arg(
         short = 'l',
         long = "login",
-        help = "Specifies the user to log in as on the remote machine (SSH-compatible)"
+        help_heading = "Authentication",
+        help = "User to log in as on the remote machine (SSH-compatible)"
     )]
     pub user: Option<String>,
 
     #[arg(
         short = 'i',
         long,
-        help = "SSH private key file path (prompts for passphrase if encrypted)\nAutomatically detects encrypted keys and prompts for passphrase\nFalls back to default keys (~/.ssh/id_ed25519, ~/.ssh/id_rsa, etc.) if not specified"
+        help_heading = "Authentication",
+        help = "SSH private key file path",
+        long_help = "SSH private key file path (prompts for passphrase if encrypted)\nAutomatically detects encrypted keys and prompts for passphrase\nFalls back to default keys (~/.ssh/id_ed25519, ~/.ssh/id_rsa, etc.) if not specified"
     )]
     pub identity: Option<PathBuf>,
 
     #[arg(
         short = 'A',
         long,
-        help = "Use SSH agent for authentication (Unix/Linux/macOS only)\nAuto-detected when SSH_AUTH_SOCK is set. Falls back to key file if agent auth fails"
+        help_heading = "Authentication",
+        help = "Use SSH agent for authentication",
+        long_help = "Use SSH agent for authentication (Unix/Linux/macOS only)\nAuto-detected when SSH_AUTH_SOCK is set. Falls back to key file if agent auth fails"
     )]
     pub use_agent: bool,
 
     #[arg(
         long = "password",
+        help_heading = "Authentication",
         help = "Use password authentication (will prompt for password)"
     )]
     pub password: bool,
@@ -100,21 +119,27 @@ pub struct Cli {
     #[arg(
         short = 'S',
         long = "sudo-password",
-        help = "Prompt for sudo password to automatically respond to sudo prompts\nWhen enabled, bssh will:\n  1. Securely prompt for sudo password before execution\n  2. Detect sudo password prompts in command output\n  3. Automatically inject the password when prompted\n\nAlternatively, set BSSH_SUDO_PASSWORD environment variable (not recommended)\nSecurity: Password is cleared from memory after use"
+        help_heading = "Authentication",
+        help = "Prompt for sudo password and auto-respond to sudo prompts",
+        long_help = "Prompt for sudo password to automatically respond to sudo prompts\nWhen enabled, bssh will:\n  1. Securely prompt for sudo password before execution\n  2. Detect sudo password prompts in command output\n  3. Automatically inject the password when prompted\n\nAlternatively, set BSSH_SUDO_PASSWORD environment variable (not recommended)\nSecurity: Password is cleared from memory after use"
     )]
     pub sudo_password: bool,
 
     #[arg(
         short = 'b',
         long = "batch",
-        help = "Batch mode: single Ctrl+C immediately terminates all jobs\nDisables two-stage Ctrl+C handling (status display on first press)\nUseful for non-interactive scripts and CI/CD pipelines\nNote: TUI mode has its own quit handling (q or Ctrl+C) and ignores this flag"
+        help_heading = "Execution Control",
+        help = "Batch mode: single Ctrl+C immediately terminates all jobs",
+        long_help = "Batch mode: single Ctrl+C immediately terminates all jobs\nDisables two-stage Ctrl+C handling (status display on first press)\nUseful for non-interactive scripts and CI/CD pipelines\nNote: TUI mode has its own quit handling (q or Ctrl+C) and ignores this flag"
     )]
     pub batch: bool,
 
     #[arg(
         short = 'J',
         long = "jump-host",
-        help = "Comma-separated list of jump hosts (ProxyJump)\n\
+        help_heading = "Connection",
+        help = "Comma-separated jump hosts (ProxyJump)",
+        long_help = "Comma-separated list of jump hosts (ProxyJump)\n\
                Format: [user@]hostname[:port]\n\
                Examples:\n  \
                  bai@bastion:4300          (user 'bai' on port 4300)\n  \
@@ -128,6 +153,7 @@ pub struct Cli {
     #[arg(
         long = "parallel",
         default_value = "10",
+        help_heading = "Target Selection",
         help = "Maximum parallel connections (multi-server mode)"
     )]
     pub parallel: usize,
@@ -136,26 +162,33 @@ pub struct Cli {
         short = 'p',
         long = "port",
         value_name = "port",
+        help_heading = "Connection",
         help = "Port to connect to on the remote host (SSH-compatible)"
     )]
     pub port: Option<u16>,
 
     #[arg(
         long,
-        help = "Stream output in real-time with [node] prefixes\nEach line of output is prefixed with the node hostname and displayed as it arrives.\nUseful for monitoring long-running commands across multiple nodes.\nAutomatically disabled when output is piped or in CI environments."
+        help_heading = "Output",
+        help = "Stream output in real-time with [node] prefixes",
+        long_help = "Stream output in real-time with [node] prefixes\nEach line of output is prefixed with the node hostname and displayed as it arrives.\nUseful for monitoring long-running commands across multiple nodes.\nAutomatically disabled when output is piped or in CI environments."
     )]
     pub stream: bool,
 
     #[arg(
         short = 'N',
         long = "no-prefix",
-        help = "Disable hostname prefix in output lines (pdsh -N compatibility)\nUseful for programmatic parsing or cleaner display"
+        help_heading = "Output",
+        help = "Disable hostname prefix in output lines (pdsh -N)",
+        long_help = "Disable hostname prefix in output lines (pdsh -N compatibility)\nUseful for programmatic parsing or cleaner display"
     )]
     pub no_prefix: bool,
 
     #[arg(
         long,
-        help = "Output directory for per-node command results\nCreates timestamped files:\n  - hostname_TIMESTAMP.stdout (command output)\n  - hostname_TIMESTAMP.stderr (error output)\n  - hostname_TIMESTAMP.error (connection failures)\n  - summary_TIMESTAMP.txt (execution summary)"
+        help_heading = "Output",
+        help = "Save per-node command results to timestamped files",
+        long_help = "Output directory for per-node command results\nCreates timestamped files:\n  - hostname_TIMESTAMP.stdout (command output)\n  - hostname_TIMESTAMP.stderr (error output)\n  - hostname_TIMESTAMP.error (connection failures)\n  - summary_TIMESTAMP.txt (execution summary)"
     )]
     pub output_dir: Option<PathBuf>,
 
@@ -163,6 +196,7 @@ pub struct Cli {
         short = 'v',
         long,
         action = clap::ArgAction::Count,
+        help_heading = "Output",
         help = "Increase verbosity (-v, -vv, -vvv)"
     )]
     pub verbose: u8,
@@ -170,12 +204,15 @@ pub struct Cli {
     #[arg(
         long,
         default_value = "accept-new",
-        help = "Host key checking mode (yes/no/accept-new) [default: accept-new]\n  yes        - Strict checking against known_hosts (most secure)\n  no         - Accept all host keys (insecure, testing only)\n  accept-new - Accept new hosts, reject changed keys (recommended)"
+        help_heading = "Connection",
+        help = "Host key checking mode (yes/no/accept-new)",
+        long_help = "Host key checking mode (yes/no/accept-new) [default: accept-new]\n  yes        - Strict checking against known_hosts (most secure)\n  no         - Accept all host keys (insecure, testing only)\n  accept-new - Accept new hosts, reject changed keys (recommended)"
     )]
     pub strict_host_key_checking: String,
 
     #[arg(
         long,
+        help_heading = "Execution Control",
         help = "Command timeout in seconds (0 for unlimited, default: 300 if not specified)"
     )]
     pub timeout: Option<u64>,
@@ -185,6 +222,7 @@ pub struct Cli {
         default_value = "30",
         value_name = "SECONDS",
         value_parser = clap::value_parser!(u64).range(1..),
+        help_heading = "Connection",
         help = "SSH connection timeout in seconds (minimum: 1)"
     )]
     pub connect_timeout: u64,
@@ -192,46 +230,60 @@ pub struct Cli {
     #[arg(
         long = "server-alive-interval",
         value_name = "SECONDS",
-        help = "Keepalive interval in seconds (default: 30, 0 to disable)\nSends keepalive packets to prevent idle connection timeouts.\nMatches OpenSSH ServerAliveInterval option."
+        help_heading = "Connection",
+        help = "Keepalive interval in seconds (default: 30, 0 to disable)",
+        long_help = "Keepalive interval in seconds (default: 30, 0 to disable)\nSends keepalive packets to prevent idle connection timeouts.\nMatches OpenSSH ServerAliveInterval option."
     )]
     pub server_alive_interval: Option<u64>,
 
     #[arg(
         long = "server-alive-count-max",
         value_name = "COUNT",
-        help = "Max keepalive messages without response before disconnect (default: 3)\nConnection is considered dead after this many missed keepalives.\nMatches OpenSSH ServerAliveCountMax option."
+        help_heading = "Connection",
+        help = "Max missed keepalives before disconnect (default: 3)",
+        long_help = "Max keepalive messages without response before disconnect (default: 3)\nConnection is considered dead after this many missed keepalives.\nMatches OpenSSH ServerAliveCountMax option."
     )]
     pub server_alive_count_max: Option<usize>,
 
     #[arg(
         long,
-        help = "Require all nodes to succeed (v1.0-v1.1 behavior)\nDefault: return main rank's exit code (v1.2+)\nUseful for health checks and monitoring where all nodes must be operational"
+        help_heading = "Execution Control",
+        help = "Require all nodes to succeed",
+        long_help = "Require all nodes to succeed (v1.0-v1.1 behavior)\nDefault: return main rank's exit code (v1.2+)\nUseful for health checks and monitoring where all nodes must be operational"
     )]
     pub require_all_success: bool,
 
     #[arg(
         long,
         conflicts_with = "require_all_success",
-        help = "Check all nodes but preserve main rank exit code\nReturns main rank's exit code if non-zero, or 1 if main succeeded but others failed\nHybrid approach for production deployments"
+        help_heading = "Execution Control",
+        help = "Check all nodes but preserve main rank exit code",
+        long_help = "Check all nodes but preserve main rank exit code\nReturns main rank's exit code if non-zero, or 1 if main succeeded but others failed\nHybrid approach for production deployments"
     )]
     pub check_all_nodes: bool,
 
     #[arg(
         short = 'k',
         long = "fail-fast",
-        help = "Stop execution immediately on first failure (pdsh -k compatible)\nCancels pending commands when any node fails (connection error or non-zero exit)\nUseful for critical operations where partial execution is unacceptable"
+        help_heading = "Execution Control",
+        help = "Stop execution immediately on first failure (pdsh -k)",
+        long_help = "Stop execution immediately on first failure (pdsh -k compatible)\nCancels pending commands when any node fails (connection error or non-zero exit)\nUseful for critical operations where partial execution is unacceptable"
     )]
     pub fail_fast: bool,
 
     #[arg(
         long = "any-failure",
-        help = "Return largest exit code from any node (pdsh -S compatible)\nWhen enabled, returns the maximum exit code from all nodes\nUseful for build/test pipelines where any failure should be reported"
+        help_heading = "Execution Control",
+        help = "Return largest exit code from any node (pdsh -S)",
+        long_help = "Return largest exit code from any node (pdsh -S compatible)\nWhen enabled, returns the maximum exit code from all nodes\nUseful for build/test pipelines where any failure should be reported"
     )]
     pub any_failure: bool,
 
     #[arg(
         long = "pdsh-compat",
-        help = "Enable pdsh compatibility mode\nAccepts pdsh-style command line arguments (-w, -x, -f, etc.)\nAuto-enabled when invoked as 'pdsh' via symlink or when BSSH_PDSH_COMPAT=1\nUseful when migrating from pdsh or in mixed environments\nSee docs/pdsh-migration.md for complete migration guide"
+        help_heading = "Execution Control",
+        help = "Enable pdsh compatibility mode",
+        long_help = "Enable pdsh compatibility mode\nAccepts pdsh-style command line arguments (-w, -x, -f, etc.)\nAuto-enabled when invoked as 'pdsh' via symlink or when BSSH_PDSH_COMPAT=1\nUseful when migrating from pdsh or in mixed environments\nSee docs/pdsh-migration.md for complete migration guide"
     )]
     pub pdsh_compat: bool,
 
@@ -244,6 +296,7 @@ pub struct Cli {
 
     // SSH-compatible options
     #[arg(short = 'o', long = "option", value_name = "option", action = clap::ArgAction::Append,
+        help_heading = "Configuration",
         help = "SSH options (e.g., -o StrictHostKeyChecking=no)")]
     pub ssh_options: Vec<String>,
 
@@ -251,7 +304,9 @@ pub struct Cli {
         short = 'F',
         long = "ssh-config",
         value_name = "configfile",
-        help = "Specifies an alternative SSH configuration file\nSupports standard SSH config format with Host, HostName, User, Port, IdentityFile, etc.\nDefaults to ~/.ssh/config if not specified and file exists"
+        help_heading = "Configuration",
+        help = "Alternative SSH configuration file",
+        long_help = "Specifies an alternative SSH configuration file\nSupports standard SSH config format with Host, HostName, User, Port, IdentityFile, etc.\nDefaults to ~/.ssh/config if not specified and file exists"
     )]
     pub ssh_config: Option<PathBuf>,
 
@@ -259,28 +314,41 @@ pub struct Cli {
         short = 'q',
         long = "quiet",
         conflicts_with = "verbose",
+        help_heading = "Output",
         help = "Quiet mode (suppress non-error messages)"
     )]
     pub quiet: bool,
 
-    #[arg(short = 't', long = "tty", help = "Force pseudo-terminal allocation")]
+    #[arg(
+        short = 't',
+        long = "tty",
+        help_heading = "Terminal",
+        help = "Force pseudo-terminal allocation"
+    )]
     pub force_tty: bool,
 
     #[arg(
         short = 'T',
         long = "no-tty",
         conflicts_with = "force_tty",
+        help_heading = "Terminal",
         help = "Disable pseudo-terminal allocation"
     )]
     pub no_tty: bool,
 
-    #[arg(short = 'x', long = "no-x11", help = "Disable X11 forwarding")]
+    #[arg(
+        short = 'x',
+        long = "no-x11",
+        help_heading = "Terminal",
+        help = "Disable X11 forwarding"
+    )]
     pub no_x11: bool,
 
     #[arg(
         short = '4',
         long = "ipv4",
         conflicts_with = "ipv6",
+        help_heading = "Connection",
         help = "Force use of IPv4 addresses only"
     )]
     pub ipv4: bool,
@@ -289,6 +357,7 @@ pub struct Cli {
         short = '6',
         long = "ipv6",
         conflicts_with = "ipv4",
+        help_heading = "Connection",
         help = "Force use of IPv6 addresses only"
     )]
     pub ipv6: bool,
@@ -297,6 +366,7 @@ pub struct Cli {
         short = 'Q',
         long = "query",
         value_name = "query_option",
+        help_heading = "Configuration",
         help = "Query SSH configuration options"
     )]
     pub query: Option<String>,
@@ -307,7 +377,9 @@ pub struct Cli {
         long = "local-forward",
         value_name = "local_forward_spec",
         action = clap::ArgAction::Append,
-        help = "Local port forwarding [bind_address:]port:host:hostport\nBinds a local port to forward connections to a remote destination via SSH.\nMultiple -L options can be specified for multiple forwards.\nExample: -L 8080:example.com:80 (localhost:8080 → example.com:80)"
+        help_heading = "Port Forwarding",
+        help = "Local port forwarding [bind_address:]port:host:hostport",
+        long_help = "Local port forwarding [bind_address:]port:host:hostport\nBinds a local port to forward connections to a remote destination via SSH.\nMultiple -L options can be specified for multiple forwards.\nExample: -L 8080:example.com:80 (localhost:8080 → example.com:80)"
     )]
     pub local_forwards: Vec<String>,
 
@@ -316,7 +388,9 @@ pub struct Cli {
         long = "remote-forward",
         value_name = "remote_forward_spec",
         action = clap::ArgAction::Append,
-        help = "Remote port forwarding [bind_address:]port:host:hostport\nRequests the SSH server to bind a port and forward connections to local destination.\nMultiple -R options can be specified for multiple forwards.\nExample: -R 8080:localhost:80 (remote:8080 → localhost:80)"
+        help_heading = "Port Forwarding",
+        help = "Remote port forwarding [bind_address:]port:host:hostport",
+        long_help = "Remote port forwarding [bind_address:]port:host:hostport\nRequests the SSH server to bind a port and forward connections to local destination.\nMultiple -R options can be specified for multiple forwards.\nExample: -R 8080:localhost:80 (remote:8080 → localhost:80)"
     )]
     pub remote_forwards: Vec<String>,
 
@@ -325,7 +399,9 @@ pub struct Cli {
         long = "dynamic-forward",
         value_name = "dynamic_forward_spec",
         action = clap::ArgAction::Append,
-        help = "Dynamic port forwarding (SOCKS proxy) [bind_address:]port[/socks_version]\nCreates a local SOCKS proxy that dynamically forwards connections via SSH.\nMultiple -D options can be specified for multiple SOCKS proxies.\nExample: -D 1080 (SOCKS5 proxy on localhost:1080), -D *:1080/4 (SOCKS4 on all interfaces)"
+        help_heading = "Port Forwarding",
+        help = "Dynamic SOCKS proxy [bind_address:]port[/socks_version]",
+        long_help = "Dynamic port forwarding (SOCKS proxy) [bind_address:]port[/socks_version]\nCreates a local SOCKS proxy that dynamically forwards connections via SSH.\nMultiple -D options can be specified for multiple SOCKS proxies.\nExample: -D 1080 (SOCKS5 proxy on localhost:1080), -D *:1080/4 (SOCKS4 on all interfaces)"
     )]
     pub dynamic_forwards: Vec<String>,
 }
