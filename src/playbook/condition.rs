@@ -67,7 +67,7 @@ pub fn resolve<'a>(variables: &'a Variables, path: &str) -> Option<&'a Value> {
     let mut parts = path.split('.');
     let mut value = variables.get(parts.next()?)?;
     for part in parts {
-        value = value.as_mapping()?.get(&Value::String(part.to_owned()))?;
+        value = value.as_mapping()?.get(Value::String(part.to_owned()))?;
     }
     Some(value)
 }

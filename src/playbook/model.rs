@@ -113,5 +113,5 @@ pub(crate) fn key(name: &str) -> Value {
 }
 
 pub(crate) fn map_get<'a>(map: &'a Mapping, name: &str) -> Option<&'a Value> {
-    map.get(&key(name))
+    map.get(key(name))
 }
