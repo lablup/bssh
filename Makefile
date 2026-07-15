@@ -10,14 +10,15 @@ ARGS ?=
 RUST_VERSION ?= 1.93
 DOCKER_IMAGE ?= rust:$(RUST_VERSION)
 
-.PHONY: help setup toolchain dependencies deps build install check test test-playbook \
-	fmt fmt-check lint clean playbook playbook-combined dry-run dry-run-combined \
-	demo playbook-help docker-check docker-test
+.PHONY: help setup bootstrap-rustup toolchain dependencies deps build install check test \
+	test-playbook fmt fmt-check lint clean playbook playbook-combined dry-run \
+	dry-run-combined demo playbook-help docker-check docker-test
 
 help: ## Show available commands
 	@printf '%s\n' \
 		'Common commands:' \
-		'  make setup             Install Rust tooling and fetch dependencies' \
+		'  make setup             Bootstrap rustup, install Rust, and fetch dependencies' \
+		'  make bootstrap-rustup  Install rustup when it is missing' \
 		'  make dependencies      Download locked Cargo dependencies' \
 		'  make build             Build the release binary' \
 		'  make install           Install bssh with cargo' \
@@ -38,43 +39,46 @@ help: ## Show available commands
 		'  make docker-check' \
 		'  make docker-test'
 
-setup: toolchain dependencies ## Install the Rust toolchain and fetch dependencies
+setup: toolchain dependencies ## Bootstrap Rust and fetch dependencies
 
-toolchain: ## Install the supported Rust toolchain, formatter, and linter
-	@command -v rustup >/dev/null 2>&1 || { echo "rustup is required: https://rustup.rs" >&2; exit 1; }
-	rustup toolchain install $(RUST_VERSION) --profile minimal --component rustfmt,clippy
+bootstrap-rustup: ## Install rustup from rustup.rs when it is missing
+	command -v rustup >/dev/null 2>&1 || [ -x "$(HOME)/.cargo/bin/rustup" ] || { command -v curl >/dev/null 2>&1 || { echo "curl is required to install rustup" >&2; exit 1; }; curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path; }
+
+toolchain: bootstrap-rustup ## Install the supported Rust toolchain, formatter, and linter
+	PATH="$(HOME)/.cargo/bin:$$PATH" rustup toolchain install $(RUST_VERSION) --profile minimal --component rustfmt,clippy
+	PATH="$(HOME)/.cargo/bin:$$PATH" rustup default $(RUST_VERSION)
 
 dependencies: ## Download all locked Cargo dependencies
-	$(CARGO) fetch --locked
+	PATH="$(HOME)/.cargo/bin:$$PATH" $(CARGO) fetch --locked
 
 deps: dependencies ## Alias for dependencies
 
 build: ## Build the optimized bssh binary
-	$(CARGO) build --release --locked --bin $(BINARY)
+	PATH="$(HOME)/.cargo/bin:$$PATH" $(CARGO) build --release --locked --bin $(BINARY)
 
 install: ## Install bssh from this checkout
-	$(CARGO) install --path . --locked
+	PATH="$(HOME)/.cargo/bin:$$PATH" $(CARGO) install --path . --locked
 
 check: ## Type-check all targets
-	$(CARGO) check --all-targets --locked
+	PATH="$(HOME)/.cargo/bin:$$PATH" $(CARGO) check --all-targets --locked
 
 test: ## Run all workspace tests
-	$(CARGO) test --workspace --locked
+	PATH="$(HOME)/.cargo/bin:$$PATH" $(CARGO) test --workspace --locked
 
 test-playbook: ## Run only playbook tests
-	$(CARGO) test --lib playbook --locked
+	PATH="$(HOME)/.cargo/bin:$$PATH" $(CARGO) test --lib playbook --locked
 
 fmt: ## Format Rust sources
-	$(CARGO) fmt --all
+	PATH="$(HOME)/.cargo/bin:$$PATH" $(CARGO) fmt --all
 
 fmt-check: ## Verify Rust formatting
-	$(CARGO) fmt --all -- --check
+	PATH="$(HOME)/.cargo/bin:$$PATH" $(CARGO) fmt --all -- --check
 
 lint: ## Run Clippy with warnings treated as errors
-	$(CARGO) clippy --all-targets --all-features --locked -- -D warnings
+	PATH="$(HOME)/.cargo/bin:$$PATH" $(CARGO) clippy --all-targets --all-features --locked -- -D warnings
 
 clean: ## Remove build artifacts
-	$(CARGO) clean
+	PATH="$(HOME)/.cargo/bin:$$PATH" $(CARGO) clean
 
 playbook: build ## Run separate playbook and inventory files
 	"$(BIN)" playbook "$(PLAYBOOK)" --inventory "$(INVENTORY)" $(ARGS)
