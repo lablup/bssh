@@ -230,6 +230,26 @@ async fn run_bssh_mode(args: &[String]) -> Result<()> {
         return Ok(());
     }
 
+    // Playbooks carry their own inventory and SSH defaults. Keep this path
+    // isolated from the existing cluster initialization and executor.
+    if let Some(Commands::Playbook {
+        playbook,
+        inventory,
+        dry_run,
+        full_output,
+    }) = &cli.command
+    {
+        return bssh::playbook::run_file(
+            playbook,
+            inventory.as_deref(),
+            bssh::playbook::RunOptions {
+                dry_run: *dry_run,
+                full_output: *full_output,
+            },
+        )
+        .await;
+    }
+
     // Initialize the application and load all configurations
     let ctx = initialize_app(&mut cli, args).await?;
 

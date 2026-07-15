@@ -1437,6 +1437,64 @@ bssh -C all-servers --output-dir ./system-info "uname -a; df -h; free -m"
 bssh -C webservers --output-dir ./debug "systemctl status nginx"
 ```
 
+## sshot-style playbooks
+
+`bssh playbook` runs bssh's intentionally limited sshot-style YAML format. It is
+**not an Ansible compatibility mode** and does not accept arbitrary Ansible
+modules, expressions, or filters.
+
+```bash
+# Separate inventory and playbook files
+bssh playbook examples/playbook.yaml \
+  --inventory examples/playbook-inventory.yaml --dry-run
+bssh playbook examples/playbook.yaml -i examples/playbook-inventory.yaml \
+  --full-output
+
+# Legacy combined inventory/playbook YAML
+bssh playbook examples/playbook-combined.yaml --dry-run
+```
+
+Inventory YAML supports sshot's `ssh_config` defaults (`user`, `port`,
+`key_file`, `use_agent`, and `strict_host_key_check`), host list entries with
+`name`/`address`, and group list entries with `order`, `parallel`, and
+`depends_on`. When groups exist they are authoritative: direct hosts are
+ignored, each ordered group runs the complete task chain, dependencies require
+successful groups, and the group's `parallel` flag controls host concurrency.
+Named-map inventory forms are accepted as a bssh convenience. Standalone
+playbooks use boolean `parallel`; legacy combined files contain
+`inventory` and `playbook` mappings. JSON collectors use
+`facts.collectors` entries with `name`, `command`, and optional `sudo`.
+
+Tasks support `command`, `shell`, UTF-8 `script`, UTF-8 `copy` with `mode`
+(up to 1 KiB inline, with a final 16 KiB SSH-command limit), sshot `wait_for`
+strings (`port:`, `service:`, `file:`, and `http:`), and `local_action`, plus
+`sudo` (non-interactive `sudo -n`):
+
+- `register` and `{{ variable }}` interpolation (including dotted registered
+  values such as `result.stdout` and `result.exit_code`)
+- `retries` as N retries after the initial attempt, a default five-second
+  delay when retries are enabled, and cancellable `timeout`
+- `allowed_exit_codes` and `ignore_error`
+- task `vars`, dependencies, `only_groups`, and `skip_groups`
+- `until_success` (an initial attempt plus 60 retries by default)
+- `delegate_to` using a named inventory host, or `localhost` for local execution
+- `run_once`, which tries eligible hosts in inventory order until one succeeds
+
+Conditions are deliberately strict. The only forms are `name == literal`,
+`name != literal`, `name is defined`, and `name is not defined`; unsupported
+syntax is an error. Host checking defaults to strict `yes`; plaintext inventory
+`password` and `key_password` fields are rejected. A `wait_for` action without
+an explicit timeout still stops after 30 checks at two-second intervals. Fact
+collector values are commands whose stdout must be
+valid JSON. `--dry-run` parses and validates the full playbook, resolves hosts,
+delegates, templates available at planning time, and prints actions without
+opening SSH connections or executing local commands. Runtime-produced fact or
+register values are marked for runtime condition evaluation.
+
+See [`examples/playbook.yaml`](examples/playbook.yaml),
+[`examples/playbook-inventory.yaml`](examples/playbook-inventory.yaml), and
+[`examples/playbook-combined.yaml`](examples/playbook-combined.yaml).
+
 ## Development
 
 Read [ARCHITECTURE](ARCHITECTURE.md) documentation for more information.

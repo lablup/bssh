@@ -21,6 +21,7 @@ pub mod hostlist;
 pub mod jump;
 pub mod keygen;
 pub mod node;
+pub mod playbook;
 pub mod pty;
 pub mod security;
 pub mod server;

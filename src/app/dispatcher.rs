@@ -104,7 +104,8 @@ fn sudo_password_is_applicable(command: &Option<Commands>, command_text: &str) -
         | Some(Commands::Download { .. })
         | Some(Commands::List)
         | Some(Commands::Interactive { .. })
-        | Some(Commands::CacheStats { .. }) => false,
+        | Some(Commands::CacheStats { .. })
+        | Some(Commands::Playbook { .. }) => false,
         // `None` is the exec/SSH-compatibility path. A non-empty command can
         // use sudo injection; an empty command is an interactive SSH shell and
         // has no sudo-injection hook.
@@ -121,7 +122,7 @@ fn sudo_password_is_applicable(command: &Option<Commands>, command_text: &str) -
 fn ssh_password_is_applicable(command: &Option<Commands>) -> bool {
     !matches!(
         command,
-        Some(Commands::List) | Some(Commands::CacheStats { .. })
+        Some(Commands::List) | Some(Commands::CacheStats { .. }) | Some(Commands::Playbook { .. })
     )
 }
 
@@ -134,6 +135,7 @@ fn subcommand_name(command: &Option<Commands>) -> &'static str {
         Some(Commands::Download { .. }) => "download",
         Some(Commands::Interactive { .. }) => "interactive",
         Some(Commands::CacheStats { .. }) => "cache-stats",
+        Some(Commands::Playbook { .. }) => "playbook",
         None => "exec",
     }
 }
@@ -328,6 +330,10 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
         Some(Commands::CacheStats { .. }) => {
             // This is handled in main.rs before node resolution
             unreachable!("CacheStats should be handled before dispatch")
+        }
+        Some(Commands::Playbook { .. }) => {
+            // This is handled in main.rs before the regular bssh initialization.
+            unreachable!("Playbook should be handled before dispatch")
         }
         None => {
             // Execute command (auto-exec or interactive shell)

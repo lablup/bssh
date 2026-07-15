@@ -1,0 +1,15 @@
+# Legacy combined sshot-style inventory/playbook YAML
+inventory:
+  ssh_config:
+    user: deploy
+    use_agent: true
+  hosts:
+    - name: app1
+      address: app1.example.com
+playbook:
+  name: health
+  parallel: false
+  tasks:
+    - name: health-check
+      shell: "test -f /etc/hostname"
+      allowed_exit_codes: [0]

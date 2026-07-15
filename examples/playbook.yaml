@@ -1,0 +1,29 @@
+# yaml-language-server: $schema=../docs/bssh-playbook.schema.json
+---
+# bssh's limited sshot-style format (not an Ansible playbook)
+name: inspect-web
+parallel: true
+facts:
+  collectors:
+    - name: kernel
+      command: >-
+        uname -r | python3 -c
+        'import json,sys; print(json.dumps(sys.stdin.read().strip()))'
+tasks:
+  - name: show-host
+    command: >-
+      printf '%s\n' '{{ .hostname }} {{ .service }}'
+    only_groups: [web]
+    register: greeting
+
+  - name: wait-for-service
+    wait_for: service:api
+    only_groups: [web]
+    timeout: 30
+    retries: 2
+    retry_delay: 1
+
+  - name: controller-summary
+    local_action: "printf 'checked %s\n' '{{ .hostname }}'"
+    when: "{{ .greeting.success }} == true"
+    run_once: true

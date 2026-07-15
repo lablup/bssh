@@ -439,6 +439,37 @@ pub enum Commands {
         #[arg(long, help = "Perform cache maintenance (remove expired entries)")]
         maintain: bool,
     },
+
+    #[command(
+        about = "Run an sshot-style YAML playbook",
+        long_about = "Runs bssh's deliberately limited sshot-style playbook format. Supports separate inventory/playbook YAML and legacy combined YAML. This is not an Ansible compatibility mode."
+    )]
+    Playbook {
+        #[arg(value_name = "PLAYBOOK", help = "Playbook YAML path")]
+        playbook: PathBuf,
+
+        #[arg(
+            short = 'i',
+            long,
+            value_name = "INVENTORY",
+            help = "Separate inventory YAML path (optional for legacy combined YAML)"
+        )]
+        inventory: Option<PathBuf>,
+
+        #[arg(
+            short = 'n',
+            long,
+            help = "Validate and print actions without SSH, file transfer, or local command execution"
+        )]
+        dry_run: bool,
+
+        #[arg(
+            short = 'f',
+            long,
+            help = "Print stdout and stderr for successful tasks"
+        )]
+        full_output: bool,
+    },
 }
 
 impl Cli {
@@ -462,7 +493,7 @@ impl Cli {
     pub fn is_known_subcommand(arg: &str) -> bool {
         matches!(
             arg,
-            "list" | "ping" | "upload" | "download" | "interactive" | "cache-stats"
+            "list" | "ping" | "upload" | "download" | "interactive" | "cache-stats" | "playbook"
         )
     }
 

@@ -1,0 +1,22 @@
+# sshot-style inventory for bssh playbooks
+ssh_config:
+  user: deploy
+  port: 22
+  key_file: ~/.ssh/id_ed25519
+  strict_host_key_check: true
+hosts:
+  - name: utility
+    address: utility.example.com
+groups:
+  - name: web
+    order: 1
+    parallel: true
+    hosts:
+      - name: web1
+        address: web1.example.com
+        vars:
+          service: api
+      - name: web2
+        address: web2.example.com
+        vars:
+          service: api
