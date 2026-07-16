@@ -160,8 +160,10 @@ pub struct ServerConfig {
     /// are used verbatim and relative paths resolve from the user's home
     /// directory, matching OpenSSH `sftp-server` semantics.
     ///
-    /// When set, SFTP clients are confined to this directory; absolute paths
-    /// outside it are rejected with `permission_denied`.
+    /// When set, SFTP clients are confined to this directory. The client's `/`
+    /// is the chroot root, so absolute and relative paths are re-anchored under
+    /// it (a host-looking `/etc/passwd` is confined to `<root>/etc/passwd`) and
+    /// `..` cannot escape.
     #[serde(default)]
     pub sftp_root: Option<PathBuf>,
 

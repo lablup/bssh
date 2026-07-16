@@ -1,7 +1,6 @@
 [workspace]
 members = [
     ".",
-    "crates/bssh-russh",
     "crates/bssh-russh-sftp",
 ]
 
@@ -25,10 +24,10 @@ rust-version = "1.93"
 [dependencies]
 bytes = "1.11.1"
 tokio = { version = "1.52.3", features = ["full"] }
-# Use our internal russh fork with session loop fixes
-# - Development: uses local path (crates/bssh-russh)
-# - Publishing: uses crates.io version (path ignored)
-russh = { package = "bssh-russh", version = "0.61.1", path = "crates/bssh-russh" }
+# Upstream russh: both fork patches are now upstreamed
+# - handle-data high-frequency PTY output fix: upstream #731 (v0.62.0)
+# - SHA-1 MAC exclusion from Preferred::DEFAULT: upstream #690 (v0.60.2)
+russh = "0.62.1"
 # Use our internal russh-sftp fork tracking upstream 2.3.0
 # (adds pipelined File I/O; serde_bytes perf fix is now upstreamed)
 russh-sftp = { package = "bssh-russh-sftp", version = "2.3.0", path = "crates/bssh-russh-sftp" }
@@ -69,9 +68,9 @@ ipnetwork = "0.21"
 bcrypt = "0.19"
 argon2 = { version = "0.5", features = ["std"] }
 rand = "0.10"
-# Pinned to match russh's ssh-key (0.61.x uses =0.7.0-rc.10) so the workspace
+# Pinned to match russh's ssh-key (0.62.x uses =0.7.0-rc.11) so the workspace
 # resolves a single ssh-key version instead of 0.6 + 0.7-rc side by side.
-ssh-key = { version = "=0.7.0-rc.10", features = ["std"] }
+ssh-key = { version = "=0.7.0-rc.11", features = ["std"] }
 async-compression = { version = "0.4", features = ["tokio", "gzip"] }
 serde_json = "1.0"
 opentelemetry = "0.32"

@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use futures::FutureExt;
 use russh::keys::ssh_key;
-use russh::server::{Auth, Msg, Session};
+use russh::server::{Auth, ChannelOpenHandle, Msg, Session};
 use russh::{Channel, ChannelId, MethodKind, MethodSet, Pty};
 use tokio::sync::RwLock;
 use zeroize::Zeroizing;
@@ -254,8 +254,9 @@ impl russh::server::Handler for SshHandler {
     fn channel_open_session(
         &mut self,
         channel: Channel<Msg>,
+        reply: ChannelOpenHandle,
         _session: &mut Session,
-    ) -> impl std::future::Future<Output = Result<bool, Self::Error>> + Send {
+    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
         let channel_id = channel.id();
         tracing::debug!(
             peer = ?self.peer_addr,
@@ -266,7 +267,10 @@ impl russh::server::Handler for SshHandler {
         // Store the channel itself so we can use it for subsystems like SFTP
         self.channels
             .insert(channel_id, ChannelState::with_channel(channel));
-        async { Ok(true) }
+        async move {
+            reply.accept().await;
+            Ok(())
+        }
     }
 
     /// Handle 'none' authentication.
