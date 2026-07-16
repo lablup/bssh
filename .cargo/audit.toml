@@ -8,8 +8,8 @@ ignore = [
     #
     # No fixed upgrade is available for any version of the `rsa` crate. The vulnerability
     # is inherent to the current RustCrypto RSA implementation, which lacks constant-time
-    # primitives. Both `rsa 0.9.x` (via ssh-key 0.6.x) and `rsa 0.10.0-rc.x` (via the
-    # vendored bssh-russh fork) are affected.
+    # primitives. Both `rsa 0.9.x` (via ssh-key 0.6.x) and `rsa 0.10.0-rc.x` (via
+    # russh's ssh-key) are affected.
     #
     # Mitigation: users should prefer Ed25519 or ECDSA host/user keys over RSA where
     # possible. The Marvin Attack requires precise timing measurements over many
