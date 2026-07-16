@@ -193,8 +193,23 @@ impl BsshServer {
 
         tracing::info!(key_count = keys.len(), "Loaded host keys");
 
+        // russh's delayed zlib (`zlib@openssh.com`) compression desyncs and
+        // corrupts the channel stream after a few packets, so any client that
+        // negotiates compression — Cyberduck, `sftp -C` — fails mid-session
+        // with "SshEncoding: length invalid" (reproducible in russh 0.61.1 and
+        // 0.62.1). Until the upstream russh bug is fixed, advertise only "none"
+        // so clients fall back to the uncompressed transport, matching the
+        // Dropbear/OpenSSH sftp-server defaults used in Backend.AI containers.
+        // See https://github.com/lablup/bssh/issues/215.
+        const NO_COMPRESSION: &[russh::compression::Name] = &[russh::compression::NONE];
+        let preferred = russh::Preferred {
+            compression: std::borrow::Cow::Borrowed(NO_COMPRESSION),
+            ..russh::Preferred::DEFAULT
+        };
+
         Ok(russh::server::Config {
             keys,
+            preferred,
             auth_rejection_time: Duration::from_secs(3),
             auth_rejection_time_initial: Some(Duration::from_secs(0)),
             max_auth_attempts: self.config.max_auth_attempts as usize,
@@ -416,6 +431,29 @@ mod tests {
         let result = server.build_russh_config();
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("No host keys"));
+    }
+
+    #[test]
+    fn test_build_russh_config_advertises_only_none_compression() {
+        // Regression guard for #215: the server must advertise only `none`
+        // compression so clients that prefer `zlib@openssh.com` (Cyberduck,
+        // `sftp -C`) fall back to the uncompressed transport instead of
+        // hitting russh's delayed-zlib desync.
+        let key = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/test_keys/ssh_host_ed25519_key"
+        );
+        let config = ServerConfig::builder().host_key(key).build();
+        let server = BsshServer::new(config);
+
+        let russh_config = server
+            .build_russh_config()
+            .expect("config should build with a valid host key");
+        assert_eq!(
+            russh_config.preferred.compression.as_ref(),
+            [russh::compression::NONE],
+            "server must advertise only `none` compression (see #215)"
+        );
     }
 
     #[tokio::test]
