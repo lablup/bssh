@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Make `sftp.root`/`scp.root` chroot usable by re-anchoring client paths under the chroot root** (#214). With a chroot configured, directory listing worked but every path resolution failed: `cd subdir`, `get file`, and even `get` of a file sitting directly at the chroot root were rejected as `path outside root` or `not found`, so only bare `/` and `readdir` functioned. Under chroot the client's coordinate space is rooted at `/` (this is what `realpath` reports and what the client sends back), but `resolve_chroot` treated a client absolute path such as `/subdir` as a *host* path and rejected anything not starting with the host root, so `/subdir` (meaning `<root>/subdir`) never matched. A prior change had introduced this to avoid "path doubling", but real clients never send the host path; they send chroot-relative absolute paths, so the guard broke the normal case. The SFTP and SCP resolvers now both interpret absolute and relative client paths relative to `root` (OpenSSH `ChrootDirectory` re-rooting), ignoring a leading `/`, dropping `.`, and clamping `..` so traversal still cannot escape. Containment is verified: `..` stays pinned at the root and a client `/etc/passwd` maps to `<root>/etc/passwd` inside the jail, never the host file. SCP previously kept the old "reject absolute outside root" behavior, so it is unified here to match `sftp.root`. Verified end-to-end with the OpenSSH `sftp` client (`cd`/`get`/root-level files/Unicode names all work; escape attempts stay confined) and covered by updated unit and integration tests.
+
+### Security
+- **Confine absolute SFTP symlink targets to the chroot** (#214). Once `resolve_chroot` stopped rejecting out-of-root absolute paths, the SFTP `symlink` handler's containment guard became a no-op, so a chrooted client could create a link whose on-disk target was an absolute *host* path (for example `symlink /link /etc/passwd`). Because bssh uses a virtual chroot with no `chroot(2)`, that link resolved to the real host filesystem. Absolute symlink targets are now re-anchored under the chroot before the link is written, so a created link can never point outside the jail; relative targets keep OpenSSH-compatible verbatim storage.
+
 ## [2.2.3] - 2026-05-25
 
 ### Security

@@ -20,8 +20,9 @@
 //!
 //! - Without chroot, absolute client paths are honored verbatim and relative
 //!   paths resolve from the user's home directory (OpenSSH-compatible).
-//! - With chroot, absolute client paths inside the chroot are honored
-//!   verbatim (no path doubling); paths outside are rejected.
+//! - With chroot, the client's `/` is the chroot root, so both absolute and
+//!   relative client paths are re-anchored under it (SFTP and SCP alike), with
+//!   `..` clamped and host-looking paths confined inside the root (#214).
 //! - Path-traversal and symlink-escape protections continue to hold under
 //!   the new logic.
 //!
@@ -98,22 +99,29 @@ fn scp_no_chroot_relative_path_lands_in_home() {
 }
 
 #[test]
-fn scp_chroot_inside_root_no_doubling() {
+fn scp_chroot_absolute_path_reanchored_under_root() {
+    // Under chroot the client's "/" IS the chroot root (matching sftp.root), so
+    // an absolute client path is re-anchored under the root: "/file.bin" means
+    // "<root>/file.bin". The client sends chroot-relative paths, not host paths.
     let handler = ScpHandler::new(
         ScpMode::Sink,
-        PathBuf::from("/home/work/file.bin"),
+        PathBuf::from("/file.bin"),
         user(),
         Some(PathBuf::from("/home/work")),
         PathBuf::from("/home/work"),
     );
     let resolved = handler
-        .resolve_path(Path::new("/home/work/file.bin"))
-        .expect("absolute inside chroot should resolve verbatim");
+        .resolve_path(Path::new("/file.bin"))
+        .expect("absolute chroot-relative path should resolve");
     assert_eq!(resolved, PathBuf::from("/home/work/file.bin"));
 }
 
 #[test]
-fn scp_chroot_rejects_paths_outside_root() {
+fn scp_chroot_absolute_host_path_confined_under_root() {
+    // A client "/etc/passwd" is confined under the chroot, mapping to
+    // <root>/etc/passwd, never the host's /etc/passwd. (Rejecting absolute
+    // paths outright, as before, also broke every legitimate path and diverged
+    // from sftp.root; #214.)
     let handler = ScpHandler::new(
         ScpMode::Sink,
         PathBuf::from("/etc/passwd"),
@@ -121,13 +129,10 @@ fn scp_chroot_rejects_paths_outside_root() {
         Some(PathBuf::from("/home/work")),
         PathBuf::from("/home/work"),
     );
-    let err = handler
+    let resolved = handler
         .resolve_path(Path::new("/etc/passwd"))
-        .expect_err("absolute outside chroot must be rejected");
-    assert!(
-        err.to_string().contains("outside root"),
-        "expected access-denied error, got: {err}"
-    );
+        .expect("absolute host-looking path should be confined, not rejected");
+    assert_eq!(resolved, PathBuf::from("/home/work/etc/passwd"));
 }
 
 #[test]
@@ -180,31 +185,31 @@ fn sftp_no_chroot_relative_path_lands_in_home() {
 }
 
 #[test]
-fn sftp_chroot_inside_root_no_doubling() {
+fn sftp_chroot_absolute_path_reanchored_under_root() {
+    // Under chroot the client's "/" IS the chroot root, so an absolute client
+    // path is re-anchored under the root, not treated as a host path. The
+    // client sends "/file.bin" meaning "<root>/file.bin". (#214)
     let handler = SftpHandler::new(
         user(),
         Some(PathBuf::from("/home/work")),
         PathBuf::from("/home/work"),
     );
-    let resolved = handler.resolve_path("/home/work/file.bin").unwrap();
+    let resolved = handler.resolve_path("/file.bin").unwrap();
     assert_eq!(resolved, PathBuf::from("/home/work/file.bin"));
 }
 
 #[test]
-fn sftp_chroot_rejects_paths_outside_root() {
+fn sftp_chroot_absolute_host_path_confined_under_root() {
+    // A client "/etc/passwd" is confined under the chroot, mapping to
+    // <root>/etc/passwd — never the host's /etc/passwd. (Rejecting absolute
+    // paths outright, as before, also broke every legitimate path; #214.)
     let handler = SftpHandler::new(
         user(),
         Some(PathBuf::from("/home/work")),
         PathBuf::from("/home/work"),
     );
-    let err = handler
-        .resolve_path("/etc/passwd")
-        .expect_err("absolute outside chroot must be rejected");
-    // The exact code is PermissionDenied; we verify by checking the message.
-    assert!(
-        err.to_string().contains("outside root"),
-        "expected permission-denied, got: {err}"
-    );
+    let resolved = handler.resolve_path("/etc/passwd").unwrap();
+    assert_eq!(resolved, PathBuf::from("/home/work/etc/passwd"));
 }
 
 #[test]
@@ -260,8 +265,10 @@ fn scp_chroot_blocks_symlink_escape() {
         Some(chroot.clone()),
         chroot.clone(),
     );
+    // The client sends the chroot-relative path "/escape"; canonicalizing the
+    // symlink must detect the target lands outside the chroot.
     let err = handler
-        .resolve_path(&escape_link)
+        .resolve_path(Path::new("/escape"))
         .expect_err("symlink escape must be blocked");
     assert!(
         err.to_string().contains("symlink target outside root"),
@@ -326,8 +333,11 @@ fn scp_chroot_blocks_parent_symlink_create() {
         chroot.clone(),
     );
 
+    // The client sends a chroot-relative path traversing the `escape` parent
+    // symlink; canonicalization of the closest existing ancestor must still
+    // detect that it lands outside the chroot.
     let err = handler
-        .resolve_path(&target)
+        .resolve_path(Path::new("/escape/newfile.txt"))
         .expect_err("parent-symlink escape must be blocked");
     assert!(
         err.to_string().contains("outside root"),
@@ -347,9 +357,11 @@ fn sftp_chroot_blocks_parent_symlink_create() {
 
     let handler = SftpHandler::new(user(), Some(chroot.clone()), chroot.clone());
 
-    let target_str = format!("{}/escape/newfile.txt", chroot.display());
+    // The client sends a chroot-relative path that traverses the `escape`
+    // parent symlink; canonicalization of the closest existing ancestor must
+    // still detect that it lands outside the chroot.
     let err = handler
-        .resolve_path(&target_str)
+        .resolve_path("/escape/newfile.txt")
         .expect_err("parent-symlink escape must be blocked");
     assert!(
         err.to_string().contains("outside root"),
@@ -369,9 +381,9 @@ fn sftp_chroot_blocks_parent_symlink_mkdir() {
 
     let handler = SftpHandler::new(user(), Some(chroot.clone()), chroot.clone());
 
-    let target_str = format!("{}/escape/newdir", chroot.display());
+    // Chroot-relative mkdir target traversing the `escape` parent symlink.
     let err = handler
-        .resolve_path(&target_str)
+        .resolve_path("/escape/newdir")
         .expect_err("parent-symlink mkdir-target must be blocked");
     assert!(err.to_string().contains("outside root"));
 }
