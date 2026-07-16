@@ -231,32 +231,19 @@ fn normalize_components(path: &Path) -> PathBuf {
 
 /// Resolve a client-supplied SCP path against a chroot root.
 ///
-/// - Absolute paths inside `root` are honored as-is.
-/// - Absolute paths outside `root` are rejected.
-/// - Relative paths are joined with `root`; `..` is clamped to `root`.
+/// Under chroot the client's `/` is the chroot root (OpenSSH `ChrootDirectory`
+/// re-rooting semantics, matching `sftp.root`):
+///
+/// - Both absolute and relative client paths are re-anchored under `root`, so
+///   `/subdir` maps to `<root>/subdir` and plain `/` maps to `root`.
+/// - A host-looking path such as `/etc/passwd` is confined to
+///   `<root>/etc/passwd`, never the host file.
+/// - `..` traversal is clamped to `root` (it can never escape).
 fn resolve_chroot_scp(requested: &Path, root: &Path, user: &str) -> Result<PathBuf> {
-    if requested.is_absolute() {
-        // Plain "/" is the client's view of the chroot root (matches what
-        // `realpath` returns). Map it back to the actual chroot directory.
-        if requested == Path::new("/") {
-            return Ok(root.to_path_buf());
-        }
-        let normalized = normalize_components(requested);
-        if normalized == root || normalized.starts_with(root) {
-            return Ok(normalized);
-        }
-        tracing::warn!(
-            event = "chroot_escape_blocked",
-            user = %user,
-            requested = %requested.display(),
-            root = %root.display(),
-            "Security: absolute path outside chroot blocked"
-        );
-        anyhow::bail!("Access denied: path outside root");
-    }
-
-    // Relative path under chroot: join, then walk components clamping `..`
-    // so traversal cannot escape the chroot.
+    // Re-anchor the client path under `root`: a leading "/" denotes the chroot
+    // root (not a host-absolute path), so absolute and relative paths alike
+    // walk from `root`, dropping "." and clamping ".." so traversal cannot
+    // escape the chroot.
     let mut resolved = root.to_path_buf();
     for component in requested.components() {
         match component {
@@ -427,9 +414,12 @@ impl ScpHandler {
     /// Behavior depends on whether a chroot `root_dir` is configured.
     ///
     /// ## With chroot (`root_dir = Some(root)`):
-    /// - Absolute client paths inside `root` are honored as-is.
-    /// - Absolute client paths outside `root` are rejected.
-    /// - Relative paths are joined with `root`; `..` traversal is clamped.
+    /// - The client's `/` is the chroot root, so both absolute and relative
+    ///   client paths are re-anchored under `root` (OpenSSH `ChrootDirectory`
+    ///   semantics, matching `sftp.root`): `/subdir` resolves to
+    ///   `<root>/subdir`, and a host-looking `/etc/passwd` is confined to
+    ///   `<root>/etc/passwd`.
+    /// - `..` traversal is clamped to `root` (cannot escape).
     /// - Existing paths are canonicalized to catch symlink-escape attempts.
     /// - For non-existent paths (typical for new-file creates), the closest
     ///   existing ancestor is canonicalized and verified to stay inside
@@ -1353,30 +1343,45 @@ mod tests {
     }
 
     #[test]
-    fn chroot_absolute_inside_root_is_returned_verbatim() {
-        // Bug fix: an absolute client path inside the chroot must NOT be
-        // re-rooted under itself. /home/testuser/file.bin must resolve to
-        // /home/testuser/file.bin, not /home/testuser/home/testuser/file.bin.
-        let handler = chroot_handler(PathBuf::from("/home/testuser/file.bin"));
-        let result = handler
-            .resolve_path(Path::new("/home/testuser/file.bin"))
-            .unwrap();
+    fn chroot_absolute_path_is_reanchored_under_root() {
+        // Under chroot the client's "/" IS the chroot root, so an absolute
+        // client path like "/file.bin" means "<root>/file.bin" and is
+        // re-anchored under the root (matching sftp.root and OpenSSH
+        // ChrootDirectory), not treated as a host path.
+        let handler = chroot_handler(PathBuf::from("/file.bin"));
+        let result = handler.resolve_path(Path::new("/file.bin")).unwrap();
         assert_eq!(result, PathBuf::from("/home/testuser/file.bin"));
+
+        let result = handler
+            .resolve_path(Path::new("/documents/file.txt"))
+            .unwrap();
+        assert_eq!(result, PathBuf::from("/home/testuser/documents/file.txt"));
     }
 
     #[test]
-    fn chroot_absolute_outside_root_is_rejected() {
+    fn chroot_absolute_host_path_is_confined_not_escaped() {
+        // A client cannot reach the host filesystem: an absolute path is
+        // confined under the chroot, so "/etc/passwd" maps to
+        // "<root>/etc/passwd" (which does not exist) rather than the host's
+        // /etc/passwd. Rejecting absolute paths outright, as before, also broke
+        // every legitimate SCP path under chroot; re-anchoring both fixes that
+        // and unifies SCP with sftp.root.
         let handler = chroot_handler(PathBuf::from("/etc/passwd"));
-        let err = handler.resolve_path(Path::new("/etc/passwd")).unwrap_err();
-        assert!(
-            err.to_string().contains("outside root"),
-            "expected rejection, got: {err}"
+        assert_eq!(
+            handler.resolve_path(Path::new("/etc/passwd")).unwrap(),
+            PathBuf::from("/home/testuser/etc/passwd")
         );
-
-        let err = handler
-            .resolve_path(Path::new("/tmp/file.bin"))
-            .unwrap_err();
-        assert!(err.to_string().contains("outside root"));
+        assert_eq!(
+            handler.resolve_path(Path::new("/tmp/file.bin")).unwrap(),
+            PathBuf::from("/home/testuser/tmp/file.bin")
+        );
+        // `..` cannot climb above the root even when prefixed with the host path.
+        assert_eq!(
+            handler
+                .resolve_path(Path::new("/home/testuser/../../etc/passwd"))
+                .unwrap(),
+            PathBuf::from("/home/testuser/etc/passwd")
+        );
     }
 
     #[test]

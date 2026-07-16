@@ -209,12 +209,17 @@ fn normalize_components(path: &Path) -> PathBuf {
 
 /// Resolve a client-supplied path against a chroot root.
 ///
-/// - Plain `/` (the chroot's pseudo-root in the client's view, also returned
-///   by `realpath`) maps to `root`.
-/// - Absolute paths inside `root` are honored as-is (no doubling).
-/// - Absolute paths outside `root` are rejected.
-/// - Relative paths are joined with `root` and normalized.
-/// - `..` traversal is clamped to `root`.
+/// Under chroot the client's coordinate space is rooted at `/` == `root`
+/// (this is what `realpath` reports and what the client sends back), so both
+/// absolute and relative client paths are interpreted relative to `root`
+/// (OpenSSH `ChrootDirectory` re-rooting semantics):
+///
+/// - A leading `/` denotes the chroot root, not a host-absolute path, so
+///   `/subdir` maps to `<root>/subdir` and plain `/` maps to `root`.
+/// - Relative paths are joined with `root`.
+/// - `..` traversal is clamped to `root` (it can never escape), and a
+///   host-looking path such as `/etc/passwd` is confined to `<root>/etc/passwd`
+///   rather than reaching the host filesystem.
 fn resolve_chroot(requested: &Path, root: &Path) -> Result<PathBuf, SftpError> {
     use std::path::Component;
 
@@ -402,11 +407,15 @@ impl SftpHandler {
     /// Behavior depends on whether a chroot `root_dir` is configured.
     ///
     /// ## With chroot (`root_dir = Some(root)`):
-    /// - Absolute client paths inside `root` are honored as-is.
-    /// - Absolute client paths outside `root` are rejected with
-    ///   `permission_denied` (matching OpenSSH `ChrootDirectory` semantics).
-    /// - Relative paths are joined with `root`.
+    /// - The client's `/` is the chroot root, so both absolute and relative
+    ///   client paths are re-anchored under `root` (OpenSSH `ChrootDirectory`
+    ///   semantics): `/subdir` resolves to `<root>/subdir`.
+    /// - A host-looking path such as `/etc/passwd` is confined to
+    ///   `<root>/etc/passwd`, never the host file.
     /// - `..` traversal is clamped to `root` (cannot escape).
+    /// - The closest existing ancestor is canonicalized and verified to stay
+    ///   inside `root`, blocking intermediate-directory symlinks that point
+    ///   outside the chroot.
     ///
     /// ## Without chroot (`root_dir = None`):
     /// - Absolute paths are used verbatim.
@@ -1374,34 +1383,29 @@ impl russh_sftp::server::Handler for SftpHandler {
         async move {
             let link_path = link_resolved?;
 
-            // Validate the symlink target. With chroot, both absolute and
-            // relative targets must resolve inside the chroot. Without chroot,
-            // mirror OpenSSH and let the kernel + filesystem permissions
-            // enforce access; we still create the link with the target as-is.
+            // Validate the symlink target and decide what to store on disk.
+            // With chroot, both absolute and relative targets must resolve
+            // inside the chroot. Without chroot, mirror OpenSSH and let the
+            // kernel + filesystem permissions enforce access.
+            //
+            // `link_target` is what actually gets written as the link's target:
+            // the client value verbatim for relative / no-chroot links, or the
+            // re-anchored in-jail path for an absolute target under chroot.
             let target = Path::new(&targetpath);
+            let mut link_target = PathBuf::from(&targetpath);
 
             if let Some(root) = root_dir.as_deref() {
                 if target.is_absolute() {
-                    let resolved_target = resolve_chroot(target, root).inspect_err(|_| {
-                        tracing::warn!(
-                            user = %user,
-                            link = %link_path.display(),
-                            target = %targetpath,
-                            "Rejected symlink with absolute target outside chroot"
-                        );
-                    })?;
-                    if !resolved_target.starts_with(root) {
-                        tracing::warn!(
-                            user = %user,
-                            link = %link_path.display(),
-                            target = %targetpath,
-                            resolved = %resolved_target.display(),
-                            "Symlink target resolves outside chroot"
-                        );
-                        return Err(SftpError::permission_denied(
-                            "Symlink target must be within root directory",
-                        ));
-                    }
+                    // The client's absolute target is chroot-relative ("/" ==
+                    // root). Re-anchor it under `root` (clamping `..`) and store
+                    // the re-anchored path, NOT the raw client string. Otherwise
+                    // `symlink /link /etc/passwd` would write an on-disk link to
+                    // the host's real `/etc/passwd`: since bssh has no kernel
+                    // `chroot(2)`, a raw absolute target escapes the virtual
+                    // jail. Re-anchoring confines it to `<root>/etc/passwd`.
+                    let resolved_target = resolve_chroot(target, root)?;
+                    Self::ensure_target_in_root(root_dir.as_deref(), &resolved_target)?;
+                    link_target = resolved_target;
                 } else {
                     // Relative target: combine with the link's parent directory
                     // (or fall back to cwd) and ensure the result stays in
@@ -1444,9 +1448,11 @@ impl russh_sftp::server::Handler for SftpHandler {
                 }
             }
 
-            // Create symbolic link (target is stored as-is, validation above)
+            // Create the symbolic link. `link_target` is the client target
+            // verbatim for relative / no-chroot links, or the re-anchored
+            // in-jail path for an absolute target under chroot (validated above).
             #[cfg(unix)]
-            tokio::fs::symlink(&targetpath, &link_path).await?;
+            tokio::fs::symlink(&link_target, &link_path).await?;
 
             #[cfg(not(unix))]
             return Err(SftpError::not_supported());
@@ -1454,7 +1460,7 @@ impl russh_sftp::server::Handler for SftpHandler {
             tracing::info!(
                 user = %user,
                 link = %link_path.display(),
-                target = %targetpath,
+                target = %link_target.display(),
                 "Created symbolic link"
             );
 
@@ -1967,5 +1973,36 @@ mod tests {
         assert!(attrs.permissions.is_some());
         assert!(attrs.mtime.is_some());
         assert!(attrs.atime.is_some());
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn chroot_symlink_absolute_target_is_reanchored_not_host() {
+        // Security guard (#214 follow-up): under chroot an absolute symlink
+        // target is chroot-relative ("/" == root) and must be stored re-anchored
+        // under the root. Storing the raw client target would make
+        // `symlink /link /etc/passwd` write an on-disk link to the host's real
+        // /etc/passwd, escaping the virtual jail (bssh has no `chroot(2)`).
+        use russh_sftp::server::Handler;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let chroot = dir.path().to_path_buf();
+        let mut handler = SftpHandler::new(
+            UserInfo::new("testuser"),
+            Some(chroot.clone()),
+            chroot.clone(),
+        );
+
+        handler
+            .symlink(1, "/link".to_string(), "/etc/passwd".to_string())
+            .await
+            .expect("symlink creation should succeed");
+
+        let on_disk = std::fs::read_link(chroot.join("link")).unwrap();
+        // The stored target is confined under the chroot, never the host path.
+        assert_eq!(on_disk, chroot.join("etc/passwd"));
+        assert!(on_disk.starts_with(&chroot));
+        assert_ne!(on_disk, PathBuf::from("/etc/passwd"));
     }
 }

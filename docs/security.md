@@ -241,18 +241,22 @@ scp:
   root: /data/scp
 ```
 
-**Chroot semantics.** When `root` is set:
+**Chroot semantics.** When `root` is set, the client's `/` is the chroot root
+(OpenSSH `ChrootDirectory` re-rooting semantics). SFTP and SCP behave the same
+way:
 
-- Absolute client paths inside `root` are honored as-is. No path doubling.
-- Absolute client paths outside `root` are rejected with `permission_denied`.
-- Relative client paths resolve under `root`, with `..` clamped at the
-  chroot boundary.
-- The pseudo-root `/` (returned by `realpath`) maps back to the chroot
-  directory so interactive SFTP clients (`cd /`, `pwd`) still work.
-- Path-traversal and symlink-escape protections continue to apply,
-  including for paths whose final component does not exist yet: the closest
-  existing ancestor is canonicalized and verified to stay inside `root`.
-  This blocks intermediate-directory symlinks pointing outside the chroot.
+- Both absolute and relative client paths are re-anchored under `root`, so
+  `/subdir` resolves to `<root>/subdir` and plain `/` maps to the chroot
+  directory (interactive clients' `cd /`, `pwd` keep working).
+- A host-looking path such as `/etc/passwd` is confined to `<root>/etc/passwd`,
+  never the host file.
+- `..` traversal is clamped at the chroot boundary and can never escape.
+- Path-traversal and symlink-escape protections apply, including for paths
+  whose final component does not exist yet: the closest existing ancestor is
+  canonicalized and verified to stay inside `root`, which blocks
+  intermediate-directory symlinks pointing outside the chroot. An absolute
+  SFTP symlink target is itself re-anchored under `root`, so a created link can
+  never point at the host filesystem.
 
 When `root` is unset (default since v2.1.3, per #186), the handler runs
 without chroot. Absolute paths are honored verbatim and relative paths

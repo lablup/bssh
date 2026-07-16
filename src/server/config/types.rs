@@ -249,11 +249,15 @@ pub struct SftpConfig {
 
     /// Optional chroot directory for SFTP operations.
     ///
-    /// When set, SFTP clients are confined to this directory:
-    /// - Absolute client paths inside `root` are honored as-is.
-    /// - Absolute client paths outside `root` are rejected with `permission_denied`.
-    /// - Relative client paths resolve under `root`.
-    /// - `..` traversal is clamped to `root`.
+    /// When set, SFTP clients are confined to this directory. The client's `/`
+    /// is the chroot root (OpenSSH `ChrootDirectory` re-rooting semantics):
+    /// - Both absolute and relative client paths are re-anchored under `root`,
+    ///   so `/subdir` resolves to `<root>/subdir`.
+    /// - A host-looking path such as `/etc/passwd` is confined to
+    ///   `<root>/etc/passwd`, never the host file.
+    /// - `..` traversal is clamped to `root` (it can never escape), and
+    ///   intermediate-directory symlinks pointing outside the chroot are
+    ///   rejected.
     ///
     /// When `None` (default), no chroot is applied. This matches OpenSSH
     /// `sftp-server` behavior: absolute paths are used verbatim and relative

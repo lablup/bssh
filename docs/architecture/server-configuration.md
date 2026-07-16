@@ -143,8 +143,10 @@ sftp:
   # Optional chroot directory.
   # When unset (default), no chroot: absolute client paths are honored
   # verbatim and relative paths resolve from the user's home directory.
-  # When set, clients are confined to this directory; absolute paths
-  # outside it are rejected with permission_denied.
+  # When set, clients are confined to this directory; the client's / is the
+  # chroot root, so absolute and relative paths alike are re-anchored under it
+  # (a host-looking /etc/passwd is confined to <root>/etc/passwd) and .. is
+  # clamped to the chroot.
   root: /data/sftp
 
 # SCP protocol configuration

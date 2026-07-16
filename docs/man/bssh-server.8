@@ -174,9 +174,13 @@ Shell execution settings (default, command_timeout, env)
 .TP
 .B sftp
 SFTP subsystem settings (\fBenabled\fR, \fBroot\fR). \fBroot\fR sets a chroot
-directory that confines SFTP transfers. When unset (default), absolute client
-paths are honored verbatim and relative paths resolve from the user's home
-directory, matching OpenSSH \fBsftp-server\fR behavior.
+directory that confines SFTP transfers. When set, the client's \fB/\fR is the
+chroot root: absolute and relative client paths are both re-anchored under it
+(OpenSSH \fBChrootDirectory\fR semantics), so a host-looking \fB/etc/passwd\fR
+is confined to \fB<root>/etc/passwd\fR and \fB..\fR cannot escape. When unset
+(default), absolute client paths are honored verbatim and relative paths
+resolve from the user's home directory, matching OpenSSH \fBsftp-server\fR
+behavior.
 .TP
 .B scp
 SCP protocol settings (\fBenabled\fR, \fBroot\fR). \fBroot\fR has the same
