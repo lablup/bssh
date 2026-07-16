@@ -433,6 +433,29 @@ mod tests {
         assert!(result.unwrap_err().to_string().contains("No host keys"));
     }
 
+    #[test]
+    fn test_build_russh_config_advertises_only_none_compression() {
+        // Regression guard for #215: the server must advertise only `none`
+        // compression so clients that prefer `zlib@openssh.com` (Cyberduck,
+        // `sftp -C`) fall back to the uncompressed transport instead of
+        // hitting russh's delayed-zlib desync.
+        let key = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/test_keys/ssh_host_ed25519_key"
+        );
+        let config = ServerConfig::builder().host_key(key).build();
+        let server = BsshServer::new(config);
+
+        let russh_config = server
+            .build_russh_config()
+            .expect("config should build with a valid host key");
+        assert_eq!(
+            russh_config.preferred.compression.as_ref(),
+            [russh::compression::NONE],
+            "server must advertise only `none` compression (see #215)"
+        );
+    }
+
     #[tokio::test]
     async fn test_session_count() {
         let config = ServerConfig::builder().host_key("/nonexistent/key").build();
