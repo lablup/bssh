@@ -82,7 +82,7 @@ impl NodeGrid {
         for (node, status) in &self.nodes {
             let node_str = format!("{node}");
             let node_display = if node_str.width() > 18 {
-                format!("{}...", &node_str.chars().take(15).collect::<String>())
+                format!("{}...", node_str.chars().take(15).collect::<String>())
             } else {
                 node_str
             };
