@@ -143,6 +143,14 @@ impl SshConfig {
         resolver::get_proxy_jump(&self.hosts, hostname)
     }
 
+    /// Get the effective `Compression` value (`yes`/`no`) for a hostname.
+    ///
+    /// Returns `None` when the directive is unset for the resolved host,
+    /// which callers should treat the same as `Compression no`.
+    pub fn get_compression(&self, hostname: &str) -> Option<bool> {
+        resolver::get_compression(&self.hosts, hostname)
+    }
+
     /// Get an integer option value for a hostname.
     ///
     /// Currently supports:
@@ -863,5 +871,25 @@ Host test
 "#;
         let config = SshConfig::parse(config_content).unwrap();
         assert_eq!(config.hosts[0].number_of_password_prompts, Some(3));
+    }
+
+    #[test]
+    fn test_get_compression_option() {
+        // Issue #219: the resolved `Compression` directive must be readable
+        // through the public API so callers can wire it into the russh
+        // client config (see SshConnectionConfig::to_russh_config).
+        let config_content = r#"
+Host compressed.example.com
+    Compression yes
+
+Host plain.example.com
+    Compression no
+"#;
+        let config = SshConfig::parse(config_content).unwrap();
+
+        assert_eq!(config.get_compression("compressed.example.com"), Some(true));
+        assert_eq!(config.get_compression("plain.example.com"), Some(false));
+        // No matching Host block and no directive at all: unset.
+        assert_eq!(config.get_compression("unconfigured.example.com"), None);
     }
 }

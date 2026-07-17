@@ -207,6 +207,7 @@ bssh supports 40+ SSH configuration directives organized into categories:
 - `ConnectTimeout` - Connection timeout in seconds
 - `ServerAliveInterval` - Keepalive interval
 - `ServerAliveCountMax` - Keepalive retry count
+- `Compression` - Advertise transport compression to the server (yes/no, default: no). `yes` offers eager `zlib` ahead of `none`; `no`/unset offers only `none`. `zlib@openssh.com` is never advertised regardless of this setting, because russh's delayed-zlib codec desyncs the flate2 stream a few packets after activation (see the server-side fix in #215); wiring is in `SshConnectionConfig::to_russh_config` (`src/ssh/tokio_client/connection.rs`).
 
 **Authentication Options:**
 - `IdentityFile` - SSH private key file (multiple allowed)

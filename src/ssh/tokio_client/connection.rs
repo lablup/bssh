@@ -72,6 +72,15 @@ pub struct SshConnectionConfig {
     /// before considering the connection dead.
     /// Default: 3
     pub keepalive_max: usize,
+
+    /// Whether the ssh_config `Compression` directive resolved to `yes`.
+    ///
+    /// `false` (the default) matches `Compression no`/unset and advertises
+    /// only `none` compression to the server. `true` matches `Compression
+    /// yes` and advertises eager `zlib` ahead of `none`. See
+    /// [`to_russh_config`](Self::to_russh_config) for why `zlib@openssh.com`
+    /// is never advertised regardless of this flag.
+    pub compression: bool,
 }
 
 impl Default for SshConnectionConfig {
@@ -79,9 +88,30 @@ impl Default for SshConnectionConfig {
         Self {
             keepalive_interval: Some(DEFAULT_KEEPALIVE_INTERVAL),
             keepalive_max: DEFAULT_KEEPALIVE_MAX,
+            compression: false,
         }
     }
 }
+
+/// Compression preference advertised when ssh_config resolves `Compression
+/// no` (or the directive is unset). This matches the current effective
+/// behavior and the server-side fix in #215.
+const NONE_ONLY_COMPRESSION: &[russh::compression::Name] = &[russh::compression::NONE];
+
+/// Compression preference advertised when ssh_config resolves `Compression
+/// yes`.
+///
+/// This deliberately omits `russh::compression::ZLIB_LEGACY`
+/// (`zlib@openssh.com`). #215 found that russh's delayed-zlib transport
+/// desyncs the flate2 stream a few packets after compression activates
+/// post-auth, corrupting the next packet's length prefix (reproducible on
+/// russh 0.61.1 and 0.62.1). That bug lives in russh's compression codec, not
+/// the server role, so a bssh client that advertised `zlib@openssh.com` would
+/// be just as exposed when talking to a server that selects it. Eager `zlib`
+/// (activated immediately after key exchange, not delayed) does not exhibit
+/// the same desync and is offered ahead of `none`.
+const COMPRESSED_ORDER: &[russh::compression::Name] =
+    &[russh::compression::ZLIB, russh::compression::NONE];
 
 impl SshConnectionConfig {
     /// Create a new configuration with default values.
@@ -104,6 +134,15 @@ impl SshConnectionConfig {
         self
     }
 
+    /// Set whether SSH transport compression should be advertised, mirroring
+    /// the ssh_config `Compression` directive (`yes` -> `true`, `no`/unset ->
+    /// `false`).
+    #[must_use]
+    pub fn with_compression(mut self, enabled: bool) -> Self {
+        self.compression = enabled;
+        self
+    }
+
     /// Convert this configuration to a russh client Config.
     ///
     /// `inactivity_timeout` stays disabled for client sessions. A healthy
@@ -111,11 +150,27 @@ impl SshConnectionConfig {
     /// long time, so inactivity must not be treated as a local reason to close
     /// it. When keepalive is enabled, russh's keepalive counter is the liveness
     /// detector; when it is disabled, the client leaves idle sessions alone.
+    ///
+    /// `preferred.compression` is derived from `self.compression`: `false`
+    /// advertises only `none`; `true` advertises `zlib` ahead of `none`.
+    /// `zlib@openssh.com` is never advertised; see [`COMPRESSED_ORDER`] for
+    /// why.
     pub fn to_russh_config(&self) -> Config {
+        let compression_order = if self.compression {
+            COMPRESSED_ORDER
+        } else {
+            NONE_ONLY_COMPRESSION
+        };
+        let preferred = russh::Preferred {
+            compression: std::borrow::Cow::Borrowed(compression_order),
+            ..russh::Preferred::DEFAULT
+        };
+
         Config {
             keepalive_interval: self.keepalive_interval.map(Duration::from_secs),
             keepalive_max: self.keepalive_max,
             inactivity_timeout: None,
+            preferred,
             ..Default::default()
         }
     }

@@ -38,8 +38,9 @@ use super::initialization::determine_use_keychain;
 use super::initialization::{AppContext, determine_ssh_key_path};
 use super::utils::format_duration;
 
-/// Build SSH connection config with keepalive settings.
-/// Precedence: CLI > SSH config > YAML config > defaults
+/// Build SSH connection config with keepalive and compression settings.
+/// Precedence: CLI > SSH config > YAML config > defaults.
+/// `Compression` has no CLI or YAML override; it is read from ssh_config only.
 fn build_ssh_connection_config(
     cli: &Cli,
     ctx: &AppContext,
@@ -66,18 +67,25 @@ fn build_ssh_connection_config(
         .or_else(|| ctx.config.get_server_alive_count_max(cluster_name))
         .unwrap_or(DEFAULT_KEEPALIVE_MAX);
 
+    let compression = ctx
+        .ssh_config
+        .get_compression(hostname.unwrap_or("*"))
+        .unwrap_or(false);
+
     let ssh_connection_config = SshConnectionConfig::new()
         .with_keepalive_interval(if keepalive_interval == 0 {
             None
         } else {
             Some(keepalive_interval)
         })
-        .with_keepalive_max(keepalive_max);
+        .with_keepalive_max(keepalive_max)
+        .with_compression(compression);
 
     tracing::debug!(
-        "SSH keepalive config: interval={:?}s, max={}",
+        "SSH keepalive config: interval={:?}s, max={}, compression={}",
         ssh_connection_config.keepalive_interval,
-        ssh_connection_config.keepalive_max
+        ssh_connection_config.keepalive_max,
+        ssh_connection_config.compression
     );
 
     ssh_connection_config
