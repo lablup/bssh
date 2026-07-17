@@ -146,6 +146,10 @@ Maximum concurrent connections (default: 100)
 .B BSSH_KEEPALIVE_INTERVAL
 Keepalive interval in seconds (default: 60)
 .TP
+.B BSSH_COMPRESSION
+Advertise SSH transport compression, "true" or "false" (default: false).
+See the \fBserver\fR configuration section for the caveat about enabling it.
+.TP
 .B BSSH_AUTH_METHODS
 Comma-separated authentication methods (publickey,password)
 .TP
@@ -164,7 +168,16 @@ Command timeout in seconds (default: 3600)
 .SS Configuration Sections
 .TP
 .B server
-Network and connection settings (bind_address, port, host_keys, max_connections, timeout, keepalive_interval)
+Network and connection settings (bind_address, port, host_keys,
+max_connections, timeout, keepalive_interval, compression).
+\fBcompression\fR controls whether the server advertises SSH transport
+compression (\fBzlib\fR, \fBzlib@openssh.com\fR). It defaults to \fBfalse\fR,
+advertising only \fBnone\fR so clients use the uncompressed transport,
+because the bundled russh library's delayed-zlib (\fBzlib@openssh.com\fR)
+transport currently desyncs a few packets after compression activates,
+dropping clients that negotiate it (Cyberduck, \fBsftp -C\fR) mid-session;
+see https://github.com/lablup/bssh/issues/215. Enable it only if the
+upstream russh bug is fixed or your clients never negotiate compression.
 .TP
 .B auth
 Authentication methods and settings (methods, publickey, password)

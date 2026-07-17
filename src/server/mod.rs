@@ -195,16 +195,27 @@ impl BsshServer {
 
         // russh's delayed zlib (`zlib@openssh.com`) compression desyncs and
         // corrupts the channel stream after a few packets, so any client that
-        // negotiates compression — Cyberduck, `sftp -C` — fails mid-session
+        // negotiates compression (Cyberduck, `sftp -C`) fails mid-session
         // with "SshEncoding: length invalid" (reproducible in russh 0.61.1 and
-        // 0.62.1). Until the upstream russh bug is fixed, advertise only "none"
-        // so clients fall back to the uncompressed transport, matching the
-        // Dropbear/OpenSSH sftp-server defaults used in Backend.AI containers.
-        // See https://github.com/lablup/bssh/issues/215.
-        const NO_COMPRESSION: &[russh::compression::Name] = &[russh::compression::NONE];
-        let preferred = russh::Preferred {
-            compression: std::borrow::Cow::Borrowed(NO_COMPRESSION),
-            ..russh::Preferred::DEFAULT
+        // 0.62.1). By default, advertise only "none" so clients fall back to
+        // the uncompressed transport, matching the Dropbear/OpenSSH
+        // sftp-server defaults used in Backend.AI containers. Operators can
+        // opt back in via the `compression` config option once the upstream
+        // russh bug is fixed. See https://github.com/lablup/bssh/issues/215
+        // and https://github.com/lablup/bssh/issues/220.
+        let preferred = if self.config.compression {
+            tracing::warn!(
+                "SSH transport compression enabled; russh's delayed-zlib \
+                 (zlib@openssh.com) desync may drop clients that negotiate \
+                 compression mid-session (see issue #215)"
+            );
+            russh::Preferred::DEFAULT
+        } else {
+            const NO_COMPRESSION: &[russh::compression::Name] = &[russh::compression::NONE];
+            russh::Preferred {
+                compression: std::borrow::Cow::Borrowed(NO_COMPRESSION),
+                ..russh::Preferred::DEFAULT
+            }
         };
 
         Ok(russh::server::Config {
@@ -435,15 +446,20 @@ mod tests {
 
     #[test]
     fn test_build_russh_config_advertises_only_none_compression() {
-        // Regression guard for #215: the server must advertise only `none`
-        // compression so clients that prefer `zlib@openssh.com` (Cyberduck,
-        // `sftp -C`) fall back to the uncompressed transport instead of
-        // hitting russh's delayed-zlib desync.
+        // Regression guard for #215: by default the server must advertise
+        // only `none` compression so clients that prefer `zlib@openssh.com`
+        // (Cyberduck, `sftp -C`) fall back to the uncompressed transport
+        // instead of hitting russh's delayed-zlib desync. The default config
+        // leaves `compression` off, so this covers the disabled setting.
         let key = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/test_keys/ssh_host_ed25519_key"
         );
         let config = ServerConfig::builder().host_key(key).build();
+        assert!(
+            !config.compression,
+            "compression must default to off (see #215/#220)"
+        );
         let server = BsshServer::new(config);
 
         let russh_config = server
@@ -453,6 +469,39 @@ mod tests {
             russh_config.preferred.compression.as_ref(),
             [russh::compression::NONE],
             "server must advertise only `none` compression (see #215)"
+        );
+    }
+
+    #[test]
+    fn test_build_russh_config_compression_opt_in_advertises_zlib() {
+        // #220: opting in via the `compression` config option restores the
+        // russh default advertisement (none, zlib, zlib@openssh.com) so
+        // clients may negotiate a compressed transport.
+        let key = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/test_keys/ssh_host_ed25519_key"
+        );
+        let config = ServerConfig::builder()
+            .host_key(key)
+            .compression(true)
+            .build();
+        let server = BsshServer::new(config);
+
+        let russh_config = server
+            .build_russh_config()
+            .expect("config should build with a valid host key");
+        assert_eq!(
+            russh_config.preferred.compression,
+            russh::Preferred::DEFAULT.compression,
+            "opt-in must advertise russh's default compression list"
+        );
+        assert!(
+            russh_config
+                .preferred
+                .compression
+                .as_ref()
+                .contains(&russh::compression::ZLIB_LEGACY),
+            "opt-in advertisement must include zlib@openssh.com"
         );
     }
 
