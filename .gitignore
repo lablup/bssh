@@ -28,3 +28,7 @@ Thumbs.db
 references/
 vendor/
 bssh-server.yaml
+
+# tools/bench artifacts
+tools/bench/interop/sshj/lib/
+*.class
