@@ -17,6 +17,8 @@
 pub mod authentication;
 pub mod channel_manager;
 pub mod connection;
+#[cfg(test)]
+mod connection_tests;
 pub mod error;
 pub mod file_transfer;
 mod to_socket_addrs_with_hostname;

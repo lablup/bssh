@@ -428,6 +428,12 @@ pub(super) fn get_strict_host_key_checking(
     config.strict_host_key_checking
 }
 
+/// Get the effective Compression value
+pub(super) fn get_compression(hosts: &[SshHostConfig], hostname: &str) -> Option<bool> {
+    let config = find_host_config(hosts, hostname);
+    config.compression
+}
+
 /// Get ProxyJump configuration
 pub(super) fn get_proxy_jump(hosts: &[SshHostConfig], hostname: &str) -> Option<String> {
     let config = find_host_config(hosts, hostname);
