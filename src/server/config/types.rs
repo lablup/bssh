@@ -140,6 +140,30 @@ pub struct ServerSettings {
     /// Default: false
     #[serde(default)]
     pub compression: bool,
+
+    /// Maximum SSH channel packet size in bytes advertised to clients.
+    ///
+    /// Larger packets amortize the per-packet cipher, copy, and scheduling
+    /// overhead of the SSH transport: with the russh library default of
+    /// 32768, a 256 KiB SFTP write is fragmented into 8 CHANNEL_DATA packets,
+    /// roughly halving single-connection SFTP throughput on slower CPUs (see
+    /// <https://github.com/lablup/bssh/issues/187>). Values above 65535 are
+    /// clamped because russh rejects packets larger than a TCP frame.
+    ///
+    /// Default: 65535
+    #[serde(default = "default_maximum_packet_size")]
+    pub maximum_packet_size: u32,
+
+    /// SSH channel flow-control window size in bytes advertised to clients.
+    ///
+    /// Bounds how much data a client may send on a channel before waiting
+    /// for a window adjustment, and therefore bounds the per-channel receive
+    /// buffering. The russh library default is 2 MiB; bssh-server defaults
+    /// higher to keep bulk SFTP/SCP uploads from stalling on window updates.
+    ///
+    /// Default: 8388608 (8 MiB)
+    #[serde(default = "default_window_size")]
+    pub window_size: u32,
 }
 
 /// Authentication configuration.
@@ -605,6 +629,20 @@ fn default_keepalive() -> u64 {
     60
 }
 
+fn default_maximum_packet_size() -> u32 {
+    // The russh transport rejects channel packets larger than a TCP frame
+    // (65535); advertise the cap so SFTP writes fragment as little as
+    // possible (issue #187).
+    65535
+}
+
+fn default_window_size() -> u32 {
+    // 8 MiB: four times the russh default, sized so bulk uploads are not
+    // throttled by window-adjust round trips while keeping worst-case
+    // per-channel buffering bounded.
+    8 * 1024 * 1024
+}
+
 fn default_auth_methods() -> Vec<AuthMethod> {
     vec![AuthMethod::PublicKey]
 }
@@ -653,6 +691,8 @@ impl Default for ServerSettings {
             timeout: default_timeout(),
             keepalive_interval: default_keepalive(),
             compression: false,
+            maximum_packet_size: default_maximum_packet_size(),
+            window_size: default_window_size(),
         }
     }
 }

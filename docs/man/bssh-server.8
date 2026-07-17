@@ -150,6 +150,13 @@ Keepalive interval in seconds (default: 60)
 Advertise SSH transport compression, "true" or "false" (default: false).
 See the \fBserver\fR configuration section for the caveat about enabling it.
 .TP
+.B BSSH_MAX_PACKET_SIZE
+Maximum SSH channel packet size in bytes (default: 65535; clamped to
+4096-65535)
+.TP
+.B BSSH_WINDOW_SIZE
+SSH channel flow-control window size in bytes (default: 8388608)
+.TP
 .B BSSH_AUTH_METHODS
 Comma-separated authentication methods (publickey,password)
 .TP
@@ -169,7 +176,14 @@ Command timeout in seconds (default: 3600)
 .TP
 .B server
 Network and connection settings (bind_address, port, host_keys,
-max_connections, timeout, keepalive_interval, compression).
+max_connections, timeout, keepalive_interval, compression,
+maximum_packet_size, window_size).
+\fBmaximum_packet_size\fR (default 65535) and \fBwindow_size\fR (default
+8388608) size the SSH channel: larger packets amortize the per-packet
+cipher and copy overhead of the transport, so bulk SFTP/SCP transfers are
+markedly faster than with the library defaults (32768 / 2097152).
+\fBmaximum_packet_size\fR is clamped to 4096-65535 and \fBwindow_size\fR is
+raised to at least one packet.
 \fBcompression\fR controls whether the server advertises SSH transport
 compression (\fBzlib\fR, \fBzlib@openssh.com\fR). It defaults to \fBfalse\fR,
 advertising only \fBnone\fR so clients use the uncompressed transport,

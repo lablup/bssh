@@ -153,8 +153,14 @@ enum OpenHandle {
     File {
         file: File,
         path: PathBuf,
-        #[allow(dead_code)]
         flags: OpenFlags,
+        /// Tracked logical file position, used to elide redundant seeks for
+        /// strictly sequential reads and writes (SFTP clients address every
+        /// transfer chunk by absolute offset, so bulk transfers would
+        /// otherwise pay one seek per chunk). `None` means the position is
+        /// unknown (append mode, or an interrupted operation) and the next
+        /// positioned operation must seek.
+        pos: Option<u64>,
     },
     /// An open directory listing.
     Dir {
@@ -668,13 +674,21 @@ impl russh_sftp::server::Handler for SftpHandler {
 
             let file = opts.open(&path).await?;
 
-            // Store the handle
+            // Store the handle. Append-mode files carry no tracked position:
+            // the kernel writes at EOF regardless of the cursor, so seek
+            // elision must not apply.
+            let pos = if pflags.contains(OpenFlags::APPEND) {
+                None
+            } else {
+                Some(0)
+            };
             handles.lock().await.insert(
                 handle_id.clone(),
                 OpenHandle::File {
                     file,
                     path,
                     flags: pflags,
+                    pos,
                 },
             );
 
@@ -710,13 +724,20 @@ impl russh_sftp::server::Handler for SftpHandler {
             let mut handles_guard = handles.lock().await;
             let handle_entry = handles_guard.get_mut(&handle);
 
-            let file = match handle_entry {
-                Some(OpenHandle::File { file, .. }) => file,
+            let (file, pos) = match handle_entry {
+                Some(OpenHandle::File { file, pos, .. }) => (file, pos),
                 _ => return Err(SftpError::invalid_handle()),
             };
 
-            // Seek to offset
-            file.seek(SeekFrom::Start(offset)).await?;
+            // Seek only when the file cursor is not already at the requested
+            // offset (sequential bulk reads hit the fast path). Mark the
+            // position unknown while operations are in flight so an error
+            // path can never leave a stale tracked position behind.
+            let need_seek = *pos != Some(offset);
+            *pos = None;
+            if need_seek {
+                file.seek(SeekFrom::Start(offset)).await?;
+            }
 
             // Read data
             let mut buffer = vec![0u8; capped_len as usize];
@@ -725,6 +746,8 @@ impl russh_sftp::server::Handler for SftpHandler {
             if bytes_read == 0 {
                 return Err(SftpError::eof());
             }
+
+            *pos = Some(offset + bytes_read as u64);
 
             buffer.truncate(bytes_read);
 
@@ -755,16 +778,31 @@ impl russh_sftp::server::Handler for SftpHandler {
             let mut handles_guard = handles.lock().await;
             let handle_entry = handles_guard.get_mut(&handle);
 
-            let file = match handle_entry {
-                Some(OpenHandle::File { file, .. }) => file,
+            let (file, flags, pos) = match handle_entry {
+                Some(OpenHandle::File {
+                    file, flags, pos, ..
+                }) => (file, *flags, pos),
                 _ => return Err(SftpError::invalid_handle()),
             };
 
-            // Seek to offset
-            file.seek(SeekFrom::Start(offset)).await?;
-
-            // Write data
-            file.write_all(&data).await?;
+            if flags.contains(OpenFlags::APPEND) {
+                // O_APPEND writes always land at EOF regardless of the file
+                // cursor, so seeking is pointless and the position stays
+                // untracked (`None`, set at open time).
+                file.write_all(&data).await?;
+            } else {
+                // Seek only when the cursor is not already at the requested
+                // offset; sequential uploads take the fast path. The tracked
+                // position is cleared first so a failed seek or partial
+                // write leaves it unknown rather than stale.
+                let need_seek = *pos != Some(offset);
+                *pos = None;
+                if need_seek {
+                    file.seek(SeekFrom::Start(offset)).await?;
+                }
+                file.write_all(&data).await?;
+                *pos = Some(offset + data.len() as u64);
+            }
 
             tracing::trace!(
                 handle = %handle,

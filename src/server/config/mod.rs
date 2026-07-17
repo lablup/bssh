@@ -230,6 +230,24 @@ pub struct ServerConfig {
     /// compression.
     #[serde(default)]
     pub compression: bool,
+
+    /// Maximum SSH channel packet size in bytes advertised to clients.
+    ///
+    /// Larger packets amortize per-packet cipher and copy overhead; russh's
+    /// library default of 32768 fragments a 256 KiB SFTP write into 8
+    /// CHANNEL_DATA packets (see
+    /// <https://github.com/lablup/bssh/issues/187>). Clamped to at most
+    /// 65535, which russh requires. Default: 65535.
+    #[serde(default = "default_maximum_packet_size")]
+    pub maximum_packet_size: u32,
+
+    /// SSH channel flow-control window size in bytes advertised to clients.
+    ///
+    /// Bounds in-flight client data per channel (and thus per-channel
+    /// buffering). Default: 8 MiB, four times the russh library default, so
+    /// bulk uploads do not stall on window-adjust round trips.
+    #[serde(default = "default_window_size")]
+    pub window_size: u32,
 }
 
 fn default_max_sessions_per_user() -> usize {
@@ -310,6 +328,17 @@ fn default_true() -> bool {
     true
 }
 
+fn default_maximum_packet_size() -> u32 {
+    // russh rejects channel packets larger than a TCP frame (65535);
+    // advertise the cap to minimize SFTP write fragmentation (issue #187).
+    65535
+}
+
+fn default_window_size() -> u32 {
+    // 8 MiB: four times the russh default; see ServerSettings::window_size.
+    8 * 1024 * 1024
+}
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -337,6 +366,8 @@ impl Default for ServerConfig {
             max_sessions_per_user: default_max_sessions_per_user(),
             session_timeout_secs: 0,
             compression: false,
+            maximum_packet_size: default_maximum_packet_size(),
+            window_size: default_window_size(),
         }
     }
 }
@@ -643,6 +674,20 @@ impl ServerConfigBuilder {
         self
     }
 
+    /// Set the maximum SSH channel packet size in bytes.
+    ///
+    /// Values above 65535 are clamped when the russh config is built.
+    pub fn maximum_packet_size(mut self, size: u32) -> Self {
+        self.config.maximum_packet_size = size;
+        self
+    }
+
+    /// Set the SSH channel flow-control window size in bytes.
+    pub fn window_size(mut self, size: u32) -> Self {
+        self.config.window_size = size;
+        self
+    }
+
     /// Build the ServerConfig.
     pub fn build(self) -> ServerConfig {
         self.config
@@ -714,6 +759,8 @@ impl ServerFileConfig {
             max_sessions_per_user: self.security.max_sessions_per_user,
             session_timeout_secs: self.security.session_timeout,
             compression: self.server.compression,
+            maximum_packet_size: self.server.maximum_packet_size,
+            window_size: self.server.window_size,
         }
     }
 }
@@ -831,6 +878,22 @@ mod tests {
         file_config.server.compression = true;
         let server_config = file_config.into_server_config();
         assert!(server_config.compression);
+    }
+
+    #[test]
+    fn channel_sizing_defaults_and_threads_into_server_config() {
+        // #187: tuned channel-sizing defaults, overridable via the file
+        // config, must propagate into ServerConfig.
+        let mut file_config = ServerFileConfig::default();
+        file_config.server.host_keys = vec![PathBuf::from("/test/key")];
+        assert_eq!(file_config.server.maximum_packet_size, 65535);
+        assert_eq!(file_config.server.window_size, 8 * 1024 * 1024);
+
+        file_config.server.maximum_packet_size = 32768;
+        file_config.server.window_size = 4 * 1024 * 1024;
+        let server_config = file_config.into_server_config();
+        assert_eq!(server_config.maximum_packet_size, 32768);
+        assert_eq!(server_config.window_size, 4 * 1024 * 1024);
     }
 
     #[test]
