@@ -615,7 +615,7 @@ let auth_method = auth_ctx.determine_method?;
 - Uses `zeroize` crate to clear passwords and passphrases from memory
 - Secure passphrase prompts via `rpassword` crate
 - No credential caching or storage
-- Platform-specific handling (SSH agent not supported on Windows)
+- Platform-specific handling (SSH agent not supported on Windows; native Windows client execution is not currently supported at all, see the README's [Platform Support](../../README.md#platform-support) section and [#213](https://github.com/lablup/bssh/issues/213))
 
 **Code Reduction:**
 - Eliminated ~130 lines of duplicated authentication logic

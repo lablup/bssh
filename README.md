@@ -36,12 +36,17 @@ A high-performance SSH client with **SSH-compatible syntax** for both single-hos
 - **Progress Tracking**: Real-time progress indicators with smart detection (percentages, fractions, apt/dpkg)
 - **Flexible Authentication**: Support for SSH keys, SSH agent, password authentication, and encrypted key passphrases
 - **Host Key Verification**: Secure host key checking with known_hosts support
-- **Cross-Platform**: Works on Linux and macOS
+- **Cross-Platform**: Works on Linux and macOS (see [Platform Support](#platform-support) for Windows status)
 - **Output Management**: Multiple output modes (TUI, stream, file, normal) with auto-detection
 - **Interactive Mode**: Interactive shell sessions with single-node or multiplexed multi-node support
 - **SSH Config Caching**: High-performance caching of SSH configurations with TTL and file modification detection
 - **Configurable Timeouts**: Set both connection timeout (`--connect-timeout`) and command execution timeout (`--timeout`) with support for unlimited execution
 - **SSH Keepalive**: Configurable keepalive settings (`--server-alive-interval`, `--server-alive-count-max`) to prevent idle connection timeouts
+
+## Platform Support
+
+- **Linux and macOS**: Fully supported, including SSH agent authentication (`-A`), PTY-based interactive sessions, and every CLI feature documented here.
+- **Windows (native)**: Not currently supported as a client. The `bssh` crate does not build for a Windows target today because of unconditional Unix-only dependencies (`nix`, `signal-hook`, `libc`) and un-gated PTY/agent code; there is no Windows CI job or release artifact. Use **WSL2** to run `bssh` on Windows in the meantime. See [#213](https://github.com/lablup/bssh/issues/213) for the current status and the known blockers to native Windows client support.
 
 ## Installation
 
