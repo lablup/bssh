@@ -218,6 +218,37 @@ impl BsshServer {
             }
         };
 
+        // Channel sizing (issue #187): russh's library defaults
+        // (maximum_packet_size 32768, window_size 2 MiB) fragment a 256 KiB
+        // SFTP write into 8 CHANNEL_DATA packets, multiplying per-packet
+        // cipher and copy overhead. Advertise larger, configurable values.
+        // russh rejects channel packets above a TCP frame, so clamp there.
+        const RUSSH_MAX_PACKET_SIZE: u32 = 65535;
+        // Floor keeps a misconfiguration from advertising a packet size that
+        // cannot even carry an SFTP header round trip.
+        const MIN_PACKET_SIZE: u32 = 4096;
+        let maximum_packet_size = self
+            .config
+            .maximum_packet_size
+            .clamp(MIN_PACKET_SIZE, RUSSH_MAX_PACKET_SIZE);
+        if maximum_packet_size != self.config.maximum_packet_size {
+            tracing::warn!(
+                configured = self.config.maximum_packet_size,
+                effective = maximum_packet_size,
+                "maximum_packet_size out of range [{MIN_PACKET_SIZE}, {RUSSH_MAX_PACKET_SIZE}], clamped"
+            );
+        }
+        // A window smaller than one packet would deadlock the channel before
+        // the first packet completes; keep it at least one packet wide.
+        let window_size = self.config.window_size.max(maximum_packet_size);
+        if window_size != self.config.window_size {
+            tracing::warn!(
+                configured = self.config.window_size,
+                effective = window_size,
+                "window_size smaller than maximum_packet_size, raised"
+            );
+        }
+
         Ok(russh::server::Config {
             keys,
             preferred,
@@ -225,6 +256,8 @@ impl BsshServer {
             auth_rejection_time_initial: Some(Duration::from_secs(0)),
             max_auth_attempts: self.config.max_auth_attempts as usize,
             inactivity_timeout: self.config.idle_timeout(),
+            maximum_packet_size,
+            window_size,
             ..Default::default()
         })
     }
@@ -503,6 +536,81 @@ mod tests {
                 .contains(&russh::compression::ZLIB_LEGACY),
             "opt-in advertisement must include zlib@openssh.com"
         );
+    }
+
+    #[test]
+    fn test_build_russh_config_channel_sizing_defaults() {
+        // #187: by default the server advertises the russh packet-size cap
+        // and an 8 MiB window instead of the library defaults (32768 / 2 MiB)
+        // so SFTP writes are not fragmented into 8 packets each.
+        let key = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/test_keys/ssh_host_ed25519_key"
+        );
+        let config = ServerConfig::builder().host_key(key).build();
+        let server = BsshServer::new(config);
+
+        let russh_config = server
+            .build_russh_config()
+            .expect("config should build with a valid host key");
+        assert_eq!(russh_config.maximum_packet_size, 65535);
+        assert_eq!(russh_config.window_size, 8 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_build_russh_config_channel_sizing_clamped() {
+        // Out-of-range values are clamped: packet size to [4096, 65535] and
+        // the window to at least one packet.
+        let key = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/test_keys/ssh_host_ed25519_key"
+        );
+        let config = ServerConfig::builder()
+            .host_key(key)
+            .maximum_packet_size(1_000_000)
+            .window_size(1024)
+            .build();
+        let server = BsshServer::new(config);
+
+        let russh_config = server
+            .build_russh_config()
+            .expect("config should build with a valid host key");
+        assert_eq!(russh_config.maximum_packet_size, 65535);
+        assert_eq!(
+            russh_config.window_size, 65535,
+            "window must be raised to at least one packet"
+        );
+
+        let config = ServerConfig::builder()
+            .host_key(key)
+            .maximum_packet_size(16)
+            .build();
+        let server = BsshServer::new(config);
+        let russh_config = server
+            .build_russh_config()
+            .expect("config should build with a valid host key");
+        assert_eq!(russh_config.maximum_packet_size, 4096);
+    }
+
+    #[test]
+    fn test_build_russh_config_channel_sizing_custom() {
+        // In-range custom values pass through unchanged.
+        let key = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/test_keys/ssh_host_ed25519_key"
+        );
+        let config = ServerConfig::builder()
+            .host_key(key)
+            .maximum_packet_size(32768)
+            .window_size(2 * 1024 * 1024)
+            .build();
+        let server = BsshServer::new(config);
+
+        let russh_config = server
+            .build_russh_config()
+            .expect("config should build with a valid host key");
+        assert_eq!(russh_config.maximum_packet_size, 32768);
+        assert_eq!(russh_config.window_size, 2 * 1024 * 1024);
     }
 
     #[tokio::test]

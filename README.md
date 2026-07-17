@@ -1446,6 +1446,16 @@ Read [ARCHITECTURE](ARCHITECTURE.md) documentation for more information.
 cargo build
 ```
 
+Release builds use a tuned profile (`lto = "fat"`, `codegen-units = 1`) so the SSH framing, cipher, and SFTP hot paths inline across crates. For maximum throughput on known hardware, additionally pin the target CPU:
+
+```bash
+# Portable AVX2-class server build (Haswell/Zen and newer)
+RUSTFLAGS="-C target-cpu=x86-64-v3" cargo build --release
+
+# Optimized only for the build machine itself
+RUSTFLAGS="-C target-cpu=native" cargo build --release
+```
+
 ### Testing
 ```bash
 cargo test

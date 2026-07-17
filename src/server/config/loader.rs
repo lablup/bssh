@@ -56,6 +56,8 @@ use std::path::{Path, PathBuf};
 /// - `BSSH_MAX_CONNECTIONS` - Maximum concurrent connections
 /// - `BSSH_KEEPALIVE_INTERVAL` - Keepalive interval in seconds
 /// - `BSSH_COMPRESSION` - Advertise SSH transport compression ("true"/"false"; default false, see issue #215)
+/// - `BSSH_MAX_PACKET_SIZE` - Maximum SSH channel packet size in bytes (default 65535, clamped to at most 65535)
+/// - `BSSH_WINDOW_SIZE` - SSH channel flow-control window size in bytes (default 8388608)
 /// - `BSSH_AUTH_METHODS` - Comma-separated auth methods (e.g., "publickey,password")
 /// - `BSSH_AUTHORIZED_KEYS_DIR` - Directory for authorized_keys files
 /// - `BSSH_AUTHORIZED_KEYS_PATTERN` - Pattern for authorized_keys paths
@@ -260,6 +262,28 @@ fn apply_env_overrides(mut config: ServerFileConfig) -> Result<ServerFileConfig>
         tracing::debug!(
             compression = config.server.compression,
             "Applied BSSH_COMPRESSION override"
+        );
+    }
+
+    // BSSH_MAX_PACKET_SIZE
+    if let Ok(size_str) = std::env::var("BSSH_MAX_PACKET_SIZE") {
+        config.server.maximum_packet_size = size_str
+            .parse()
+            .context(format!("Invalid BSSH_MAX_PACKET_SIZE value: {size_str}"))?;
+        tracing::debug!(
+            maximum_packet_size = config.server.maximum_packet_size,
+            "Applied BSSH_MAX_PACKET_SIZE override"
+        );
+    }
+
+    // BSSH_WINDOW_SIZE
+    if let Ok(size_str) = std::env::var("BSSH_WINDOW_SIZE") {
+        config.server.window_size = size_str
+            .parse()
+            .context(format!("Invalid BSSH_WINDOW_SIZE value: {size_str}"))?;
+        tracing::debug!(
+            window_size = config.server.window_size,
+            "Applied BSSH_WINDOW_SIZE override"
         );
     }
 
@@ -497,6 +521,26 @@ auth:
     fn test_env_override_compression_invalid() {
         let _port = EnvGuard::remove("BSSH_PORT");
         let _compression = EnvGuard::set("BSSH_COMPRESSION", "maybe");
+        let result = apply_env_overrides(ServerFileConfig::default());
+        assert!(result.is_err());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_env_override_channel_sizing() {
+        let _port = EnvGuard::remove("BSSH_PORT");
+        let _packet = EnvGuard::set("BSSH_MAX_PACKET_SIZE", "32768");
+        let _window = EnvGuard::set("BSSH_WINDOW_SIZE", "4194304");
+        let config = apply_env_overrides(ServerFileConfig::default()).unwrap();
+        assert_eq!(config.server.maximum_packet_size, 32768);
+        assert_eq!(config.server.window_size, 4194304);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_env_override_channel_sizing_invalid() {
+        let _port = EnvGuard::remove("BSSH_PORT");
+        let _packet = EnvGuard::set("BSSH_MAX_PACKET_SIZE", "not-a-number");
         let result = apply_env_overrides(ServerFileConfig::default());
         assert!(result.is_err());
     }

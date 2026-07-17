@@ -104,3 +104,14 @@ path = "src/bin/bssh_server.rs"
 name = "bssh-keygen"
 path = "src/bin/bssh_keygen.rs"
 
+
+# Tuned release profile (issue #187): fat LTO plus a single codegen unit let
+# the compiler inline across the russh framing / cipher / SFTP hot path,
+# which per-packet overhead makes worthwhile for bulk SFTP/SCP transfers.
+# For an additional boost on known deployment hardware, build with a pinned
+# target CPU, e.g.:
+#   RUSTFLAGS="-C target-cpu=x86-64-v3" cargo build --release   # AVX2-class servers
+#   RUSTFLAGS="-C target-cpu=native"    cargo build --release   # this machine only
+[profile.release]
+lto = "fat"
+codegen-units = 1
