@@ -258,6 +258,12 @@ impl BsshServer {
             inactivity_timeout: self.config.idle_timeout(),
             maximum_packet_size,
             window_size,
+            // TCP_NODELAY on accepted sockets, matching OpenSSH. russh
+            // defaults this off, which leaves Nagle's algorithm to interact
+            // with delayed ACKs: request/response SFTP traffic then stalls
+            // ~40 ms per round trip, and paramiko's read prefetch hangs
+            // outright (issue #227).
+            nodelay: true,
             ..Default::default()
         })
     }
@@ -426,11 +432,45 @@ impl russh::server::Server for BsshServerRunner {
     }
 
     fn handle_session_error(&mut self, error: <Self::Handler as russh::server::Handler>::Error) {
-        tracing::error!(
-            error = %error,
-            "Session error"
-        );
+        if is_client_disconnect_error(&error) {
+            tracing::debug!(
+                error = %error,
+                "Session ended by client disconnect"
+            );
+        } else {
+            tracing::error!(
+                error = %error,
+                "Session error"
+            );
+        }
     }
+}
+
+/// Whether a session error is an ordinary client-side disconnect (abrupt
+/// client exit, network cut) rather than a server fault. These used to be
+/// logged at ERROR, which was noise (issue #227). russh's `Error::IO` is
+/// `#[error(transparent)]`, which forwards `source()` past the contained
+/// io::Error, so the io::Error never appears in the anyhow chain on its own;
+/// it has to be matched through `russh::Error` as well.
+fn is_client_disconnect_error(error: &anyhow::Error) -> bool {
+    fn is_disconnect_io(io: &std::io::Error) -> bool {
+        matches!(
+            io.kind(),
+            std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::ConnectionAborted
+                | std::io::ErrorKind::BrokenPipe
+                | std::io::ErrorKind::UnexpectedEof
+        )
+    }
+    error.chain().any(|cause| {
+        if let Some(io) = cause.downcast_ref::<std::io::Error>() {
+            return is_disconnect_io(io);
+        }
+        if let Some(russh_error) = cause.downcast_ref::<russh::Error>() {
+            return matches!(russh_error, russh::Error::IO(io) if is_disconnect_io(io));
+        }
+        false
+    })
 }
 
 /// Load an SSH host key from a file.
@@ -637,5 +677,25 @@ mod tests {
         }
 
         assert_eq!(server.session_count().await, 1);
+    }
+
+    #[test]
+    fn client_disconnect_errors_are_classified() {
+        // russh wraps disconnect I/O errors in its transparent `IO` variant.
+        let reset = anyhow::Error::from(russh::Error::IO(std::io::Error::from(
+            std::io::ErrorKind::ConnectionReset,
+        )));
+        assert!(is_client_disconnect_error(&reset));
+
+        // A bare io::Error in the chain must be recognized too.
+        let pipe = anyhow::Error::from(std::io::Error::from(std::io::ErrorKind::BrokenPipe));
+        assert!(is_client_disconnect_error(&pipe));
+
+        // Genuine server faults stay at ERROR.
+        let decrypt = anyhow::Error::from(russh::Error::DecryptionError);
+        assert!(!is_client_disconnect_error(&decrypt));
+        let denied =
+            anyhow::Error::from(std::io::Error::from(std::io::ErrorKind::PermissionDenied));
+        assert!(!is_client_disconnect_error(&denied));
     }
 }
