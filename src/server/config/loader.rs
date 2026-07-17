@@ -55,6 +55,7 @@ use std::path::{Path, PathBuf};
 /// - `BSSH_HOST_KEY` - Comma-separated host key paths
 /// - `BSSH_MAX_CONNECTIONS` - Maximum concurrent connections
 /// - `BSSH_KEEPALIVE_INTERVAL` - Keepalive interval in seconds
+/// - `BSSH_COMPRESSION` - Advertise SSH transport compression ("true"/"false"; default false, see issue #215)
 /// - `BSSH_AUTH_METHODS` - Comma-separated auth methods (e.g., "publickey,password")
 /// - `BSSH_AUTHORIZED_KEYS_DIR` - Directory for authorized_keys files
 /// - `BSSH_AUTHORIZED_KEYS_PATTERN` - Pattern for authorized_keys paths
@@ -248,6 +249,17 @@ fn apply_env_overrides(mut config: ServerFileConfig) -> Result<ServerFileConfig>
         tracing::debug!(
             interval = config.server.keepalive_interval,
             "Applied BSSH_KEEPALIVE_INTERVAL override"
+        );
+    }
+
+    // BSSH_COMPRESSION
+    if let Ok(compression_str) = std::env::var("BSSH_COMPRESSION") {
+        config.server.compression = compression_str.parse().context(format!(
+            "Invalid BSSH_COMPRESSION value (expected \"true\" or \"false\"): {compression_str}"
+        ))?;
+        tracing::debug!(
+            compression = config.server.compression,
+            "Applied BSSH_COMPRESSION override"
         );
     }
 
@@ -469,6 +481,24 @@ auth:
         let config = apply_env_overrides(ServerFileConfig::default()).unwrap();
         assert_eq!(config.server.host_keys.len(), 3);
         assert_eq!(config.server.host_keys[0], PathBuf::from("/key1"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_env_override_compression() {
+        let _port = EnvGuard::remove("BSSH_PORT");
+        let _compression = EnvGuard::set("BSSH_COMPRESSION", "true");
+        let config = apply_env_overrides(ServerFileConfig::default()).unwrap();
+        assert!(config.server.compression);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_env_override_compression_invalid() {
+        let _port = EnvGuard::remove("BSSH_PORT");
+        let _compression = EnvGuard::set("BSSH_COMPRESSION", "maybe");
+        let result = apply_env_overrides(ServerFileConfig::default());
+        assert!(result.is_err());
     }
 
     #[test]

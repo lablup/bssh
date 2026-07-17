@@ -121,6 +121,25 @@ pub struct ServerSettings {
     /// Default: 60 (1 minute)
     #[serde(default = "default_keepalive")]
     pub keepalive_interval: u64,
+
+    /// Advertise SSH transport compression (`zlib`, `zlib@openssh.com`).
+    ///
+    /// When `false` (default), the server advertises only `none`, so every
+    /// client falls back to the uncompressed transport. This matches the
+    /// Dropbear / OpenSSH `sftp-server` defaults used in Backend.AI
+    /// containers.
+    ///
+    /// **Caveat:** russh's delayed-zlib (`zlib@openssh.com`) transport
+    /// currently desyncs a few packets after compression activates post-auth,
+    /// dropping clients that negotiate it (Cyberduck, `sftp -C`) mid-session
+    /// (reproduced on russh 0.61.1 and 0.62.1; see
+    /// <https://github.com/lablup/bssh/issues/215>). Enable this only if you
+    /// have verified the underlying russh bug is fixed or your clients never
+    /// negotiate compression.
+    ///
+    /// Default: false
+    #[serde(default)]
+    pub compression: bool,
 }
 
 /// Authentication configuration.
@@ -633,6 +652,7 @@ impl Default for ServerSettings {
             max_connections: default_max_connections(),
             timeout: default_timeout(),
             keepalive_interval: default_keepalive(),
+            compression: false,
         }
     }
 }
@@ -705,6 +725,27 @@ mod tests {
         assert!(config.scp.enabled);
         assert!(!config.filter.enabled);
         assert!(!config.audit.enabled);
+        assert!(!config.server.compression);
+    }
+
+    #[test]
+    fn test_yaml_parsing_compression() {
+        // #220: `server.compression` is parseable from YAML and defaults to
+        // false when omitted.
+        let yaml = r#"
+server:
+  port: 2222
+  compression: true
+"#;
+        let config: ServerFileConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(config.server.compression);
+
+        let yaml = r#"
+server:
+  port: 2222
+"#;
+        let config: ServerFileConfig = serde_yaml::from_str(yaml).unwrap();
+        assert!(!config.server.compression);
     }
 
     #[test]

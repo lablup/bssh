@@ -217,6 +217,19 @@ pub struct ServerConfig {
     /// Default: 0 (disabled)
     #[serde(default)]
     pub session_timeout_secs: u64,
+
+    /// Advertise SSH transport compression (`zlib`, `zlib@openssh.com`).
+    ///
+    /// When `false` (default), the server advertises only `none` so clients
+    /// fall back to the uncompressed transport. This is the safe default:
+    /// russh's delayed-zlib (`zlib@openssh.com`) transport desyncs a few
+    /// packets after compression activates post-auth, dropping clients that
+    /// negotiate it (Cyberduck, `sftp -C`) mid-session. See
+    /// <https://github.com/lablup/bssh/issues/215>. Enable only if the
+    /// upstream russh bug is fixed or your clients never negotiate
+    /// compression.
+    #[serde(default)]
+    pub compression: bool,
 }
 
 fn default_max_sessions_per_user() -> usize {
@@ -323,6 +336,7 @@ impl Default for ServerConfig {
             blocked_ips: Vec::new(),
             max_sessions_per_user: default_max_sessions_per_user(),
             session_timeout_secs: 0,
+            compression: false,
         }
     }
 }
@@ -618,6 +632,17 @@ impl ServerConfigBuilder {
         self
     }
 
+    /// Enable or disable SSH transport compression negotiation.
+    ///
+    /// Disabled by default: russh's delayed-zlib (`zlib@openssh.com`)
+    /// transport desyncs mid-session, so the server advertises only `none`
+    /// unless this is explicitly enabled (see
+    /// <https://github.com/lablup/bssh/issues/215>).
+    pub fn compression(mut self, enabled: bool) -> Self {
+        self.config.compression = enabled;
+        self
+    }
+
     /// Build the ServerConfig.
     pub fn build(self) -> ServerConfig {
         self.config
@@ -688,6 +713,7 @@ impl ServerFileConfig {
             blocked_ips: self.security.blocked_ips,
             max_sessions_per_user: self.security.max_sessions_per_user,
             session_timeout_secs: self.security.session_timeout,
+            compression: self.server.compression,
         }
     }
 }
@@ -788,6 +814,23 @@ mod tests {
 
         assert!(server_config.sftp_root.is_none());
         assert!(server_config.scp_root.is_none());
+    }
+
+    #[test]
+    fn compression_defaults_to_off_and_threads_into_server_config() {
+        // #220: compression must default to off (preserving the #215
+        // workaround) and the file-config `server.compression` flag must
+        // propagate into ServerConfig.
+        let mut file_config = ServerFileConfig::default();
+        file_config.server.host_keys = vec![PathBuf::from("/test/key")];
+        assert!(!file_config.server.compression);
+
+        let server_config = file_config.clone().into_server_config();
+        assert!(!server_config.compression);
+
+        file_config.server.compression = true;
+        let server_config = file_config.into_server_config();
+        assert!(server_config.compression);
     }
 
     #[test]
