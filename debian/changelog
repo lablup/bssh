@@ -1,3 +1,41 @@
+bssh (2.3.0-1~jammy1) jammy; urgency=medium
+
+  * v2.3.0
+  ### Performance
+  - Roughly double single-connection SFTP write throughput on
+    bssh-server by raising SSH channel sizing, pipelining server-side
+    writes with sequential coalescing and seek elision, and tuning the
+    release profile (#187, #224).
+  ### Added
+  - Make server-side SSH compression configurable via
+    server.compression (default off) instead of hard-disabled (#220),
+    and wire the ssh_config Compression directive into the client
+    (#219).
+  ### Fixed
+  - Fix an SFTP session deadlock that froze every download to a
+    paramiko client at its initial 2 MiB channel window, and set
+    TCP_NODELAY on accepted sockets to remove a delayed-ACK stall on
+    sequential round trips (#227).
+  - Make sftp.root/scp.root chroot usable by re-anchoring client paths
+    under the root; cd/get/open/stat previously failed (#214).
+  - Advertise only none SSH compression so clients negotiating
+    zlib@openssh.com no longer drop mid-session (#215).
+  ### Security
+  - Confine absolute SFTP symlink targets to the chroot so a chrooted
+    client cannot link to the host filesystem (#214).
+  ### Changed
+  - Drop the vendored bssh-russh fork and build against upstream russh
+    0.62.1 now that both fork patches are upstream (#212). Raise the
+    workspace minimum supported Rust to 1.93 and add a CI MSRV guard;
+    the Debian and Launchpad PPA toolchains move to rustc-1.93.
+  ### Documentation
+  - Add an Apache-2.0 NOTICE file (#210), document that native Windows
+    client execution is not supported with WSL2 as the path today
+    (#221), and add an SFTP benchmark/interop harness under tools/bench
+    (#228).
+
+ -- Jeongkyu Shin <inureyes@gmail.com>  Sat, 18 Jul 2026 12:00:00 +0900
+
 bssh (2.2.3-1~jammy1) jammy; urgency=medium
 
   * v2.2.3
