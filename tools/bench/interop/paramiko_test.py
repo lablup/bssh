@@ -14,6 +14,7 @@ Requires: pip install paramiko
 
 import argparse
 import filecmp
+import os
 import signal
 import sys
 import time
@@ -46,7 +47,9 @@ def main() -> int:
 
     def on_timeout(signum, frame):
         print(f"TIMEOUT after {args.timeout}s (see lablup/bssh#227)", flush=True)
-        sys.exit(2)
+        # os._exit: paramiko worker threads survive SystemExit and would keep
+        # the interpreter (and any calling script) alive after the timeout.
+        os._exit(2)
 
     signal.signal(signal.SIGALRM, on_timeout)
     signal.alarm(args.timeout)

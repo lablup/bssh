@@ -83,6 +83,11 @@ start_bssh() {
   $(pin "$SERVER_CORE") "$bin" run -c "$BENCH_DIR/bssh-server.yaml" -D 2>>"$BENCH_DIR/bssh.log" &
   BSSH_PID=$!
   sleep 2
+  # The port answering is not enough: if a stale server already holds the
+  # port, our process dies with "Address already in use" and the smoke test
+  # below would silently pass against the wrong (old) binary.
+  kill -0 "$BSSH_PID" 2>/dev/null \
+    || { echo "FATAL: bssh-server exited at startup (stale server on port $BSSH_PORT?)" >&2; tail -5 "$BENCH_DIR/bssh.log" >&2; return 1; }
   echo "ls /" | "$TIMEOUT_BIN" 15 "$SFTP_BIN" $(ssh_opts) -q -P "$BSSH_PORT" -b - "$USER_NAME@127.0.0.1" >/dev/null 2>&1 \
     || { echo "FATAL: bssh-server not reachable on port $BSSH_PORT" >&2; tail -5 "$BENCH_DIR/bssh.log" >&2; return 1; }
 }
@@ -92,6 +97,8 @@ start_sshd() {
   $(pin "$SERVER_CORE") "$SSHD_BIN" -f "$BENCH_DIR/sshd_config" -D -e 2>>"$BENCH_DIR/sshd.log" &
   SSHD_PID=$!
   sleep 2
+  kill -0 "$SSHD_PID" 2>/dev/null \
+    || { echo "FATAL: sshd exited at startup (stale server on port $SSHD_PORT?)" >&2; tail -5 "$BENCH_DIR/sshd.log" >&2; return 1; }
   "$TIMEOUT_BIN" 15 "$SSH_BIN" $(ssh_opts) -p "$SSHD_PORT" "$USER_NAME@127.0.0.1" true 2>/dev/null \
     || { echo "FATAL: sshd not reachable on port $SSHD_PORT" >&2; tail -5 "$BENCH_DIR/sshd.log" >&2; return 1; }
 }

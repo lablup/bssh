@@ -1,6 +1,9 @@
 mod handler;
 mod reply;
 
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+
 use bytes::Bytes;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
@@ -37,13 +40,23 @@ pub struct Config {
     /// Maximum allowed size of SFTP packets sent by clients. Default: 256 KiB.
     pub max_client_packet_len: u32,
 
-    /// Maximum number of client requests read ahead of the one currently
+    /// Maximum number of request bytes buffered ahead of the one currently
     /// being processed. Read-ahead lets the transport keep delivering (and
     /// decrypting) requests while the handler is blocked on file I/O, and it
-    /// feeds the sequential-write coalescer. Bounded so a client cannot make
-    /// the server buffer unlimited data; the worst-case buffered bytes are
-    /// `max_read_ahead * max_client_packet_len` per session. Default: 16.
-    pub max_read_ahead: usize,
+    /// feeds the sequential-write coalescer.
+    ///
+    /// The intake queue is unbounded in request count and bounded in bytes,
+    /// and the reader never stops draining the stream while under this
+    /// budget. This matters for deadlock avoidance: if request intake ever
+    /// stalls while the response side is waiting for channel window, the
+    /// russh session loop can block on delivering channel data and stop
+    /// processing the very `SSH_MSG_CHANNEL_WINDOW_ADJUST` that would free
+    /// the response side (issue lablup/bssh#227, paramiko's unbounded READ
+    /// prefetch). Well-behaved clients stay far under this budget: a READ
+    /// request is ~50 bytes, so the default admits hundreds of thousands of
+    /// outstanding reads. A client that exceeds it is flooding and its
+    /// session is terminated. Default: 8 MiB.
+    pub max_buffered_request_bytes: usize,
 
     /// Maximum number of bytes merged into a single coalesced `SSH_FXP_WRITE`
     /// handler call. Consecutive queued WRITE requests targeting the same
@@ -58,7 +71,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             max_client_packet_len: 262144,
-            max_read_ahead: 16,
+            max_buffered_request_bytes: 8 * 1024 * 1024,
             max_write_coalesce_len: 262144,
         }
     }
@@ -130,14 +143,18 @@ where
 
 /// Drive one SFTP session over `stream` until EOF.
 ///
-/// Architecture: a reader task frames client packets and feeds a bounded
-/// queue (`Config::max_read_ahead`), so the transport keeps delivering
-/// requests while the handler is busy with file I/O. The processor loop
-/// consumes the queue strictly in order: requests are handled one at a time
-/// against `&mut handler` and responses are written in request order, so
-/// response ordering and error semantics are identical to the previous
-/// serial read -> process -> write -> flush loop. Two optimizations apply on
-/// top:
+/// Architecture: a reader task frames client packets and feeds a queue that
+/// is unbounded in request count and bounded in bytes
+/// (`Config::max_buffered_request_bytes`), so the transport keeps delivering
+/// requests while the handler is busy with file I/O. The reader never
+/// applies per-request backpressure: stalling intake while a response write
+/// waits for channel window lets the russh session loop block on channel
+/// data delivery, which stops WINDOW_ADJUST processing and deadlocks the
+/// session (issue lablup/bssh#227). The processor loop consumes the queue
+/// strictly in order: requests are handled one at a time against
+/// `&mut handler` and responses are written in request order, so response
+/// ordering and error semantics are identical to the previous serial
+/// read -> process -> write -> flush loop. Two optimizations apply on top:
 ///
 /// - **Deferred flush**: responses are flushed only when the queue is
 ///   momentarily empty (or the session ends) instead of after every request.
@@ -155,19 +172,39 @@ where
 {
     let (mut read_half, mut write_half) = tokio::io::split(stream);
 
-    let (tx, mut rx) = mpsc::channel::<Result<Bytes, Error>>(cfg.max_read_ahead.max(1));
+    let (tx, mut rx) = mpsc::unbounded_channel::<Result<Bytes, Error>>();
+    let queued_bytes = Arc::new(AtomicUsize::new(0));
     let max_packet_len = cfg.max_client_packet_len;
+    let budget = cfg.max_buffered_request_bytes;
+    let reader_queued = Arc::clone(&queued_bytes);
     let reader = tokio::spawn(async move {
         loop {
             let item = read_packet(&mut read_half, max_packet_len).await;
             // Stop on EOF; keep reading after other errors to preserve the
             // previous loop's behavior (it warned and retried).
             let stop = matches!(item, Err(Error::UnexpectedEof));
-            if tx.send(item).await.is_err() || stop {
+            let len = item.as_ref().map_or(0, Bytes::len);
+            if reader_queued.fetch_add(len, Ordering::Relaxed) + len > budget {
+                // A client this far ahead of the processor is flooding, not
+                // pipelining; terminate instead of stalling intake (which
+                // could deadlock the whole session, see the doc above).
+                let _ = tx.send(Err(Error::UnexpectedBehavior(format!(
+                    "request backlog exceeded {budget} buffered bytes"
+                ))));
+                break;
+            }
+            if tx.send(item).is_err() || stop {
                 break;
             }
         }
     });
+
+    // Return a dequeued item's framed length to the byte budget.
+    let release = |item: &Result<Bytes, Error>| {
+        if let Ok(bytes) = item {
+            queued_bytes.fetch_sub(bytes.len(), Ordering::Relaxed);
+        }
+    };
 
     // Holds a packet dequeued by the coalescer that did not merge into the
     // current write; it must be processed next to preserve ordering.
@@ -177,7 +214,10 @@ where
         let queued = match pending.take() {
             Some(queued) => queued,
             None => match rx.try_recv() {
-                Ok(item) => decode(item),
+                Ok(item) => {
+                    release(&item);
+                    decode(item)
+                }
                 Err(mpsc::error::TryRecvError::Empty) => {
                     // No request ready: flush buffered responses before
                     // blocking so the client is never left waiting on
@@ -187,7 +227,10 @@ where
                         break 'session;
                     }
                     match rx.recv().await {
-                        Some(item) => decode(item),
+                        Some(item) => {
+                            release(&item);
+                            decode(item)
+                        }
                         None => break 'session,
                     }
                 }
@@ -197,6 +240,11 @@ where
 
         match queued {
             Queued::ReadError(Error::UnexpectedEof) => break 'session,
+            Queued::ReadError(err @ Error::UnexpectedBehavior(_)) => {
+                // Reader-side budget overflow: the session is being flooded.
+                warn!("sftp: terminating session: {err}");
+                break 'session;
+            }
             Queued::ReadError(err) => {
                 warn!("{}", err);
             }
@@ -217,6 +265,7 @@ where
                         // A disconnect is surfaced by the next dequeue.
                         break;
                     };
+                    release(&item);
                     match decode(item) {
                         Queued::Request(Packet::Write(next))
                             if next.handle == write.handle
@@ -415,6 +464,19 @@ mod tests {
                 language_tag: "en".to_string(),
             })
         }
+
+        async fn read(
+            &mut self,
+            id: u32,
+            _handle: String,
+            _offset: u64,
+            len: u32,
+        ) -> Result<crate::protocol::Data, Self::Error> {
+            Ok(crate::protocol::Data {
+                id,
+                data: vec![0u8; len as usize],
+            })
+        }
     }
 
     fn encode(packet: Packet) -> Bytes {
@@ -437,6 +499,15 @@ mod tests {
             handle: handle.to_string(),
             offset,
             data,
+        }))
+    }
+
+    fn read_request_packet(id: u32, handle: &str, offset: u64, len: u32) -> Bytes {
+        encode(Packet::Read(crate::protocol::Read {
+            id,
+            handle: handle.to_string(),
+            offset,
+            len,
         }))
     }
 
@@ -693,5 +764,147 @@ mod tests {
 
         let shared = shared.lock().unwrap();
         assert_eq!(shared.write_calls.len(), 2, "no merging with zero budget");
+    }
+
+    /// Regression test for the paramiko prefetch deadlock (lablup/bssh#227).
+    ///
+    /// The client sends a burst of READ requests and reads no responses until
+    /// every request has been written, over a transport with a tiny buffer so
+    /// the server's response writes block almost immediately. The old
+    /// count-bounded intake queue stopped draining the stream once full,
+    /// which left the client's send side blocked too: a mutual stall, and at
+    /// the russh layer the same coupling froze WINDOW_ADJUST processing. The
+    /// byte-budgeted intake must keep draining, letting the client finish
+    /// sending and then collect every response.
+    #[tokio::test]
+    async fn pipelined_read_burst_drains_while_response_path_blocked() {
+        const READS: usize = 300;
+        const READ_LEN: u32 = 1024;
+
+        let shared = Arc::new(Mutex::new(Shared::default()));
+        let cfg = Config::default();
+        // Tiny per-direction buffer: response writes block after ~4 frames,
+        // and the request burst does not fit in the transport either.
+        let (client, server) = tokio::io::duplex(4096);
+
+        let session = tokio::spawn(async move {
+            let mut handler = MockHandler { shared };
+            process_stream(server, &mut handler, &cfg).await;
+        });
+
+        let (mut client_rd, mut client_wr) = tokio::io::split(client);
+
+        let send_all = async move {
+            client_wr.write_all(&open_packet(0, "h")).await.unwrap();
+            for i in 0..READS {
+                client_wr
+                    .write_all(&read_request_packet(
+                        i as u32 + 1,
+                        "h",
+                        u64::from(READ_LEN) * i as u64,
+                        READ_LEN,
+                    ))
+                    .await
+                    .unwrap();
+            }
+            client_wr.shutdown().await.unwrap();
+        };
+        let send_all = tokio::time::timeout(Duration::from_secs(10), send_all);
+
+        let recv_all = async move {
+            let mut responses = 0usize;
+            let mut buf = BytesMut::new();
+            loop {
+                let mut chunk = [0u8; 4096];
+                let n = client_rd.read(&mut chunk).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                buf.extend_from_slice(&chunk[..n]);
+                loop {
+                    if buf.len() < 4 {
+                        break;
+                    }
+                    let length = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+                    if buf.len() < 4 + length {
+                        break;
+                    }
+                    buf.advance(4);
+                    let mut frame = buf.split_to(length).freeze();
+                    Packet::try_from(&mut frame).expect("response must decode");
+                    responses += 1;
+                }
+            }
+            responses
+        };
+        let recv_all = tokio::time::timeout(Duration::from_secs(10), recv_all);
+
+        // The send side must complete even though nothing reads responses
+        // concurrently; only then does the receive side start.
+        send_all.await.expect("request burst must not deadlock");
+        let responses = recv_all.await.expect("responses must not deadlock");
+        assert_eq!(responses, READS + 1, "one HANDLE plus one DATA per READ");
+
+        session.await.unwrap();
+    }
+
+    /// A client that floods requests far beyond `max_buffered_request_bytes`
+    /// is terminated instead of being allowed to grow the queue without
+    /// bound (and instead of stalling intake, which is the deadlock shape
+    /// covered by the test above).
+    #[tokio::test]
+    async fn request_flood_beyond_budget_terminates_session() {
+        const READS: usize = 100;
+
+        let shared = Arc::new(Mutex::new(Shared::default()));
+        let cfg = Config {
+            // Far below the ~4 KiB the burst below queues while the OPEN
+            // handler sleeps.
+            max_buffered_request_bytes: 512,
+            ..Config::default()
+        };
+        let (client, server) = tokio::io::duplex(1 << 20);
+
+        let session = tokio::spawn(async move {
+            let mut handler = MockHandler { shared };
+            process_stream(server, &mut handler, &cfg).await;
+        });
+
+        let (mut client_rd, mut client_wr) = tokio::io::split(client);
+        // OPEN's 50 ms handler sleep keeps the processor busy while the
+        // reader accounts the whole burst against the byte budget.
+        client_wr.write_all(&open_packet(0, "h")).await.unwrap();
+        for i in 0..READS {
+            client_wr
+                .write_all(&read_request_packet(i as u32 + 1, "h", 0, 64))
+                .await
+                .unwrap();
+        }
+
+        // The server must close the stream (EOF) rather than answer the
+        // whole flood or hang.
+        let drain = async move {
+            let mut total = 0usize;
+            let mut chunk = [0u8; 4096];
+            loop {
+                let n = client_rd.read(&mut chunk).await.unwrap();
+                if n == 0 {
+                    break;
+                }
+                total += n;
+            }
+            total
+        };
+        let answered_bytes = tokio::time::timeout(Duration::from_secs(10), drain)
+            .await
+            .expect("flooded session must terminate, not hang");
+        // A full flood's worth of DATA replies would be ~100 * 64 bytes of
+        // payload plus framing; termination must cut this short.
+        assert!(
+            answered_bytes < READS * 64,
+            "expected early termination, got {answered_bytes} response bytes"
+        );
+
+        session.await.unwrap();
     }
 }
