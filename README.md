@@ -12,17 +12,16 @@ A high-performance SSH client with **SSH-compatible syntax** for both single-hos
 
 ## Recent Updates
 
-- **v2.3.0 (2026/07/18):** Roughly double single-connection SFTP write throughput on `bssh-server` by raising SSH channel sizing, pipelining server-side writes with sequential coalescing and seek elision, and tuning the release profile (#187, #224). Fix an SFTP session deadlock that froze every download to a paramiko client at its initial 2 MiB channel window, and set `TCP_NODELAY` on accepted sockets to remove a delayed-ACK stall on sequential round trips (#227). Make `sftp.root`/`scp.root` chroot actually usable by re-anchoring client paths under the root (`cd`/`get`/`open`/`stat` previously failed), and confine absolute symlink targets to the jail (#214). Make server-side SSH compression configurable via `server.compression` (default off) instead of hard-disabled, and wire the ssh_config `Compression` directive into the client (#215, #220, #219). Drop the vendored `bssh-russh` fork and build against upstream russh 0.62.1 now that both fork patches are upstream (#212). Raise the workspace minimum supported Rust to 1.93 and add a CI MSRV guard. Add an Apache-2.0 `NOTICE` file, document that native Windows client execution is not supported (WSL2 is the path today), and add an SFTP benchmark/interop harness under `tools/bench/` (#210, #221, #228).
-- **v2.2.3 (2026/05/25):** Sync both internal russh forks to upstream stable (bssh-russh to russh 0.61.1, bssh-russh-sftp to russh-sftp 2.3.0), advancing the bundled RustCrypto chain (sha2/sha1 0.11, hmac 0.13, aes 0.9, digest 0.11, pbkdf2 0.13) and collapsing ssh-key onto a single 0.7.0-rc.10; re-port the high-frequency PTY `Handle::data` drain fix onto the new server session loop, add a dedicated regression test for it, and retire three patches now merged upstream (#207). Patch RUSTSEC-2026-0009 (time stack-exhaustion DoS) by bumping `time` to 0.3.47, which raises the minimum supported Rust to 1.88 (#208).
-- **v2.2.2 (2026/05/25):** Keep idle SSH sessions alive (#206): lower the default `--server-alive-interval` from 60s to 30s so keepalive traffic beats common one-minute idle reapers, normalize `--server-alive-interval 0` to fully disabled keepalive instead of a zero-duration timer, and leave the client-side `inactivity_timeout` disabled so healthy interactive sessions (tmux, idle shells, long-running REPLs) are never closed by bssh itself. Dead-peer detection now resolves in about 120s instead of 180s.
-- **v2.2.1 (2026/05/19):** Workspace dependency upgrade pass and a controlled sync of both internal russh forks to upstream stable, picking up the SSH-agent half of CVE-2026-46673 (256 KiB frame-length cap forward-port from upstream russh `a2d48a7`) and the cryptovec hardening half via `russh-cryptovec` 0.60.3. Bumps `lru` 0.17 to 0.18, `signal-hook` 0.3 to 0.4, the `opentelemetry` family 0.31 to 0.32, and `nix` 0.31.3; syncs `bssh-russh` to upstream russh 0.60.3 and `bssh-russh-sftp` to upstream russh-sftp 2.1.2 with the two pipelined File I/O helpers re-ported on top of the new `Features` API (#203). Adds the missing `[dev-dependencies]` block to `bssh-russh` so its 75 inline tests (agent round-trip, PKCS#8 decoding, channel lifecycle, GEX, compress) compile and run for the first time since the fork's inception (#204). Drops a redundant `.into_iter()` in the synced SFTP session code that rustc 1.95's stricter `clippy::useless_conversion` lint flags (#205).
-- **v2.2.0 (2026/05/18):** Collect `--password` once up-front and share the secret across all parallel SSH tasks via `Arc<Password>`, fixing per-node stdin races and progress-UI interleaving; add `BSSH_PASSWORD` env support; warn (on stderr) when `-S`/`--sudo-password` is passed to subcommands where it has no effect (`ping`, `upload`, `download`, `list`, `cache-stats`) (#200, #201). Resolve all cargo-audit findings by replacing `atty` with `std::io::IsTerminal` and acknowledging the unfixable rsa Marvin Attack advisory in `.cargo/audit.toml` (#198). Drop five stale or redundant direct dependencies (`arrayvec`, `ctrlc`, `directories`, `signal-hook 0.4`, plus the macOS objc2/block2/dispatch2 chain) by migrating to `std::sync::LazyLock`/`OnceLock`, `tokio::signal::ctrl_c`, and `dirs` (#199).
-- **v2.1.4 (2026/05/10):** SFTP transfer perf: stream uploads/downloads in 255 KiB chunks instead of buffering whole files (~160x lower RSS, ~11x faster 1 GiB upload), pipeline up to 64 concurrent SFTP requests, raise server `MAX_READ_SIZE` to the 255 KiB SFTP standard (#195, #196, #197)
-- **v2.1.3 (2026/04/30):** Fix SCP/SFTP path doubling on absolute paths and chroot dead config (#186); vendor `russh-sftp` with `serde_bytes` perf fix (+29% SFTP upload throughput); forward-port unreleased upstream russh fixes; standardize man page trailers
-- **v2.1.2 (2026/04/27):** Restore terminal mouse tracking state on PTY session disconnect (#190); release workflow fixes
-- **v2.1.1 (2026/04/17):** Fix server panic and auth rejection on every client connection
-- **v2.1.0 (2026/04/14):** Rust 2024 edition migration, EnvGuard for safe test env handling, bytes pin
-- **v2.0.1 (2026/04/13):** Security updates (RSA Marvin Attack fix), bssh-keygen in Debian pipeline
+- **v2.3.0 (2026/07/18):** Roughly double bssh-server SFTP write throughput, fix the paramiko prefetch deadlock (with TCP_NODELAY), make `sftp.root`/`scp.root` chroot usable, make server SSH compression configurable, and drop the vendored `bssh-russh` fork for upstream russh 0.62.1 (#187, #212, #214, #215, #227).
+- **v2.2.3 (2026/05/25):** Sync both internal russh forks to upstream stable and patch RUSTSEC-2026-0009 (a `time` stack-exhaustion DoS), raising the minimum supported Rust to 1.88 (#207, #208).
+- **v2.2.2 (2026/05/25):** Keep idle SSH sessions alive by lowering the default `--server-alive-interval` to 30s and leaving the client inactivity timeout disabled (#206).
+- **v2.2.1 (2026/05/19):** Dependency upgrade pass and russh fork sync picking up both halves of CVE-2026-46673, plus a bssh-russh dev-deps fix so its inline tests compile (#203, #204, #205).
+- **v2.2.0 (2026/05/18):** Collect `--password` once and share it across parallel tasks, add `BSSH_PASSWORD`, resolve all cargo-audit findings, and drop five redundant dependencies (#198, #199, #200, #201).
+- **v2.1.4 (2026/05/10):** Stream SFTP transfers in 255 KiB chunks (~160x lower memory, ~11x faster 1 GiB upload) and pipeline up to 64 concurrent requests (#195, #196, #197).
+- **v2.1.3 (2026/04/30):** Fix SCP/SFTP path doubling and chroot config, vendor `russh-sftp` with a serde_bytes perf fix (+29% upload), and forward-port unreleased upstream russh fixes (#186).
+- **v2.1.2 (2026/04/27):** Restore terminal mouse tracking state on PTY disconnect and fix release workflow issues (#190).
+
+_See [CHANGELOG.md](./CHANGELOG.md) for the complete version history._
 
 ## Features
 
@@ -1484,35 +1483,4 @@ See the [LICENSE](./LICENSE) file for details.
 
 ## Changelog
 
-### Recent Updates
-- **v2.1.0 (2026/04/14):** Migrate to Rust 2024 edition, apply 2024 edition clippy improvements (guard clauses with `if let ... && condition`), introduce `EnvGuard` RAII wrapper for safe environment variable handling in tests (#179, #181), and pin `bytes` to v1.11.1
-- **v2.0.1 (2026/04/13):** Add bssh-keygen to Debian package build pipeline, bump bssh-russh to 0.60.1 with security updates (RUSTSEC-2023-0071 RSA Marvin Attack fix), update RC dependencies to latest versions
-- **v2.0.0 (2026/04/13):** Major release — bssh-server SSH server for containers with SFTP/SCP, PTY/shell sessions, password + public-key auth; audit logging (file/OpenTelemetry/Logstash); IP access control, rate limiting, session management, file transfer filtering; bssh-keygen tool; SSH idle-disconnect fix via proper keepalive wiring (inactivity_timeout override + TCP SO_KEEPALIVE); bssh-russh fork synced with upstream russh 0.60.0 (rand 0.10 stable, updated RustCrypto chain); separate packaging for bssh and bssh-server
-- **v1.7.0 (2026/01/09):** Add SSH keepalive support with --server-alive-interval and --server-alive-count-max options to prevent idle connection timeouts (#122), update dependencies (russh 0.56, ratatui 0.30, whoami 2.0)
-- **v1.6.0 (2025/12/19):** Add jump_host field support in config.yaml (issue #115), fix SSH config ProxyJump directive application, fix jump host authentication with empty SSH agent (issues #116, #117)
-- **v1.5.1 (2025/12/18):** Fix SSH disconnect error handling during authentication for password fallback (issue #113)
-- **v1.5.0 (2025/12/18):** Add pdsh compatibility mode with -w/-x/-f/-N/-b/-k/-q options, pdsh-style hostlist expressions (node[1-5], rack[1-2]-node[1-3]), in-TUI log panel, --connect-timeout option, --fail-fast/-k and --batch/-b flags, fix --timeout 0 handling for unlimited execution
-- **v1.4.2 (2025/12/16):** Fix terminal escape sequence responses displayed on first prompt when starting tmux, fix paste not working in PTY sessions, bump dependencies
-- **v1.4.1 (2025/12/16):** Add comprehensive TUI/streaming tests (84 new tests), extend password fallback for SSH agent auth failures, add TUI module documentation
-- **v1.4.0 (2025/12/15):** Add --sudo-password flag for automated sudo authentication, password fallback with improved SSH debugging, developer tooling (githooks)
-- **v1.3.0 (2025/12/10):** Add interactive TUI with 4 view modes (Summary/Detail/Split/Diff), multi-node stream management, and fix terminal escape sequence filtering in PTY sessions
-- **v1.2.2 (2025/10/29):** Improve Backend.AI auto-detection with comprehensive host heuristics (localhost, IPv4, user@host, FQDN, IPv6)
-- **v1.2.1 (2025/10/28):** Fix password authentication fallback in interactive mode and test race condition with RankDetector
-- **v1.2.0 (2025/10/27):** Add exit code strategy with main rank exit code (matching MPI tools), comprehensive tests, and improved documentation
-- **v1.1.0 (2025/10/24):** Add macOS Keychain integration for SSH key passphrases (UseKeychain option) with automatic password fallback and ProxyUseFdpass support
-- **v1.0.0 (2025/10/24):** Major milestone release with comprehensive SSH configuration support (~71 options), certificate authentication, advanced security features, and modular parser architecture
-- **v0.9.1 (2025/10/14):** Complete PTY terminal modes implementation with Shift key input support
-- **v0.9.0 (2025/10/14):** Add SSH ProxyJump support for file transfers and interactive mode, update packages
-- **v0.8.0 (2025/09/12):** Add comprehensive SSH port forwarding (local/remote/dynamic), improve error messages and remove dangerous unwrap() calls
-- **v0.7.0 (2025/08/30):** Add SSH jump host (-J) infrastructure and CLI integration, improve Ubuntu PPA support and fix deprecated GitHub Actions
-- **v0.6.1 (2025/08/28):** Rebrand from 'Backend.AI SSH' to 'Broadcast SSH' to emphasize the tool's core broadcast/parallel functionality
-- **v0.6.0 (2025/08/28):** Add SSH config file support (-F), PTY allocation, security enhancements, performance improvements, and SSH-compatible command-line interface
-- **v0.5.4 (2025/08/27):** Fix parallel config value handling and align interactive mode authentication with exec mode
-- **v0.5.3 (2025/08/27):** Use Backend.AI cluster SSH key for auto-detected environments
-- **v0.5.2 (2025/08/27):** Fix config file loading priority, improve BACKENDAI environment handling, use cluster SSH key config
-- **v0.5.1 (2025/08/25):** Add configurable command timeout with support for unlimited execution (timeout=0), configurable via CLI and config file
-- **v0.5.0 (2025/08/22):** Add interactive mode with single-node and multiplex support, broadcast command, and improved Backend.AI cluster auto-detection
-- **v0.4.0 (2025/08/22):** Add password authentication, SSH key passphrase support, modern UI with colors, XDG config compliance, and Debian packaging
-- **v0.3.0 (2025/08/22):** Add native SFTP directory operations and recursive file transfer support
-- **v0.2.0 (2025/08/21):** Added Backend.AI multi-node session support with SSH authentication, host key verification, environment variable expansion, timeouts, and SCP file copy functionality.
-- **v0.1.0 (2025/08/21):** Initial release with parallel SSH execution using async-ssh2-tokio
+See [CHANGELOG.md](./CHANGELOG.md) for the complete version history. Recent highlights are in the [Recent Updates](#recent-updates) section near the top of this file.

@@ -13,26 +13,10 @@ bssh is part of the Backend.AI project family developed by Lablup Inc.
 Bundled third-party source
 ================================================================================
 
-This product vendors modified source code from the projects below. Each lives
+This product vendors modified source code from the project below. It lives
 under crates/ as a thin fork that tracks an upstream release verbatim and adds
-the bssh-specific patches noted here. Both upstream projects are licensed under
+the bssh-specific patches noted here. The upstream project is licensed under
 the Apache License, Version 2.0.
-
---------------------------------------------------------------------------------
-russh  (vendored as crates/bssh-russh, Cargo package "bssh-russh")
---------------------------------------------------------------------------------
-
-Upstream : https://github.com/Eugeny/russh  (tracking release 0.61.1)
-License  : Apache-2.0
-
-    Copyright 2016 Pierre-Étienne Meunier
-    Copyright the russh authors and contributors
-
-russh began as Thrussh by Pierre-Étienne Meunier and is currently maintained by
-Eugeny Pankov and the russh contributors. The vendored copy is unmodified
-upstream source plus a single change that drains pending Handle::data() messages
-before the server session select loop (patches/handle-data-fix.patch), so
-high-frequency PTY output is delivered reliably.
 
 --------------------------------------------------------------------------------
 russh-sftp  (vendored as crates/bssh-russh-sftp, Cargo package "bssh-russh-sftp")
