@@ -19,10 +19,10 @@ The following packages are required and must be available to Launchpad through t
 This project currently requires Rust 1.96 or newer because the vendored dependency set no longer builds with Rust 1.85. This means:
 - Ubuntu 22.04 (Jammy): requires a versioned Rust 1.96 toolchain from the dependent PPA `~lablup/+archive/ubuntu/rustc-release`
 - Ubuntu 24.04 (Noble): requires a versioned Rust 1.96 toolchain from the dependent PPA `~lablup/+archive/ubuntu/rustc-release`
-- Ubuntu 26.04 (Resolute): can use the archive's Rust 1.96+ toolchain without the extra dependency PPA
+- Ubuntu 26.04 (Resolute): requires a versioned Rust 1.96 toolchain from the dependent PPA `~lablup/+archive/ubuntu/rustc-release`
 
 If building for older Ubuntu versions, you may need to:
-1. Add a Launchpad PPA dependency on `~lablup/+archive/ubuntu/rustc-release` so Jammy and Noble can see `rustc-1.96` and `cargo-1.96`
+1. Add a Launchpad PPA dependency on `~lablup/+archive/ubuntu/rustc-release` so Jammy, Noble, and Resolute can see `rustc-1.96` and `cargo-1.96`
 2. Limit support to distributions with Rust 1.96+
 
 ### Build Process
@@ -37,7 +37,7 @@ If the build fails on Launchpad:
 2. Common issues:
    - Missing build dependencies: Add them to debian/control
    - Rust version incompatibility: Ensure Rust 1.96+ is available
-   - Missing PPA dependency: Jammy/Noble need access to `rustc-1.96` and `cargo-1.96`
+   - Missing PPA dependency: Jammy/Noble/Resolute need access to `rustc-1.96` and `cargo-1.96`
    - Missing vendored crates: Ensure `vendor/` and `.cargo/config.toml` are included in the source package
    - Cargo registry access: The build will fail if it tries to download crates
 
