@@ -15,11 +15,12 @@ readme = "README.md"
 keywords = ["cli", "rust"]
 categories = ["command-line-utilities"]
 edition = "2024"
-# MSRV 1.93: aligned with the Launchpad PPA build toolchain (rustc-1.93 on
+# MSRV 1.96: aligned with the Launchpad PPA build toolchain (rustc-1.96 on
 # jammy/noble, Ubuntu 26.04 archive on resolute). Hard floor is 1.89
 # (`rustyline` 18 uses `File::lock`, stabilized in 1.89); `time` 0.3.47
-# (RUSTSEC-2026-0009) requires >= 1.88. Verified with `cargo +1.93.0 check`.
-rust-version = "1.93"
+# (RUSTSEC-2026-0009) requires >= 1.88. The declared value tracks the PPA
+# build toolchain, not the hard floor.
+rust-version = "1.96"
 
 [dependencies]
 bytes = "1.11.1"
