@@ -3,8 +3,8 @@ Section: utils
 Priority: optional
 Maintainer: Jeongkyu Shin <jshin@lablup.com>
 Build-Depends: debhelper-compat (= 13),
-               rustc-1.93 | rustc (>= 1.93),
-               cargo-1.93 | cargo (>= 1.93),
+               rustc-1.96 | rustc (>= 1.96),
+               cargo-1.96 | cargo (>= 1.96),
                pkg-config,
                cmake,
                build-essential
