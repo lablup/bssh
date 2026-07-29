@@ -36,9 +36,9 @@ static RAW_MODE_ACTIVE: AtomicBool = AtomicBool::new(false);
 ///
 /// Kitty keyboard mode stacks are independent for the main and alternate screens.
 /// Reset the current screen first, leave the alternate screen, and then reset the
-/// main screen. `CSI < 999 u` drains any unbalanced pushes, `CSI = 0 u` also
-/// handles implementations without a stack, and `CSI > 4 ; 0 m` disables xterm's
-/// `modifyOtherKeys` fallback.
+/// main screen. `CSI < 999 u` performs a large bounded pop of unbalanced pushes,
+/// `CSI = 0 u` also handles implementations without a stack, and
+/// `CSI > 4 ; 0 m` disables xterm's `modifyOtherKeys` fallback.
 ///
 /// This intentionally restores the ordinary shell baseline. Crossterm does not
 /// expose the current enhancement flags, and querying `/dev/tty` here would race
