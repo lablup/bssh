@@ -252,6 +252,9 @@ impl PtySession {
 
                     match msg {
                         Some(ChannelMsg::Data { ref data }) => {
+                            if let Some(guard) = self.terminal_guard.as_mut() {
+                                guard.observe_remote_output(data);
+                            }
                             // Filter terminal escape sequence responses before display
                             // This prevents raw XTGETTCAP, DA1/DA2/DA3 responses from appearing
                             // on screen when running applications like Neovim
@@ -267,6 +270,9 @@ impl PtySession {
                         }
                         Some(ChannelMsg::ExtendedData { ref data, ext }) => {
                             if ext == 1 {
+                                if let Some(guard) = self.terminal_guard.as_mut() {
+                                    guard.observe_remote_output(data);
+                                }
                                 // stderr - also filter escape sequences
                                 let filtered_data = self.escape_filter.filter(data);
                                 if !filtered_data.is_empty() {
@@ -316,6 +322,9 @@ impl PtySession {
                             }
                         }
                         Some(PtyMessage::RemoteOutput(data)) => {
+                            if let Some(guard) = self.terminal_guard.as_mut() {
+                                guard.observe_remote_output(&data);
+                            }
                             // Apply escape filter for consistency with SSH channel data
                             // This path may receive data from other sources that could
                             // contain terminal responses that shouldn't be displayed

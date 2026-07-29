@@ -20,6 +20,7 @@ const COMMON_RESET_PREFIX: &[u8] =
     b"\x1b[?2004l\x1b[<999u\x1b[=0u\x1b[>4;0m\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l";
 const SELECT_MAIN_SCREEN: &[u8] = b"\x1b[?47l";
 const SELECT_ALTERNATE_SCREEN: &[u8] = b"\x1b[?47h";
+const LEAVE_1049_SCREEN: &[u8] = b"\x1b[?1049l";
 const KEYBOARD_RESET: &[u8] = b"\x1b[<999u\x1b[=0u\x1b[>4;0m";
 const SHOW_CURSOR: &[u8] = b"\x1b[?25h";
 
@@ -27,12 +28,25 @@ const SHOW_CURSOR: &[u8] = b"\x1b[?25h";
 pub(crate) fn write_terminal_cleanup(writer: &mut impl Write, state: &ProtocolState) {
     let _ = (|| -> std::io::Result<()> {
         writer.write_all(COMMON_RESET_PREFIX)?;
-        let Some(initial_alternate) = state.alternate_screen else {
+        let Some(initial_alternate) = state.initial_screen_alternate else {
             writer.write_all(b"\x1b[?1049l")?;
             writer.write_all(KEYBOARD_RESET)?;
             writer.write_all(SHOW_CURSOR)?;
             return writer.flush();
         };
+
+        // If bssh started on the main screen and the remote died inside a
+        // 1049 alternate screen, DECRST 1049 is both safe and useful: it
+        // restores the main screen and the cursor saved by the remote.
+        //
+        // The inverse is deliberately not attempted. DECSET 1049 clears the
+        // alternate buffer and overwrites the terminal's single saved-cursor
+        // slot, so forcing it when bssh started in an alternate screen would
+        // destroy exactly the outer state this cleanup is preserving. Mode 47
+        // below selects that buffer without clearing it.
+        if !initial_alternate && state.current_1049 == Some(true) {
+            writer.write_all(LEAVE_1049_SCREEN)?;
+        }
 
         writer.write_all(screen_select(!initial_alternate))?;
         writer.write_all(KEYBOARD_RESET)?;
@@ -91,7 +105,8 @@ mod tests {
             main_kitty_flags: Some(31),
             alternate_kitty_flags: Some(15),
             modify_other_keys: Some(ModifyOtherKeys::Value(2)),
-            alternate_screen: Some(false),
+            initial_screen_alternate: Some(false),
+            current_1049: Some(false),
         };
         let mut output = Vec::new();
 
@@ -113,7 +128,8 @@ mod tests {
             main_kitty_flags: Some(3),
             alternate_kitty_flags: Some(7),
             modify_other_keys: Some(ModifyOtherKeys::Value(1)),
-            alternate_screen: Some(true),
+            initial_screen_alternate: Some(true),
+            current_1049: Some(true),
         };
         let mut output = Vec::new();
 
@@ -135,7 +151,8 @@ mod tests {
             main_kitty_flags: Some(31),
             alternate_kitty_flags: Some(15),
             modify_other_keys: None,
-            alternate_screen: Some(false),
+            initial_screen_alternate: Some(false),
+            current_1049: Some(false),
         };
         let mut output = Vec::new();
 
@@ -149,5 +166,46 @@ mod tests {
                 .count(),
             2
         );
+    }
+
+    #[test]
+    fn leaves_remote_1049_screen_when_initial_screen_was_main() {
+        let state = ProtocolState {
+            main_kitty_flags: Some(3),
+            alternate_kitty_flags: Some(7),
+            modify_other_keys: None,
+            initial_screen_alternate: Some(false),
+            current_1049: Some(true),
+        };
+        let mut output = Vec::new();
+
+        write_terminal_cleanup(&mut output, &state);
+
+        let leave = output
+            .windows(LEAVE_1049_SCREEN.len())
+            .position(|window| window == LEAVE_1049_SCREEN)
+            .expect("cleanup should leave the remote's 1049 screen");
+        let select_hidden = output
+            .windows(SELECT_ALTERNATE_SCREEN.len())
+            .position(|window| window == SELECT_ALTERNATE_SCREEN)
+            .expect("cleanup should still restore hidden-screen keyboard state");
+        assert!(leave < select_hidden);
+    }
+
+    #[test]
+    fn does_not_clear_outer_alternate_screen_to_force_1049_bit() {
+        let state = ProtocolState {
+            main_kitty_flags: Some(3),
+            alternate_kitty_flags: Some(7),
+            modify_other_keys: None,
+            initial_screen_alternate: Some(true),
+            current_1049: Some(false),
+        };
+        let mut output = Vec::new();
+
+        write_terminal_cleanup(&mut output, &state);
+
+        assert!(!output.windows(8).any(|window| window == b"\x1b[?1049h"));
+        assert!(output.ends_with(b"\x1b[?25h"));
     }
 }

@@ -33,6 +33,7 @@ mod terminal_protocol;
 #[cfg(test)]
 mod terminal_protocol_boundary_tests;
 mod terminal_protocol_restore;
+mod terminal_screen;
 
 pub use session::PtySession;
 pub use terminal::{TerminalState, TerminalStateGuard, force_terminal_cleanup};
