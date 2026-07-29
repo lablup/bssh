@@ -14,10 +14,9 @@
 
 //! Terminal state management for PTY sessions.
 
-use std::io::Write;
 use std::sync::{
     Arc, LazyLock, Mutex,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicI8, Ordering},
 };
 
 use anyhow::{Context, Result};
@@ -27,33 +26,17 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode},
 };
 
+use super::terminal_protocol::{ProtocolState, capture_protocol_state, write_terminal_cleanup};
+use super::terminal_screen::ScreenModeTracker;
+
 /// Global terminal cleanup synchronization
 /// Ensures only one cleanup attempt happens even with multiple guards
 static TERMINAL_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+static SAVED_PROTOCOL_STATE: LazyLock<Mutex<Option<ProtocolState>>> =
+    LazyLock::new(|| Mutex::new(None));
 static RAW_MODE_ACTIVE: AtomicBool = AtomicBool::new(false);
-
-/// Best-effort reset for terminal modes that a remote PTY application can leak.
-///
-/// Kitty keyboard mode stacks are independent for the main and alternate screens.
-/// Reset the current screen first, leave the alternate screen, and then reset the
-/// main screen. `CSI < 999 u` performs a large bounded pop of unbalanced pushes,
-/// `CSI = 0 u` also handles implementations without a stack, and
-/// `CSI > 4 ; 0 m` disables xterm's `modifyOtherKeys` fallback.
-///
-/// This intentionally restores the ordinary shell baseline. Crossterm does not
-/// expose the current enhancement flags, and querying `/dev/tty` here would race
-/// the PTY input reader. An outer local TUI that starts bssh with enhanced keyboard
-/// reporting enabled may therefore need to re-enable its mode after bssh exits.
-const TERMINAL_CLEANUP_SEQUENCE: &[u8] = b"\x1b[?2004l\x1b[<999u\x1b[=0u\x1b[>4;0m\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l\x1b[?1049l\x1b[<999u\x1b[=0u\x1b[>4;0m\x1b[?25h";
-
-/// Emit the shared terminal reset sequence to an injectable writer.
-///
-/// Cleanup must never replace the original session error, so write and flush
-/// failures are deliberately ignored.
-fn write_terminal_cleanup(writer: &mut impl Write) {
-    let _ = writer.write_all(TERMINAL_CLEANUP_SEQUENCE);
-    let _ = writer.flush();
-}
+static CURRENT_ALTERNATE_SCREEN: AtomicI8 = AtomicI8::new(-1);
+static SCREEN_CHANGED: AtomicBool = AtomicBool::new(false);
 
 /// Terminal state information that needs to be preserved and restored
 #[derive(Debug, Clone)]
@@ -66,6 +49,7 @@ pub struct TerminalState {
     pub was_alternate_screen: bool,
     /// Whether mouse reporting was enabled
     pub was_mouse_enabled: bool,
+    protocol_state: ProtocolState,
 }
 
 impl Default for TerminalState {
@@ -75,6 +59,7 @@ impl Default for TerminalState {
             size: (80, 24),
             was_alternate_screen: false,
             was_mouse_enabled: false,
+            protocol_state: ProtocolState::default(),
         }
     }
 }
@@ -88,12 +73,14 @@ pub struct TerminalStateGuard {
     is_raw_mode_active: Arc<AtomicBool>,
     // Simplified cleanup - just track if we need cleanup
     _needs_cleanup: bool,
+    pending_input: Vec<u8>,
+    screen_mode_tracker: ScreenModeTracker,
 }
 
 impl TerminalStateGuard {
     /// Create a new terminal state guard and enter raw mode
     pub fn new() -> Result<Self> {
-        let saved_state = Self::save_terminal_state()?;
+        let mut saved_state = Self::save_terminal_state()?;
         let is_raw_mode_active = Arc::new(AtomicBool::new(false));
 
         // Enter raw mode with global synchronization
@@ -104,14 +91,32 @@ impl TerminalStateGuard {
             is_raw_mode_active.store(true, Ordering::Relaxed);
         }
 
+        // This bounded query runs before the PTY input task exists, so terminal
+        // replies cannot race normal input forwarding.
+        let capture = capture_protocol_state(&mut std::io::stdout());
+        saved_state.protocol_state = capture.state.clone();
+
         // Enable bracketed paste mode
         execute!(std::io::stdout(), EnableBracketedPaste)
             .with_context(|| "Failed to enable bracketed paste mode")?;
+
+        if let Ok(mut saved) = SAVED_PROTOCOL_STATE.try_lock() {
+            *saved = Some(saved_state.protocol_state.clone());
+        }
+        CURRENT_ALTERNATE_SCREEN.store(
+            encode_screen_state(saved_state.protocol_state.current_alternate_screen()),
+            Ordering::SeqCst,
+        );
+        SCREEN_CHANGED.store(false, Ordering::SeqCst);
+        let screen_mode_tracker =
+            ScreenModeTracker::new(saved_state.protocol_state.current_alternate_screen());
 
         Ok(Self {
             saved_state,
             is_raw_mode_active,
             _needs_cleanup: true,
+            pending_input: capture.pending_input,
+            screen_mode_tracker,
         })
     }
 
@@ -124,6 +129,8 @@ impl TerminalStateGuard {
             saved_state,
             is_raw_mode_active,
             _needs_cleanup: false,
+            pending_input: Vec::new(),
+            screen_mode_tracker: ScreenModeTracker::new(None),
         })
     }
 
@@ -159,6 +166,26 @@ impl TerminalStateGuard {
         &self.saved_state
     }
 
+    /// Take bytes read during the pre-input terminal query that were not replies.
+    pub(crate) fn take_pending_input(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.pending_input)
+    }
+
+    /// Track remote screen-buffer selection so cleanup avoids disrupting an
+    /// outer TUI that remains on its alternate screen.
+    pub(crate) fn observe_remote_output(&mut self, bytes: &[u8]) {
+        if let Some(observation) = self.screen_mode_tracker.observe(bytes) {
+            self.saved_state
+                .protocol_state
+                .set_screen_observation(Some(observation.current), observation.changed);
+            CURRENT_ALTERNATE_SCREEN.store(
+                encode_screen_state(Some(observation.current)),
+                Ordering::SeqCst,
+            );
+            SCREEN_CHANGED.store(observation.changed, Ordering::SeqCst);
+        }
+    }
+
     /// Save current terminal state
     fn save_terminal_state() -> Result<TerminalState> {
         let size = if let Some((terminal_size::Width(w), terminal_size::Height(h))) =
@@ -176,6 +203,7 @@ impl TerminalStateGuard {
             size,
             was_alternate_screen: false,
             was_mouse_enabled: false,
+            protocol_state: ProtocolState::default(),
         })
     }
 
@@ -186,7 +214,12 @@ impl TerminalStateGuard {
 
         // Reset every terminal mode owned by the remote PTY through the same path
         // used by panic and last-resort cleanup.
-        write_terminal_cleanup(&mut std::io::stdout());
+        write_terminal_cleanup(&mut std::io::stdout(), &self.saved_state.protocol_state);
+        CURRENT_ALTERNATE_SCREEN.store(
+            encode_screen_state(self.saved_state.protocol_state.initial_alternate_screen()),
+            Ordering::SeqCst,
+        );
+        SCREEN_CHANGED.store(false, Ordering::SeqCst);
 
         // Exit raw mode if it's globally active
         if RAW_MODE_ACTIVE.load(Ordering::SeqCst) {
@@ -241,11 +274,39 @@ pub fn force_terminal_cleanup() {
     // operations below are individually safe.
     let _guard = TERMINAL_MUTEX.try_lock().ok();
 
-    write_terminal_cleanup(&mut std::io::stdout());
+    let state = SAVED_PROTOCOL_STATE
+        .try_lock()
+        .ok()
+        .and_then(|saved| saved.clone())
+        .map(|mut state| {
+            state.set_screen_observation(
+                decode_screen_state(CURRENT_ALTERNATE_SCREEN.load(Ordering::SeqCst)),
+                SCREEN_CHANGED.load(Ordering::SeqCst),
+            );
+            state
+        })
+        .unwrap_or_default();
+    write_terminal_cleanup(&mut std::io::stdout(), &state);
 
     if RAW_MODE_ACTIVE.load(Ordering::SeqCst) {
         let _ = disable_raw_mode();
         RAW_MODE_ACTIVE.store(false, Ordering::SeqCst);
+    }
+}
+
+fn encode_screen_state(state: Option<bool>) -> i8 {
+    match state {
+        Some(false) => 0,
+        Some(true) => 1,
+        None => -1,
+    }
+}
+
+fn decode_screen_state(state: i8) -> Option<bool> {
+    match state {
+        0 => Some(false),
+        1 => Some(true),
+        _ => None,
     }
 }
 
@@ -350,64 +411,15 @@ mod tests {
     //     must be carefully ordered or marked #[serial].
     //
     // What *can* be reliably tested here:
-    //   1. Exact cleanup bytes and ordering through an injectable writer.
-    //   2. Idempotency: calling force_terminal_cleanup() twice does not panic.
-    //   3. Poisoned-mutex resilience: the `try_lock().ok()` pattern correctly
+    //   1. Idempotency: calling force_terminal_cleanup() twice does not panic.
+    //   2. Poisoned-mutex resilience: the `try_lock().ok()` pattern correctly
     //      yields None (rather than panicking) when the mutex is poisoned.
     //      Verified using a local Mutex so the global TERMINAL_MUTEX is never
     //      poisoned, keeping other tests unaffected.
-    //   4. Held-mutex resilience: `try_lock()` returns WouldBlock (not a
+    //   3. Held-mutex resilience: `try_lock()` returns WouldBlock (not a
     //      deadlock) when a lock is already held. Verified using a local Mutex
     //      for the same isolation reason.
     // -----------------------------------------------------------------------
-
-    #[test]
-    fn test_terminal_cleanup_writes_exact_mode_reset_sequence() {
-        let mut output = Vec::new();
-
-        write_terminal_cleanup(&mut output);
-
-        assert_eq!(
-            output,
-            b"\x1b[?2004l\
-              \x1b[<999u\x1b[=0u\x1b[>4;0m\
-              \x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l\
-              \x1b[?1049l\
-              \x1b[<999u\x1b[=0u\x1b[>4;0m\
-              \x1b[?25h"
-        );
-    }
-
-    #[test]
-    fn test_terminal_cleanup_writer_is_idempotent() {
-        let mut output = Vec::new();
-
-        write_terminal_cleanup(&mut output);
-        write_terminal_cleanup(&mut output);
-
-        assert_eq!(output.len(), TERMINAL_CLEANUP_SEQUENCE.len() * 2);
-        assert_eq!(
-            &output[..TERMINAL_CLEANUP_SEQUENCE.len()],
-            &output[TERMINAL_CLEANUP_SEQUENCE.len()..]
-        );
-    }
-
-    #[test]
-    fn test_terminal_cleanup_ignores_writer_failures() {
-        struct FailingWriter;
-
-        impl Write for FailingWriter {
-            fn write(&mut self, _buffer: &[u8]) -> std::io::Result<usize> {
-                Err(std::io::Error::other("intentional write failure"))
-            }
-
-            fn flush(&mut self) -> std::io::Result<()> {
-                Err(std::io::Error::other("intentional flush failure"))
-            }
-        }
-
-        write_terminal_cleanup(&mut FailingWriter);
-    }
 
     /// Calling force_terminal_cleanup() twice in succession must not panic.
     ///

@@ -16,8 +16,7 @@
 
 use super::constants::*;
 use super::escape_filter::EscapeSequenceFilter;
-use super::local_escape::{LocalAction, LocalEscapeDetector};
-use super::raw_input::RawInputReader;
+use super::raw_input_task;
 use super::terminal_modes::configure_terminal_modes;
 use crate::pty::{
     PtyConfig, PtyMessage, PtyState,
@@ -156,7 +155,9 @@ impl PtySession {
         }
 
         // Set up terminal state guard
-        self.terminal_guard = Some(TerminalStateGuard::new()?);
+        let mut terminal_guard = TerminalStateGuard::new()?;
+        let pending_input = terminal_guard.take_pending_input();
+        self.terminal_guard = Some(terminal_guard);
 
         // Enable mouse support if requested
         if self.config.enable_mouse {
@@ -226,70 +227,7 @@ impl PtySession {
         // NOTE: TerminalStateGuard has already called enable_raw_mode() at this point,
         // so stdin.read() will return raw bytes without line buffering
         let input_task = tokio::task::spawn_blocking(move || {
-            let mut reader = RawInputReader::new();
-            let mut buffer = [0u8; 1024];
-            let mut escape_detector = LocalEscapeDetector::new();
-
-            loop {
-                if *cancel_for_input.borrow() {
-                    break;
-                }
-
-                let poll_timeout = Duration::from_millis(INPUT_POLL_TIMEOUT_MS);
-
-                match reader.poll(poll_timeout) {
-                    Ok(true) => {
-                        match reader.read(&mut buffer) {
-                            Ok(0) => {
-                                // EOF - user closed stdin
-                                tracing::debug!("EOF received on stdin");
-                                break;
-                            }
-                            Ok(n) => {
-                                // Check for local escape sequences (e.g., ~. for disconnect)
-                                if let Some(action) = escape_detector.process(&buffer[..n]) {
-                                    match action {
-                                        LocalAction::Disconnect => {
-                                            tracing::debug!("Disconnect escape sequence detected");
-                                            let _ = input_tx.try_send(PtyMessage::Terminate);
-                                            break;
-                                        }
-                                        LocalAction::Passthrough(data) => {
-                                            // Send filtered data
-                                            if input_tx
-                                                .try_send(PtyMessage::LocalInput(data))
-                                                .is_err()
-                                            {
-                                                break;
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    // Pass raw bytes through as-is
-                                    // This includes arrow keys, function keys, terminal responses, etc.
-                                    let data = smallvec::SmallVec::from_slice(&buffer[..n]);
-                                    if input_tx.try_send(PtyMessage::LocalInput(data)).is_err() {
-                                        break;
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                let _ = input_tx
-                                    .try_send(PtyMessage::Error(format!("Input error: {e}")));
-                                break;
-                            }
-                        }
-                    }
-                    Ok(false) => {
-                        // Timeout - continue polling
-                        continue;
-                    }
-                    Err(e) => {
-                        let _ = input_tx.try_send(PtyMessage::Error(format!("Poll error: {e}")));
-                        break;
-                    }
-                }
-            }
+            raw_input_task::run(input_tx, cancel_for_input, pending_input);
         });
 
         // We'll integrate channel reading into the main loop since russh Channel doesn't clone
@@ -323,6 +261,9 @@ impl PtySession {
                                     tracing::error!("Failed to write to stdout: {e}");
                                     should_terminate = true;
                                 } else {
+                                    if let Some(guard) = self.terminal_guard.as_mut() {
+                                        guard.observe_remote_output(&filtered_data);
+                                    }
                                     let _ = io::stdout().flush();
                                 }
                             }
@@ -336,6 +277,9 @@ impl PtySession {
                                         tracing::error!("Failed to write stderr to stdout: {e}");
                                         should_terminate = true;
                                     } else {
+                                        if let Some(guard) = self.terminal_guard.as_mut() {
+                                            guard.observe_remote_output(&filtered_data);
+                                        }
                                         let _ = io::stdout().flush();
                                     }
                                 }
@@ -387,6 +331,9 @@ impl PtySession {
                                     tracing::error!("Failed to write to stdout: {e}");
                                     should_terminate = true;
                                 } else {
+                                    if let Some(guard) = self.terminal_guard.as_mut() {
+                                        guard.observe_remote_output(&filtered_data);
+                                    }
                                     let _ = io::stdout().flush();
                                 }
                             }

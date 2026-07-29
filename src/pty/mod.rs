@@ -29,6 +29,8 @@ use tokio::time::Duration;
 
 pub mod session;
 pub mod terminal;
+mod terminal_protocol;
+mod terminal_screen;
 
 pub use session::PtySession;
 pub use terminal::{TerminalState, TerminalStateGuard, force_terminal_cleanup};

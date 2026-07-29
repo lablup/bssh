@@ -193,7 +193,14 @@ Run this check in Ghostty and at least one other Kitty-keyboard-compatible termi
 3. At the restored local prompt, verify that Space, Enter, arrow keys, and modified keys behave normally and do not print CSI-u fragments such as `;1:3u`, `:1C`, or `:3C`.
 4. Repeat with a Kitty-keyboard-aware full-screen application on the remote host and terminate the SSH transport before the application exits cleanly.
 
-The cleanup deliberately restores the ordinary shell baseline. Exact preservation of an enhanced keyboard mode owned by an outer local TUI is not currently available because crossterm exposes protocol support detection but not the active flag value, while issuing a separate `/dev/tty` query would race bssh's PTY input reader.
+Before starting the PTY input task, bssh spends at most 100 ms querying the active Kitty enhancement flags, xterm `modifyOtherKeys` value, and DEC private mode 1049. A primary-device-attributes query terminates the probe promptly on terminals that do not support the optional protocols. Only strict query replies are consumed; user input and malformed or unrelated escape sequences read during the probe are retained and forwarded to the remote session. Teardown tracks remote screen-buffer transitions and restores the captured keyboard values on the original main or alternate screen. If any required screen-state query is unsupported, malformed, or times out, cleanup falls back to the ordinary-shell baseline from #234.
+
+To validate outer-TUI preservation in Ghostty and Kitty or WezTerm:
+
+1. Start a Kitty-keyboard-aware TUI that can launch a child command while remaining in its alternate screen, and record its active enhancement flags with `printf '\033[?u'`.
+2. Launch `bssh` from that TUI, enable different remote flags with `printf '\033[=31u'`, and exit normally.
+3. Verify the outer TUI receives the same keyboard encoding it used before launching bssh and that its alternate-screen contents were not cleared by an unnecessary `1049l`/`1049h` round trip.
+4. Repeat after abrupt transport loss, local `~.`, and a remote `printf '\033[?1049l'` to exercise both unchanged-screen and screen-recovery cleanup paths.
 
 ### Performance Characteristics
 
