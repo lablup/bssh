@@ -261,9 +261,6 @@ impl PtySession {
                                     tracing::error!("Failed to write to stdout: {e}");
                                     should_terminate = true;
                                 } else {
-                                    if let Some(guard) = self.terminal_guard.as_mut() {
-                                        guard.observe_remote_output(&filtered_data);
-                                    }
                                     let _ = io::stdout().flush();
                                 }
                             }
@@ -277,9 +274,6 @@ impl PtySession {
                                         tracing::error!("Failed to write stderr to stdout: {e}");
                                         should_terminate = true;
                                     } else {
-                                        if let Some(guard) = self.terminal_guard.as_mut() {
-                                            guard.observe_remote_output(&filtered_data);
-                                        }
                                         let _ = io::stdout().flush();
                                     }
                                 }
@@ -331,9 +325,6 @@ impl PtySession {
                                     tracing::error!("Failed to write to stdout: {e}");
                                     should_terminate = true;
                                 } else {
-                                    if let Some(guard) = self.terminal_guard.as_mut() {
-                                        guard.observe_remote_output(&filtered_data);
-                                    }
                                     let _ = io::stdout().flush();
                                 }
                             }

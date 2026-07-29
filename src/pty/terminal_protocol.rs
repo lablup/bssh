@@ -18,62 +18,49 @@ use std::io::Write;
 use std::time::{Duration, Instant};
 
 use super::session::raw_input::RawInputReader;
+pub(crate) use super::terminal_protocol_restore::write_terminal_cleanup;
 
-const QUERY_SEQUENCE: &[u8] = b"\x1b[?u\x1b[?4m\x1b[?1049$p\x1b[c";
+const INITIAL_QUERY: &[u8] = b"\x1b[?u\x1b[?4m\x1b[?1049$p\x1b[c";
+const HIDDEN_SCREEN_QUERY: &[u8] = b"\x1b[?u\x1b[c";
 const QUERY_TIMEOUT: Duration = Duration::from_millis(100);
 const MAX_QUERY_INPUT: usize = 4096;
 const MAX_CSI_SEQUENCE: usize = 64;
 
-const COMMON_RESET_PREFIX: &[u8] =
-    b"\x1b[?2004l\x1b[<999u\x1b[=0u\x1b[>4;0m\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l";
-const LEAVE_ALTERNATE_SCREEN: &[u8] = b"\x1b[?1049l";
-const ENTER_ALTERNATE_SCREEN: &[u8] = b"\x1b[?1049h";
-const KEYBOARD_RESET: &[u8] = b"\x1b[<999u\x1b[=0u\x1b[>4;0m";
-const SHOW_CURSOR: &[u8] = b"\x1b[?25h";
+const SELECT_MAIN_SCREEN: &[u8] = b"\x1b[?47l";
+const SELECT_ALTERNATE_SCREEN: &[u8] = b"\x1b[?47h";
+const ENTRY_KEYBOARD_BASELINE: &[u8] = b"\x1b[=0u\x1b[>4;0m";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct ProtocolState {
-    /// Raw Kitty progressive-enhancement flags, including flags unknown to crossterm.
-    kitty_flags: Option<u32>,
+    /// Raw Kitty flags for the main screen, including flags unknown to crossterm.
+    pub(crate) main_kitty_flags: Option<u32>,
+    /// Raw Kitty flags for the alternate screen.
+    pub(crate) alternate_kitty_flags: Option<u32>,
     /// xterm's `modifyOtherKeys` resource value.
-    modify_other_keys: Option<ModifyOtherKeys>,
+    pub(crate) modify_other_keys: Option<ModifyOtherKeys>,
     /// Whether DEC private mode 1049 was set before bssh took control.
-    alternate_screen: Option<bool>,
-    /// Last screen selection observed in remote output.
-    current_alternate_screen: Option<bool>,
-    /// Whether remote output switched away from the initial screen at any point.
-    screen_changed: bool,
+    pub(crate) alternate_screen: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ModifyOtherKeys {
+pub(crate) enum ModifyOtherKeys {
     Value(u32),
     Disabled,
-}
-
-impl ProtocolState {
-    pub(crate) fn set_screen_observation(
-        &mut self,
-        is_alternate: Option<bool>,
-        screen_changed: bool,
-    ) {
-        self.current_alternate_screen = is_alternate;
-        self.screen_changed = screen_changed;
-    }
-
-    pub(crate) fn current_alternate_screen(&self) -> Option<bool> {
-        self.current_alternate_screen
-    }
-
-    pub(crate) fn initial_alternate_screen(&self) -> Option<bool> {
-        self.alternate_screen
-    }
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct ProtocolCapture {
     pub(crate) state: ProtocolState,
     pub(crate) pending_input: Vec<u8>,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct QueryReplies {
+    kitty_flags: Option<u32>,
+    modify_other_keys: Option<ModifyOtherKeys>,
+    pub(crate) alternate_screen: Option<bool>,
+    pub(crate) pending_input: Vec<u8>,
+    pub(crate) completed: bool,
 }
 
 trait QueryInput {
@@ -98,20 +85,97 @@ impl QueryInput for RawInputReader {
 /// strict matches for one of our replies are returned for normal PTY forwarding.
 pub(crate) fn capture_protocol_state(writer: &mut impl Write) -> ProtocolCapture {
     let mut reader = RawInputReader::new();
-    capture_with_io(writer, &mut reader, QUERY_TIMEOUT)
+    capture_all_screens(writer, &mut reader, QUERY_TIMEOUT)
 }
 
-fn capture_with_io(
+fn capture_all_screens(
     writer: &mut impl Write,
     reader: &mut impl QueryInput,
     timeout: Duration,
 ) -> ProtocolCapture {
+    let first = capture_transaction(writer, reader, timeout, INITIAL_QUERY);
+    let mut pending_input = first.pending_input;
+    let Some(initial_alternate) = first.alternate_screen else {
+        let _ = writer.write_all(ENTRY_KEYBOARD_BASELINE);
+        let _ = writer.flush();
+        return ProtocolCapture {
+            state: ProtocolState::default(),
+            pending_input,
+        };
+    };
+    if !first.completed {
+        let _ = writer.write_all(ENTRY_KEYBOARD_BASELINE);
+        let _ = writer.flush();
+        return ProtocolCapture {
+            state: ProtocolState::default(),
+            pending_input,
+        };
+    }
+
+    let _ = writer.write_all(ENTRY_KEYBOARD_BASELINE);
+    let hidden_switch = if initial_alternate {
+        SELECT_MAIN_SCREEN
+    } else {
+        SELECT_ALTERNATE_SCREEN
+    };
+    let return_switch = if initial_alternate {
+        SELECT_ALTERNATE_SCREEN
+    } else {
+        SELECT_MAIN_SCREEN
+    };
     if writer
-        .write_all(QUERY_SEQUENCE)
+        .write_all(hidden_switch)
         .and_then(|()| writer.flush())
         .is_err()
     {
-        return ProtocolCapture::default();
+        return ProtocolCapture {
+            state: ProtocolState::default(),
+            pending_input,
+        };
+    }
+
+    let hidden = capture_transaction(writer, reader, timeout, HIDDEN_SCREEN_QUERY);
+    pending_input.extend_from_slice(&hidden.pending_input);
+    let _ = writer.write_all(ENTRY_KEYBOARD_BASELINE);
+    let _ = writer.write_all(return_switch);
+    let _ = writer.write_all(ENTRY_KEYBOARD_BASELINE);
+    let _ = writer.flush();
+
+    if !hidden.completed {
+        return ProtocolCapture {
+            state: ProtocolState::default(),
+            pending_input,
+        };
+    }
+
+    let (main_kitty_flags, alternate_kitty_flags) = if initial_alternate {
+        (hidden.kitty_flags, first.kitty_flags)
+    } else {
+        (first.kitty_flags, hidden.kitty_flags)
+    };
+    ProtocolCapture {
+        state: ProtocolState {
+            main_kitty_flags,
+            alternate_kitty_flags,
+            modify_other_keys: first.modify_other_keys,
+            alternate_screen: Some(initial_alternate),
+        },
+        pending_input,
+    }
+}
+
+fn capture_transaction(
+    writer: &mut impl Write,
+    reader: &mut impl QueryInput,
+    timeout: Duration,
+    query: &[u8],
+) -> QueryReplies {
+    if writer
+        .write_all(query)
+        .and_then(|()| writer.flush())
+        .is_err()
+    {
+        return QueryReplies::default();
     }
 
     let deadline = Instant::now() + timeout;
@@ -145,30 +209,40 @@ fn contains_primary_device_attributes(input: &[u8]) -> bool {
     csi_sequences(input).any(is_primary_device_attributes)
 }
 
-fn parse_query_input(input: &[u8]) -> ProtocolCapture {
-    let mut capture = ProtocolCapture::default();
+pub(crate) fn parse_query_input(input: &[u8]) -> QueryReplies {
+    let Some(sentinel_end) = csi_ranges(input)
+        .find_map(|(start, end)| is_primary_device_attributes(&input[start..end]).then_some(end))
+    else {
+        return QueryReplies {
+            pending_input: input.to_vec(),
+            ..QueryReplies::default()
+        };
+    };
+
+    let mut capture = QueryReplies::default();
     let mut cursor = 0;
 
-    for (start, end) in csi_ranges(input) {
+    for (start, end) in csi_ranges(&input[..sentinel_end]) {
         capture
             .pending_input
             .extend_from_slice(&input[cursor..start]);
         let sequence = &input[start..end];
 
         if let Some(flags) = parse_decimal_reply(sequence, b"\x1b[?", b"u") {
-            capture.state.kitty_flags = Some(flags);
+            capture.kitty_flags = Some(flags);
         } else if let Some(value) = parse_decimal_reply(sequence, b"\x1b[>4;", b"m") {
-            capture.state.modify_other_keys = Some(ModifyOtherKeys::Value(value));
+            capture.modify_other_keys = Some(ModifyOtherKeys::Value(value));
         } else if sequence == b"\x1b[>4n" {
-            capture.state.modify_other_keys = Some(ModifyOtherKeys::Disabled);
+            capture.modify_other_keys = Some(ModifyOtherKeys::Disabled);
         } else if let Some(mode) = parse_decimal_reply(sequence, b"\x1b[?1049;", b"$y") {
-            capture.state.alternate_screen = match mode {
-                1 | 3 => Some(true),
-                2 | 4 => Some(false),
-                _ => None,
-            };
-            capture.state.current_alternate_screen = capture.state.alternate_screen;
-        } else if !is_primary_device_attributes(sequence) {
+            match mode {
+                1 | 3 => capture.alternate_screen = Some(true),
+                2 | 4 => capture.alternate_screen = Some(false),
+                _ => capture.pending_input.extend_from_slice(sequence),
+            }
+        } else if is_primary_device_attributes(sequence) {
+            capture.completed = true;
+        } else {
             capture.pending_input.extend_from_slice(sequence);
         }
 
@@ -227,67 +301,6 @@ fn csi_ranges(input: &[u8]) -> impl Iterator<Item = (usize, usize)> {
     })
 }
 
-/// Reset remote-owned modes, then restore the captured local keyboard state.
-pub(crate) fn write_terminal_cleanup(writer: &mut impl Write, state: &ProtocolState) {
-    let _ = (|| -> std::io::Result<()> {
-        writer.write_all(COMMON_RESET_PREFIX)?;
-
-        match (
-            state.alternate_screen,
-            state.current_alternate_screen,
-            state.screen_changed,
-        ) {
-            (Some(true), Some(true), false) | (Some(false), Some(false), false) => {
-                write_keyboard_restore(writer, state)?;
-            }
-            (Some(true), Some(false), _) => {
-                writer.write_all(ENTER_ALTERNATE_SCREEN)?;
-                writer.write_all(KEYBOARD_RESET)?;
-                write_keyboard_restore(writer, state)?;
-            }
-            (Some(false), Some(true), _) => {
-                writer.write_all(LEAVE_ALTERNATE_SCREEN)?;
-                writer.write_all(KEYBOARD_RESET)?;
-                write_keyboard_restore(writer, state)?;
-            }
-            (Some(true), Some(true), true) => {
-                writer.write_all(LEAVE_ALTERNATE_SCREEN)?;
-                writer.write_all(KEYBOARD_RESET)?;
-                writer.write_all(ENTER_ALTERNATE_SCREEN)?;
-                writer.write_all(KEYBOARD_RESET)?;
-                write_keyboard_restore(writer, state)?;
-            }
-            (Some(false), Some(false), true) => {
-                writer.write_all(ENTER_ALTERNATE_SCREEN)?;
-                writer.write_all(KEYBOARD_RESET)?;
-                writer.write_all(LEAVE_ALTERNATE_SCREEN)?;
-                writer.write_all(KEYBOARD_RESET)?;
-                write_keyboard_restore(writer, state)?;
-            }
-            _ => {
-                writer.write_all(LEAVE_ALTERNATE_SCREEN)?;
-                writer.write_all(KEYBOARD_RESET)?;
-            }
-        }
-
-        writer.write_all(SHOW_CURSOR)?;
-        writer.flush()
-    })();
-}
-
-fn write_keyboard_restore(writer: &mut impl Write, state: &ProtocolState) -> std::io::Result<()> {
-    if let Some(flags) = state.kitty_flags {
-        write!(writer, "\x1b[={flags}u")?;
-    }
-    if let Some(value) = state.modify_other_keys {
-        match value {
-            ModifyOtherKeys::Value(value) => write!(writer, "\x1b[>4;{value}m")?,
-            ModifyOtherKeys::Disabled => writer.write_all(b"\x1b[>4n")?,
-        }
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
@@ -329,19 +342,26 @@ mod tests {
             b"typed",
             b"\x1b[?3",
             b"1u\x1b[>4;2m\x1b[?1049;1$y\x1b[?1;2c",
+            b"\x1b[?5u\x1b[?1;2c",
         ]);
 
-        let capture = capture_with_io(&mut output, &mut input, Duration::from_secs(1));
+        let capture = capture_all_screens(&mut output, &mut input, Duration::from_secs(1));
 
-        assert_eq!(output, QUERY_SEQUENCE);
+        assert_eq!(
+            output,
+            b"\x1b[?u\x1b[?4m\x1b[?1049$p\x1b[c\
+              \x1b[=0u\x1b[>4;0m\x1b[?47l\
+              \x1b[?u\x1b[c\
+              \x1b[=0u\x1b[>4;0m\x1b[?47h\
+              \x1b[=0u\x1b[>4;0m"
+        );
         assert_eq!(
             capture.state,
             ProtocolState {
-                kitty_flags: Some(31),
+                main_kitty_flags: Some(5),
+                alternate_kitty_flags: Some(31),
                 modify_other_keys: Some(ModifyOtherKeys::Value(2)),
                 alternate_screen: Some(true),
-                current_alternate_screen: Some(true),
-                screen_changed: false,
             }
         );
         assert_eq!(capture.pending_input, b"typed");
@@ -352,7 +372,7 @@ mod tests {
         let mut output = Vec::new();
         let mut input = FakeInput::new(&[b"abc\x1b[?1;2c"]);
 
-        let capture = capture_with_io(&mut output, &mut input, Duration::from_secs(1));
+        let capture = capture_all_screens(&mut output, &mut input, Duration::from_secs(1));
 
         assert_eq!(capture.state, ProtocolState::default());
         assert_eq!(capture.pending_input, b"abc");
@@ -364,129 +384,7 @@ mod tests {
 
         let capture = parse_query_input(input);
 
-        assert_eq!(capture.state, ProtocolState::default());
+        assert!(!capture.completed);
         assert_eq!(capture.pending_input, input);
-    }
-
-    #[test]
-    fn restores_main_screen_flags_exactly() {
-        let mut output = Vec::new();
-        let state = ProtocolState {
-            kitty_flags: Some(31),
-            modify_other_keys: Some(ModifyOtherKeys::Value(2)),
-            alternate_screen: Some(false),
-            current_alternate_screen: Some(false),
-            screen_changed: false,
-        };
-
-        write_terminal_cleanup(&mut output, &state);
-
-        assert_eq!(
-            output,
-            b"\x1b[?2004l\x1b[<999u\x1b[=0u\x1b[>4;0m\
-              \x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l\
-              \x1b[=31u\x1b[>4;2m\x1b[?25h"
-        );
-    }
-
-    #[test]
-    fn preserves_outer_alternate_screen_without_switching_buffers() {
-        let mut output = Vec::new();
-        let state = ProtocolState {
-            kitty_flags: Some(7),
-            modify_other_keys: Some(ModifyOtherKeys::Value(1)),
-            alternate_screen: Some(true),
-            current_alternate_screen: Some(true),
-            screen_changed: false,
-        };
-
-        write_terminal_cleanup(&mut output, &state);
-
-        assert_eq!(
-            output,
-            b"\x1b[?2004l\x1b[<999u\x1b[=0u\x1b[>4;0m\
-              \x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l\
-              \x1b[=7u\x1b[>4;1m\x1b[?25h"
-        );
-    }
-
-    #[test]
-    fn returns_to_outer_alternate_screen_when_remote_left_it() {
-        let mut output = Vec::new();
-        let state = ProtocolState {
-            kitty_flags: Some(7),
-            modify_other_keys: Some(ModifyOtherKeys::Value(1)),
-            alternate_screen: Some(true),
-            current_alternate_screen: Some(false),
-            screen_changed: true,
-        };
-
-        write_terminal_cleanup(&mut output, &state);
-
-        assert!(output.windows(8).any(|window| window == b"\x1b[?1049h"));
-        assert!(output.ends_with(b"\x1b[=7u\x1b[>4;1m\x1b[?25h"));
-    }
-
-    #[test]
-    fn cleans_both_screens_after_remote_round_trip() {
-        let mut output = Vec::new();
-        let state = ProtocolState {
-            kitty_flags: Some(7),
-            modify_other_keys: None,
-            alternate_screen: Some(true),
-            current_alternate_screen: Some(true),
-            screen_changed: true,
-        };
-
-        write_terminal_cleanup(&mut output, &state);
-
-        assert!(output.windows(8).any(|window| window == b"\x1b[?1049l"));
-        assert!(output.windows(8).any(|window| window == b"\x1b[?1049h"));
-        assert!(output.ends_with(b"\x1b[=7u\x1b[?25h"));
-    }
-
-    #[test]
-    fn unknown_screen_state_uses_legacy_baseline() {
-        let mut output = Vec::new();
-
-        write_terminal_cleanup(&mut output, &ProtocolState::default());
-
-        assert_eq!(
-            output,
-            b"\x1b[?2004l\x1b[<999u\x1b[=0u\x1b[>4;0m\
-              \x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l\
-              \x1b[?1049l\x1b[<999u\x1b[=0u\x1b[>4;0m\x1b[?25h"
-        );
-    }
-
-    #[test]
-    fn repeated_cleanup_keeps_restoring_the_captured_state() {
-        let state = ProtocolState {
-            kitty_flags: Some(31),
-            modify_other_keys: Some(ModifyOtherKeys::Value(2)),
-            alternate_screen: Some(false),
-            current_alternate_screen: Some(false),
-            screen_changed: false,
-        };
-        let mut output = Vec::new();
-
-        for _ in 0..3 {
-            write_terminal_cleanup(&mut output, &state);
-        }
-
-        assert_eq!(
-            output
-                .windows(b"\x1b[=31u".len())
-                .filter(|window| *window == b"\x1b[=31u")
-                .count(),
-            3
-        );
-        assert_eq!(
-            output
-                .windows(b"\x1b[>4;2m".len())
-                .filter(|window| *window == b"\x1b[>4;2m")
-                .count(),
-            3
-        );
     }
 }

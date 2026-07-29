@@ -16,7 +16,7 @@
 
 use std::sync::{
     Arc, LazyLock, Mutex,
-    atomic::{AtomicBool, AtomicI8, Ordering},
+    atomic::{AtomicBool, Ordering},
 };
 
 use anyhow::{Context, Result};
@@ -27,7 +27,6 @@ use crossterm::{
 };
 
 use super::terminal_protocol::{ProtocolState, capture_protocol_state, write_terminal_cleanup};
-use super::terminal_screen::ScreenModeTracker;
 
 /// Global terminal cleanup synchronization
 /// Ensures only one cleanup attempt happens even with multiple guards
@@ -35,8 +34,27 @@ static TERMINAL_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 static SAVED_PROTOCOL_STATE: LazyLock<Mutex<Option<ProtocolState>>> =
     LazyLock::new(|| Mutex::new(None));
 static RAW_MODE_ACTIVE: AtomicBool = AtomicBool::new(false);
-static CURRENT_ALTERNATE_SCREEN: AtomicI8 = AtomicI8::new(-1);
-static SCREEN_CHANGED: AtomicBool = AtomicBool::new(false);
+static TERMINAL_OWNER_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+struct TerminalOwner;
+
+impl TerminalOwner {
+    fn acquire() -> Result<Self> {
+        if TERMINAL_OWNER_ACTIVE
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            anyhow::bail!("Another terminal state guard is already active");
+        }
+        Ok(Self)
+    }
+}
+
+impl Drop for TerminalOwner {
+    fn drop(&mut self) {
+        TERMINAL_OWNER_ACTIVE.store(false, Ordering::SeqCst);
+    }
+}
 
 /// Terminal state information that needs to be preserved and restored
 #[derive(Debug, Clone)]
@@ -72,8 +90,8 @@ pub struct TerminalStateGuard {
     // Simplified cleanup - just track if we need cleanup
     _needs_cleanup: bool,
     pending_input: Vec<u8>,
-    screen_mode_tracker: ScreenModeTracker,
     protocol_state: ProtocolState,
+    _owner: Option<TerminalOwner>,
 }
 
 impl TerminalStateGuard {
@@ -81,6 +99,7 @@ impl TerminalStateGuard {
     pub fn new() -> Result<Self> {
         let saved_state = Self::save_terminal_state()?;
         let is_raw_mode_active = Arc::new(AtomicBool::new(false));
+        let owner = TerminalOwner::acquire()?;
 
         // Enter raw mode with global synchronization
         let _guard = TERMINAL_MUTEX.lock().unwrap();
@@ -100,25 +119,17 @@ impl TerminalStateGuard {
         if let Ok(mut saved) = SAVED_PROTOCOL_STATE.try_lock() {
             *saved = Some(protocol_state.clone());
         }
-        CURRENT_ALTERNATE_SCREEN.store(
-            encode_screen_state(protocol_state.current_alternate_screen()),
-            Ordering::SeqCst,
-        );
-        SCREEN_CHANGED.store(false, Ordering::SeqCst);
-
         // Enable bracketed paste mode
         execute!(std::io::stdout(), EnableBracketedPaste)
             .with_context(|| "Failed to enable bracketed paste mode")?;
-
-        let screen_mode_tracker = ScreenModeTracker::new(protocol_state.current_alternate_screen());
 
         Ok(Self {
             saved_state,
             is_raw_mode_active,
             _needs_cleanup: true,
             pending_input: capture.pending_input,
-            screen_mode_tracker,
             protocol_state,
+            _owner: Some(owner),
         })
     }
 
@@ -132,8 +143,8 @@ impl TerminalStateGuard {
             is_raw_mode_active,
             _needs_cleanup: false,
             pending_input: Vec::new(),
-            screen_mode_tracker: ScreenModeTracker::new(None),
             protocol_state: ProtocolState::default(),
+            _owner: None,
         })
     }
 
@@ -174,20 +185,6 @@ impl TerminalStateGuard {
         std::mem::take(&mut self.pending_input)
     }
 
-    /// Track remote screen-buffer selection so cleanup avoids disrupting an
-    /// outer TUI that remains on its alternate screen.
-    pub(crate) fn observe_remote_output(&mut self, bytes: &[u8]) {
-        if let Some(observation) = self.screen_mode_tracker.observe(bytes) {
-            self.protocol_state
-                .set_screen_observation(Some(observation.current), observation.changed);
-            CURRENT_ALTERNATE_SCREEN.store(
-                encode_screen_state(Some(observation.current)),
-                Ordering::SeqCst,
-            );
-            SCREEN_CHANGED.store(observation.changed, Ordering::SeqCst);
-        }
-    }
-
     /// Save current terminal state
     fn save_terminal_state() -> Result<TerminalState> {
         let size = if let Some((terminal_size::Width(w), terminal_size::Height(h))) =
@@ -216,11 +213,6 @@ impl TerminalStateGuard {
         // Reset every terminal mode owned by the remote PTY through the same path
         // used by panic and last-resort cleanup.
         write_terminal_cleanup(&mut std::io::stdout(), &self.protocol_state);
-        CURRENT_ALTERNATE_SCREEN.store(
-            encode_screen_state(self.protocol_state.initial_alternate_screen()),
-            Ordering::SeqCst,
-        );
-        SCREEN_CHANGED.store(false, Ordering::SeqCst);
 
         // Exit raw mode if it's globally active
         if RAW_MODE_ACTIVE.load(Ordering::SeqCst) {
@@ -279,35 +271,12 @@ pub fn force_terminal_cleanup() {
         .try_lock()
         .ok()
         .and_then(|saved| saved.clone())
-        .map(|mut state| {
-            state.set_screen_observation(
-                decode_screen_state(CURRENT_ALTERNATE_SCREEN.load(Ordering::SeqCst)),
-                SCREEN_CHANGED.load(Ordering::SeqCst),
-            );
-            state
-        })
         .unwrap_or_default();
     write_terminal_cleanup(&mut std::io::stdout(), &state);
 
     if RAW_MODE_ACTIVE.load(Ordering::SeqCst) {
         let _ = disable_raw_mode();
         RAW_MODE_ACTIVE.store(false, Ordering::SeqCst);
-    }
-}
-
-fn encode_screen_state(state: Option<bool>) -> i8 {
-    match state {
-        Some(false) => 0,
-        Some(true) => 1,
-        None => -1,
-    }
-}
-
-fn decode_screen_state(state: i8) -> Option<bool> {
-    match state {
-        0 => Some(false),
-        1 => Some(true),
-        _ => None,
     }
 }
 
@@ -482,5 +451,15 @@ mod tests {
         assert!(!state.was_alternate_screen);
         assert!(!state.was_mouse_enabled);
         assert_eq!(state.size, (80, 24));
+    }
+
+    #[test]
+    fn test_terminal_owner_rejects_nesting_and_releases_on_drop() {
+        let owner = TerminalOwner::acquire().unwrap();
+        assert!(TerminalOwner::acquire().is_err());
+
+        drop(owner);
+
+        assert!(TerminalOwner::acquire().is_ok());
     }
 }
