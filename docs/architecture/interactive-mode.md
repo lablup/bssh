@@ -182,6 +182,18 @@ All timeouts and buffer sizes have been carefully chosen based on empirical test
 - Multiple cleanup mechanisms ensure terminal restoration
 - `Drop` implementations provide failsafe cleanup
 - Force cleanup functions for emergency recovery
+- PTY teardown disables bracketed paste, mouse tracking, Kitty keyboard progressive enhancements, and xterm `modifyOtherKeys` on both the current and main screens before returning control to the local shell
+
+### Manual Enhanced-Keyboard Teardown Test
+
+Run this check in Ghostty and at least one other Kitty-keyboard-compatible terminal such as Kitty or WezTerm:
+
+1. Start an interactive session with `bssh user@host`.
+2. At the remote shell, run `printf '\033[>15u'; exit` to leave all supported Kitty keyboard enhancements enabled while the PTY exits.
+3. At the restored local prompt, verify that Space, Enter, arrow keys, and modified keys behave normally and do not print CSI-u fragments such as `;1:3u`, `:1C`, or `:3C`.
+4. Repeat with a Kitty-keyboard-aware full-screen application on the remote host and terminate the SSH transport before the application exits cleanly.
+
+The cleanup deliberately restores the ordinary shell baseline. Exact preservation of an enhanced keyboard mode owned by an outer local TUI is not currently available because crossterm exposes protocol support detection but not the active flag value, while issuing a separate `/dev/tty` query would race bssh's PTY input reader.
 
 ### Performance Characteristics
 
