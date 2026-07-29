@@ -49,7 +49,6 @@ pub struct TerminalState {
     pub was_alternate_screen: bool,
     /// Whether mouse reporting was enabled
     pub was_mouse_enabled: bool,
-    protocol_state: ProtocolState,
 }
 
 impl Default for TerminalState {
@@ -59,7 +58,6 @@ impl Default for TerminalState {
             size: (80, 24),
             was_alternate_screen: false,
             was_mouse_enabled: false,
-            protocol_state: ProtocolState::default(),
         }
     }
 }
@@ -75,12 +73,13 @@ pub struct TerminalStateGuard {
     _needs_cleanup: bool,
     pending_input: Vec<u8>,
     screen_mode_tracker: ScreenModeTracker,
+    protocol_state: ProtocolState,
 }
 
 impl TerminalStateGuard {
     /// Create a new terminal state guard and enter raw mode
     pub fn new() -> Result<Self> {
-        let mut saved_state = Self::save_terminal_state()?;
+        let saved_state = Self::save_terminal_state()?;
         let is_raw_mode_active = Arc::new(AtomicBool::new(false));
 
         // Enter raw mode with global synchronization
@@ -94,22 +93,24 @@ impl TerminalStateGuard {
         // This bounded query runs before the PTY input task exists, so terminal
         // replies cannot race normal input forwarding.
         let capture = capture_protocol_state(&mut std::io::stdout());
-        saved_state.protocol_state = capture.state.clone();
+        let protocol_state = capture.state.clone();
+
+        // Publish the snapshot before any later fallible setup so the caller's
+        // forced cleanup can preserve it if construction returns an error.
+        if let Ok(mut saved) = SAVED_PROTOCOL_STATE.try_lock() {
+            *saved = Some(protocol_state.clone());
+        }
+        CURRENT_ALTERNATE_SCREEN.store(
+            encode_screen_state(protocol_state.current_alternate_screen()),
+            Ordering::SeqCst,
+        );
+        SCREEN_CHANGED.store(false, Ordering::SeqCst);
 
         // Enable bracketed paste mode
         execute!(std::io::stdout(), EnableBracketedPaste)
             .with_context(|| "Failed to enable bracketed paste mode")?;
 
-        if let Ok(mut saved) = SAVED_PROTOCOL_STATE.try_lock() {
-            *saved = Some(saved_state.protocol_state.clone());
-        }
-        CURRENT_ALTERNATE_SCREEN.store(
-            encode_screen_state(saved_state.protocol_state.current_alternate_screen()),
-            Ordering::SeqCst,
-        );
-        SCREEN_CHANGED.store(false, Ordering::SeqCst);
-        let screen_mode_tracker =
-            ScreenModeTracker::new(saved_state.protocol_state.current_alternate_screen());
+        let screen_mode_tracker = ScreenModeTracker::new(protocol_state.current_alternate_screen());
 
         Ok(Self {
             saved_state,
@@ -117,6 +118,7 @@ impl TerminalStateGuard {
             _needs_cleanup: true,
             pending_input: capture.pending_input,
             screen_mode_tracker,
+            protocol_state,
         })
     }
 
@@ -131,6 +133,7 @@ impl TerminalStateGuard {
             _needs_cleanup: false,
             pending_input: Vec::new(),
             screen_mode_tracker: ScreenModeTracker::new(None),
+            protocol_state: ProtocolState::default(),
         })
     }
 
@@ -175,8 +178,7 @@ impl TerminalStateGuard {
     /// outer TUI that remains on its alternate screen.
     pub(crate) fn observe_remote_output(&mut self, bytes: &[u8]) {
         if let Some(observation) = self.screen_mode_tracker.observe(bytes) {
-            self.saved_state
-                .protocol_state
+            self.protocol_state
                 .set_screen_observation(Some(observation.current), observation.changed);
             CURRENT_ALTERNATE_SCREEN.store(
                 encode_screen_state(Some(observation.current)),
@@ -203,7 +205,6 @@ impl TerminalStateGuard {
             size,
             was_alternate_screen: false,
             was_mouse_enabled: false,
-            protocol_state: ProtocolState::default(),
         })
     }
 
@@ -214,9 +215,9 @@ impl TerminalStateGuard {
 
         // Reset every terminal mode owned by the remote PTY through the same path
         // used by panic and last-resort cleanup.
-        write_terminal_cleanup(&mut std::io::stdout(), &self.saved_state.protocol_state);
+        write_terminal_cleanup(&mut std::io::stdout(), &self.protocol_state);
         CURRENT_ALTERNATE_SCREEN.store(
-            encode_screen_state(self.saved_state.protocol_state.initial_alternate_screen()),
+            encode_screen_state(self.protocol_state.initial_alternate_screen()),
             Ordering::SeqCst,
         );
         SCREEN_CHANGED.store(false, Ordering::SeqCst);
