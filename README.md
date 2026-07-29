@@ -12,6 +12,7 @@ A high-performance SSH client with **SSH-compatible syntax** for both single-hos
 
 ## Recent Updates
 
+- **v2.3.1 (2026/07/29):** Restore keyboard protocols leaked by disconnected PTY applications, preserve an outer TUI's keyboard state, raise the MSRV and Debian/Launchpad toolchain to Rust 1.96, and make Homebrew formula updates safer (#231, #232, #233, #235, #237).
 - **v2.3.0 (2026/07/18):** Roughly double bssh-server SFTP write throughput, fix the paramiko prefetch deadlock (with TCP_NODELAY), make `sftp.root`/`scp.root` chroot usable, make server SSH compression configurable, and drop the vendored `bssh-russh` fork for upstream russh 0.62.1 (#187, #212, #214, #215, #227).
 - **v2.2.3 (2026/05/25):** Sync both internal russh forks to upstream stable and patch RUSTSEC-2026-0009 (a `time` stack-exhaustion DoS), raising the minimum supported Rust to 1.88 (#207, #208).
 - **v2.2.2 (2026/05/25):** Keep idle SSH sessions alive by lowering the default `--server-alive-interval` to 30s and leaving the client inactivity timeout disabled (#206).
@@ -19,7 +20,6 @@ A high-performance SSH client with **SSH-compatible syntax** for both single-hos
 - **v2.2.0 (2026/05/18):** Collect `--password` once and share it across parallel tasks, add `BSSH_PASSWORD`, resolve all cargo-audit findings, and drop five redundant dependencies (#198, #199, #200, #201).
 - **v2.1.4 (2026/05/10):** Stream SFTP transfers in 255 KiB chunks (~160x lower memory, ~11x faster 1 GiB upload) and pipeline up to 64 concurrent requests (#195, #196, #197).
 - **v2.1.3 (2026/04/30):** Fix SCP/SFTP path doubling and chroot config, vendor `russh-sftp` with a serde_bytes perf fix (+29% upload), and forward-port unreleased upstream russh fixes (#186).
-- **v2.1.2 (2026/04/27):** Restore terminal mouse tracking state on PTY disconnect and fix release workflow issues (#190).
 
 _See [CHANGELOG.md](./CHANGELOG.md) for the complete version history._
 

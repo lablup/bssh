@@ -32,7 +32,7 @@
 //! # Example
 //!
 //! ```rust
-//! use bssh::server::filter::{FilterPolicy, FilterResult, Operation};
+//! use bssh::server::filter::{FilterPolicy, FilterResult, Operation, TransferFilter};
 //! use bssh::server::filter::pattern::GlobMatcher;
 //! use bssh::server::filter::policy::FilterRule;
 //! use std::path::Path;

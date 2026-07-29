@@ -1,3 +1,24 @@
+bssh (2.3.1-1~jammy1) jammy; urgency=medium
+
+  * v2.3.1
+  ### Added
+  - Preserve Kitty keyboard state owned by an outer TUI across
+    interactive PTY sessions (#236).
+  ### Fixed
+  - Restore ordinary keyboard input after remote PTY applications leak
+    Kitty keyboard or xterm modifyOtherKeys modes (#234).
+  - Prevent Homebrew tap updates from corrupting formula stanzas or
+    publishing checksums from failed downloads (#233).
+  ### Changed
+  - Raise the workspace MSRV and Debian/Launchpad toolchain to Rust 1.96;
+    use the rustc-release PPA for jammy, noble, and resolute (#231, #232).
+  ### Documentation
+  - Remove stale bssh-russh attribution and keep README release history
+    bounded (#230).
+  - Fix the file-transfer filter example so it compiles as a doctest.
+
+ -- Jeongkyu Shin <inureyes@gmail.com>  Wed, 29 Jul 2026 17:24:18 +0900
+
 bssh (2.3.0-1~jammy1) jammy; urgency=medium
 
   * v2.3.0
@@ -1049,4 +1070,3 @@ bssh (0.7.0-1~jammy1) jammy; urgency=medium
   None
 
  -- Jeongkyu Shin <inureyes@gmail.com>  Sat, 30 Aug 2025 08:48:19 +0900
-
