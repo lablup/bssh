@@ -22,7 +22,7 @@ use std::sync::{
 
 use anyhow::{Context, Result};
 use crossterm::{
-    event::{DisableBracketedPaste, EnableBracketedPaste},
+    event::EnableBracketedPaste,
     execute,
     terminal::{disable_raw_mode, enable_raw_mode},
 };
@@ -31,6 +31,29 @@ use crossterm::{
 /// Ensures only one cleanup attempt happens even with multiple guards
 static TERMINAL_MUTEX: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 static RAW_MODE_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Best-effort reset for terminal modes that a remote PTY application can leak.
+///
+/// Kitty keyboard mode stacks are independent for the main and alternate screens.
+/// Reset the current screen first, leave the alternate screen, and then reset the
+/// main screen. `CSI < 999 u` drains any unbalanced pushes, `CSI = 0 u` also
+/// handles implementations without a stack, and `CSI > 4 ; 0 m` disables xterm's
+/// `modifyOtherKeys` fallback.
+///
+/// This intentionally restores the ordinary shell baseline. Crossterm does not
+/// expose the current enhancement flags, and querying `/dev/tty` here would race
+/// the PTY input reader. An outer local TUI that starts bssh with enhanced keyboard
+/// reporting enabled may therefore need to re-enable its mode after bssh exits.
+const TERMINAL_CLEANUP_SEQUENCE: &[u8] = b"\x1b[?2004l\x1b[<999u\x1b[=0u\x1b[>4;0m\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l\x1b[?1049l\x1b[<999u\x1b[=0u\x1b[>4;0m\x1b[?25h";
+
+/// Emit the shared terminal reset sequence to an injectable writer.
+///
+/// Cleanup must never replace the original session error, so write and flush
+/// failures are deliberately ignored.
+fn write_terminal_cleanup(writer: &mut impl Write) {
+    let _ = writer.write_all(TERMINAL_CLEANUP_SEQUENCE);
+    let _ = writer.flush();
+}
 
 /// Terminal state information that needs to be preserved and restored
 #[derive(Debug, Clone)]
@@ -161,19 +184,9 @@ impl TerminalStateGuard {
         // Use global synchronization to prevent race conditions
         let _guard = TERMINAL_MUTEX.lock().unwrap();
 
-        // Disable bracketed paste mode
-        if let Err(e) = execute!(std::io::stdout(), DisableBracketedPaste) {
-            eprintln!("Warning: Failed to disable bracketed paste mode during cleanup: {e}");
-        }
-
-        // Best-effort: disable all mouse tracking modes that a remote program may have
-        // enabled. Each write is independent so one failure does not abort the rest.
-        // Modes: 1000 (X11), 1002 (button-event), 1003 (any-event), 1006 (SGR),
-        //        1015 (urxvt), plus restore cursor visibility and alternate screen.
-        let _ = std::io::stdout().write_all(
-            b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l\x1b[?1049l\x1b[?25h",
-        );
-        let _ = std::io::stdout().flush();
+        // Reset every terminal mode owned by the remote PTY through the same path
+        // used by panic and last-resort cleanup.
+        write_terminal_cleanup(&mut std::io::stdout());
 
         // Exit raw mode if it's globally active
         if RAW_MODE_ACTIVE.load(Ordering::SeqCst) {
@@ -203,9 +216,9 @@ impl Drop for TerminalStateGuard {
 
 /// Force terminal cleanup - can be called from anywhere to ensure terminal is restored.
 ///
-/// This is a best-effort, infallible cleanup that disables mouse tracking, resets
-/// alternate screen and cursor visibility, and exits raw mode. Each operation is
-/// performed independently so a failure in one does not prevent the rest.
+/// This is a best-effort, infallible cleanup that disables bracketed paste, enhanced
+/// keyboard reporting, and mouse tracking, resets alternate screen and cursor
+/// visibility, and exits raw mode.
 ///
 /// # Panic-safety
 ///
@@ -228,13 +241,7 @@ pub fn force_terminal_cleanup() {
     // operations below are individually safe.
     let _guard = TERMINAL_MUTEX.try_lock().ok();
 
-    // Best-effort: disable all mouse tracking modes, restore cursor, and leave alternate
-    // screen. Written as a single atomic blob to minimize partial-state risk.
-    // Modes: 1000 (X11), 1002 (button-event), 1003 (any-event), 1006 (SGR),
-    //        1015 (urxvt); then restore cursor visibility and normal screen buffer.
-    let _ = std::io::stdout()
-        .write_all(b"\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l\x1b[?1049l\x1b[?25h");
-    let _ = std::io::stdout().flush();
+    write_terminal_cleanup(&mut std::io::stdout());
 
     if RAW_MODE_ACTIVE.load(Ordering::SeqCst) {
         let _ = disable_raw_mode();
@@ -343,18 +350,64 @@ mod tests {
     //     must be carefully ordered or marked #[serial].
     //
     // What *can* be reliably tested here:
-    //   1. Idempotency: calling force_terminal_cleanup() twice does not panic.
-    //   2. Poisoned-mutex resilience: the `try_lock().ok()` pattern correctly
+    //   1. Exact cleanup bytes and ordering through an injectable writer.
+    //   2. Idempotency: calling force_terminal_cleanup() twice does not panic.
+    //   3. Poisoned-mutex resilience: the `try_lock().ok()` pattern correctly
     //      yields None (rather than panicking) when the mutex is poisoned.
     //      Verified using a local Mutex so the global TERMINAL_MUTEX is never
     //      poisoned, keeping other tests unaffected.
-    //   3. Held-mutex resilience: `try_lock()` returns WouldBlock (not a
+    //   4. Held-mutex resilience: `try_lock()` returns WouldBlock (not a
     //      deadlock) when a lock is already held. Verified using a local Mutex
     //      for the same isolation reason.
-    //
-    // Manual reproduction of the actual terminal fix (mouse tracking escape
-    // sequences) requires a real TTY (vim/tmux) and cannot be automated here.
     // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_terminal_cleanup_writes_exact_mode_reset_sequence() {
+        let mut output = Vec::new();
+
+        write_terminal_cleanup(&mut output);
+
+        assert_eq!(
+            output,
+            b"\x1b[?2004l\
+              \x1b[<999u\x1b[=0u\x1b[>4;0m\
+              \x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l\
+              \x1b[?1049l\
+              \x1b[<999u\x1b[=0u\x1b[>4;0m\
+              \x1b[?25h"
+        );
+    }
+
+    #[test]
+    fn test_terminal_cleanup_writer_is_idempotent() {
+        let mut output = Vec::new();
+
+        write_terminal_cleanup(&mut output);
+        write_terminal_cleanup(&mut output);
+
+        assert_eq!(output.len(), TERMINAL_CLEANUP_SEQUENCE.len() * 2);
+        assert_eq!(
+            &output[..TERMINAL_CLEANUP_SEQUENCE.len()],
+            &output[TERMINAL_CLEANUP_SEQUENCE.len()..]
+        );
+    }
+
+    #[test]
+    fn test_terminal_cleanup_ignores_writer_failures() {
+        struct FailingWriter;
+
+        impl Write for FailingWriter {
+            fn write(&mut self, _buffer: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("intentional write failure"))
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::Error::other("intentional flush failure"))
+            }
+        }
+
+        write_terminal_cleanup(&mut FailingWriter);
+    }
 
     /// Calling force_terminal_cleanup() twice in succession must not panic.
     ///
