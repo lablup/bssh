@@ -21,8 +21,14 @@ enum ParserState {
     Ground,
     Escape,
     Csi,
-    String,
-    StringEscape,
+    String(StringKind),
+    StringEscape(StringKind),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StringKind {
+    Osc,
+    Other,
 }
 
 #[derive(Debug)]
@@ -41,8 +47,9 @@ impl ScreenModeTracker {
 
     /// Return the last DEC 1049 state explicitly selected by delivered output.
     ///
-    /// OSC, DCS, APC, PM, and SOS payloads are skipped until BEL or ST so an
-    /// escape-looking payload cannot be mistaken for an executed CSI command.
+    /// OSC payloads are skipped until BEL or ST; DCS, APC, PM, and SOS payloads
+    /// require ST. This prevents escape-looking payload data from being
+    /// mistaken for an executed CSI command.
     pub(crate) fn observe(&mut self, input: &[u8]) -> Option<bool> {
         let mut current = None;
 
@@ -55,8 +62,8 @@ impl ScreenModeTracker {
                         current = Some(is_set);
                     }
                 }
-                ParserState::String => self.consume_string(byte),
-                ParserState::StringEscape => self.consume_string_escape(byte),
+                ParserState::String(kind) => self.consume_string(kind, byte),
+                ParserState::StringEscape(kind) => self.consume_string_escape(kind, byte),
             }
         }
 
@@ -64,19 +71,19 @@ impl ScreenModeTracker {
     }
 
     fn consume_ground(&mut self, byte: u8) {
-        match byte {
-            b'\x1b' => self.state = ParserState::Escape,
-            0x9b => self.start_csi(),
-            0x90 | 0x98 | 0x9d | 0x9e | 0x9f => self.state = ParserState::String,
-            _ => {}
+        if byte == b'\x1b' {
+            self.state = ParserState::Escape;
         }
     }
 
     fn consume_escape(&mut self, byte: u8) {
         match byte {
             b'[' => self.start_csi(),
-            // DCS, SOS, OSC, PM, and APC.
-            b'P' | b'X' | b']' | b'^' | b'_' => self.state = ParserState::String,
+            b']' => self.state = ParserState::String(StringKind::Osc),
+            // DCS, SOS, PM, and APC.
+            b'P' | b'X' | b'^' | b'_' => {
+                self.state = ParserState::String(StringKind::Other);
+            }
             b'\x1b' => {}
             _ => self.state = ParserState::Ground,
         }
@@ -90,7 +97,7 @@ impl ScreenModeTracker {
     fn consume_csi(&mut self, byte: u8) -> Option<bool> {
         match byte {
             // CAN and SUB cancel a control sequence.
-            0x18 | 0x1a | 0x9c => {
+            0x18 | 0x1a => {
                 self.csi.clear();
                 self.state = ParserState::Ground;
                 return None;
@@ -118,19 +125,20 @@ impl ScreenModeTracker {
         selection
     }
 
-    fn consume_string(&mut self, byte: u8) {
+    fn consume_string(&mut self, kind: StringKind, byte: u8) {
         match byte {
-            b'\x07' | 0x9c => self.state = ParserState::Ground,
-            b'\x1b' => self.state = ParserState::StringEscape,
+            b'\x07' if kind == StringKind::Osc => self.state = ParserState::Ground,
+            b'\x1b' => self.state = ParserState::StringEscape(kind),
             _ => {}
         }
     }
 
-    fn consume_string_escape(&mut self, byte: u8) {
+    fn consume_string_escape(&mut self, kind: StringKind, byte: u8) {
         match byte {
-            b'\\' | b'\x07' | 0x9c => self.state = ParserState::Ground,
+            b'\\' => self.state = ParserState::Ground,
+            b'\x07' if kind == StringKind::Osc => self.state = ParserState::Ground,
             b'\x1b' => {}
-            _ => self.state = ParserState::String,
+            _ => self.state = ParserState::String(kind),
         }
     }
 }
@@ -181,14 +189,27 @@ mod tests {
     }
 
     #[test]
-    fn skips_apc_pm_and_sos_until_fragmented_st() {
+    fn non_osc_strings_ignore_bel_and_embedded_1049_until_fragmented_st() {
         let mut tracker = ScreenModeTracker::new();
 
-        assert_eq!(tracker.observe(b"\x1b_payload\x1b[?1049h\x1b"), None);
-        assert_eq!(tracker.observe(b"\\"), None);
-        assert_eq!(tracker.observe(b"\x1b^payload\x1b[?1049l\x1b\\"), None);
-        assert_eq!(tracker.observe(b"\x1bXpayload\x1b[?1049h\x07"), None);
+        for introducer in [
+            b"\x1bP".as_slice(),
+            b"\x1b_".as_slice(),
+            b"\x1b^".as_slice(),
+            b"\x1bX".as_slice(),
+        ] {
+            assert_eq!(tracker.observe(introducer), None);
+            assert_eq!(tracker.observe(b"payload\x07\x1b[?1049h\x1b"), None);
+            assert_eq!(tracker.observe(b"\\"), None);
+        }
         assert_eq!(tracker.observe(b"\x1b[?1049l"), Some(false));
+    }
+
+    #[test]
+    fn osc_bel_terminates_before_following_1049() {
+        let mut tracker = ScreenModeTracker::new();
+
+        assert_eq!(tracker.observe(b"\x1b]0;title\x07\x1b[?1049h"), Some(true));
     }
 
     #[test]
@@ -202,11 +223,10 @@ mod tests {
     }
 
     #[test]
-    fn supports_eight_bit_csi_strings_and_st() {
+    fn does_not_treat_utf8_c1_continuation_as_csi() {
         let mut tracker = ScreenModeTracker::new();
 
-        assert_eq!(tracker.observe(b"\x9dtitle\x9b?1049h\x9c"), None);
-        assert_eq!(tracker.observe(b"\x90payload\x9b?1049l\x9c"), None);
-        assert_eq!(tracker.observe(b"\x9b?1049h"), Some(true));
+        assert_eq!(tracker.observe(b"\xc2\x9b?1049h"), None);
+        assert_eq!(tracker.observe(b"\x9b?1049h"), None);
     }
 }
