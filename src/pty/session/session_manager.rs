@@ -16,8 +16,8 @@
 
 use super::constants::*;
 use super::escape_filter::EscapeSequenceFilter;
-use super::local_escape::{LocalAction, LocalEscapeDetector};
-use super::raw_input::RawInputReader;
+use super::output_delivery::deliver_filtered_output;
+use super::raw_input_task;
 use super::terminal_modes::configure_terminal_modes;
 use crate::pty::{
     PtyConfig, PtyMessage, PtyState,
@@ -156,7 +156,9 @@ impl PtySession {
         }
 
         // Set up terminal state guard
-        self.terminal_guard = Some(TerminalStateGuard::new()?);
+        let mut terminal_guard = TerminalStateGuard::new()?;
+        let pending_input = terminal_guard.take_pending_input();
+        self.terminal_guard = Some(terminal_guard);
 
         // Enable mouse support if requested
         if self.config.enable_mouse {
@@ -226,70 +228,7 @@ impl PtySession {
         // NOTE: TerminalStateGuard has already called enable_raw_mode() at this point,
         // so stdin.read() will return raw bytes without line buffering
         let input_task = tokio::task::spawn_blocking(move || {
-            let mut reader = RawInputReader::new();
-            let mut buffer = [0u8; 1024];
-            let mut escape_detector = LocalEscapeDetector::new();
-
-            loop {
-                if *cancel_for_input.borrow() {
-                    break;
-                }
-
-                let poll_timeout = Duration::from_millis(INPUT_POLL_TIMEOUT_MS);
-
-                match reader.poll(poll_timeout) {
-                    Ok(true) => {
-                        match reader.read(&mut buffer) {
-                            Ok(0) => {
-                                // EOF - user closed stdin
-                                tracing::debug!("EOF received on stdin");
-                                break;
-                            }
-                            Ok(n) => {
-                                // Check for local escape sequences (e.g., ~. for disconnect)
-                                if let Some(action) = escape_detector.process(&buffer[..n]) {
-                                    match action {
-                                        LocalAction::Disconnect => {
-                                            tracing::debug!("Disconnect escape sequence detected");
-                                            let _ = input_tx.try_send(PtyMessage::Terminate);
-                                            break;
-                                        }
-                                        LocalAction::Passthrough(data) => {
-                                            // Send filtered data
-                                            if input_tx
-                                                .try_send(PtyMessage::LocalInput(data))
-                                                .is_err()
-                                            {
-                                                break;
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    // Pass raw bytes through as-is
-                                    // This includes arrow keys, function keys, terminal responses, etc.
-                                    let data = smallvec::SmallVec::from_slice(&buffer[..n]);
-                                    if input_tx.try_send(PtyMessage::LocalInput(data)).is_err() {
-                                        break;
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                let _ = input_tx
-                                    .try_send(PtyMessage::Error(format!("Input error: {e}")));
-                                break;
-                            }
-                        }
-                    }
-                    Ok(false) => {
-                        // Timeout - continue polling
-                        continue;
-                    }
-                    Err(e) => {
-                        let _ = input_tx.try_send(PtyMessage::Error(format!("Poll error: {e}")));
-                        break;
-                    }
-                }
-            }
+            raw_input_task::run(input_tx, cancel_for_input, pending_input);
         });
 
         // We'll integrate channel reading into the main loop since russh Channel doesn't clone
@@ -317,27 +256,37 @@ impl PtySession {
                             // Filter terminal escape sequence responses before display
                             // This prevents raw XTGETTCAP, DA1/DA2/DA3 responses from appearing
                             // on screen when running applications like Neovim
-                            let filtered_data = self.escape_filter.filter(data);
-                            if !filtered_data.is_empty() {
-                                if let Err(e) = io::stdout().write_all(&filtered_data) {
-                                    tracing::error!("Failed to write to stdout: {e}");
-                                    should_terminate = true;
-                                } else {
-                                    let _ = io::stdout().flush();
-                                }
+                            let terminal_guard = &mut self.terminal_guard;
+                            if let Err(e) = deliver_filtered_output(
+                                &mut self.escape_filter,
+                                &mut io::stdout(),
+                                data,
+                                |delivered| {
+                                    if let Some(guard) = terminal_guard.as_mut() {
+                                        guard.observe_remote_output(delivered);
+                                    }
+                                },
+                            ) {
+                                tracing::error!("Failed to write to stdout: {e}");
+                                should_terminate = true;
                             }
                         }
                         Some(ChannelMsg::ExtendedData { ref data, ext }) => {
                             if ext == 1 {
                                 // stderr - also filter escape sequences
-                                let filtered_data = self.escape_filter.filter(data);
-                                if !filtered_data.is_empty() {
-                                    if let Err(e) = io::stdout().write_all(&filtered_data) {
-                                        tracing::error!("Failed to write stderr to stdout: {e}");
-                                        should_terminate = true;
-                                    } else {
-                                        let _ = io::stdout().flush();
-                                    }
+                                let terminal_guard = &mut self.terminal_guard;
+                                if let Err(e) = deliver_filtered_output(
+                                    &mut self.escape_filter,
+                                    &mut io::stdout(),
+                                    data,
+                                    |delivered| {
+                                        if let Some(guard) = terminal_guard.as_mut() {
+                                            guard.observe_remote_output(delivered);
+                                        }
+                                    },
+                                ) {
+                                    tracing::error!("Failed to write stderr to stdout: {e}");
+                                    should_terminate = true;
                                 }
                             }
                         }
@@ -381,14 +330,19 @@ impl PtySession {
                             // Apply escape filter for consistency with SSH channel data
                             // This path may receive data from other sources that could
                             // contain terminal responses that shouldn't be displayed
-                            let filtered_data = self.escape_filter.filter(&data);
-                            if !filtered_data.is_empty() {
-                                if let Err(e) = io::stdout().write_all(&filtered_data) {
-                                    tracing::error!("Failed to write to stdout: {e}");
-                                    should_terminate = true;
-                                } else {
-                                    let _ = io::stdout().flush();
-                                }
+                            let terminal_guard = &mut self.terminal_guard;
+                            if let Err(e) = deliver_filtered_output(
+                                &mut self.escape_filter,
+                                &mut io::stdout(),
+                                &data,
+                                |delivered| {
+                                    if let Some(guard) = terminal_guard.as_mut() {
+                                        guard.observe_remote_output(delivered);
+                                    }
+                                },
+                            ) {
+                                tracing::error!("Failed to write to stdout: {e}");
+                                should_terminate = true;
                             }
                         }
                         Some(PtyMessage::Resize { width, height }) => {
