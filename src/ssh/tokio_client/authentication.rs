@@ -196,6 +196,10 @@ pub enum ServerCheckMethod {
     DefaultKnownHostsFile,
     /// Use a specific known_hosts file path
     KnownHostsFile(String),
+    /// Trust On First Use against a specific known_hosts file path:
+    /// matching keys are accepted, unknown hosts are recorded and accepted,
+    /// changed keys are rejected (OpenSSH `StrictHostKeyChecking=accept-new`)
+    AcceptNewKnownHostsFile(String),
 }
 
 impl ServerCheckMethod {
@@ -212,6 +216,11 @@ impl ServerCheckMethod {
     /// Convenience method to create a [`ServerCheckMethod`] from a string literal.
     pub fn with_known_hosts_file(known_hosts_file: &str) -> Self {
         Self::KnownHostsFile(known_hosts_file.to_string())
+    }
+
+    /// Convenience method to create a [`ServerCheckMethod`] from a string literal.
+    pub fn with_accept_new_known_hosts_file(known_hosts_file: &str) -> Self {
+        Self::AcceptNewKnownHostsFile(known_hosts_file.to_string())
     }
 }
 

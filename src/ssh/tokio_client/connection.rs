@@ -541,25 +541,40 @@ impl Handler for ClientHandler {
                 Ok(pk == *server_public_key)
             }
             ServerCheckMethod::KnownHostsFile(known_hosts_path) => {
-                let result = russh::keys::check_known_hosts_path(
+                russh::keys::check_known_hosts_path(
                     &self.hostname,
                     self.host.port(),
                     server_public_key,
                     known_hosts_path,
                 )
-                .map_err(|_| super::Error::ServerCheckFailed)?;
-
-                Ok(result)
+                .map_err(|e| {
+                    super::host_verification::map_known_hosts_error(
+                        &self.hostname,
+                        server_public_key,
+                        known_hosts_path,
+                        e,
+                    )
+                })
             }
             ServerCheckMethod::DefaultKnownHostsFile => {
-                let result = russh::keys::check_known_hosts(
+                russh::keys::check_known_hosts(&self.hostname, self.host.port(), server_public_key)
+                    .map_err(|e| {
+                        super::host_verification::map_known_hosts_error(
+                            &self.hostname,
+                            server_public_key,
+                            "~/.ssh/known_hosts",
+                            e,
+                        )
+                    })
+            }
+            ServerCheckMethod::AcceptNewKnownHostsFile(known_hosts_path) => {
+                super::host_verification::verify_accept_new(
                     &self.hostname,
                     self.host.port(),
                     server_public_key,
+                    known_hosts_path,
                 )
-                .map_err(|_| super::Error::ServerCheckFailed)?;
-
-                Ok(result)
+                .await
             }
         }
     }

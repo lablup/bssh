@@ -23,6 +23,10 @@ pub enum Error {
     CommandDidntExit,
     #[error("Server check failed")]
     ServerCheckFailed,
+    #[error(
+        "Host key for '{host}' has changed and no longer matches the known_hosts entry at line {line}"
+    )]
+    HostKeyChanged { host: String, line: usize },
     #[error("SSH error occurred: {0}")]
     SshError(#[from] russh::Error),
     #[error("Send error")]

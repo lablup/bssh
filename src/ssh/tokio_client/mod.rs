@@ -21,6 +21,7 @@ pub mod connection;
 mod connection_tests;
 pub mod error;
 pub mod file_transfer;
+mod host_verification;
 mod to_socket_addrs_with_hostname;
 
 // Re-export public API types for backward compatibility

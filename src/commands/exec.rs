@@ -99,8 +99,7 @@ async fn execute_command_with_forwarding(params: ExecuteCommandParams<'_>) -> Re
     let mut manager = ForwardingManager::new(forwarding_config);
 
     // Create SSH client for forwarding
-    use crate::ssh::known_hosts::StrictHostKeyChecking;
-    use crate::ssh::tokio_client::{AuthMethod, Client, ServerCheckMethod};
+    use crate::ssh::tokio_client::{AuthMethod, Client};
 
     // Determine authentication method
     let auth_method = if params.use_agent {
@@ -154,12 +153,12 @@ async fn execute_command_with_forwarding(params: ExecuteCommandParams<'_>) -> Re
         AuthMethod::with_key_file(key_path, None)
     };
 
-    // Determine server check method
-    let server_check = match params.strict_mode {
-        StrictHostKeyChecking::Yes => ServerCheckMethod::DefaultKnownHostsFile,
-        StrictHostKeyChecking::No => ServerCheckMethod::NoCheck,
-        StrictHostKeyChecking::AcceptNew => ServerCheckMethod::DefaultKnownHostsFile, // Could be enhanced
-    };
+    // Determine server check method through the shared mapping so the
+    // port-forwarding path gets the same TOFU behavior as every other
+    // connection path (#239). The previous hand-rolled match sent accept-new
+    // through strict default-known_hosts checking, which rejected unknown
+    // hosts instead of recording them.
+    let server_check = crate::ssh::known_hosts::get_check_method(params.strict_mode);
 
     // Create SSH client
     let ssh_client = Arc::new(

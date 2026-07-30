@@ -746,6 +746,11 @@ fn format_ssh_error(context: &str, e: &crate::ssh::tokio_client::Error) -> Strin
                 "{context} failed: Host key verification failed, the server's host key is not trusted"
             )
         }
+        crate::ssh::tokio_client::Error::HostKeyChanged { host, .. } => {
+            format!(
+                "{context} failed: Possible man-in-the-middle attack, remove the old known_hosts entry with 'ssh-keygen -R {host}' only if the key change is expected"
+            )
+        }
         crate::ssh::tokio_client::Error::PasswordWrong => {
             format!("{context} failed: Password authentication rejected")
         }
@@ -822,6 +827,10 @@ mod tests {
             crate::ssh::tokio_client::Error::AgentConnectionFailed,
             crate::ssh::tokio_client::Error::AgentNoIdentities,
             crate::ssh::tokio_client::Error::AgentAuthenticationFailed,
+            crate::ssh::tokio_client::Error::HostKeyChanged {
+                host: "node1.example.com".to_string(),
+                line: 3,
+            },
         ] {
             let detailed = format_ssh_error(&context, &e);
             assert!(
@@ -829,6 +838,36 @@ mod tests {
                 "context message must not end with a period, got: {detailed}"
             );
         }
+    }
+
+    #[test]
+    fn test_format_ssh_error_host_key_changed_adds_guidance_without_echo() {
+        // The changed-key context layer must point at the offending entry's
+        // removal command without restating the cause's own wording, which
+        // would render twice through anyhow's `{:#}` form (#239, #238).
+        let e = crate::ssh::tokio_client::Error::HostKeyChanged {
+            host: "node1.example.com".to_string(),
+            line: 7,
+        };
+        let cause_text = e.to_string();
+        let context = "SFTP upload to host:22".to_string();
+
+        let detailed = format_ssh_error(&context, &e);
+        assert!(
+            detailed.contains("ssh-keygen -R node1.example.com"),
+            "guidance must include the removal command, got: {detailed}"
+        );
+        assert!(
+            !detailed.contains("has changed and no longer matches"),
+            "context must not restate the cause, got: {detailed}"
+        );
+
+        let rendered = format!("{:#}", anyhow::Error::new(e).context(detailed));
+        assert_eq!(
+            rendered.matches(cause_text.as_str()).count(),
+            1,
+            "cause text should appear exactly once, got: {rendered}"
+        );
     }
 
     #[test]

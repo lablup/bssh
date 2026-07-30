@@ -37,11 +37,12 @@
 
 **Security Implementation:**
 - Host key verification with three modes:
- - `StrictHostKeyChecking::Yes` - Strict verification using known_hosts
+ - `StrictHostKeyChecking::Yes` - Strict verification using known_hosts; a missing file behaves as an empty one, so unknown hosts are rejected
  - `StrictHostKeyChecking::No` - Skip all verification
- - `StrictHostKeyChecking::AcceptNew` - TOFU mode
+ - `StrictHostKeyChecking::AcceptNew` - TOFU mode: keys matching their known_hosts entry are accepted, unknown hosts are recorded in known_hosts and accepted, changed keys are rejected with an OpenSSH-style warning
 - CLI flag `--strict-host-key-checking` with default "accept-new"
-- Uses system known_hosts file (~/.ssh/known_hosts)
+- Uses system known_hosts file (~/.ssh/known_hosts); accept-new creates it on first recording (directory 0700, file 0600) and serializes concurrent first-time recordings behind a process-wide lock so parallel connects to the same new host produce a single entry
+- Changed keys surface as a dedicated `HostKeyChanged` error (host, offending line) instead of a generic check failure, in strict and accept-new modes alike
 - SSH agent authentication with auto-detection
 
 ### 4.0.1 Command Output Streaming Infrastructure
