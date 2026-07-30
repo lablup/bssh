@@ -18,6 +18,7 @@ use anyhow::Result;
 use owo_colors::OwoColorize;
 use std::sync::Arc;
 
+use crate::commands::error_format::format_connection_error;
 use crate::pty::PtyManager;
 
 use super::super::interactive_signal::{
@@ -61,7 +62,11 @@ impl InteractiveCommand {
                     connected_nodes.push(node);
                 }
                 Err(e) => {
-                    eprintln!("✗ Failed to connect to {}: {}", node.to_string().red(), e);
+                    eprintln!(
+                        "✗ Failed to connect to {}: {}",
+                        node.to_string().red(),
+                        format_connection_error(&e)
+                    );
                 }
             }
         }
@@ -130,7 +135,11 @@ impl InteractiveCommand {
                     sessions.push(session);
                 }
                 Err(e) => {
-                    eprintln!("✗ Failed to connect to {}: {}", node.to_string().red(), e);
+                    eprintln!(
+                        "✗ Failed to connect to {}: {}",
+                        node.to_string().red(),
+                        format_connection_error(&e)
+                    );
                 }
             }
         }
