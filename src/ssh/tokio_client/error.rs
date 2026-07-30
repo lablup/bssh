@@ -23,10 +23,18 @@ pub enum Error {
     CommandDidntExit,
     #[error("Server check failed")]
     ServerCheckFailed,
+    /// `port` is not interpolated into the `Display` text, but carrying it is
+    /// what lets the client-facing messages name the actual known_hosts entry
+    /// (`[host]:port` for non-standard ports) in their `ssh-keygen -R`
+    /// remediation hint.
     #[error(
         "Host key for '{host}' has changed and no longer matches the known_hosts entry at line {line}"
     )]
-    HostKeyChanged { host: String, line: usize },
+    HostKeyChanged {
+        host: String,
+        port: u16,
+        line: usize,
+    },
     #[error("SSH error occurred: {0}")]
     SshError(#[from] russh::Error),
     #[error("Send error")]

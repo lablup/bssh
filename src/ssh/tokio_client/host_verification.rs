@@ -47,10 +47,10 @@ static KNOWN_HOSTS_LOCK: Mutex<()> = Mutex::const_new(());
 
 /// Verify a server key in accept-new (TOFU) mode against `known_hosts_path`.
 ///
-/// Returns `Ok(true)` when the key matches an existing entry or the host was
-/// unknown (in which case the key is recorded first). Returns
-/// [`super::Error::HostKeyChanged`] when an entry for the host exists with a
-/// different key, without modifying the file.
+/// Returns `Ok(true)` when the key matches an existing entry or the host had no
+/// entry at all (in which case the key is recorded first). Returns
+/// [`super::Error::HostKeyChanged`] when any entry for the host already exists
+/// and does not match the offered key, without modifying the file.
 pub(super) async fn verify_accept_new(
     hostname: &str,
     port: u16,
@@ -61,15 +61,60 @@ pub(super) async fn verify_accept_new(
 
     match russh::keys::check_known_hosts_path(hostname, port, server_public_key, known_hosts_path) {
         Ok(true) => Ok(true),
+        // `check_known_hosts_path` reports `Err(KeyChanged)` only when an entry
+        // for the host exists *with the same key algorithm* but a different
+        // key. A hostname whose entries are all of some other algorithm
+        // therefore also lands here, indistinguishable from a hostname with no
+        // entry at all, so "unknown host" cannot be inferred from this arm
+        // alone; the entries for the host have to be looked at directly.
         Ok(false) => {
-            // Unknown host: trust on first use. A missing known_hosts file
-            // also lands here because russh treats an unreadable file as
-            // empty; `learn_known_hosts_path` creates it on demand.
-            record_host_key(hostname, port, server_public_key, known_hosts_path);
-            Ok(true)
+            match russh::keys::known_hosts::known_host_keys_path(hostname, port, known_hosts_path) {
+                // Unreadable or malformed known_hosts. `check_known_hosts_path`
+                // parses the same lines, so it would normally have failed first;
+                // failing closed here keeps the fallthrough from recording.
+                Err(e) => Err(map_known_hosts_error(
+                    hostname,
+                    port,
+                    server_public_key,
+                    known_hosts_path,
+                    e,
+                )),
+                Ok(existing) => match existing.first() {
+                    // The host is pinned, just under a different key algorithm.
+                    // Recording the offered key alongside the existing entry would
+                    // hand an active man-in-the-middle a complete bypass of
+                    // pinning: SSH negotiation selects the first host key
+                    // algorithm on the client's list that the server also
+                    // supports, so an attacker who advertises support for only an
+                    // algorithm the real host has not used yet gets to choose that
+                    // algorithm and would then be trusted on "first" use. OpenSSH
+                    // resists this by reordering its host key algorithm proposal
+                    // per host to prefer already-known types
+                    // (`order_hostkeyalgs`), which russh cannot do per host, so the
+                    // protection has to live in this check: an existing entry that
+                    // does not match is treated as a changed key, reported against
+                    // the first conflicting line.
+                    Some(&(line, _)) => Err(map_known_hosts_error(
+                        hostname,
+                        port,
+                        server_public_key,
+                        known_hosts_path,
+                        russh::keys::Error::KeyChanged { line },
+                    )),
+                    // Genuinely unknown host: trust on first use. A missing
+                    // known_hosts file also lands here because russh treats an
+                    // unreadable file as empty; `learn_known_hosts_path` creates it
+                    // on demand.
+                    None => {
+                        record_host_key(hostname, port, server_public_key, known_hosts_path);
+                        Ok(true)
+                    }
+                },
+            }
         }
         Err(e) => Err(map_known_hosts_error(
             hostname,
+            port,
             server_public_key,
             known_hosts_path,
             e,
@@ -87,15 +132,23 @@ pub(super) async fn verify_accept_new(
 /// check methods so strict mode reports changed keys just as clearly.
 pub(super) fn map_known_hosts_error(
     hostname: &str,
+    port: u16,
     server_public_key: &PublicKey,
     known_hosts_display: &str,
     err: russh::keys::Error,
 ) -> super::Error {
     match err {
         russh::keys::Error::KeyChanged { line } => {
-            print_host_key_changed_warning(hostname, server_public_key, known_hosts_display, line);
+            print_host_key_changed_warning(
+                hostname,
+                port,
+                server_public_key,
+                known_hosts_display,
+                line,
+            );
             super::Error::HostKeyChanged {
                 host: hostname.to_string(),
+                port,
                 line,
             }
         }
@@ -151,7 +204,7 @@ fn record_host_key(
 /// The host as it appears in the known_hosts entry: `[host]:port` for
 /// non-standard ports, the bare hostname otherwise. Mirrors the convention
 /// `learn_known_hosts_path` writes and `check_known_hosts_path` matches.
-fn known_hosts_entry_name(hostname: &str, port: u16) -> String {
+pub(crate) fn known_hosts_entry_name(hostname: &str, port: u16) -> String {
     if port == 22 {
         hostname.to_string()
     } else {
@@ -199,12 +252,20 @@ fn algorithm_display_name(key: &PublicKey) -> String {
 /// a remediation hint. The conflicting entry is never modified.
 fn print_host_key_changed_warning(
     hostname: &str,
+    port: u16,
     server_public_key: &PublicKey,
     known_hosts_display: &str,
     line: usize,
 ) {
     let algo = algorithm_display_name(server_public_key);
     let fingerprint = server_public_key.fingerprint(HashAlg::Sha256);
+    // The removal command names the entry as known_hosts actually records it,
+    // so it works for non-standard ports: `ssh-keygen -R hostname` matches
+    // nothing when the entry is `[hostname]:port`. Both arguments are double
+    // quoted because an unquoted `[host]:port` is an unmatched glob that zsh
+    // refuses to run ("no matches found"), and because the resolved
+    // known_hosts path may contain spaces.
+    let entry_name = known_hosts_entry_name(hostname, port);
     eprintln!(
         "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n\
          @    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\n\
@@ -218,7 +279,7 @@ fn print_host_key_changed_warning(
          Add correct host key in {known_hosts_display} to get rid of this message.\n\
          Offending key in {known_hosts_display}:{line}\n\
          If the key change is expected, remove the old entry with:\n\
-         \x20 ssh-keygen -R '{hostname}'"
+         \x20 ssh-keygen -f \"{known_hosts_display}\" -R \"{entry_name}\""
     );
 }
 
@@ -234,6 +295,26 @@ mod tests {
     fn generate_key() -> PrivateKey {
         PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)
             .expect("ed25519 key generation should not fail")
+    }
+
+    /// A fixed RSA public key, used wherever a test needs a key of a *different*
+    /// algorithm than [`generate_key`]'s ED25519.
+    ///
+    /// This is a checked-in fixture rather than `PrivateKey::random(..,
+    /// Algorithm::Rsa { .. })` because ssh-key always generates 4096-bit RSA and
+    /// the pure-Rust prime search costs minutes in an unoptimized test build.
+    /// Only the public half is ever needed: both `verify_accept_new` and
+    /// `learn_known_hosts_path` take a `&PublicKey`.
+    const RSA_PUBLIC_KEY_FIXTURE: &str = "AAAAB3NzaC1yc2EAAAADAQABAAABAQDHQLu1Tz0J6aMlXcWUot3RKzgkfGen5V0tlCTDCmvUsqdkNZyKjbXLz725KrF8D4KZadci68LKgJ1oqyMKnjFRH40l3JMlNUQaWSo7wROStyax3cyJB+h//z9l8BB/6diq2JZk1UOl0DflsFtKc1p0KgmUhG6hY/Gu8CZQx8L1Y0N2SC1L4LRgx0gYvGt3MisAyvjl5Hah2d3GVi+PS9Jb2Ckmfrr4JQ3BEO0x4vhJWUGn2D1Nh5asTIvW/7v5k6DfkUWY8unQv5Wu/aEOC9NfuIWX8dS5mClvm8g8HVZ7gXW7zwvCq5a7cKn3IggMehzdTG1nN/dtLUCh3FTJt7iV";
+
+    fn rsa_public_key() -> PublicKey {
+        let key = russh::keys::parse_public_key_base64(RSA_PUBLIC_KEY_FIXTURE)
+            .expect("the RSA fixture must parse");
+        assert!(
+            matches!(key.algorithm(), Algorithm::Rsa { .. }),
+            "the fixture must be an RSA key so it differs from generate_key()"
+        );
+        key
     }
 
     /// Non-empty known_hosts lines. `learn_known_hosts_path` prefixes its
@@ -308,8 +389,9 @@ mod tests {
         let result =
             verify_accept_new("node1.example.com", 22, imposter.public_key(), &path_str).await;
         match result {
-            Err(Error::HostKeyChanged { host, line }) => {
+            Err(Error::HostKeyChanged { host, port, line }) => {
                 assert_eq!(host, "node1.example.com");
+                assert_eq!(port, 22);
                 assert!(line > 0);
             }
             other => panic!("expected HostKeyChanged, got {other:?}"),
@@ -320,6 +402,67 @@ mod tests {
             recorded,
             "the conflicting entry must not be overwritten or appended to"
         );
+    }
+
+    #[tokio::test]
+    async fn test_accept_new_rejects_alternate_algorithm_key_for_known_host() {
+        let (_dir, path, path_str) = temp_known_hosts();
+        let pinned = generate_key();
+
+        let result =
+            verify_accept_new("node1.example.com", 22, pinned.public_key(), &path_str).await;
+        assert!(matches!(result, Ok(true)));
+        let recorded = entry_lines(&path);
+        assert_eq!(recorded.len(), 1, "the ED25519 key must be pinned first");
+
+        // The host is pinned, just not with an RSA key, and russh's checker
+        // reports a changed key only when the algorithms match. This case used
+        // to be indistinguishable from a first use, so the offered key was
+        // appended next to the existing entry and accepted, which let an
+        // attacker who advertises support for only an algorithm the real host
+        // has not used yet bypass pinning entirely.
+        let result = verify_accept_new("node1.example.com", 22, &rsa_public_key(), &path_str).await;
+        match result {
+            Err(Error::HostKeyChanged { host, port, line }) => {
+                assert_eq!(host, "node1.example.com");
+                assert_eq!(port, 22);
+                assert!(line > 0);
+            }
+            other => {
+                panic!("expected HostKeyChanged for an alternate-algorithm key, got {other:?}")
+            }
+        }
+
+        assert_eq!(
+            entry_lines(&path),
+            recorded,
+            "no second entry may be appended for an already-pinned host"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_changed_key_error_carries_connection_port() {
+        // The client-facing guidance messages build `ssh-keygen -R
+        // "[host]:port"` out of this port, so it has to be the port the
+        // connection actually used rather than a default 22.
+        let (_dir, _path, path_str) = temp_known_hosts();
+        let original = generate_key();
+        let imposter = generate_key();
+
+        let result =
+            verify_accept_new("node1.example.com", 2222, original.public_key(), &path_str).await;
+        assert!(matches!(result, Ok(true)));
+
+        let result =
+            verify_accept_new("node1.example.com", 2222, imposter.public_key(), &path_str).await;
+        match result {
+            Err(Error::HostKeyChanged { host, port, line }) => {
+                assert_eq!(host, "node1.example.com");
+                assert_eq!(port, 2222, "the error must carry the connection port");
+                assert!(line > 0);
+            }
+            other => panic!("expected HostKeyChanged, got {other:?}"),
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -428,13 +571,15 @@ mod tests {
 
         let err = map_known_hosts_error(
             "node1.example.com",
+            22,
             key.public_key(),
             "/tmp/known_hosts",
             russh::keys::Error::KeyChanged { line: 7 },
         );
         match err {
-            Error::HostKeyChanged { host, line } => {
+            Error::HostKeyChanged { host, port, line } => {
                 assert_eq!(host, "node1.example.com");
+                assert_eq!(port, 22);
                 assert_eq!(line, 7);
             }
             other => panic!("expected HostKeyChanged, got {other:?}"),
@@ -442,6 +587,7 @@ mod tests {
 
         let err = map_known_hosts_error(
             "node1.example.com",
+            22,
             key.public_key(),
             "/tmp/known_hosts",
             russh::keys::Error::KeyIsCorrupt,

@@ -746,9 +746,16 @@ fn format_ssh_error(context: &str, e: &crate::ssh::tokio_client::Error) -> Strin
                 "{context} failed: Host key verification failed, the server's host key is not trusted"
             )
         }
-        crate::ssh::tokio_client::Error::HostKeyChanged { host, .. } => {
+        crate::ssh::tokio_client::Error::HostKeyChanged { host, port, .. } => {
+            // Name the entry as known_hosts records it, so the command also
+            // works for non-standard ports, and double quote it so zsh does not
+            // reject the unmatched `[...]` glob. No `-f` here: this path has no
+            // known_hosts path to hand, and production always uses the default
+            // file, which `ssh-keygen` picks itself.
+            let entry =
+                crate::ssh::tokio_client::host_verification::known_hosts_entry_name(host, *port);
             format!(
-                "{context} failed: Possible man-in-the-middle attack, remove the old known_hosts entry with 'ssh-keygen -R {host}' only if the key change is expected"
+                "{context} failed: Possible man-in-the-middle attack, remove the old known_hosts entry with 'ssh-keygen -R \"{entry}\"' only if the key change is expected"
             )
         }
         crate::ssh::tokio_client::Error::PasswordWrong => {
@@ -829,6 +836,12 @@ mod tests {
             crate::ssh::tokio_client::Error::AgentAuthenticationFailed,
             crate::ssh::tokio_client::Error::HostKeyChanged {
                 host: "node1.example.com".to_string(),
+                port: 22,
+                line: 3,
+            },
+            crate::ssh::tokio_client::Error::HostKeyChanged {
+                host: "node1.example.com".to_string(),
+                port: 2222,
                 line: 3,
             },
         ] {
@@ -847,6 +860,7 @@ mod tests {
         // would render twice through anyhow's `{:#}` form (#239, #238).
         let e = crate::ssh::tokio_client::Error::HostKeyChanged {
             host: "node1.example.com".to_string(),
+            port: 22,
             line: 7,
         };
         let cause_text = e.to_string();
@@ -854,7 +868,7 @@ mod tests {
 
         let detailed = format_ssh_error(&context, &e);
         assert!(
-            detailed.contains("ssh-keygen -R node1.example.com"),
+            detailed.contains("ssh-keygen -R \"node1.example.com\""),
             "guidance must include the removal command, got: {detailed}"
         );
         assert!(
@@ -867,6 +881,30 @@ mod tests {
             rendered.matches(cause_text.as_str()).count(),
             1,
             "cause text should appear exactly once, got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn test_format_ssh_error_host_key_changed_names_port_qualified_entry() {
+        // known_hosts records a non-standard port as `[host]:port`, so
+        // `ssh-keygen -R host` would remove nothing and leave the user stuck.
+        // The guidance must name the entry that actually exists, quoted so the
+        // unmatched `[...]` glob does not make zsh reject the command.
+        let e = crate::ssh::tokio_client::Error::HostKeyChanged {
+            host: "node1.example.com".to_string(),
+            port: 2222,
+            line: 7,
+        };
+        let context = "SFTP upload to host:2222".to_string();
+
+        let detailed = format_ssh_error(&context, &e);
+        assert!(
+            detailed.contains("ssh-keygen -R \"[node1.example.com]:2222\""),
+            "guidance must name the port-qualified entry, got: {detailed}"
+        );
+        assert!(
+            !detailed.contains("has changed and no longer matches"),
+            "context must not restate the cause, got: {detailed}"
         );
     }
 

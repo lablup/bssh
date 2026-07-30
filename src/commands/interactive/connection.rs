@@ -620,6 +620,7 @@ mod tests {
         // untrusted endpoint (#239).
         let error = SshError::HostKeyChanged {
             host: "node1.example.com".to_string(),
+            port: 22,
             line: 3,
         };
         assert!(
