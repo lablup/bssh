@@ -17,6 +17,7 @@ use owo_colors::OwoColorize;
 use std::path::Path;
 use tokio::fs;
 
+use crate::commands::error_format::format_connection_error;
 use crate::executor::{self, ParallelExecutor};
 use crate::ssh::SshClient;
 use crate::ui::OutputFormatter;
@@ -140,7 +141,7 @@ pub async fn download_file(
                         "  {} {} {}",
                         "●".red(),
                         "Failed to download directory:".red(),
-                        e.to_string().dimmed()
+                        format_connection_error(&e).dimmed()
                     );
                     total_failed += 1;
                 }

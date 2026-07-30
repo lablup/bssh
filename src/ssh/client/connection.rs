@@ -28,6 +28,43 @@ use std::time::Duration;
 // - Balances user patience with reliability on poor networks
 const SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
 
+/// Build the friendly, outer-context message for a failed direct SSH
+/// connection attempt.
+///
+/// The result is meant to be used as `anyhow::Error::new(e).context(message)`
+/// so the message renders as the outer layer and `e` renders as the cause.
+/// Because anyhow's `{:#}` form joins layers with `": "`, a context message
+/// that restates the variant's own `Display` text would make the same wording
+/// appear twice in one line. So this returns `None` for variants whose
+/// `Display` already says everything the context layer would, and the
+/// messages it does return add remediation guidance without echoing the
+/// cause and carry no trailing period (which would render as `".: "`).
+/// See issue #238.
+fn connect_error_message(e: &crate::ssh::tokio_client::Error) -> Option<String> {
+    match e {
+        crate::ssh::tokio_client::Error::KeyAuthFailed => {
+            Some("The private key was rejected by the server".to_string())
+        }
+        crate::ssh::tokio_client::Error::ServerCheckFailed => Some(
+            "Host key verification failed: the server's host key was not recognized or has changed"
+                .to_string(),
+        ),
+        crate::ssh::tokio_client::Error::KeyInvalid(_) => {
+            Some("Check the key file format and passphrase".to_string())
+        }
+        crate::ssh::tokio_client::Error::AgentConnectionFailed => {
+            Some("Ensure SSH_AUTH_SOCK is set and the agent is running".to_string())
+        }
+        crate::ssh::tokio_client::Error::AgentNoIdentities => {
+            Some("Add your key to the agent using 'ssh-add'".to_string())
+        }
+        // `PasswordWrong`, `AgentAuthenticationFailed` and `SshError` already
+        // render the full story through their own `Display`, and any context
+        // here would only repeat it.
+        _ => None,
+    }
+}
+
 impl SshClient {
     /// Determine the authentication method based on provided parameters.
     ///
@@ -114,37 +151,16 @@ impl SshClient {
         {
             Ok(Ok(client)) => Ok(client),
             Ok(Err(e)) => {
-                // Specific error from the SSH connection attempt
-                let error_msg = match &e {
-                    crate::ssh::tokio_client::Error::KeyAuthFailed => {
-                        "Authentication failed. The private key was rejected by the server.".to_string()
-                    }
-                    crate::ssh::tokio_client::Error::PasswordWrong => {
-                        "Password authentication failed.".to_string()
-                    }
-                    crate::ssh::tokio_client::Error::ServerCheckFailed => {
-                        "Host key verification failed. The server's host key was not recognized or has changed.".to_string()
-                    }
-                    crate::ssh::tokio_client::Error::KeyInvalid(key_err) => {
-                        format!("Failed to load SSH key: {key_err}. Please check the key file format and passphrase.")
-                    }
-                    crate::ssh::tokio_client::Error::AgentConnectionFailed => {
-                        "Failed to connect to SSH agent. Please ensure SSH_AUTH_SOCK is set and the agent is running.".to_string()
-                    }
-                    crate::ssh::tokio_client::Error::AgentNoIdentities => {
-                        "SSH agent has no identities. Please add your key to the agent using 'ssh-add'.".to_string()
-                    }
-                    crate::ssh::tokio_client::Error::AgentAuthenticationFailed => {
-                        "SSH agent authentication failed.".to_string()
-                    }
-                    crate::ssh::tokio_client::Error::SshError(ssh_err) => {
-                        format!("SSH connection error: {ssh_err}")
-                    }
-                    _ => {
-                        format!("Failed to connect: {e}")
-                    }
-                };
-                Err(anyhow::anyhow!(error_msg).context(e))
+                // Specific error from the SSH connection attempt.
+                // The friendly message is the outer context and `e` is the
+                // cause, so `{:#}` renders "<friendly message>: <cause>"
+                // instead of the reverse. Variants whose own `Display` is
+                // already sufficient get no extra layer, so the same wording
+                // is not printed twice; see issue #238.
+                match connect_error_message(&e) {
+                    Some(error_msg) => Err(anyhow::Error::new(e).context(error_msg)),
+                    None => Err(anyhow::Error::new(e)),
+                }
             }
             Err(_) => Err(anyhow::anyhow!(
                 "Connection timeout after {} seconds. \
@@ -458,6 +474,100 @@ mod tests {
                 assert!(key_file_path.is_absolute());
             }
             _ => panic!("Expected PrivateKeyFile auth method"),
+        }
+    }
+
+    #[test]
+    fn test_connect_error_ordering_puts_friendly_message_first() {
+        // Regression test for issue #238's readability defect: the friendly
+        // message must be the OUTER context so `{:#}` renders it first,
+        // followed by the underlying cause, instead of the reverse.
+        let e = crate::ssh::tokio_client::Error::KeyAuthFailed;
+        let cause_text = e.to_string();
+        let error_msg = connect_error_message(&e).expect("KeyAuthFailed adds guidance");
+        let err = anyhow::Error::new(e).context(error_msg);
+
+        let rendered = format!("{err:#}");
+        assert_eq!(
+            rendered, "The private key was rejected by the server: Key authentication failed",
+            "expected friendly message first, then the cause"
+        );
+        // The underlying cause must appear after the friendly message, not
+        // before it, and must not be swallowed.
+        let friendly_end = rendered
+            .find("The private key was rejected by the server")
+            .unwrap()
+            + "The private key was rejected by the server".len();
+        assert!(
+            rendered[friendly_end..].contains(&cause_text),
+            "expected the cause to appear after the friendly message, got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn test_connect_error_message_omits_context_that_would_repeat_cause() {
+        // Variants whose own `Display` already says everything get no extra
+        // context layer, so the same wording is not printed twice. Before this
+        // fix, `PasswordWrong` rendered as
+        // "Password authentication failed.: Password authentication failed".
+        for e in [
+            crate::ssh::tokio_client::Error::PasswordWrong,
+            crate::ssh::tokio_client::Error::AgentAuthenticationFailed,
+            crate::ssh::tokio_client::Error::CommandDidntExit,
+        ] {
+            let cause_text = e.to_string();
+            assert!(
+                connect_error_message(&e).is_none(),
+                "{cause_text} should not get a context layer"
+            );
+
+            let rendered = format!("{:#}", anyhow::Error::new(e));
+            assert_eq!(rendered, cause_text);
+            assert_eq!(
+                rendered.matches(cause_text.as_str()).count(),
+                1,
+                "cause text should appear exactly once, got: {rendered}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_connect_error_message_does_not_duplicate_inner_key_error() {
+        // `KeyInvalid`'s own `Display` already interpolates the underlying
+        // key error, so the context layer must not interpolate it again.
+        let key_err = russh::keys::Error::KeyIsCorrupt;
+        let inner_text = key_err.to_string();
+        let e = crate::ssh::tokio_client::Error::KeyInvalid(key_err);
+
+        let error_msg = connect_error_message(&e).expect("KeyInvalid adds guidance");
+        assert!(
+            !error_msg.contains(&inner_text),
+            "context must not echo the inner key error, got: {error_msg}"
+        );
+
+        let rendered = format!("{:#}", anyhow::Error::new(e).context(error_msg));
+        assert_eq!(
+            rendered.matches(inner_text.as_str()).count(),
+            1,
+            "inner key error should appear exactly once, got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn test_connect_error_messages_have_no_trailing_period() {
+        // `{:#}` joins layers with ": ", so a trailing period would render as
+        // the awkward sequence ".: " in the middle of a line.
+        for e in [
+            crate::ssh::tokio_client::Error::KeyAuthFailed,
+            crate::ssh::tokio_client::Error::ServerCheckFailed,
+            crate::ssh::tokio_client::Error::AgentConnectionFailed,
+            crate::ssh::tokio_client::Error::AgentNoIdentities,
+        ] {
+            let message = connect_error_message(&e).expect("variant adds guidance");
+            assert!(
+                !message.ends_with('.'),
+                "context message must not end with a period, got: {message}"
+            );
         }
     }
 }

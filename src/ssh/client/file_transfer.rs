@@ -675,7 +675,7 @@ impl SshClient {
             Ok(Err(e)) => {
                 let context = format!("SSH connection to {}:{}", self.host, self.port);
                 let detailed = format_ssh_error(&context, &e);
-                Err(anyhow::anyhow!(detailed).context(e))
+                Err(anyhow::Error::new(e).context(detailed))
             }
             Err(_) => Err(anyhow::anyhow!(
                 "Connection timeout after {timeout_secs} seconds. Host may be unreachable or SSH service not running."
@@ -735,26 +735,119 @@ fn format_ssh_error(context: &str, e: &crate::ssh::tokio_client::Error) -> Strin
         crate::ssh::tokio_client::Error::KeyAuthFailed => {
             format!("{context} failed: Authentication rejected with provided SSH key")
         }
-        crate::ssh::tokio_client::Error::KeyInvalid(err) => {
-            format!("{context} failed: Invalid SSH key - {err}")
+        // The inner key error is not interpolated here: the `KeyInvalid`
+        // variant's own `Display` already includes it, and this message is the
+        // outer context layer, so echoing it would print it twice.
+        crate::ssh::tokio_client::Error::KeyInvalid(_) => {
+            format!("{context} failed: Invalid SSH key")
         }
         crate::ssh::tokio_client::Error::ServerCheckFailed => {
             format!(
-                "{context} failed: Host key verification failed. The server's host key is not trusted."
+                "{context} failed: Host key verification failed, the server's host key is not trusted"
             )
         }
         crate::ssh::tokio_client::Error::PasswordWrong => {
             format!("{context} failed: Password authentication rejected")
         }
         crate::ssh::tokio_client::Error::AgentConnectionFailed => {
-            format!("{context} failed: Cannot connect to SSH agent. Ensure SSH_AUTH_SOCK is set.")
+            format!("{context} failed: Cannot connect to SSH agent, ensure SSH_AUTH_SOCK is set")
         }
         crate::ssh::tokio_client::Error::AgentNoIdentities => {
-            format!("{context} failed: SSH agent has no keys. Use 'ssh-add' to add your key.")
+            format!("{context} failed: SSH agent has no keys, use 'ssh-add' to add your key")
         }
         crate::ssh::tokio_client::Error::AgentAuthenticationFailed => {
             format!("{context} failed: SSH agent authentication rejected")
         }
-        _ => format!("{context} failed: {e}"),
+        _ => format!("{context} failed"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_connect_for_file_transfer_error_ordering_puts_friendly_message_first() {
+        // Regression test for issue #238's readability defect: `detailed`
+        // must be the OUTER context so `{:#}` renders it first, followed by
+        // the underlying cause, instead of the reverse.
+        let e = crate::ssh::tokio_client::Error::PasswordWrong;
+        let context = "SSH connection to host:22".to_string();
+        let detailed = format_ssh_error(&context, &e);
+        let err = anyhow::Error::new(e).context(detailed.clone());
+
+        let rendered = format!("{err:#}");
+        assert!(
+            rendered.starts_with(&detailed),
+            "expected friendly message first, got: {rendered}"
+        );
+        assert!(
+            rendered[detailed.len()..].contains("Password authentication failed"),
+            "expected the cause to appear after the friendly message, got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn test_format_ssh_error_does_not_duplicate_inner_key_error() {
+        // `KeyInvalid`'s own `Display` already interpolates the underlying key
+        // error, so this outer context layer must not interpolate it again.
+        let key_err = russh::keys::Error::KeyIsCorrupt;
+        let inner_text = key_err.to_string();
+        let e = crate::ssh::tokio_client::Error::KeyInvalid(key_err);
+        let context = "SSH connection to host:22".to_string();
+
+        let detailed = format_ssh_error(&context, &e);
+        assert!(
+            !detailed.contains(&inner_text),
+            "context must not echo the inner key error, got: {detailed}"
+        );
+
+        let rendered = format!("{:#}", anyhow::Error::new(e).context(detailed));
+        assert_eq!(
+            rendered.matches(inner_text.as_str()).count(),
+            1,
+            "inner key error should appear exactly once, got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn test_format_ssh_error_messages_have_no_trailing_period() {
+        // `{:#}` joins layers with ": ", so a trailing period would render as
+        // the awkward sequence ".: " in the middle of a line.
+        let context = "SSH connection to host:22".to_string();
+        for e in [
+            crate::ssh::tokio_client::Error::KeyAuthFailed,
+            crate::ssh::tokio_client::Error::ServerCheckFailed,
+            crate::ssh::tokio_client::Error::PasswordWrong,
+            crate::ssh::tokio_client::Error::AgentConnectionFailed,
+            crate::ssh::tokio_client::Error::AgentNoIdentities,
+            crate::ssh::tokio_client::Error::AgentAuthenticationFailed,
+        ] {
+            let detailed = format_ssh_error(&context, &e);
+            assert!(
+                !detailed.ends_with('.'),
+                "context message must not end with a period, got: {detailed}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_format_ssh_error_catch_all_does_not_duplicate_cause() {
+        // The catch-all arm used to interpolate `{e}` directly into the
+        // detailed message; once nesting is corrected that would print the
+        // cause's text twice. It must not repeat the variant's own text.
+        let e = crate::ssh::tokio_client::Error::CommandDidntExit;
+        let context = "SSH connection to host:22".to_string();
+        let detailed = format_ssh_error(&context, &e);
+        assert_eq!(detailed, "SSH connection to host:22 failed");
+
+        let cause_text = e.to_string();
+        let err = anyhow::Error::new(e).context(detailed);
+        let rendered = format!("{err:#}");
+        assert_eq!(
+            rendered.matches(cause_text.as_str()).count(),
+            1,
+            "cause text should appear exactly once, got: {rendered}"
+        );
     }
 }

@@ -301,14 +301,7 @@ impl JumpHostChain {
                 &self.ssh_connection_config,
             )
             .await
-            .with_context(|| {
-                format!(
-                    "Failed to connect to jump host {} (hop {}): {}",
-                    jump_host,
-                    i + 2,
-                    jump_host
-                )
-            })?;
+            .with_context(|| intermediate_jump_hop_context(jump_host, i + 2))?;
 
             debug!("Connected through jump host: {}", jump_host);
         }
@@ -452,6 +445,16 @@ impl Drop for JumpHostChain {
     }
 }
 
+/// Build the `.with_context()` message for a failed intermediate jump hop.
+///
+/// `hop` is the 1-based position of `jump_host` within the full chain (i.e.
+/// already offset past the first jump host). The host is interpolated only
+/// once; see issue #238 for the readability defect this replaced, where the
+/// host name was duplicated as both the subject and a trailing echo.
+fn intermediate_jump_hop_context(jump_host: &JumpHost, hop: usize) -> String {
+    format!("Failed to connect to jump host {jump_host} (hop {hop})")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -486,5 +489,25 @@ mod tests {
         assert_eq!(chain.command_timeout, Duration::from_secs(600));
         assert_eq!(chain.max_retries, 5);
         assert_eq!(chain.base_retry_delay, 2000);
+    }
+
+    #[test]
+    fn test_intermediate_jump_hop_context_does_not_repeat_host_name() {
+        let jump_host = JumpHost::new("bastion".to_string(), None, None);
+        let message = intermediate_jump_hop_context(&jump_host, 2);
+
+        assert_eq!(message, "Failed to connect to jump host bastion (hop 2)");
+        // The host name must appear exactly once; issue #238's readability
+        // review found it interpolated twice (subject + trailing echo).
+        assert_eq!(message.matches("bastion").count(), 1);
+    }
+
+    #[test]
+    fn test_intermediate_jump_hop_context_reports_correct_hop_number() {
+        let jump_host = JumpHost::new("relay.example.com".to_string(), None, None);
+        let message = intermediate_jump_hop_context(&jump_host, 3);
+
+        assert!(message.contains("hop 3"));
+        assert!(message.contains("relay.example.com"));
     }
 }

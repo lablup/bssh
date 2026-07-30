@@ -13,6 +13,7 @@
 // limitations under the License.
 
 pub mod download;
+pub mod error_format;
 pub mod exec;
 pub mod interactive;
 pub mod interactive_signal;

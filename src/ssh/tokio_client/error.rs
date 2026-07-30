@@ -23,7 +23,7 @@ pub enum Error {
     CommandDidntExit,
     #[error("Server check failed")]
     ServerCheckFailed,
-    #[error("Ssh error occured: {0}")]
+    #[error("SSH error occurred: {0}")]
     SshError(#[from] russh::Error),
     #[error("Send error")]
     SendError(#[from] russh::SendError),
@@ -37,7 +37,7 @@ pub enum Error {
     AgentNoIdentities,
     #[error("SSH agent authentication failed")]
     AgentAuthenticationFailed,
-    #[error("SFTP error occured: {0}")]
+    #[error("SFTP error occurred: {0}")]
     SftpError(#[from] russh_sftp::client::error::Error),
     #[error("I/O error")]
     IoError(#[from] io::Error),
