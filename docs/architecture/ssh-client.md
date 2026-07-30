@@ -39,10 +39,12 @@
 - Host key verification with three modes:
  - `StrictHostKeyChecking::Yes` - Strict verification using known_hosts; a missing file behaves as an empty one, so unknown hosts are rejected
  - `StrictHostKeyChecking::No` - Skip all verification
- - `StrictHostKeyChecking::AcceptNew` - TOFU mode: keys matching their known_hosts entry are accepted, unknown hosts are recorded in known_hosts and accepted, changed keys are rejected with an OpenSSH-style warning
+ - `StrictHostKeyChecking::AcceptNew` - TOFU mode: a key matching any of a host's recorded known_hosts entries is accepted (not just the first one, matching OpenSSH rather than short-circuiting on the first same-algorithm mismatch), unknown hosts are recorded and accepted, and a key is rejected only when the host has recorded keys and none of them match
 - CLI flag `--strict-host-key-checking` with default "accept-new"
-- Uses system known_hosts file (~/.ssh/known_hosts); accept-new creates it on first recording (directory 0700, file 0600) and serializes concurrent first-time recordings behind a process-wide lock so parallel connects to the same new host produce a single entry
-- Changed keys surface as a dedicated `HostKeyChanged` error (host, offending line) instead of a generic check failure, in strict and accept-new modes alike
+- Uses system known_hosts file (~/.ssh/known_hosts); accept-new creates the directory (0700) and file (0600) with their final permissions up front rather than tightening the mode after creation, and serializes concurrent first-time recordings behind a process-wide lock so parallel connects to the same new host produce a single entry
+- Changed keys surface as a dedicated `HostKeyChanged` error (host, port, offending line) instead of a generic check failure, in strict and accept-new modes alike; a key matching a known_hosts `@revoked` marker line is rejected separately as `HostKeyRevoked`, since russh's parser otherwise reads the marker itself as the literal host field and never matches these lines against the real host, silently letting a revoked key through TOFU
+- A `@cert-authority` marker line is not validated (bssh has no CA signature verification path); it only prints a warning and falls through to ordinary TOFU for the offered key, rather than failing closed
+- The hostname is lowercased once before both the lookup and the recorded entry, matching OpenSSH's case-insensitive known_hosts comparison, and rejected outright if it cannot round-trip through a known_hosts line (contains whitespace, a control character, or a known_hosts/glob metacharacter), since an unrecordable hostname can never be verified on a later connection either
 - SSH agent authentication with auto-detection
 
 ### 4.0.1 Command Output Streaming Infrastructure
