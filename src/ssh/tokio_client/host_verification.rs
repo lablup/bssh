@@ -21,12 +21,20 @@
 //! OpenSSH-style warning. The recording itself is delegated to
 //! `russh::keys::known_hosts::learn_known_hosts_path`, which handles entry
 //! formatting (including the `[host]:port` form for non-22 ports) and file
-//! creation; this module adds the trust decision, restrictive permissions on
-//! newly created files, and serialization of concurrent first-time connections.
+//! creation; this module adds the trust decision, restrictive permissions
+//! created up front rather than tightened after the fact, and serialization
+//! of concurrent first-time connections.
 //!
 //! The known_hosts lookup itself ([`lookup_known_host`]) also backs strict
 //! (`yes`) mode through [`verify_known_hosts_file`], so both modes agree on
-//! which keys verify and which count as changed.
+//! which keys verify and which count as changed. Both entry points also
+//! lowercase the hostname once before it is used for either the lookup or the
+//! recorded entry, matching OpenSSH's case-insensitive known_hosts matching
+//! (russh's own matcher is a plain byte compare), and scan for
+//! `@revoked`/`@cert-authority` marker lines before the ordinary lookup runs:
+//! russh's parser reads the marker itself as the literal first field of the
+//! host list, so a line like `@revoked node1 ssh-ed25519 <key>` never matches
+//! `node1` and is otherwise invisible to [`lookup_known_host`].
 
 use russh::keys::{Algorithm, HashAlg, PublicKey};
 use std::path::Path;
@@ -103,6 +111,203 @@ fn lookup_known_host(
     })
 }
 
+/// The result of scanning known_hosts for `@revoked`/`@cert-authority`
+/// marker lines naming a host, ahead of the ordinary lookup.
+///
+/// russh's `known_host_keys_path` splits each line on `' '` and takes the
+/// *first* field as the host list, so on a marker line such as `@revoked
+/// node1 ssh-ed25519 <key>` that first field is the literal string
+/// `@revoked`, which never matches `node1`. The line is therefore invisible
+/// to [`lookup_known_host`], and without this scan a revoked key would look
+/// like an ordinary first use: recorded and accepted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MarkerScan {
+    /// A `@revoked` line names the host and its key field is exactly the
+    /// offered key: the caller must hard reject without recording or
+    /// accepting anything.
+    Revoked { line: usize },
+    /// A `@cert-authority` line names the host. bssh has no CA signature
+    /// validation path to fall back to, so this does not fail closed; the
+    /// caller warns and falls through to ordinary TOFU.
+    CertAuthority { line: usize },
+    /// No marker line applies to this host.
+    None,
+}
+
+/// Scan `known_hosts_path` for `@revoked` and `@cert-authority` lines naming
+/// `hostname`/`port`. `hostname` must already be normalized (lowercase) by
+/// the caller, the same convention [`lookup_known_host`] relies on.
+///
+/// An unreadable or missing file has nothing to scan and reports
+/// [`MarkerScan::None`], the same as [`lookup_known_host`] treats it as an
+/// unknown host: `record_host_key` is what actually creates the file.
+fn scan_known_hosts_markers(
+    hostname: &str,
+    port: u16,
+    server_public_key: &PublicKey,
+    known_hosts_path: &str,
+) -> MarkerScan {
+    let Ok(contents) = std::fs::read_to_string(known_hosts_path) else {
+        return MarkerScan::None;
+    };
+
+    let host_port = known_hosts_entry_name(hostname, port);
+    let mut cert_authority: Option<usize> = None;
+
+    for (idx, raw_line) in contents.lines().enumerate() {
+        let line = idx + 1;
+        let text = raw_line.trim_start();
+        if text.is_empty() || text.starts_with('#') {
+            continue;
+        }
+
+        let mut fields = text.split(' ').filter(|f| !f.is_empty());
+        let Some(marker) = fields.next() else {
+            continue;
+        };
+        let is_revoked = marker == "@revoked";
+        if !is_revoked && marker != "@cert-authority" {
+            continue;
+        }
+        // Fields after the marker mirror an ordinary known_hosts line: host
+        // list, key type, base64 key. The key type itself is not needed here
+        // (`parse_public_key_base64` recovers the algorithm from the key
+        // blob), only skipped over to reach the base64 field, the same way
+        // russh's own `known_host_keys_path` does for ordinary lines.
+        let (Some(host_field), Some(_key_type), Some(key_field)) =
+            (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+
+        if !marker_host_matches(&host_port, hostname, host_field, is_revoked) {
+            continue;
+        }
+
+        if is_revoked {
+            if let Ok(key) = russh::keys::parse_public_key_base64(key_field)
+                && key == *server_public_key
+            {
+                return MarkerScan::Revoked { line };
+            }
+            // A `@revoked` line matching the host but holding a *different*
+            // key revokes some other key, not the one being offered now, so
+            // it must not block this one; keep scanning the rest of the file.
+        } else {
+            cert_authority.get_or_insert(line);
+        }
+    }
+
+    match cert_authority {
+        Some(line) => MarkerScan::CertAuthority { line },
+        None => MarkerScan::None,
+    }
+}
+
+/// Whether a marker line's host field names `hostname`/`host_port`.
+///
+/// Supports the exact form, the comma-separated list form, and simple `*`
+/// and `?` globs, since marker lines commonly use them (`@cert-authority
+/// *.example.com`). When `lenient` (used for `@revoked` only), a pattern that
+/// does not match the port-qualified form is also tried against the bare
+/// hostname: a `@revoked` line commonly omits the port, and failing to honor
+/// a revocation is worse than an unnecessary rejection.
+fn marker_host_matches(
+    host_port: &str,
+    hostname: &str,
+    pattern_field: &str,
+    lenient: bool,
+) -> bool {
+    pattern_field.split(',').any(|pattern| {
+        let pattern = pattern.trim();
+        if pattern.is_empty() {
+            return false;
+        }
+        glob_match(host_port, pattern)
+            || (lenient && host_port != hostname && glob_match(hostname, pattern))
+    })
+}
+
+/// Minimal case-insensitive glob matcher supporting `*` (any sequence,
+/// including empty) and `?` (any single character). known_hosts marker
+/// patterns use only these two wildcards (no bracket classes), and matching
+/// is case-insensitive to agree with the hostname normalization elsewhere in
+/// this module.
+fn glob_match(text: &str, pattern: &str) -> bool {
+    if !pattern.contains(['*', '?']) {
+        return text.eq_ignore_ascii_case(pattern);
+    }
+    let text: Vec<char> = text.chars().map(|c| c.to_ascii_lowercase()).collect();
+    let pattern: Vec<char> = pattern.chars().map(|c| c.to_ascii_lowercase()).collect();
+    glob_match_chars(&text, &pattern, 0, 0)
+}
+
+/// Recursive helper for [`glob_match`].
+fn glob_match_chars(text: &[char], pattern: &[char], ti: usize, pi: usize) -> bool {
+    if pi == pattern.len() {
+        return ti == text.len();
+    }
+    match pattern[pi] {
+        '*' => {
+            glob_match_chars(text, pattern, ti, pi + 1)
+                || (ti < text.len() && glob_match_chars(text, pattern, ti + 1, pi))
+        }
+        '?' => ti < text.len() && glob_match_chars(text, pattern, ti + 1, pi + 1),
+        c => ti < text.len() && text[ti] == c && glob_match_chars(text, pattern, ti + 1, pi + 1),
+    }
+}
+
+/// Act on any `@revoked`/`@cert-authority` marker line naming
+/// `hostname`/`port`, ahead of the ordinary lookup. `hostname` must already
+/// be normalized (lowercase).
+///
+/// A `@revoked` match is a hard stop: `Err` with the dedicated
+/// [`super::Error::HostKeyRevoked`], printed with a loud warning, and nothing
+/// is recorded or accepted. A `@cert-authority` match only warns: bssh has no
+/// CA signature validation to fall back to, so failing closed here would
+/// break every working CA setup with no workaround, and the point of this
+/// check is only to stop the marker being silently ignored, not to implement
+/// CA validation. No marker at all is a silent `Ok(())`.
+fn check_marker_lines(
+    hostname: &str,
+    port: u16,
+    server_public_key: &PublicKey,
+    known_hosts_path: &str,
+) -> Result<(), super::Error> {
+    match scan_known_hosts_markers(hostname, port, server_public_key, known_hosts_path) {
+        MarkerScan::Revoked { line } => {
+            let entry = known_hosts_entry_name(hostname, port);
+            tracing::error!(
+                "Refusing host key for '{entry}': revoked by {known_hosts_path}:{line}"
+            );
+            eprintln!(
+                "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n\
+                 @    WARNING: REVOKED HOST KEY!                           @\n\
+                 @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n\
+                 The key offered by '{entry}' matches a key explicitly revoked at {known_hosts_path}:{line}.\n\
+                 This most likely means the key has been compromised. Connecting is refused.\n\
+                 Do not remove the @revoked entry unless you are certain the revocation itself was a mistake."
+            );
+            Err(super::Error::HostKeyRevoked {
+                host: hostname.to_string(),
+                port,
+                line,
+            })
+        }
+        MarkerScan::CertAuthority { line } => {
+            let entry = known_hosts_entry_name(hostname, port);
+            tracing::warn!(
+                "'{entry}' has a @cert-authority entry at {known_hosts_path}:{line}, which bssh does not validate; falling back to trust-on-first-use for the offered key"
+            );
+            eprintln!(
+                "Warning: {known_hosts_path}:{line} marks '{entry}' as a certificate authority (@cert-authority); bssh cannot validate CA-signed host keys, so the offered key is being trusted on first use instead"
+            );
+            Ok(())
+        }
+        MarkerScan::None => Ok(()),
+    }
+}
+
 /// Longest hostname accepted in a known_hosts entry. A DNS name cannot exceed
 /// 253 characters, so this only bounds the line length against a hostname that
 /// could never have resolved anyway.
@@ -170,20 +375,33 @@ fn ensure_recordable_hostname(hostname: &str) -> Result<(), super::Error> {
 /// Returns `Ok(true)` when the key matches any of the host's recorded keys, or
 /// when the host has no recorded keys at all (in which case the key is recorded
 /// first). Returns [`super::Error::HostKeyChanged`] when the host has recorded
-/// keys and none of them matches the offered key, without modifying the file.
-/// A hostname that cannot be represented in a known_hosts entry is rejected
-/// outright, before anything is looked up or written.
+/// keys and none of them matches the offered key, without modifying the file,
+/// and [`super::Error::HostKeyRevoked`] when the offered key matches a
+/// known_hosts `@revoked` marker line. A hostname that cannot be represented
+/// in a known_hosts entry is rejected outright, before anything is looked up
+/// or written.
 pub(super) async fn verify_accept_new(
     hostname: &str,
     port: u16,
     server_public_key: &PublicKey,
     known_hosts_path: &str,
 ) -> Result<bool, super::Error> {
+    // OpenSSH lowercases the hostname before every known_hosts comparison;
+    // russh's `match_hostname` is a plain byte compare. Normalizing once here
+    // and using the normalized value for both the lookup and the recorded
+    // entry keeps a later differently-cased connection hitting the same pin
+    // instead of bypassing it and re-recording, and matches what OpenSSH
+    // itself would have written to the file.
+    let hostname = hostname.to_ascii_lowercase();
+    let hostname = hostname.as_str();
+
     // Checked before the lock is taken: serializing a hostname that is already
     // rejected would only make every other connection wait on it.
     ensure_recordable_hostname(hostname)?;
 
     let _guard = KNOWN_HOSTS_LOCK.lock().await;
+
+    check_marker_lines(hostname, port, server_public_key, known_hosts_path)?;
 
     match lookup_known_host(hostname, port, server_public_key, known_hosts_path) {
         Ok(KnownHostLookup::Match) => Ok(true),
@@ -225,9 +443,12 @@ pub(super) async fn verify_accept_new(
 ///
 /// Returns `Ok(false)` for a host with no recorded keys so the caller's own
 /// unknown-host rejection applies, `Ok(true)` when one of the host's recorded
-/// keys is the offered key, and [`super::Error::HostKeyChanged`] when the host
-/// is pinned and none of its keys match. Shares [`lookup_known_host`] with
-/// accept-new so both modes agree on what "changed" means. A hostname that
+/// keys is the offered key, [`super::Error::HostKeyChanged`] when the host is
+/// pinned and none of its keys match, and [`super::Error::HostKeyRevoked`]
+/// when the offered key matches a known_hosts `@revoked` marker line. Shares
+/// [`lookup_known_host`] with accept-new so both modes agree on what
+/// "changed" means, and the hostname is normalized (lowercase) the same way
+/// so both modes hit the same pin regardless of spelling. A hostname that
 /// cannot be represented in a known_hosts entry is rejected outright: strict
 /// mode never records, but such a hostname could not match a well-formed entry
 /// either, so this only replaces a misleading "unknown host" with the real
@@ -238,7 +459,11 @@ pub(super) fn verify_known_hosts_file(
     server_public_key: &PublicKey,
     known_hosts_path: &str,
 ) -> Result<bool, super::Error> {
+    let hostname = hostname.to_ascii_lowercase();
+    let hostname = hostname.as_str();
+
     ensure_recordable_hostname(hostname)?;
+    check_marker_lines(hostname, port, server_public_key, known_hosts_path)?;
 
     match lookup_known_host(hostname, port, server_public_key, known_hosts_path) {
         Ok(KnownHostLookup::Match) => Ok(true),
@@ -316,6 +541,14 @@ fn record_host_key(
     let dir_preexisted = path.parent().is_none_or(Path::exists);
     let file_preexisted = path.exists();
 
+    // Create with the final restrictive mode up front, before
+    // `learn_known_hosts_path` gets a chance to create either one with the
+    // process umask. See `precreate_with_restrictive_permissions` for why
+    // this closes the window that `restrict_created_permissions` below can
+    // only narrow after the fact.
+    #[cfg(unix)]
+    precreate_with_restrictive_permissions(path, dir_preexisted, file_preexisted);
+
     if let Err(e) =
         russh::keys::known_hosts::learn_known_hosts_path(hostname, port, server_public_key, path)
     {
@@ -350,10 +583,69 @@ pub(crate) fn known_hosts_entry_name(hostname: &str, port: u16) -> String {
     }
 }
 
+/// Pre-create the `.ssh` directory (0700) and known_hosts file (0600) with
+/// their final permissions before `learn_known_hosts_path` touches either.
+///
+/// `learn_known_hosts_path` creates both with `std::fs::create_dir_all` and
+/// `OpenOptions::create(true)`, which apply the process umask, and the mode
+/// used to be tightened by [`restrict_created_permissions`] only *after*
+/// that call returned, leaving a window where a permissive umask could leave
+/// either one group- or world-writable. A `mkdir`/`open` syscall that
+/// requests 0o700/0o600 directly cannot be widened by any umask, because
+/// umask only ever clears requested bits and neither mode carries a group or
+/// other bit for a standard umask to clear, so creating with the final mode
+/// up front closes the window instead of narrowing it afterward.
+///
+/// Only whichever of the two does not already exist is touched, matching
+/// [`restrict_created_permissions`]'s preservation of pre-existing modes. An
+/// error other than "already exists" (a benign race with another creator,
+/// since this runs under `KNOWN_HOSTS_LOCK` only within this process) is
+/// logged and otherwise ignored: `learn_known_hosts_path` runs regardless,
+/// and its own error handling in [`record_host_key`] is what decides whether
+/// the connection fails.
+#[cfg(unix)]
+fn precreate_with_restrictive_permissions(
+    path: &Path,
+    dir_preexisted: bool,
+    file_preexisted: bool,
+) {
+    use std::fs::{DirBuilder, OpenOptions};
+    use std::io::ErrorKind;
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+
+    if !dir_preexisted
+        && let Some(parent) = path.parent()
+        && let Err(e) = DirBuilder::new().mode(0o700).create(parent)
+        && e.kind() != ErrorKind::AlreadyExists
+    {
+        tracing::warn!(
+            "Failed to pre-create {} with mode 0700: {e}",
+            parent.display()
+        );
+    }
+
+    if !file_preexisted
+        && let Err(e) = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)
+        && e.kind() != ErrorKind::AlreadyExists
+    {
+        tracing::warn!(
+            "Failed to pre-create {} with mode 0600: {e}",
+            path.display()
+        );
+    }
+}
+
 /// Tighten permissions on the `.ssh` directory (0700) and known_hosts file
 /// (0600), but only when this recording created them.
 /// `learn_known_hosts_path` creates both with the process umask, so a fresh
-/// directory could otherwise be group/world readable.
+/// directory could otherwise be group/world readable. Kept as a fallback for
+/// the rare case where [`precreate_with_restrictive_permissions`] could not
+/// pre-create one of them (for example a missing grandparent directory that
+/// only `learn_known_hosts_path`'s `create_dir_all` fills in).
 #[cfg(unix)]
 fn restrict_created_permissions(path: &Path, dir_preexisted: bool, file_preexisted: bool) {
     use std::os::unix::fs::PermissionsExt;
@@ -702,6 +994,267 @@ mod tests {
             entry_lines(&path),
             recorded,
             "a conflicting key must not be recorded"
+        );
+    }
+
+    // `@revoked` / `@cert-authority` marker lines.
+
+    #[tokio::test]
+    async fn test_accept_new_rejects_revoked_key() {
+        let (_dir, path, path_str) = temp_known_hosts();
+        let revoked = generate_key();
+
+        std::fs::write(
+            &path,
+            format!(
+                "@revoked node1.example.com {}\n",
+                revoked.public_key().to_openssh().unwrap()
+            ),
+        )
+        .unwrap();
+
+        // russh's own parser reads "@revoked" as the literal host list, so
+        // without marker handling this offered key would look like an
+        // ordinary first use and get recorded and accepted.
+        let result =
+            verify_accept_new("node1.example.com", 22, revoked.public_key(), &path_str).await;
+        match result {
+            Err(Error::HostKeyRevoked { host, port, line }) => {
+                assert_eq!(host, "node1.example.com");
+                assert_eq!(port, 22);
+                assert_eq!(line, 1);
+            }
+            other => panic!("expected HostKeyRevoked, got {other:?}"),
+        }
+        assert_eq!(
+            entry_lines(&path).len(),
+            1,
+            "the revoked key must not be recorded"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_accept_new_revoked_entry_for_different_key_does_not_block() {
+        let (_dir, path, path_str) = temp_known_hosts();
+        let revoked = generate_key();
+        let genuine = generate_key();
+
+        std::fs::write(
+            &path,
+            format!(
+                "@revoked node1.example.com {}\n",
+                revoked.public_key().to_openssh().unwrap()
+            ),
+        )
+        .unwrap();
+
+        // A `@revoked` line matching the host but holding a *different* key
+        // revokes that other key, not the one offered now, so it must not
+        // block this connection: as far as ordinary TOFU is concerned this
+        // host is still unknown and the genuine key is recorded normally.
+        let result =
+            verify_accept_new("node1.example.com", 22, genuine.public_key(), &path_str).await;
+        assert!(
+            matches!(result, Ok(true)),
+            "a key that is not the revoked one must not be blocked, got {result:?}"
+        );
+        assert_eq!(
+            entry_lines(&path).len(),
+            2,
+            "the genuine key must be recorded alongside the @revoked marker"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_accept_new_cert_authority_warns_and_falls_through_to_tofu() {
+        let (_dir, path, path_str) = temp_known_hosts();
+        let key = generate_key();
+
+        std::fs::write(
+            &path,
+            "@cert-authority *.example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ\n",
+        )
+        .unwrap();
+
+        // bssh has no CA signature validation path, so the marker must not
+        // fail closed: the offered key still goes through ordinary TOFU and
+        // is recorded like any other unknown host.
+        let result = verify_accept_new("node1.example.com", 22, key.public_key(), &path_str).await;
+        assert!(
+            matches!(result, Ok(true)),
+            "a @cert-authority marker must not block TOFU, got {result:?}"
+        );
+        assert_eq!(
+            entry_lines(&path).len(),
+            2,
+            "the offered key must still be recorded alongside the @cert-authority line"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_accept_new_revoked_marker_matches_comma_list_and_glob() {
+        let revoked = generate_key();
+
+        let (_dir, path, path_str) = temp_known_hosts();
+        std::fs::write(
+            &path,
+            format!(
+                "@revoked node2,node1.example.com,node3 {}\n",
+                revoked.public_key().to_openssh().unwrap()
+            ),
+        )
+        .unwrap();
+        let result =
+            verify_accept_new("node1.example.com", 22, revoked.public_key(), &path_str).await;
+        assert!(
+            matches!(result, Err(Error::HostKeyRevoked { .. })),
+            "the comma-list form must match, got {result:?}"
+        );
+
+        let (_dir2, path2, path2_str) = temp_known_hosts();
+        std::fs::write(
+            &path2,
+            format!(
+                "@revoked *.example.com {}\n",
+                revoked.public_key().to_openssh().unwrap()
+            ),
+        )
+        .unwrap();
+        let result =
+            verify_accept_new("node1.example.com", 22, revoked.public_key(), &path2_str).await;
+        assert!(
+            matches!(result, Err(Error::HostKeyRevoked { .. })),
+            "the glob form must match, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_accept_new_revoked_marker_matches_non_standard_port_entry_form() {
+        let (_dir, path, path_str) = temp_known_hosts();
+        let revoked = generate_key();
+        std::fs::write(
+            &path,
+            format!(
+                "@revoked [node1.example.com]:2222 {}\n",
+                revoked.public_key().to_openssh().unwrap()
+            ),
+        )
+        .unwrap();
+
+        let result =
+            verify_accept_new("node1.example.com", 2222, revoked.public_key(), &path_str).await;
+        assert!(
+            matches!(result, Err(Error::HostKeyRevoked { .. })),
+            "the [host]:port marker form must match, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_accept_new_revoked_marker_without_port_still_matches_non_standard_port() {
+        // `@revoked` errs toward matching: a marker line commonly omits the
+        // port, and failing to honor a revocation is worse than an
+        // unnecessary rejection.
+        let (_dir, path, path_str) = temp_known_hosts();
+        let revoked = generate_key();
+        std::fs::write(
+            &path,
+            format!(
+                "@revoked node1.example.com {}\n",
+                revoked.public_key().to_openssh().unwrap()
+            ),
+        )
+        .unwrap();
+
+        let result =
+            verify_accept_new("node1.example.com", 2222, revoked.public_key(), &path_str).await;
+        assert!(
+            matches!(result, Err(Error::HostKeyRevoked { .. })),
+            "a port-less @revoked pattern must still match a non-standard port connection, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_strict_mode_rejects_revoked_key() {
+        let (_dir, path, path_str) = temp_known_hosts();
+        let revoked = generate_key();
+        std::fs::write(
+            &path,
+            format!(
+                "@revoked node1.example.com {}\n",
+                revoked.public_key().to_openssh().unwrap()
+            ),
+        )
+        .unwrap();
+
+        let mut handler = handler_for(ServerCheckMethod::KnownHostsFile(path_str));
+        let result = handler.check_server_key(revoked.public_key()).await;
+        assert!(
+            matches!(result, Err(Error::HostKeyRevoked { .. })),
+            "strict mode must also honor @revoked, got {result:?}"
+        );
+    }
+
+    // Hostname case normalization.
+
+    #[tokio::test]
+    async fn test_accept_new_hostname_matching_is_case_insensitive() {
+        let (_dir, path, path_str) = temp_known_hosts();
+        let key = generate_key();
+
+        let result = verify_accept_new("NODE1.example.com", 22, key.public_key(), &path_str).await;
+        assert!(matches!(result, Ok(true)));
+        let recorded = entry_lines(&path);
+        assert_eq!(recorded.len(), 1);
+        assert!(
+            recorded[0].starts_with("node1.example.com "),
+            "the recorded entry must use the normalized (lowercase) hostname, got: {}",
+            recorded[0]
+        );
+
+        // A differently-cased spelling of the same host must hit the same
+        // pin instead of looking unknown and recording a second entry.
+        let result = verify_accept_new("node1.example.com", 22, key.public_key(), &path_str).await;
+        assert!(matches!(result, Ok(true)));
+        assert_eq!(
+            entry_lines(&path),
+            recorded,
+            "differently-cased hostnames must resolve to the same pin"
+        );
+
+        // A changed key offered under yet another casing must still be
+        // caught as a conflict, not treated as a fresh first use.
+        let imposter = generate_key();
+        let result =
+            verify_accept_new("Node1.Example.Com", 22, imposter.public_key(), &path_str).await;
+        assert!(
+            matches!(result, Err(Error::HostKeyChanged { .. })),
+            "a changed key under a different casing must still be caught, got {result:?}"
+        );
+        assert_eq!(entry_lines(&path), recorded);
+    }
+
+    #[tokio::test]
+    async fn test_strict_mode_hostname_matching_is_case_insensitive() {
+        let (_dir, _path, path_str) = temp_known_hosts();
+        let key = generate_key();
+
+        russh::keys::known_hosts::learn_known_hosts_path(
+            "node1.example.com",
+            22,
+            key.public_key(),
+            &path_str,
+        )
+        .unwrap();
+
+        let mut handler = ClientHandler::new(
+            "NODE1.example.com".to_string(),
+            "127.0.0.1:22".parse().unwrap(),
+            ServerCheckMethod::KnownHostsFile(path_str),
+        );
+        let result = handler.check_server_key(key.public_key()).await;
+        assert!(
+            matches!(result, Ok(true)),
+            "strict mode must match an existing pin regardless of hostname casing, got {result:?}"
         );
     }
 

@@ -758,6 +758,14 @@ fn format_ssh_error(context: &str, e: &crate::ssh::tokio_client::Error) -> Strin
                 "{context} failed: Possible man-in-the-middle attack, remove the old known_hosts entry with 'ssh-keygen -R \"{entry}\"' only if the key change is expected"
             )
         }
+        // No `ssh-keygen -R` remediation here, unlike `HostKeyChanged`: the
+        // entry that matched is the `@revoked` marker line placed
+        // deliberately to blocklist this exact key, not a stale pin.
+        crate::ssh::tokio_client::Error::HostKeyRevoked { .. } => {
+            format!(
+                "{context} failed: The offered host key is explicitly revoked in known_hosts, refusing to connect"
+            )
+        }
         crate::ssh::tokio_client::Error::PasswordWrong => {
             format!("{context} failed: Password authentication rejected")
         }
@@ -844,6 +852,11 @@ mod tests {
                 port: 2222,
                 line: 3,
             },
+            crate::ssh::tokio_client::Error::HostKeyRevoked {
+                host: "node1.example.com".to_string(),
+                port: 22,
+                line: 3,
+            },
         ] {
             let detailed = format_ssh_error(&context, &e);
             assert!(
@@ -905,6 +918,37 @@ mod tests {
         assert!(
             !detailed.contains("has changed and no longer matches"),
             "context must not restate the cause, got: {detailed}"
+        );
+    }
+
+    #[test]
+    fn test_format_ssh_error_host_key_revoked_adds_guidance_without_echo() {
+        // Same invariant as HostKeyChanged: guidance without restating the
+        // cause's own wording, which would render twice through anyhow's
+        // `{:#}` form (#239, #238).
+        let e = crate::ssh::tokio_client::Error::HostKeyRevoked {
+            host: "node1.example.com".to_string(),
+            port: 22,
+            line: 7,
+        };
+        let cause_text = e.to_string();
+        let context = "SFTP upload to host:22".to_string();
+
+        let detailed = format_ssh_error(&context, &e);
+        assert!(
+            detailed.contains("explicitly revoked"),
+            "guidance must warn about revocation, got: {detailed}"
+        );
+        assert!(
+            !detailed.contains("is explicitly revoked by the known_hosts entry at line"),
+            "context must not restate the cause, got: {detailed}"
+        );
+
+        let rendered = format!("{:#}", anyhow::Error::new(e).context(detailed));
+        assert_eq!(
+            rendered.matches(cause_text.as_str()).count(),
+            1,
+            "cause text should appear exactly once, got: {rendered}"
         );
     }
 

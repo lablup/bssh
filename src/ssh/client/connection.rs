@@ -62,6 +62,14 @@ fn connect_error_message(e: &crate::ssh::tokio_client::Error) -> Option<String> 
                 "Possible man-in-the-middle attack: verify the server's new key out of band, or remove the old entry with 'ssh-keygen -R \"{entry}\"' if the change is expected"
             ))
         }
+        // Unlike `HostKeyChanged`, there is no `ssh-keygen -R` remediation to
+        // offer: the marker was placed deliberately to blocklist this exact
+        // key, and the entry it points at is the `@revoked` line itself, not
+        // a stale pin to remove.
+        crate::ssh::tokio_client::Error::HostKeyRevoked { .. } => Some(
+            "The offered host key matches a key explicitly revoked in known_hosts; do not connect unless you can independently verify the server's identity out of band"
+                .to_string(),
+        ),
         crate::ssh::tokio_client::Error::SshError(russh::Error::UnknownKey) => Some(
             "The host is not in known_hosts and strict host key checking is enabled; connect once with '--strict-host-key-checking accept-new' or add the key manually"
                 .to_string(),
@@ -589,6 +597,11 @@ mod tests {
                 port: 2222,
                 line: 3,
             },
+            crate::ssh::tokio_client::Error::HostKeyRevoked {
+                host: "node1.example.com".to_string(),
+                port: 22,
+                line: 3,
+            },
             crate::ssh::tokio_client::Error::SshError(russh::Error::UnknownKey),
         ] {
             let message = connect_error_message(&e).expect("variant adds guidance");
@@ -651,6 +664,35 @@ mod tests {
         assert!(
             !message.contains("has changed and no longer matches"),
             "context must not restate the cause, got: {message}"
+        );
+    }
+
+    #[test]
+    fn test_connect_error_message_host_key_revoked_adds_guidance_without_echo() {
+        // Same invariant as HostKeyChanged: the context layer adds guidance
+        // without restating the cause's own wording, which would otherwise
+        // render twice through anyhow's `{:#}` form (#239, #238).
+        let e = crate::ssh::tokio_client::Error::HostKeyRevoked {
+            host: "node1.example.com".to_string(),
+            port: 22,
+            line: 7,
+        };
+        let cause_text = e.to_string();
+        let message = connect_error_message(&e).expect("HostKeyRevoked adds guidance");
+        assert!(
+            message.contains("explicitly revoked"),
+            "guidance must warn about revocation, got: {message}"
+        );
+        assert!(
+            !message.contains("is explicitly revoked by the known_hosts entry at line"),
+            "context must not restate the cause, got: {message}"
+        );
+
+        let rendered = format!("{:#}", anyhow::Error::new(e).context(message));
+        assert_eq!(
+            rendered.matches(cause_text.as_str()).count(),
+            1,
+            "cause text should appear exactly once, got: {rendered}"
         );
     }
 }
