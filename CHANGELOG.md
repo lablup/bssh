@@ -5,6 +5,11 @@ All notable changes to bssh will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Show the full error context chain when an interactive connection fails** (#238). Interactive mode printed only anyhow's outermost context, so a jump-host failure surfaced as `Failed to establish jump host connection to <host>` with no indication of which hop failed or why, leaving first-jump authentication failures, destination TCP refusals, and destination authentication failures indistinguishable. Both interactive execution paths (PTY and traditional) and the directory-download failure message now render the whole chain through a shared `format_connection_error` helper that uses anyhow's alternate `Display` form, matching the format the parallel exec path already used. Tracing verbosity and exec-mode output are unchanged.
+
 ## [2.3.1] - 2026-07-29
 
 ### Added
