@@ -49,8 +49,7 @@ mod tests {
         let root = anyhow!("authentication failed for user 'alice' on '10.0.0.5:22'");
         let with_channel =
             root.context("Failed to open direct-tcpip channel to destination 10.0.0.5:22");
-        let with_hop =
-            with_channel.context("Failed to connect to jump host 'bastion' (hop 2): bastion");
+        let with_hop = with_channel.context("Failed to connect to jump host bastion (hop 2)");
         let with_outer =
             with_hop.context("Failed to establish jump host connection to 10.0.0.5:22");
 
@@ -61,7 +60,7 @@ mod tests {
             "missing outer context layer in: {formatted}"
         );
         assert!(
-            formatted.contains("Failed to connect to jump host 'bastion' (hop 2): bastion"),
+            formatted.contains("Failed to connect to jump host bastion (hop 2)"),
             "missing intermediate hop layer in: {formatted}"
         );
         assert!(

@@ -28,6 +28,48 @@ use std::time::Duration;
 // - Balances user patience with reliability on poor networks
 const SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
 
+/// Build the friendly, outer-context message for a failed direct SSH
+/// connection attempt.
+///
+/// The returned message is meant to be used as `anyhow::Error::new(e).context(message)`
+/// so it renders as the outer layer and `e` renders as the cause. It
+/// deliberately does not repeat `e`'s own `Display` text so `{:#}` output
+/// does not show the same wording twice; see issue #238.
+fn connect_error_message(e: &crate::ssh::tokio_client::Error) -> String {
+    match e {
+        crate::ssh::tokio_client::Error::KeyAuthFailed => {
+            "Authentication failed. The private key was rejected by the server.".to_string()
+        }
+        crate::ssh::tokio_client::Error::PasswordWrong => {
+            "Password authentication failed.".to_string()
+        }
+        crate::ssh::tokio_client::Error::ServerCheckFailed => {
+            "Host key verification failed. The server's host key was not recognized or has changed."
+                .to_string()
+        }
+        crate::ssh::tokio_client::Error::KeyInvalid(key_err) => {
+            format!(
+                "Failed to load SSH key: {key_err}. Please check the key file format and passphrase."
+            )
+        }
+        crate::ssh::tokio_client::Error::AgentConnectionFailed => {
+            "Failed to connect to SSH agent. Please ensure SSH_AUTH_SOCK is set and the agent is running."
+                .to_string()
+        }
+        crate::ssh::tokio_client::Error::AgentNoIdentities => {
+            "SSH agent has no identities. Please add your key to the agent using 'ssh-add'."
+                .to_string()
+        }
+        crate::ssh::tokio_client::Error::AgentAuthenticationFailed => {
+            "SSH agent authentication failed.".to_string()
+        }
+        crate::ssh::tokio_client::Error::SshError(ssh_err) => {
+            format!("SSH connection error: {ssh_err}")
+        }
+        _ => "Failed to connect".to_string(),
+    }
+}
+
 impl SshClient {
     /// Determine the authentication method based on provided parameters.
     ///
@@ -114,37 +156,12 @@ impl SshClient {
         {
             Ok(Ok(client)) => Ok(client),
             Ok(Err(e)) => {
-                // Specific error from the SSH connection attempt
-                let error_msg = match &e {
-                    crate::ssh::tokio_client::Error::KeyAuthFailed => {
-                        "Authentication failed. The private key was rejected by the server.".to_string()
-                    }
-                    crate::ssh::tokio_client::Error::PasswordWrong => {
-                        "Password authentication failed.".to_string()
-                    }
-                    crate::ssh::tokio_client::Error::ServerCheckFailed => {
-                        "Host key verification failed. The server's host key was not recognized or has changed.".to_string()
-                    }
-                    crate::ssh::tokio_client::Error::KeyInvalid(key_err) => {
-                        format!("Failed to load SSH key: {key_err}. Please check the key file format and passphrase.")
-                    }
-                    crate::ssh::tokio_client::Error::AgentConnectionFailed => {
-                        "Failed to connect to SSH agent. Please ensure SSH_AUTH_SOCK is set and the agent is running.".to_string()
-                    }
-                    crate::ssh::tokio_client::Error::AgentNoIdentities => {
-                        "SSH agent has no identities. Please add your key to the agent using 'ssh-add'.".to_string()
-                    }
-                    crate::ssh::tokio_client::Error::AgentAuthenticationFailed => {
-                        "SSH agent authentication failed.".to_string()
-                    }
-                    crate::ssh::tokio_client::Error::SshError(ssh_err) => {
-                        format!("SSH connection error: {ssh_err}")
-                    }
-                    _ => {
-                        format!("Failed to connect: {e}")
-                    }
-                };
-                Err(anyhow::anyhow!(error_msg).context(e))
+                // Specific error from the SSH connection attempt.
+                // The friendly message is the outer context and `e` is the
+                // cause, so `{:#}` renders "<friendly message>: <cause>"
+                // instead of the reverse; see issue #238.
+                let error_msg = connect_error_message(&e);
+                Err(anyhow::Error::new(e).context(error_msg))
             }
             Err(_) => Err(anyhow::anyhow!(
                 "Connection timeout after {} seconds. \
@@ -459,5 +476,48 @@ mod tests {
             }
             _ => panic!("Expected PrivateKeyFile auth method"),
         }
+    }
+
+    #[test]
+    fn test_connect_error_ordering_puts_friendly_message_first() {
+        // Regression test for issue #238's readability defect: the friendly
+        // message must be the OUTER context so `{:#}` renders it first,
+        // followed by the underlying cause, instead of the reverse.
+        let e = crate::ssh::tokio_client::Error::PasswordWrong;
+        let error_msg = connect_error_message(&e);
+        let err = anyhow::Error::new(e).context(error_msg);
+
+        let rendered = format!("{err:#}");
+        assert!(
+            rendered.starts_with("Password authentication failed."),
+            "expected friendly message first, got: {rendered}"
+        );
+        // The underlying cause (thiserror's own Display text) must still be
+        // present, appearing after the friendly message rather than before it.
+        let friendly_end = rendered.find("Password authentication failed.").unwrap()
+            + "Password authentication failed.".len();
+        assert!(
+            rendered[friendly_end..].contains("Password authentication failed"),
+            "expected the cause to appear after the friendly message, got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn test_connect_error_message_catch_all_does_not_duplicate_cause() {
+        // The catch-all arm used to interpolate `{e}` directly into the
+        // friendly message; once nesting is corrected that would print the
+        // cause's text twice. It must not repeat the variant's own text.
+        let e = crate::ssh::tokio_client::Error::CommandDidntExit;
+        let error_msg = connect_error_message(&e);
+        assert_eq!(error_msg, "Failed to connect");
+
+        let cause_text = e.to_string();
+        let err = anyhow::Error::new(e).context(error_msg);
+        let rendered = format!("{err:#}");
+        assert_eq!(
+            rendered.matches(cause_text.as_str()).count(),
+            1,
+            "cause text should appear exactly once, got: {rendered}"
+        );
     }
 }
