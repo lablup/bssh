@@ -103,18 +103,86 @@ fn lookup_known_host(
     })
 }
 
+/// Longest hostname accepted in a known_hosts entry. A DNS name cannot exceed
+/// 253 characters, so this only bounds the line length against a hostname that
+/// could never have resolved anyway.
+const MAX_KNOWN_HOSTS_HOSTNAME_LEN: usize = 255;
+
+/// Reject a hostname that cannot be represented as a known_hosts entry.
+///
+/// `learn_known_hosts_path` writes `{host} <key>` (or `[{host}]:{port} <key>`)
+/// with no escaping, and russh's parser splits entries on `' '`, reads `,` as
+/// the host-list separator, skips any line whose first byte is `#`, and reads a
+/// leading `|1|` as a hashed host field. A hostname carrying any of those, or
+/// any whitespace or control character, therefore does not round-trip: it can
+/// forge a second entry that pins the offered key for a host the user never
+/// named, silently pin one key for a whole list of hosts, or write a line that
+/// can never match again, in which case every later connection is a fresh first
+/// use that accepts any key and appends yet another entry.
+///
+/// Nothing validates the hostname on the way here. `validate_hostname` is
+/// reached only from `-H/--hosts` and is then overwritten by the unvalidated
+/// `~/.ssh/config` `HostName`; `Config::from_backendai_env` only trims the
+/// platform-supplied `BACKENDAI_CLUSTER_HOSTS` value; `AuthContext::new`
+/// rejects only NUL, LF and CR; and the port-forwarding path in
+/// `commands::exec` skips `AuthContext` entirely. So the check belongs at the
+/// point of use, where every connection path passes through.
+///
+/// A hostname that cannot be recorded also cannot be verified on any later
+/// connection, so this fails closed rather than connecting unverified.
+fn ensure_recordable_hostname(hostname: &str) -> Result<(), super::Error> {
+    // `*`, `?` and `!` are OpenSSH known_hosts pattern metacharacters. russh
+    // does not implement patterns, but the file is shared with OpenSSH, which
+    // would read such an entry as matching hosts it was never meant to.
+    const REJECTED: [char; 7] = ['#', ',', '|', '*', '?', '!', '\\'];
+
+    let problem = if hostname.is_empty() {
+        Some("it is empty")
+    } else if hostname.len() > MAX_KNOWN_HOSTS_HOSTNAME_LEN {
+        Some("it is too long")
+    } else if hostname
+        .chars()
+        .any(|c| c.is_whitespace() || c.is_control())
+    {
+        Some("it contains whitespace or a control character")
+    } else if hostname.contains(REJECTED) {
+        Some("it contains a known_hosts metacharacter")
+    } else {
+        None
+    };
+
+    match problem {
+        None => Ok(()),
+        Some(problem) => {
+            tracing::error!(
+                "Refusing to verify host key: hostname is not representable in known_hosts because {problem}"
+            );
+            eprintln!(
+                "Host key verification failed: the hostname cannot be recorded in known_hosts because {problem}"
+            );
+            Err(super::Error::ServerCheckFailed)
+        }
+    }
+}
+
 /// Verify a server key in accept-new (TOFU) mode against `known_hosts_path`.
 ///
 /// Returns `Ok(true)` when the key matches any of the host's recorded keys, or
 /// when the host has no recorded keys at all (in which case the key is recorded
 /// first). Returns [`super::Error::HostKeyChanged`] when the host has recorded
 /// keys and none of them matches the offered key, without modifying the file.
+/// A hostname that cannot be represented in a known_hosts entry is rejected
+/// outright, before anything is looked up or written.
 pub(super) async fn verify_accept_new(
     hostname: &str,
     port: u16,
     server_public_key: &PublicKey,
     known_hosts_path: &str,
 ) -> Result<bool, super::Error> {
+    // Checked before the lock is taken: serializing a hostname that is already
+    // rejected would only make every other connection wait on it.
+    ensure_recordable_hostname(hostname)?;
+
     let _guard = KNOWN_HOSTS_LOCK.lock().await;
 
     match lookup_known_host(hostname, port, server_public_key, known_hosts_path) {
@@ -159,13 +227,19 @@ pub(super) async fn verify_accept_new(
 /// unknown-host rejection applies, `Ok(true)` when one of the host's recorded
 /// keys is the offered key, and [`super::Error::HostKeyChanged`] when the host
 /// is pinned and none of its keys match. Shares [`lookup_known_host`] with
-/// accept-new so both modes agree on what "changed" means.
+/// accept-new so both modes agree on what "changed" means. A hostname that
+/// cannot be represented in a known_hosts entry is rejected outright: strict
+/// mode never records, but such a hostname could not match a well-formed entry
+/// either, so this only replaces a misleading "unknown host" with the real
+/// reason.
 pub(super) fn verify_known_hosts_file(
     hostname: &str,
     port: u16,
     server_public_key: &PublicKey,
     known_hosts_path: &str,
 ) -> Result<bool, super::Error> {
+    ensure_recordable_hostname(hostname)?;
+
     match lookup_known_host(hostname, port, server_public_key, known_hosts_path) {
         Ok(KnownHostLookup::Match) => Ok(true),
         Ok(KnownHostLookup::Unknown) => Ok(false),
@@ -895,5 +969,112 @@ mod tests {
         let result = handler.check_server_key(key.public_key()).await;
         assert!(matches!(result, Ok(true)));
         assert_eq!(entry_lines(&path).len(), 1);
+    }
+
+    // Hostnames that cannot be written back out as a known_hosts entry.
+
+    #[tokio::test]
+    async fn test_accept_new_rejects_hostnames_that_cannot_be_recorded() {
+        let key = generate_key();
+        let over_long = "a".repeat(300);
+
+        // `learn_known_hosts_path` writes the hostname into the entry with no
+        // escaping at all, and russh's parser splits on ' ', treats ',' as the
+        // host-list separator, skips any line starting with '#', and reads a
+        // leading '|1|' as a hashed host. None of these hostnames survives that
+        // round trip, so recording one is worse than refusing to connect.
+        let unrecordable = [
+            // The dangerous one: the embedded newline ends the forged entry and
+            // starts a second line, so the server gets its own key pinned for
+            // `[node1]:2200`, a host the user never named. Every later
+            // connection to node1 then trusts the attacker's key or is refused
+            // as a changed key.
+            "victim]:2200 ssh-ed25519 AAAA\n[node1",
+            // A space makes russh read `plaintext` as the key field, which then
+            // fails to parse, so the host stays permanently unconnectable with
+            // only a generic "Server check failed".
+            "evil.example.com plaintext",
+            "evil.example.com\tplaintext",
+            // russh skips a line whose first byte is '#', so the entry can
+            // never match again: every connection is a fresh first use that
+            // accepts whatever key is offered and appends yet another entry,
+            // growing the file without bound.
+            "#node1.example.com",
+            // A comma writes a host list, silently pinning one server's key for
+            // every name in it.
+            "node1,node2",
+            // A leading '|' is how russh spells a hashed host field.
+            "node1|node2",
+            // OpenSSH reads this as a pattern and would match hosts the entry
+            // was never meant to cover.
+            "*.example.com",
+            "",
+            over_long.as_str(),
+        ];
+
+        for hostname in unrecordable {
+            let (_dir, path, path_str) = temp_known_hosts();
+            let result = verify_accept_new(hostname, 2200, key.public_key(), &path_str).await;
+            assert!(
+                matches!(result, Err(Error::ServerCheckFailed)),
+                "hostname {hostname:?} must be refused, got {result:?}"
+            );
+            assert!(
+                !path.exists(),
+                "hostname {hostname:?} must not cause anything to be written"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_accept_new_still_records_normal_and_ipv6_hostnames() {
+        let key = generate_key();
+
+        // Regression guard for the rejection set above: IPv6 literals, zone
+        // identifiers, the bracketed form and ordinary DNS names all have to
+        // keep working, so the character set may not grow past what actually
+        // breaks the known_hosts round trip.
+        for hostname in [
+            "node1.example.com",
+            "host-1.sub.example.com",
+            "10.0.0.1",
+            "::1",
+            "fe80::1%eth0",
+            "[::1]",
+        ] {
+            let (_dir, path, path_str) = temp_known_hosts();
+            let result = verify_accept_new(hostname, 22, key.public_key(), &path_str).await;
+            assert!(
+                matches!(result, Ok(true)),
+                "hostname {hostname:?} must still be accepted, got {result:?}"
+            );
+            assert_eq!(
+                entry_lines(&path).len(),
+                1,
+                "hostname {hostname:?} must record exactly one entry"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_strict_mode_rejects_hostname_that_cannot_be_recorded() {
+        // Strict mode never records, so it cannot be poisoned, but it shares
+        // the guard so both modes fail for the same stated reason instead of
+        // reporting a misleading "not in known_hosts" for a hostname that
+        // could never have matched a well-formed entry anyway.
+        let (_dir, _path, path_str) = temp_known_hosts();
+        let key = generate_key();
+
+        // `handler_for` hardcodes a valid hostname, so build the handler here.
+        let mut handler = ClientHandler::new(
+            "evil.example.com plaintext".to_string(),
+            "127.0.0.1:22".parse().unwrap(),
+            ServerCheckMethod::KnownHostsFile(path_str),
+        );
+        let result = handler.check_server_key(key.public_key()).await;
+        assert!(
+            matches!(result, Err(Error::ServerCheckFailed)),
+            "strict mode must refuse an unrecordable hostname, got {result:?}"
+        );
     }
 }
