@@ -541,41 +541,34 @@ impl Handler for ClientHandler {
                 Ok(pk == *server_public_key)
             }
             ServerCheckMethod::KnownHostsFile(known_hosts_path) => {
-                russh::keys::check_known_hosts_path(
+                super::host_verification::verify_known_hosts_file(
                     &self.hostname,
                     self.host.port(),
                     server_public_key,
                     known_hosts_path,
                 )
-                .map_err(|e| {
-                    super::host_verification::map_known_hosts_error(
-                        &self.hostname,
-                        self.host.port(),
-                        server_public_key,
-                        known_hosts_path,
-                        e,
-                    )
-                })
             }
             ServerCheckMethod::DefaultKnownHostsFile => {
-                russh::keys::check_known_hosts(&self.hostname, self.host.port(), server_public_key)
-                    .map_err(|e| {
-                        // The changed-key banner prints an `ssh-keygen -f
-                        // "<file>"` hint, so it needs the resolved path: a
-                        // literal `~/.ssh/known_hosts` is not expanded inside
-                        // the quotes the command requires.
-                        let known_hosts_display =
-                            crate::ssh::known_hosts::get_default_known_hosts_path()
-                                .map(|p| p.to_string_lossy().into_owned())
-                                .unwrap_or_else(|| "~/.ssh/known_hosts".to_string());
-                        super::host_verification::map_known_hosts_error(
-                            &self.hostname,
-                            self.host.port(),
-                            server_public_key,
-                            &known_hosts_display,
-                            e,
-                        )
-                    })
+                // Resolve the default path here rather than letting russh
+                // resolve it internally, so the check and the changed-key
+                // banner's `ssh-keygen -f "<file>"` hint agree on one path and
+                // both modes share `verify_known_hosts_file`. No home
+                // directory means no trust state at all, so fail closed.
+                let Some(known_hosts_path) =
+                    crate::ssh::known_hosts::get_default_known_hosts_path()
+                else {
+                    tracing::error!(
+                        "Cannot determine the known_hosts path; rejecting host key for '{}'",
+                        self.hostname
+                    );
+                    return Err(super::Error::ServerCheckFailed);
+                };
+                super::host_verification::verify_known_hosts_file(
+                    &self.hostname,
+                    self.host.port(),
+                    server_public_key,
+                    &known_hosts_path.to_string_lossy(),
+                )
             }
             ServerCheckMethod::AcceptNewKnownHostsFile(known_hosts_path) => {
                 super::host_verification::verify_accept_new(

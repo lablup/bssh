@@ -15,14 +15,18 @@
 //! Trust On First Use (TOFU) host key verification.
 //!
 //! Implements the `accept-new` host key checking mode (#239): a host key that
-//! matches its known_hosts entry is accepted, an unknown host is recorded in
-//! the known_hosts file and accepted, and a key that conflicts with an existing
-//! entry is rejected with an OpenSSH-style warning. The recording itself is
-//! delegated to `russh::keys::known_hosts::learn_known_hosts_path`, which
-//! handles entry formatting (including the `[host]:port` form for non-22
-//! ports) and file creation; this module adds the trust decision, restrictive
-//! permissions on newly created files, and serialization of concurrent
-//! first-time connections.
+//! matches any key recorded for the host is accepted, an unknown host is
+//! recorded in the known_hosts file and accepted, and a key offered for a host
+//! that has recorded keys, none of which match, is rejected with an
+//! OpenSSH-style warning. The recording itself is delegated to
+//! `russh::keys::known_hosts::learn_known_hosts_path`, which handles entry
+//! formatting (including the `[host]:port` form for non-22 ports) and file
+//! creation; this module adds the trust decision, restrictive permissions on
+//! newly created files, and serialization of concurrent first-time connections.
+//!
+//! The known_hosts lookup itself ([`lookup_known_host`]) also backs strict
+//! (`yes`) mode through [`verify_known_hosts_file`], so both modes agree on
+//! which keys verify and which count as changed.
 
 use russh::keys::{Algorithm, HashAlg, PublicKey};
 use std::path::Path;
@@ -45,12 +49,66 @@ use tokio::sync::Mutex;
 /// blocking runtime worker threads.
 static KNOWN_HOSTS_LOCK: Mutex<()> = Mutex::const_new(());
 
+/// The outcome of looking a host up in a known_hosts file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KnownHostLookup {
+    /// One of the host's recorded keys is the offered key.
+    Match,
+    /// The host has recorded keys and none of them is the offered key.
+    /// `line` is the entry to report as the offending one.
+    Conflict { line: usize },
+    /// The host has no recorded keys at all.
+    Unknown,
+}
+
+/// Look `hostname`/`port` up in `known_hosts_path` using OpenSSH's matching
+/// rule: the host is trusted when *any* key recorded for it equals the offered
+/// key, and only a host that has recorded keys with none matching counts as
+/// changed.
+///
+/// This replaces `russh::keys::check_known_hosts_path`, which collects its
+/// per-line results with `collect::<Result<Vec<bool>, _>>()` and so reports
+/// `Err(KeyChanged)` as soon as *any* same-algorithm entry for the host
+/// differs, even when another entry holds exactly the offered key. A host that
+/// legitimately carries several keys of one algorithm (a stale entry kept
+/// beside a rotated one, or a comma-separated cluster line beside a per-node
+/// line) would otherwise be rejected with the man-in-the-middle banner where
+/// OpenSSH's `check_key_in_hostkeys` accepts. Reading the entries directly also
+/// parses the file once instead of twice on the unknown-host path.
+fn lookup_known_host(
+    hostname: &str,
+    port: u16,
+    server_public_key: &PublicKey,
+    known_hosts_path: &str,
+) -> Result<KnownHostLookup, russh::keys::Error> {
+    let recorded =
+        russh::keys::known_hosts::known_host_keys_path(hostname, port, known_hosts_path)?;
+
+    if recorded.iter().any(|(_, key)| key == server_public_key) {
+        return Ok(KnownHostLookup::Match);
+    }
+
+    // Report the line of an entry with the same key algorithm when there is
+    // one, since that is the entry OpenSSH would call the offending key. Fall
+    // back to the host's first entry so an algorithm-only conflict (the
+    // alternate-algorithm pinning bypass) still points at a real line.
+    let offending = recorded
+        .iter()
+        .find(|(_, key)| key.algorithm() == server_public_key.algorithm())
+        .or_else(|| recorded.first());
+
+    Ok(match offending {
+        Some(&(line, _)) => KnownHostLookup::Conflict { line },
+        None => KnownHostLookup::Unknown,
+    })
+}
+
 /// Verify a server key in accept-new (TOFU) mode against `known_hosts_path`.
 ///
-/// Returns `Ok(true)` when the key matches an existing entry or the host had no
-/// entry at all (in which case the key is recorded first). Returns
-/// [`super::Error::HostKeyChanged`] when any entry for the host already exists
-/// and does not match the offered key, without modifying the file.
+/// Returns `Ok(true)` when the key matches any of the host's recorded keys, or
+/// when the host has no recorded keys at all (in which case the key is recorded
+/// first). Returns [`super::Error::HostKeyChanged`] when the host has recorded
+/// keys and none of them matches the offered key, without modifying the file.
 pub(super) async fn verify_accept_new(
     hostname: &str,
     port: u16,
@@ -59,59 +117,65 @@ pub(super) async fn verify_accept_new(
 ) -> Result<bool, super::Error> {
     let _guard = KNOWN_HOSTS_LOCK.lock().await;
 
-    match russh::keys::check_known_hosts_path(hostname, port, server_public_key, known_hosts_path) {
-        Ok(true) => Ok(true),
-        // `check_known_hosts_path` reports `Err(KeyChanged)` only when an entry
-        // for the host exists *with the same key algorithm* but a different
-        // key. A hostname whose entries are all of some other algorithm
-        // therefore also lands here, indistinguishable from a hostname with no
-        // entry at all, so "unknown host" cannot be inferred from this arm
-        // alone; the entries for the host have to be looked at directly.
-        Ok(false) => {
-            match russh::keys::known_hosts::known_host_keys_path(hostname, port, known_hosts_path) {
-                // Unreadable or malformed known_hosts. `check_known_hosts_path`
-                // parses the same lines, so it would normally have failed first;
-                // failing closed here keeps the fallthrough from recording.
-                Err(e) => Err(map_known_hosts_error(
-                    hostname,
-                    port,
-                    server_public_key,
-                    known_hosts_path,
-                    e,
-                )),
-                Ok(existing) => match existing.first() {
-                    // The host is pinned, just under a different key algorithm.
-                    // Recording the offered key alongside the existing entry would
-                    // hand an active man-in-the-middle a complete bypass of
-                    // pinning: SSH negotiation selects the first host key
-                    // algorithm on the client's list that the server also
-                    // supports, so an attacker who advertises support for only an
-                    // algorithm the real host has not used yet gets to choose that
-                    // algorithm and would then be trusted on "first" use. OpenSSH
-                    // resists this by reordering its host key algorithm proposal
-                    // per host to prefer already-known types
-                    // (`order_hostkeyalgs`), which russh cannot do per host, so the
-                    // protection has to live in this check: an existing entry that
-                    // does not match is treated as a changed key, reported against
-                    // the first conflicting line.
-                    Some(&(line, _)) => Err(map_known_hosts_error(
-                        hostname,
-                        port,
-                        server_public_key,
-                        known_hosts_path,
-                        russh::keys::Error::KeyChanged { line },
-                    )),
-                    // Genuinely unknown host: trust on first use. A missing
-                    // known_hosts file also lands here because russh treats an
-                    // unreadable file as empty; `learn_known_hosts_path` creates it
-                    // on demand.
-                    None => {
-                        record_host_key(hostname, port, server_public_key, known_hosts_path);
-                        Ok(true)
-                    }
-                },
-            }
+    match lookup_known_host(hostname, port, server_public_key, known_hosts_path) {
+        Ok(KnownHostLookup::Match) => Ok(true),
+        // The host is pinned and the offered key is not one of its recorded
+        // keys. That covers both a genuine key change and a key offered under
+        // an algorithm the host has not used yet: recording the latter
+        // alongside the existing entry would hand an active man-in-the-middle a
+        // complete bypass of pinning, because SSH negotiation lets the server
+        // steer the choice of host key algorithm and OpenSSH's per-host
+        // reordering of that proposal (`order_hostkeyalgs`) is not available
+        // through russh.
+        Ok(KnownHostLookup::Conflict { line }) => Err(map_known_hosts_error(
+            hostname,
+            port,
+            server_public_key,
+            known_hosts_path,
+            russh::keys::Error::KeyChanged { line },
+        )),
+        // Genuinely unknown host: trust on first use. A missing known_hosts
+        // file also lands here because russh treats an unopenable file as
+        // empty; `learn_known_hosts_path` creates it on demand.
+        Ok(KnownHostLookup::Unknown) => {
+            record_host_key(hostname, port, server_public_key, known_hosts_path);
+            Ok(true)
         }
+        // Unreadable or malformed known_hosts: fail closed rather than record.
+        Err(e) => Err(map_known_hosts_error(
+            hostname,
+            port,
+            server_public_key,
+            known_hosts_path,
+            e,
+        )),
+    }
+}
+
+/// Verify a server key against `known_hosts_path` without recording anything,
+/// for strict (`yes`) mode.
+///
+/// Returns `Ok(false)` for a host with no recorded keys so the caller's own
+/// unknown-host rejection applies, `Ok(true)` when one of the host's recorded
+/// keys is the offered key, and [`super::Error::HostKeyChanged`] when the host
+/// is pinned and none of its keys match. Shares [`lookup_known_host`] with
+/// accept-new so both modes agree on what "changed" means.
+pub(super) fn verify_known_hosts_file(
+    hostname: &str,
+    port: u16,
+    server_public_key: &PublicKey,
+    known_hosts_path: &str,
+) -> Result<bool, super::Error> {
+    match lookup_known_host(hostname, port, server_public_key, known_hosts_path) {
+        Ok(KnownHostLookup::Match) => Ok(true),
+        Ok(KnownHostLookup::Unknown) => Ok(false),
+        Ok(KnownHostLookup::Conflict { line }) => Err(map_known_hosts_error(
+            hostname,
+            port,
+            server_public_key,
+            known_hosts_path,
+            russh::keys::Error::KeyChanged { line },
+        )),
         Err(e) => Err(map_known_hosts_error(
             hostname,
             port,
@@ -441,6 +505,133 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_accept_new_accepts_key_matching_any_recorded_entry() {
+        let (_dir, path, path_str) = temp_known_hosts();
+        let stale = generate_key();
+        let current = generate_key();
+
+        // Two ED25519 entries for one host: a stale key kept beside the rotated
+        // one. OpenSSH's `check_key_in_hostkeys` returns HOST_OK as soon as
+        // *any* key recorded for the host matches, so both of these keys
+        // verify. russh's `check_known_hosts_path` instead collects its
+        // per-line results with `collect::<Result<Vec<bool>, _>>()`, so a
+        // non-matching same-algorithm entry short-circuits the whole check into
+        // `Err(KeyChanged)` no matter which line holds the matching key. That
+        // is why the entries are looked up directly here.
+        std::fs::write(
+            &path,
+            format!(
+                "node1.example.com {}\nnode1.example.com {}\n",
+                stale.public_key().to_openssh().unwrap(),
+                current.public_key().to_openssh().unwrap()
+            ),
+        )
+        .unwrap();
+        let recorded = entry_lines(&path);
+        assert_eq!(recorded.len(), 2, "the fixture must hold two entries");
+
+        let result =
+            verify_accept_new("node1.example.com", 22, current.public_key(), &path_str).await;
+        assert!(
+            matches!(result, Ok(true)),
+            "a key matching the second entry must be accepted, got {result:?}"
+        );
+        assert_eq!(
+            entry_lines(&path),
+            recorded,
+            "an already-recorded key must not be appended again"
+        );
+
+        // The stale key is still a recorded key for the host, so OpenSSH keeps
+        // accepting it until the operator removes that entry.
+        let result =
+            verify_accept_new("node1.example.com", 22, stale.public_key(), &path_str).await;
+        assert!(
+            matches!(result, Ok(true)),
+            "a key matching the first entry must be accepted, got {result:?}"
+        );
+        assert_eq!(entry_lines(&path), recorded);
+    }
+
+    #[tokio::test]
+    async fn test_accept_new_accepts_per_host_key_beside_shared_cluster_entry() {
+        let (_dir, path, path_str) = temp_known_hosts();
+        let shared = generate_key();
+        let own = generate_key();
+
+        // Cluster-style known_hosts: one comma-separated line pins a shared key
+        // for every node, and a later line pins node2's own key. OpenSSH
+        // matches the host against both lines and accepts either key. The old
+        // `check_known_hosts_path` call rejected this layout with the
+        // man-in-the-middle banner, and pointed at the shared line rather than
+        // at any entry that actually conflicted.
+        std::fs::write(
+            &path,
+            format!(
+                "node1,node2,node3 {}\nnode2 {}\n",
+                shared.public_key().to_openssh().unwrap(),
+                own.public_key().to_openssh().unwrap()
+            ),
+        )
+        .unwrap();
+        let recorded = entry_lines(&path);
+
+        let result = verify_accept_new("node2", 22, own.public_key(), &path_str).await;
+        assert!(
+            matches!(result, Ok(true)),
+            "node2's own pinned key must be accepted, got {result:?}"
+        );
+        assert_eq!(
+            entry_lines(&path),
+            recorded,
+            "nothing may be appended for an already-pinned host"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_accept_new_conflict_reports_same_algorithm_line() {
+        let (_dir, path, path_str) = temp_known_hosts();
+        let stale = generate_key();
+        let imposter = generate_key();
+
+        // An RSA entry precedes the stale ED25519 one. OpenSSH names the key of
+        // the same type as the offending one, so the banner must point at line
+        // 2 rather than at the host's first entry, which is a key the operator
+        // would then be told to delete for no reason.
+        std::fs::write(
+            &path,
+            format!(
+                "node1.example.com {}\nnode1.example.com {}\n",
+                rsa_public_key().to_openssh().unwrap(),
+                stale.public_key().to_openssh().unwrap()
+            ),
+        )
+        .unwrap();
+        let recorded = entry_lines(&path);
+        assert_eq!(recorded.len(), 2, "the fixture must hold two entries");
+
+        let result =
+            verify_accept_new("node1.example.com", 22, imposter.public_key(), &path_str).await;
+        match result {
+            Err(Error::HostKeyChanged { host, port, line }) => {
+                assert_eq!(host, "node1.example.com");
+                assert_eq!(port, 22);
+                assert_eq!(
+                    line, 2,
+                    "the same-algorithm entry must be reported as the offending one"
+                );
+            }
+            other => panic!("expected HostKeyChanged, got {other:?}"),
+        }
+
+        assert_eq!(
+            entry_lines(&path),
+            recorded,
+            "a conflicting key must not be recorded"
+        );
+    }
+
+    #[tokio::test]
     async fn test_changed_key_error_carries_connection_port() {
         // The client-facing guidance messages build `ssh-keygen -R
         // "[host]:port"` out of this port, so it has to be the port the
@@ -652,6 +843,35 @@ mod tests {
         let mut handler = handler_for(ServerCheckMethod::KnownHostsFile(path_str));
         let result = handler.check_server_key(original.public_key()).await;
         assert!(matches!(result, Ok(true)));
+    }
+
+    #[tokio::test]
+    async fn test_strict_mode_accepts_key_matching_any_recorded_entry() {
+        let (_dir, path, path_str) = temp_known_hosts();
+        let stale = generate_key();
+        let current = generate_key();
+
+        // Strict mode shares the lookup with accept-new, so both modes agree on
+        // what "changed" means. A stale ED25519 entry kept beside the rotated
+        // one is a layout OpenSSH accepts, and short-circuiting on the
+        // non-matching same-algorithm line would reject the connection here just
+        // as it did in accept-new.
+        std::fs::write(
+            &path,
+            format!(
+                "node1.example.com {}\nnode1.example.com {}\n",
+                stale.public_key().to_openssh().unwrap(),
+                current.public_key().to_openssh().unwrap()
+            ),
+        )
+        .unwrap();
+
+        let mut handler = handler_for(ServerCheckMethod::KnownHostsFile(path_str));
+        let result = handler.check_server_key(current.public_key()).await;
+        assert!(
+            matches!(result, Ok(true)),
+            "strict mode must accept a key matching any recorded entry, got {result:?}"
+        );
     }
 
     #[tokio::test]
