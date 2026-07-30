@@ -21,6 +21,9 @@ pub mod connection;
 mod connection_tests;
 pub mod error;
 pub mod file_transfer;
+// `pub(crate)` so the client-facing error message builders in `ssh::client` can
+// reuse `known_hosts_entry_name` instead of duplicating the `[host]:port` rule.
+pub(crate) mod host_verification;
 mod to_socket_addrs_with_hostname;
 
 // Re-export public API types for backward compatibility

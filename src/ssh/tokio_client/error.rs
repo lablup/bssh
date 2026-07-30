@@ -23,6 +23,31 @@ pub enum Error {
     CommandDidntExit,
     #[error("Server check failed")]
     ServerCheckFailed,
+    /// `port` is not interpolated into the `Display` text, but carrying it is
+    /// what lets the client-facing messages name the actual known_hosts entry
+    /// (`[host]:port` for non-standard ports) in their `ssh-keygen -R`
+    /// remediation hint.
+    #[error(
+        "Host key for '{host}' has changed and no longer matches the known_hosts entry at line {line}"
+    )]
+    HostKeyChanged {
+        host: String,
+        port: u16,
+        line: usize,
+    },
+    /// The offered key exactly matches a key an operator explicitly
+    /// blocklisted with a known_hosts `@revoked` marker line. `port` is
+    /// carried for the same reason `HostKeyChanged` carries it (naming the
+    /// actual known_hosts entry in client-facing guidance), but unlike a
+    /// changed key there is no `ssh-keygen -R` remediation to suggest: the
+    /// marker was placed deliberately, and removing it would silence the
+    /// warning rather than fix anything.
+    #[error("Host key for '{host}' is explicitly revoked by the known_hosts entry at line {line}")]
+    HostKeyRevoked {
+        host: String,
+        port: u16,
+        line: usize,
+    },
     #[error("SSH error occurred: {0}")]
     SshError(#[from] russh::Error),
     #[error("Send error")]

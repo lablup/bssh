@@ -214,10 +214,7 @@ pub(super) async fn connect_to_destination(
 
     // Create SSH client over the tunnel stream with keepalive settings
     let config = Arc::new(ssh_connection_config.to_russh_config());
-    let check_method = match strict_mode {
-        StrictHostKeyChecking::No => crate::ssh::tokio_client::ServerCheckMethod::NoCheck,
-        _ => crate::ssh::known_hosts::get_check_method(strict_mode),
-    };
+    let check_method = crate::ssh::known_hosts::get_check_method(strict_mode);
 
     let socket_addr: SocketAddr = format!("{destination_host}:{destination_port}")
         .to_socket_addrs()

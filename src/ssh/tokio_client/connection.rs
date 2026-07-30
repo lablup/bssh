@@ -541,25 +541,43 @@ impl Handler for ClientHandler {
                 Ok(pk == *server_public_key)
             }
             ServerCheckMethod::KnownHostsFile(known_hosts_path) => {
-                let result = russh::keys::check_known_hosts_path(
+                super::host_verification::verify_known_hosts_file(
                     &self.hostname,
                     self.host.port(),
                     server_public_key,
                     known_hosts_path,
                 )
-                .map_err(|_| super::Error::ServerCheckFailed)?;
-
-                Ok(result)
             }
             ServerCheckMethod::DefaultKnownHostsFile => {
-                let result = russh::keys::check_known_hosts(
+                // Resolve the default path here rather than letting russh
+                // resolve it internally, so the check and the changed-key
+                // banner's `ssh-keygen -f "<file>"` hint agree on one path and
+                // both modes share `verify_known_hosts_file`. No home
+                // directory means no trust state at all, so fail closed.
+                let Some(known_hosts_path) =
+                    crate::ssh::known_hosts::get_default_known_hosts_path()
+                else {
+                    tracing::error!(
+                        "Cannot determine the known_hosts path; rejecting host key for '{}'",
+                        self.hostname
+                    );
+                    return Err(super::Error::ServerCheckFailed);
+                };
+                super::host_verification::verify_known_hosts_file(
                     &self.hostname,
                     self.host.port(),
                     server_public_key,
+                    &known_hosts_path.to_string_lossy(),
                 )
-                .map_err(|_| super::Error::ServerCheckFailed)?;
-
-                Ok(result)
+            }
+            ServerCheckMethod::AcceptNewKnownHostsFile(known_hosts_path) => {
+                super::host_verification::verify_accept_new(
+                    &self.hostname,
+                    self.host.port(),
+                    server_public_key,
+                    known_hosts_path,
+                )
+                .await
             }
         }
     }

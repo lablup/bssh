@@ -49,6 +49,31 @@ fn connect_error_message(e: &crate::ssh::tokio_client::Error) -> Option<String> 
             "Host key verification failed: the server's host key was not recognized or has changed"
                 .to_string(),
         ),
+        crate::ssh::tokio_client::Error::HostKeyChanged { host, port, .. } => {
+            // Name the entry as known_hosts records it, so the command also
+            // works for non-standard ports, and double quote it so zsh does not
+            // reject the unmatched `[...]` glob. No `-f` here: this path has no
+            // known_hosts path to hand, and production always uses the default
+            // file, which `ssh-keygen` picks itself.
+            let entry = crate::ssh::tokio_client::host_verification::known_hosts_entry_name(
+                host, *port,
+            );
+            Some(format!(
+                "Possible man-in-the-middle attack: verify the server's new key out of band, or remove the old entry with 'ssh-keygen -R \"{entry}\"' if the change is expected"
+            ))
+        }
+        // Unlike `HostKeyChanged`, there is no `ssh-keygen -R` remediation to
+        // offer: the marker was placed deliberately to blocklist this exact
+        // key, and the entry it points at is the `@revoked` line itself, not
+        // a stale pin to remove.
+        crate::ssh::tokio_client::Error::HostKeyRevoked { .. } => Some(
+            "The offered host key matches a key explicitly revoked in known_hosts; do not connect unless you can independently verify the server's identity out of band"
+                .to_string(),
+        ),
+        crate::ssh::tokio_client::Error::SshError(russh::Error::UnknownKey) => Some(
+            "The host is not in known_hosts and strict host key checking is enabled; connect once with '--strict-host-key-checking accept-new' or add the key manually"
+                .to_string(),
+        ),
         crate::ssh::tokio_client::Error::KeyInvalid(_) => {
             Some("Check the key file format and passphrase".to_string())
         }
@@ -562,6 +587,22 @@ mod tests {
             crate::ssh::tokio_client::Error::ServerCheckFailed,
             crate::ssh::tokio_client::Error::AgentConnectionFailed,
             crate::ssh::tokio_client::Error::AgentNoIdentities,
+            crate::ssh::tokio_client::Error::HostKeyChanged {
+                host: "node1.example.com".to_string(),
+                port: 22,
+                line: 3,
+            },
+            crate::ssh::tokio_client::Error::HostKeyChanged {
+                host: "node1.example.com".to_string(),
+                port: 2222,
+                line: 3,
+            },
+            crate::ssh::tokio_client::Error::HostKeyRevoked {
+                host: "node1.example.com".to_string(),
+                port: 22,
+                line: 3,
+            },
+            crate::ssh::tokio_client::Error::SshError(russh::Error::UnknownKey),
         ] {
             let message = connect_error_message(&e).expect("variant adds guidance");
             assert!(
@@ -569,5 +610,89 @@ mod tests {
                 "context message must not end with a period, got: {message}"
             );
         }
+    }
+
+    #[test]
+    fn test_connect_error_message_host_key_changed_adds_guidance_without_echo() {
+        // The changed-key context layer must add remediation guidance (which
+        // host entry to remove) without restating the cause's own wording,
+        // which would render twice through anyhow's `{:#}` form (#239, #238).
+        let e = crate::ssh::tokio_client::Error::HostKeyChanged {
+            host: "node1.example.com".to_string(),
+            port: 22,
+            line: 7,
+        };
+        let cause_text = e.to_string();
+        let message = connect_error_message(&e).expect("HostKeyChanged adds guidance");
+        assert!(
+            message.contains("ssh-keygen -R \"node1.example.com\""),
+            "guidance must include the removal command, got: {message}"
+        );
+        assert!(
+            !message.contains("has changed and no longer matches"),
+            "context must not restate the cause, got: {message}"
+        );
+
+        let rendered = format!("{:#}", anyhow::Error::new(e).context(message));
+        assert_eq!(
+            rendered.matches(cause_text.as_str()).count(),
+            1,
+            "cause text should appear exactly once, got: {rendered}"
+        );
+        assert!(
+            rendered.contains("line 7"),
+            "the conflicting line number must survive into the chain, got: {rendered}"
+        );
+    }
+
+    #[test]
+    fn test_connect_error_message_host_key_changed_names_port_qualified_entry() {
+        // known_hosts records a non-standard port as `[host]:port`, so
+        // `ssh-keygen -R host` would remove nothing and leave the user stuck.
+        // The guidance must name the entry that actually exists, quoted so the
+        // unmatched `[...]` glob does not make zsh reject the command.
+        let e = crate::ssh::tokio_client::Error::HostKeyChanged {
+            host: "node1.example.com".to_string(),
+            port: 2222,
+            line: 7,
+        };
+        let message = connect_error_message(&e).expect("HostKeyChanged adds guidance");
+        assert!(
+            message.contains("ssh-keygen -R \"[node1.example.com]:2222\""),
+            "guidance must name the port-qualified entry, got: {message}"
+        );
+        assert!(
+            !message.contains("has changed and no longer matches"),
+            "context must not restate the cause, got: {message}"
+        );
+    }
+
+    #[test]
+    fn test_connect_error_message_host_key_revoked_adds_guidance_without_echo() {
+        // Same invariant as HostKeyChanged: the context layer adds guidance
+        // without restating the cause's own wording, which would otherwise
+        // render twice through anyhow's `{:#}` form (#239, #238).
+        let e = crate::ssh::tokio_client::Error::HostKeyRevoked {
+            host: "node1.example.com".to_string(),
+            port: 22,
+            line: 7,
+        };
+        let cause_text = e.to_string();
+        let message = connect_error_message(&e).expect("HostKeyRevoked adds guidance");
+        assert!(
+            message.contains("explicitly revoked"),
+            "guidance must warn about revocation, got: {message}"
+        );
+        assert!(
+            !message.contains("is explicitly revoked by the known_hosts entry at line"),
+            "context must not restate the cause, got: {message}"
+        );
+
+        let rendered = format!("{:#}", anyhow::Error::new(e).context(message));
+        assert_eq!(
+            rendered.matches(cause_text.as_str()).count(),
+            1,
+            "cause text should appear exactly once, got: {rendered}"
+        );
     }
 }

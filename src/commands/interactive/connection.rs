@@ -614,6 +614,37 @@ mod tests {
     }
 
     #[test]
+    fn test_host_key_changed_does_not_trigger_fallback() {
+        // A changed host key is a possible man-in-the-middle, not an auth
+        // problem; retrying with a password would hand credentials to the
+        // untrusted endpoint (#239).
+        let error = SshError::HostKeyChanged {
+            host: "node1.example.com".to_string(),
+            port: 22,
+            line: 3,
+        };
+        assert!(
+            !is_auth_error_for_password_fallback(&error),
+            "HostKeyChanged should NOT trigger password fallback (host key issue)"
+        );
+    }
+
+    #[test]
+    fn test_host_key_revoked_does_not_trigger_fallback() {
+        // Same reasoning as HostKeyChanged: a revoked host key is a possible
+        // man-in-the-middle, not an auth problem (#239).
+        let error = SshError::HostKeyRevoked {
+            host: "node1.example.com".to_string(),
+            port: 22,
+            line: 3,
+        };
+        assert!(
+            !is_auth_error_for_password_fallback(&error),
+            "HostKeyRevoked should NOT trigger password fallback (host key issue)"
+        );
+    }
+
+    #[test]
     fn test_io_error_does_not_trigger_fallback() {
         let error = SshError::IoError(std::io::Error::new(
             std::io::ErrorKind::ConnectionRefused,
