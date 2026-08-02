@@ -16,7 +16,7 @@
 
 use anyhow::Result;
 
-use crate::node::Node;
+use crate::node::{Node, parse_node_spec};
 use crate::ssh::ssh_config::SshConfig;
 
 use super::types::{Cluster, Config, JumpHostConfig, NodeConfig};
@@ -51,12 +51,18 @@ impl Config {
 
                     let default_port = cluster.defaults.port.or(self.defaults.port).unwrap_or(22);
 
-                    Node::parse(&expanded_host, default_user.as_deref()).map(|mut n| {
-                        if !expanded_host.contains(':') {
-                            n.port = default_port;
-                        }
-                        n
-                    })?
+                    let spec = parse_node_spec(&expanded_host)?;
+                    let username = spec
+                        .user
+                        .map(str::to_string)
+                        .or(default_user)
+                        .unwrap_or_else(get_current_username);
+
+                    Node::new(
+                        spec.host.to_string(),
+                        spec.port.unwrap_or(default_port),
+                        username,
+                    )
                 }
                 NodeConfig::Detailed {
                     host, port, user, ..
@@ -76,7 +82,13 @@ impl Config {
                         .or(self.defaults.port)
                         .unwrap_or(22);
 
-                    Node::new(expanded_host, port, username)
+                    let normalized_host = if expanded_host.starts_with('[') {
+                        parse_node_spec(&expanded_host)?.host.to_string()
+                    } else {
+                        expanded_host
+                    };
+
+                    Node::new(normalized_host, port, username)
                 }
             };
 
