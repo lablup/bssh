@@ -328,11 +328,11 @@ Print help information
 .BR \-V ", " \-\-version
 Print version information
 
-.SS Exit Code Strategy Options (v1.2.0+)
+.SS Exit Code Strategy Options
 .TP
 .BR \-\-require\-all\-success
-Require all nodes to succeed (v1.0-v1.1 behavior).
-By default (v1.2+), bssh returns the main rank's exit code, matching
+Require all nodes to succeed.
+By default, bssh returns the main rank's exit code, matching
 standard MPI tools like mpirun and srun. When this flag is specified,
 bssh returns exit code 0 only if ALL nodes succeed, and exit code 1
 if ANY node fails. This is useful for health checks and monitoring
@@ -1595,7 +1595,7 @@ Configure SSH keepalive settings to prevent idle disconnection in long-running s
 The keepalive settings apply to both the destination host and any jump hosts in the connection chain.
 .RE
 
-.SS Exit Code Handling Examples (v1.2.0+)
+.SS Exit Code Handling Examples
 
 .TP
 MPI job with intelligent error handling:
@@ -1613,7 +1613,7 @@ MPI job with intelligent error handling:
 .fi
 
 .TP
-Health check requiring all nodes (legacy behavior):
+Health check requiring all nodes:
 .nf
 .B bssh --require-all-success -C production "disk-check"
 .B if [ $? -ne 0 ]; then
@@ -1670,7 +1670,7 @@ Note: The special command prefix can be customized in the configuration file.
 .B bssh
 uses different exit code strategies depending on command-line flags.
 
-.SS Default Behavior (v1.2.0+)
+.SS Default Behavior
 Returns the exit code from the main rank (rank 0 or first node).
 This matches standard MPI tool behavior (mpirun, srun, mpiexec).
 
@@ -1713,10 +1713,10 @@ Common exit codes:
 \- Terminated by SIGTERM
 .RE
 
-.SS Legacy Behavior (--require-all-success)
+.SS All-Nodes Mode (--require-all-success)
 When using the
 .B --require-all-success
-flag, bssh uses the v1.0-v1.1 behavior:
+flag, bssh requires every node to succeed:
 
 .TP
 .B 0
@@ -1868,42 +1868,7 @@ SSH agent socket path. When set, bssh can automatically detect and use
 the SSH agent for authentication without specifying the -A flag
 
 .SH NOTES
-.SS Breaking Changes (v0.5.3+)
-.TP
-.B Cluster option changed:
-The cluster option has changed from lowercase -c to uppercase -C to avoid conflicts 
-with SSH's -c (cipher) option. Update your scripts accordingly.
-.TP
-.B Parallel option changed:
-The -p option now specifies port (SSH compatibility). For parallel connections,
-use --parallel instead.
-
-.SS Breaking Changes (v1.2.0)
-.TP
-.B Exit code behavior changed:
-The default exit code behavior has changed to match standard MPI tools.
-.RS
-.IP \(bu 2
-.B Old behavior (v1.0-v1.1):
-Returns 0 if all nodes succeeded, 1 if any node failed
-.IP \(bu 2
-.B New behavior (v1.2+):
-Returns main rank's actual exit code (matches mpirun/srun/mpiexec)
-.IP \(bu 2
-.B Migration:
-Use
-.I --require-all-success
-flag to preserve old behavior
-.IP \(bu 2
-.B Why this change?
-This change aligns bssh with industry-standard MPI tools, preserves actual exit codes
-for better error diagnosis (139=segfault, 137=OOM, etc.), enables exit-code-based
-automation in CI/CD pipelines, and improves integration with shell scripts and
-monitoring systems.
-.RE
-
-.TP
-.B Main Rank Detection:
+.SS Main Rank Detection
 The main rank is automatically identified using the following priority order:
 .RS
 .IP 1. 4

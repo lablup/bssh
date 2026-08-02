@@ -844,6 +844,10 @@ None
 ### Changed
 - Backend.AI cluster auto-detection now uses cluster SSH key configuration
 
+### Breaking Changes
+- **Cluster option**: changed from lowercase `-c` to uppercase `-C`, to avoid conflicting with SSH's `-c` (cipher) option. Scripts using `-c` for cluster selection must be updated.
+- **Parallel option**: `-p` now specifies the port, for SSH compatibility. Use `--parallel` for parallel connection count.
+
 ## [0.5.2] - 2025-08-27
 
 ### Fixed
