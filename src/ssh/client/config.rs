@@ -14,7 +14,7 @@
 
 use crate::security::Password;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
-use crate::ssh::tokio_client::SshConnectionConfig;
+use crate::ssh::tokio_client::{SshConnectionConfig, SshConnectionConfigResolver};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -32,6 +32,8 @@ pub struct ConnectionConfig<'a> {
     pub jump_hosts_spec: Option<&'a str>,
     /// SSH keepalive / inactivity settings. `None` falls back to defaults.
     pub ssh_connection_config: Option<&'a SshConnectionConfig>,
+    /// Per-host connection settings resolver used by jump chains.
+    pub ssh_connection_config_resolver: Option<&'a SshConnectionConfigResolver>,
     /// Pre-collected SSH password shared with every per-node auth task.
     ///
     /// When `use_password` is `true`, this MUST be `Some(_)`; the dispatcher

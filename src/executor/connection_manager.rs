@@ -24,7 +24,7 @@ use crate::ssh::{
     SshClient, SshConfig,
     client::{CommandResult, ConnectionConfig},
     known_hosts::StrictHostKeyChecking,
-    tokio_client::{AddressFamily, SshConnectionConfig},
+    tokio_client::{SshConnectionConfig, SshConnectionConfigResolver},
 };
 
 /// Configuration for node execution.
@@ -49,6 +49,9 @@ pub(crate) struct ExecutionConfig<'a> {
     /// Threaded through to `Client::connect_with_ssh_config` so user-configured
     /// `server_alive_interval` / `server_alive_count_max` apply to exec mode.
     pub ssh_connection_config: Option<&'a SshConnectionConfig>,
+    /// Per-host resolver used by jump chains so each hop consults its own
+    /// ssh_config Host block instead of inheriting the destination's settings.
+    pub ssh_connection_config_resolver: Option<&'a SshConnectionConfigResolver>,
 }
 
 /// Execute a command on a node with jump host support.
@@ -86,6 +89,7 @@ pub(crate) async fn execute_on_node_with_jump_hosts(
         connect_timeout_seconds: config.connect_timeout,
         jump_hosts_spec: effective_jump_hosts,
         ssh_connection_config: config.ssh_connection_config,
+        ssh_connection_config_resolver: config.ssh_connection_config_resolver,
         ssh_password: config.ssh_password.clone(),
     };
 
@@ -140,7 +144,8 @@ pub(crate) async fn upload_to_node(
     connect_timeout_seconds: Option<u64>,
     ssh_config: Option<&SshConfig>,
     pre_collected_password: Option<Arc<Password>>,
-    address_family: AddressFamily,
+    ssh_connection_config: &SshConnectionConfig,
+    ssh_connection_config_resolver: &SshConnectionConfigResolver,
 ) -> Result<()> {
     let mut client = SshClient::new(node.host.clone(), node.port, node.username.clone());
 
@@ -169,7 +174,8 @@ pub(crate) async fn upload_to_node(
                 effective_jump_hosts,
                 connect_timeout_seconds,
                 pre_collected_password,
-                address_family,
+                ssh_connection_config,
+                Some(ssh_connection_config_resolver),
             )
             .await
     } else {
@@ -184,7 +190,8 @@ pub(crate) async fn upload_to_node(
                 effective_jump_hosts,
                 connect_timeout_seconds,
                 pre_collected_password,
-                address_family,
+                ssh_connection_config,
+                Some(ssh_connection_config_resolver),
             )
             .await
     }
@@ -204,7 +211,8 @@ pub(crate) async fn download_from_node(
     connect_timeout_seconds: Option<u64>,
     ssh_config: Option<&SshConfig>,
     pre_collected_password: Option<Arc<Password>>,
-    address_family: AddressFamily,
+    ssh_connection_config: &SshConnectionConfig,
+    ssh_connection_config_resolver: &SshConnectionConfigResolver,
 ) -> Result<PathBuf> {
     let mut client = SshClient::new(node.host.clone(), node.port, node.username.clone());
 
@@ -233,7 +241,8 @@ pub(crate) async fn download_from_node(
             effective_jump_hosts,
             connect_timeout_seconds,
             pre_collected_password,
-            address_family,
+            ssh_connection_config,
+            Some(ssh_connection_config_resolver),
         )
         .await?;
 
@@ -254,7 +263,8 @@ pub async fn download_dir_from_node(
     connect_timeout_seconds: Option<u64>,
     ssh_config: Option<&SshConfig>,
     pre_collected_password: Option<Arc<Password>>,
-    address_family: AddressFamily,
+    ssh_connection_config: &SshConnectionConfig,
+    ssh_connection_config_resolver: &SshConnectionConfigResolver,
 ) -> Result<PathBuf> {
     let mut client = SshClient::new(node.host.clone(), node.port, node.username.clone());
 
@@ -281,7 +291,8 @@ pub async fn download_dir_from_node(
             effective_jump_hosts,
             connect_timeout_seconds,
             pre_collected_password,
-            address_family,
+            ssh_connection_config,
+            Some(ssh_connection_config_resolver),
         )
         .await?;
 

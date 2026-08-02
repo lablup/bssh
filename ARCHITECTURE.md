@@ -754,24 +754,24 @@ implements the OpenSSH precedence rule: command line flag, then config keyword,
 then the `any` default. `AddressFamily::from_config_value` accepts
 `any | inet | inet6` case-insensitively and warns (via `tracing`) rather than
 failing on an unrecognized value, so a configuration file OpenSSH would tolerate
-does not become a hard error. The dispatcher resolves the preference once per
-dispatch path in `app::dispatcher::resolve_address_family`.
+does not become a hard error. The dispatcher builds an
+`SshConnectionConfigResolver` from CLI overrides, YAML defaults, and the parsed
+ssh_config; exec, ping, upload, and download resolve that object for each
+target node so per-host `Host` blocks apply to the actual connection target.
 
 **Threading.** The preference rides on `SshConnectionConfig`, the struct every
 connection path already carries. `Client::connect_with_ssh_config` passes it to
 `connect_with_config_inner`, which resolves the target, filters the candidate
 list, and connects. `Any` returns the resolver's list untouched, which is what
 keeps the unflagged path byte-for-byte identical to the previous behavior.
-`JumpHostChain` and the exec, interactive, ping, and port-forwarding paths all
-inherit the setting from the same struct.
-
-The SFTP paths (`upload` / `download`) never carried a `SshConnectionConfig`;
-they relied on `establish_connection` substituting the default. They thread the
-`AddressFamily` value alone (it is `Copy`, so it crosses the per-node
-`tokio::spawn` boundary without an allocation) and rebuild that same default
-with the family applied at the connect call. `ForwardingConfig` carries its own
-copy for the forwarding-target filter, since forwarders run detached from the
-connect config.
+`JumpHostChain` receives the same resolver and resolves each jump hop against
+that hop's own host name instead of inheriting the destination's settings.
+The SFTP paths (`upload` / `download`) now receive the full resolved
+`SshConnectionConfig`, so `AddressFamily`, `Compression`,
+`ServerAliveInterval`, and `ServerAliveCountMax` follow the same per-host path
+as exec and ping. `ForwardingConfig` carries its own copy of the resolved
+address family for the forwarding-target filter, since forwarders run detached
+from the connect config.
 
 **Scope.** The constraint is a hard filter where bssh opens the socket, and a
 hint where the remote server does:

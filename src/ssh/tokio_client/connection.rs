@@ -25,6 +25,7 @@ use std::{fmt::Debug, io};
 
 use super::address_family::AddressFamily;
 use super::authentication::{AuthMethod, ServerCheckMethod};
+use crate::ssh::SshConfig;
 
 /// Default keepalive interval in seconds.
 ///
@@ -101,6 +102,129 @@ impl Default for SshConnectionConfig {
             compression: false,
             address_family: AddressFamily::Any,
         }
+    }
+}
+
+/// Resolves SSH connection settings for a concrete target host.
+///
+/// The dispatcher builds this once from the CLI flags, YAML defaults, and the
+/// parsed ssh_config. Per-node execution then calls
+/// [`resolve_for_host`](Self::resolve_for_host) at the last responsible moment
+/// so `Host <name>` blocks apply to the actual destination or jump hop instead
+/// of a once-per-dispatch fallback.
+#[derive(Debug, Clone, Default)]
+pub struct SshConnectionConfigResolver {
+    fixed_config: Option<SshConnectionConfig>,
+    ssh_config: Option<SshConfig>,
+    cli_keepalive_interval: Option<u64>,
+    cli_keepalive_max: Option<usize>,
+    yaml_keepalive_interval: Option<u64>,
+    yaml_keepalive_max: Option<usize>,
+    cli_address_family: Option<AddressFamily>,
+}
+
+impl SshConnectionConfigResolver {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn fixed(config: SshConnectionConfig) -> Self {
+        Self {
+            fixed_config: Some(config),
+            ..Self::default()
+        }
+    }
+
+    #[must_use]
+    pub fn with_ssh_config(mut self, ssh_config: Option<SshConfig>) -> Self {
+        self.ssh_config = ssh_config;
+        self
+    }
+
+    #[must_use]
+    pub fn with_cli_keepalive_interval(mut self, interval: Option<u64>) -> Self {
+        self.cli_keepalive_interval = interval;
+        self
+    }
+
+    #[must_use]
+    pub fn with_cli_keepalive_max(mut self, max: Option<usize>) -> Self {
+        self.cli_keepalive_max = max;
+        self
+    }
+
+    #[must_use]
+    pub fn with_yaml_keepalive_interval(mut self, interval: Option<u64>) -> Self {
+        self.yaml_keepalive_interval = interval;
+        self
+    }
+
+    #[must_use]
+    pub fn with_yaml_keepalive_max(mut self, max: Option<usize>) -> Self {
+        self.yaml_keepalive_max = max;
+        self
+    }
+
+    #[must_use]
+    pub fn with_cli_address_family(mut self, family: Option<AddressFamily>) -> Self {
+        if let (Some(config), Some(family)) = (self.fixed_config.as_mut(), family) {
+            config.address_family = family;
+            return self;
+        }
+        self.cli_address_family = family;
+        self
+    }
+
+    pub fn resolve_for_host(&self, hostname: &str) -> SshConnectionConfig {
+        if let Some(config) = &self.fixed_config {
+            return config.clone();
+        }
+
+        let keepalive_interval = self
+            .cli_keepalive_interval
+            .or_else(|| {
+                self.ssh_config
+                    .as_ref()
+                    .and_then(|config| config.get_int_option(Some(hostname), "serveraliveinterval"))
+                    .map(|v| v as u64)
+            })
+            .or(self.yaml_keepalive_interval)
+            .unwrap_or(DEFAULT_KEEPALIVE_INTERVAL);
+
+        let keepalive_max = self
+            .cli_keepalive_max
+            .or_else(|| {
+                self.ssh_config
+                    .as_ref()
+                    .and_then(|config| config.get_int_option(Some(hostname), "serveralivecountmax"))
+                    .map(|v| v as usize)
+            })
+            .or(self.yaml_keepalive_max)
+            .unwrap_or(DEFAULT_KEEPALIVE_MAX);
+
+        let compression = self
+            .ssh_config
+            .as_ref()
+            .and_then(|config| config.get_compression(hostname))
+            .unwrap_or(false);
+
+        let config_address_family = self
+            .ssh_config
+            .as_ref()
+            .and_then(|config| config.get_address_family(hostname));
+        let address_family = self.cli_address_family.unwrap_or_else(|| {
+            AddressFamily::resolve(false, false, config_address_family.as_deref())
+        });
+
+        SshConnectionConfig::new()
+            .with_keepalive_interval(if keepalive_interval == 0 {
+                None
+            } else {
+                Some(keepalive_interval)
+            })
+            .with_keepalive_max(keepalive_max)
+            .with_compression(compression)
+            .with_address_family(address_family)
     }
 }
 

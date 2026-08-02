@@ -60,7 +60,7 @@ pub async fn download_file(
     )
     .with_jump_hosts(params.jump_hosts.clone())
     .with_ssh_password(params.ssh_password.clone())
-    .with_address_family(params.address_family);
+    .with_ssh_connection_config_resolver(params.ssh_connection_config_resolver.clone());
     if let Some(ssh_config) = params.ssh_config {
         executor = executor.with_ssh_config(Some(ssh_config.clone()));
     }
@@ -102,6 +102,9 @@ pub async fn download_file(
         // Download the entire directory from each node
         for node in &params.nodes {
             let node_dir = validated_destination.join(node.to_string());
+            let ssh_connection_config = params
+                .ssh_connection_config_resolver
+                .resolve_for_host(&node.host);
 
             println!(
                 "\n{} {} {} {} {:?}",
@@ -125,7 +128,8 @@ pub async fn download_file(
                 None,                         // Use default connect timeout
                 params.ssh_config,            // Pass ssh_config for ProxyJump resolution
                 params.ssh_password.clone(),
-                params.address_family,
+                &ssh_connection_config,
+                &params.ssh_connection_config_resolver,
             )
             .await;
 

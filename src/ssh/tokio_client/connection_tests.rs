@@ -24,7 +24,8 @@
 
 use super::address_family::AddressFamily;
 use super::authentication::{AuthMethod, ServerCheckMethod};
-use super::connection::{Client, SshConnectionConfig};
+use super::connection::{Client, SshConnectionConfig, SshConnectionConfigResolver};
+use crate::ssh::SshConfig;
 
 #[test]
 fn test_default_compression_advertises_none_only() {
@@ -123,6 +124,75 @@ fn test_with_address_family_is_chainable_and_leaves_other_settings_alone() {
     assert_eq!(config.keepalive_interval, Some(15));
     assert_eq!(config.keepalive_max, 5);
     assert!(config.compression);
+}
+
+#[test]
+fn test_connection_config_resolver_applies_ssh_config_per_host() {
+    let ssh_config = SshConfig::parse(
+        r#"
+Host v4node
+    AddressFamily inet
+    Compression yes
+    ServerAliveInterval 11
+    ServerAliveCountMax 2
+
+Host v6node
+    AddressFamily inet6
+    Compression no
+    ServerAliveInterval 22
+    ServerAliveCountMax 4
+"#,
+    )
+    .expect("valid ssh_config");
+
+    let resolver = SshConnectionConfigResolver::new()
+        .with_ssh_config(Some(ssh_config))
+        .with_yaml_keepalive_interval(Some(30))
+        .with_yaml_keepalive_max(Some(3));
+
+    let v4 = resolver.resolve_for_host("v4node");
+    assert_eq!(v4.address_family, AddressFamily::V4);
+    assert!(v4.compression);
+    assert_eq!(v4.keepalive_interval, Some(11));
+    assert_eq!(v4.keepalive_max, 2);
+
+    let v6 = resolver.resolve_for_host("v6node");
+    assert_eq!(v6.address_family, AddressFamily::V6);
+    assert!(!v6.compression);
+    assert_eq!(v6.keepalive_interval, Some(22));
+    assert_eq!(v6.keepalive_max, 4);
+
+    let fallback = resolver.resolve_for_host("unconfigured");
+    assert_eq!(fallback.address_family, AddressFamily::Any);
+    assert!(!fallback.compression);
+    assert_eq!(fallback.keepalive_interval, Some(30));
+    assert_eq!(fallback.keepalive_max, 3);
+}
+
+#[test]
+fn test_connection_config_resolver_preserves_cli_precedence() {
+    let ssh_config = SshConfig::parse(
+        r#"
+Host target
+    AddressFamily inet6
+    ServerAliveInterval 11
+    ServerAliveCountMax 2
+"#,
+    )
+    .expect("valid ssh_config");
+
+    let config = SshConnectionConfigResolver::new()
+        .with_ssh_config(Some(ssh_config))
+        .with_cli_keepalive_interval(Some(7))
+        .with_cli_keepalive_max(Some(9))
+        .with_yaml_keepalive_interval(Some(30))
+        .with_yaml_keepalive_max(Some(3))
+        .with_cli_address_family(Some(AddressFamily::V4))
+        .resolve_for_host("target");
+
+    assert_eq!(config.address_family, AddressFamily::V4);
+    assert_eq!(config.keepalive_interval, Some(7));
+    assert_eq!(config.keepalive_max, 9);
 }
 
 /// The empty-after-filter path must fail with a specific error naming the host

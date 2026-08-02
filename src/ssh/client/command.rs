@@ -76,6 +76,7 @@ impl SshClient {
             connect_timeout_seconds: None, // Use default
             jump_hosts_spec: None,         // No jump hosts
             ssh_connection_config: None,
+            ssh_connection_config_resolver: None,
             ssh_password,
         };
 
@@ -118,6 +119,7 @@ impl SshClient {
                 config.use_password,
                 config.connect_timeout_seconds,
                 config.ssh_connection_config,
+                config.ssh_connection_config_resolver,
                 config.ssh_password.clone(),
             )
             .await?;
@@ -231,6 +233,7 @@ impl SshClient {
                 config.use_password,
                 config.connect_timeout_seconds,
                 config.ssh_connection_config,
+                config.ssh_connection_config_resolver,
                 config.ssh_password.clone(),
             )
             .await?;
@@ -345,6 +348,7 @@ impl SshClient {
                 config.use_password,
                 config.connect_timeout_seconds,
                 config.ssh_connection_config,
+                config.ssh_connection_config_resolver,
                 config.ssh_password.clone(),
             )
             .await?;
