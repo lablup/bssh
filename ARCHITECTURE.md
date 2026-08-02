@@ -771,8 +771,9 @@ with the family applied at the connect call. `ForwardingConfig` carries its own
 copy for the forwarding-target filter, since forwarders run detached from the
 connect config.
 
-**Scope.** The constraint is a hard filter where bssh opens the socket, and a
-hint where the remote server does:
+**Scope.** The constraint is a hard filter where bssh opens the socket, a hint
+where the remote server does, and not yet applied past the first jump hop
+(issue #248):
 
 | Path | Behavior |
 | --- | --- |
@@ -781,7 +782,7 @@ hint where the remote server does:
 | `-L` / `-D` listener | Selects the implicit bind address (`::1` / `::` under `-6`); an explicit bind address wins |
 | `-L` / SOCKS5 `-D` target | Filters the `direct-tcpip` candidate list; the remote sshd still performs the connect, so this is advisory |
 | SOCKS4 `-D` target | Unfiltered; SOCKS4 carries a literal IPv4 destination by protocol definition |
-| Jump hops past the first, and the destination behind a chain | Not constrained; those connections ride an existing channel with no local TCP connect. The family still selects the address recorded for host key verification, so known_hosts diagnostics stay consistent |
+| Jump hops past the first, and the destination behind a chain | Not yet filtered; the target is resolved locally through the same `direct-tcpip` mechanism as `-L`/SOCKS5 `-D` targets, but this change does not apply the family constraint there (scope limitation, tracked as issue #248). The family still selects the address recorded for host key verification, so known_hosts diagnostics stay consistent |
 | `-R` listener | Not constrained; the server binds it |
 | `bssh-server` | Out of scope; separate CLI |
 
