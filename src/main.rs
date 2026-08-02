@@ -16,6 +16,7 @@ use anyhow::Result;
 use bssh::cli::{
     Cli, Commands, PdshCli, has_pdsh_compat_flag, is_pdsh_compat_mode, remove_pdsh_compat_flag,
 };
+use bssh::commands::ping::PING_SSH_LEVEL_FAILURE;
 use bssh::hostlist;
 use clap::Parser;
 use glob::Pattern;
@@ -23,8 +24,11 @@ use glob::Pattern;
 mod app;
 
 use app::{
-    cache::handle_cache_stats, dispatcher::dispatch_command, initialization::initialize_app,
-    query::handle_query, utils::show_usage,
+    cache::handle_cache_stats,
+    dispatcher::dispatch_command,
+    initialization::{AppContext, initialize_app},
+    query::handle_query,
+    utils::show_usage,
 };
 
 /// Main entry point for bssh
@@ -47,6 +51,42 @@ async fn main() -> Result<()> {
 
     // Standard bssh mode
     run_bssh_mode(&args).await
+}
+
+/// Run the dispatcher and translate its result into the process exit status.
+///
+/// This is the single place where a command-level exit code becomes a process
+/// exit code. `dispatch_command` returns the code instead of exiting itself, so
+/// the mapping stays in one place instead of being scattered across command
+/// implementations.
+async fn dispatch_and_exit(cli: &Cli, ctx: &AppContext) -> Result<()> {
+    match dispatch_command(cli, ctx).await {
+        Ok(0) => Ok(()),
+        Ok(exit_code) => std::process::exit(exit_code),
+        Err(e) => Err(map_hard_failure(&cli.command, e)),
+    }
+}
+
+/// Apply the `ping` exit code contract to a hard failure.
+///
+/// `ping` reports 255 whenever bssh itself failed rather than a remote host: a
+/// configuration file that could not be loaded, a host list that resolved to
+/// nothing, or any error raised before the connectivity check could produce a
+/// per-host tally. That is OpenSSH's convention for "ssh encountered an error",
+/// and it keeps the pre-connection case distinct from the exit code 1 that means
+/// "some hosts answered and some did not".
+///
+/// Every other subcommand keeps the default behavior, where returning `Err` from
+/// `main` prints the error chain and exits 1.
+fn map_hard_failure(command: &Option<Commands>, error: anyhow::Error) -> anyhow::Error {
+    if matches!(command, Some(Commands::Ping)) {
+        // Match the format anyhow's `Termination` impl uses, since this path
+        // replaces it.
+        eprintln!("Error: {error:?}");
+        std::process::exit(PING_SSH_LEVEL_FAILURE);
+    }
+
+    error
 }
 
 /// Run in pdsh compatibility mode
@@ -87,7 +127,7 @@ async fn run_pdsh_mode(args: &[String]) -> Result<()> {
 
     // Initialize and run
     let ctx = initialize_app(&mut cli, args).await?;
-    dispatch_command(&cli, &ctx).await
+    dispatch_and_exit(&cli, &ctx).await
 }
 
 /// Handle pdsh query mode (-q)
@@ -230,9 +270,14 @@ async fn run_bssh_mode(args: &[String]) -> Result<()> {
         return Ok(());
     }
 
-    // Initialize the application and load all configurations
-    let ctx = initialize_app(&mut cli, args).await?;
+    // Initialize the application and load all configurations. A failure here is
+    // a pre-connection failure, which `ping` reports as 255.
+    let init_result = initialize_app(&mut cli, args).await;
+    let ctx = match init_result {
+        Ok(ctx) => ctx,
+        Err(e) => return Err(map_hard_failure(&cli.command, e)),
+    };
 
     // Dispatch to the appropriate command handler
-    dispatch_command(&cli, &ctx).await
+    dispatch_and_exit(&cli, &ctx).await
 }

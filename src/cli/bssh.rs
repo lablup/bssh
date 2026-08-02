@@ -340,7 +340,7 @@ pub enum Commands {
 
     #[command(
         about = "Test connectivity to hosts",
-        long_about = "Verifies SSH connectivity and authentication to all target hosts.\nReports connection status, authentication success, and response times.\nUseful for validating cluster configuration and SSH key setup.\n\nExit codes: 0 (all reachable), 1 (any unreachable)"
+        long_about = "Verifies SSH connectivity and authentication to all target hosts.\nReports per-host connection status and the reason each failure occurred.\nUseful for validating cluster configuration and SSH key setup.\n\nExit codes:\n  0    every host connected and authenticated\n  1    at least one host reachable, at least one unreachable\n  255  no host reachable, or bssh failed before connecting"
     )]
     Ping,
 
