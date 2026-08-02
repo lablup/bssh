@@ -146,6 +146,9 @@ impl Default for ForwardingConfig {
 
 impl fmt::Display for ForwardingType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // `SocketAddr`'s own `Display` brackets IPv6 addresses ([::1]:8080)
+        // and leaves IPv4 addresses unbracketed (127.0.0.1:8080), so building
+        // one from `bind_addr`/`bind_port` keeps both forms unambiguous.
         match self {
             ForwardingType::Local {
                 bind_addr,
@@ -153,7 +156,11 @@ impl fmt::Display for ForwardingType {
                 remote_host,
                 remote_port,
             } => {
-                write!(f, "{bind_addr}:{bind_port}→{remote_host}:{remote_port}")
+                write!(
+                    f,
+                    "{}→{remote_host}:{remote_port}",
+                    SocketAddr::new(*bind_addr, *bind_port)
+                )
             }
             ForwardingType::Remote {
                 bind_addr,
@@ -161,14 +168,22 @@ impl fmt::Display for ForwardingType {
                 local_host,
                 local_port,
             } => {
-                write!(f, "{bind_addr}:{bind_port}←{local_host}:{local_port}")
+                write!(
+                    f,
+                    "{}←{local_host}:{local_port}",
+                    SocketAddr::new(*bind_addr, *bind_port)
+                )
             }
             ForwardingType::Dynamic {
                 bind_addr,
                 bind_port,
                 socks_version,
             } => {
-                write!(f, "SOCKS{socks_version:?} proxy on {bind_addr}:{bind_port}")
+                write!(
+                    f,
+                    "SOCKS{socks_version:?} proxy on {}",
+                    SocketAddr::new(*bind_addr, *bind_port)
+                )
             }
         }
     }
@@ -312,5 +327,41 @@ mod tests {
             socks_version: SocksVersion::V5,
         };
         assert!(format!("{dynamic}").contains("SOCKS"));
+    }
+
+    #[test]
+    fn test_forwarding_type_display_brackets_ipv6() {
+        // IPv4 stays unbracketed.
+        let local_v4 = ForwardingType::Local {
+            bind_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            bind_port: 8080,
+            remote_host: "example.com".to_string(),
+            remote_port: 80,
+        };
+        assert_eq!(format!("{local_v4}"), "127.0.0.1:8080→example.com:80");
+
+        // IPv6 must be bracketed so `host:port` is unambiguous.
+        let local_v6 = ForwardingType::Local {
+            bind_addr: IpAddr::V6(Ipv6Addr::LOCALHOST),
+            bind_port: 8080,
+            remote_host: "example.com".to_string(),
+            remote_port: 80,
+        };
+        assert_eq!(format!("{local_v6}"), "[::1]:8080→example.com:80");
+
+        let remote_v6 = ForwardingType::Remote {
+            bind_addr: IpAddr::V6(Ipv6Addr::LOCALHOST),
+            bind_port: 9090,
+            local_host: "localhost".to_string(),
+            local_port: 22,
+        };
+        assert_eq!(format!("{remote_v6}"), "[::1]:9090←localhost:22");
+
+        let dynamic_v6 = ForwardingType::Dynamic {
+            bind_addr: IpAddr::V6(Ipv6Addr::LOCALHOST),
+            bind_port: 1080,
+            socks_version: SocksVersion::V5,
+        };
+        assert_eq!(format!("{dynamic_v6}"), "SOCKSV5 proxy on [::1]:1080");
     }
 }

@@ -18,7 +18,7 @@
 //! // Remote forwarding: remote:8080 -> localhost:80
 //! let spec = ForwardingSpec::parse_remote("8080:localhost:80").unwrap();
 //!
-//! // Dynamic SOCKS proxy on ::1:1080
+//! // Dynamic SOCKS proxy on [::1]:1080
 //! let spec = ForwardingSpec::parse_dynamic("1080", AddressFamily::V6).unwrap();
 //! ```
 

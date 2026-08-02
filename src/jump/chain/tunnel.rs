@@ -29,21 +29,26 @@ use tracing::debug;
 /// Resolve `host:port` to the `SocketAddr` handed to [`ClientHandler`].
 ///
 /// Hops past the first one connect over an already-open channel, so this
-/// address is never dialed: it supplies host key verification context and
-/// display text. When a family is forced, prefer a candidate of that family so
-/// known_hosts diagnostics name the family the user asked for. If no candidate
-/// matches, fall back to the first resolved address rather than failing, since
-/// the connection itself is unaffected by the mismatch and the remote sshd,
-/// not bssh, decides what the next hop actually connects to.
+/// particular address is never dialed: it only supplies host key verification
+/// context and display text. The channel itself is still opened locally
+/// through `open_direct_tcpip_channel` on the previous hop, but that call does
+/// not yet take the address family filter (issue #248), so the family
+/// preference resolved here has no effect on which candidate that call picks.
+/// When a family is forced, this function still prefers a candidate of that
+/// family so known_hosts diagnostics name the family the user asked for. If no
+/// candidate matches, fall back to the first resolved address rather than
+/// failing, since the connection this address describes is never dialed
+/// regardless.
+// `host:port` is deliberately left out of the messages below: every caller
+// already wraps this function with a `.with_context()` that names the host
+// and port, and repeating it here would print the same wording twice in the
+// rendered chain (see issue #238).
 fn resolve_handler_address(
     host: &str,
     port: u16,
     address_family: AddressFamily,
 ) -> Result<SocketAddr> {
-    let candidates: Vec<SocketAddr> = format!("{host}:{port}")
-        .to_socket_addrs()
-        .with_context(|| format!("Failed to resolve address: {host}:{port}"))?
-        .collect();
+    let candidates: Vec<SocketAddr> = format!("{host}:{port}").to_socket_addrs()?.collect();
 
     if address_family.is_forced()
         && let Some(addr) = address_family.first_match(&candidates)
@@ -61,7 +66,7 @@ fn resolve_handler_address(
     candidates
         .into_iter()
         .next()
-        .with_context(|| format!("No addresses resolved for: {host}:{port}"))
+        .context("No addresses resolved")
 }
 
 /// Connect to a jump host through a previous SSH connection
@@ -346,5 +351,27 @@ mod tests {
         let addr = resolve_handler_address("127.0.0.1", 22, AddressFamily::Any)
             .expect("IPv4 literal resolves");
         assert_eq!(addr.to_string(), "127.0.0.1:22");
+    }
+
+    /// Regression test for the chain-duplication defect issue #238 established
+    /// a convention against: `resolve_handler_address`'s own error must not
+    /// restate `host:port`, since every call site already wraps it with a
+    /// `.with_context()` that names the host and port.
+    #[test]
+    fn handler_address_failure_does_not_duplicate_host_port_in_the_chain() {
+        let host = "no-such-host.bssh-test.invalid";
+        let port = 22;
+
+        let err = resolve_handler_address(host, port, AddressFamily::Any)
+            .with_context(|| format!("Failed to resolve jump host address: {host}:{port}"))
+            .expect_err("a reserved .invalid hostname must not resolve");
+
+        let rendered = format!("{err:#}");
+        let needle = format!("{host}:{port}");
+        assert_eq!(
+            rendered.matches(needle.as_str()).count(),
+            1,
+            "host:port should appear exactly once in the rendered chain, got: {rendered}"
+        );
     }
 }
