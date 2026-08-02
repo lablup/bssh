@@ -143,6 +143,39 @@ mod ipv6_tests {
 
         assert!(format!("{error:#}").contains("must be enclosed in brackets"));
     }
+
+    #[tokio::test]
+    async fn ssh_destination_resolves_bracketed_ipv6() {
+        for (destination, expected_user, expected_port) in [
+            ("[::1]", None, 22),
+            ("[::1]:2222", None, 2222),
+            ("user@[::1]", Some("user"), 22),
+            ("user@[::1]:2222", Some("user"), 2222),
+            ("ssh://user@[::1]:2222", Some("user"), 2222),
+        ] {
+            let cli = Cli::parse_from(["bssh", destination]);
+            let (nodes, _) = resolve_nodes(&cli, &Config::default(), &SshConfig::new())
+                .await
+                .unwrap();
+
+            assert_eq!(nodes.len(), 1);
+            assert_eq!(nodes[0].host, "::1");
+            assert_eq!(nodes[0].port, expected_port);
+            if let Some(user) = expected_user {
+                assert_eq!(nodes[0].username, user);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn ssh_destination_rejects_bare_ipv6_with_bracket_guidance() {
+        let cli = Cli::parse_from(["bssh", "::1"]);
+        let error = resolve_nodes(&cli, &Config::default(), &SshConfig::new())
+            .await
+            .unwrap_err();
+
+        assert!(format!("{error:#}").contains("must be enclosed in brackets"));
+    }
 }
 
 /// Resolve nodes from CLI arguments and configuration
@@ -157,7 +190,7 @@ pub async fn resolve_nodes(
     // Handle SSH compatibility mode (single host)
     if cli.is_ssh_mode() {
         let (user, host, port) = cli
-            .parse_destination()
+            .parse_destination_result()?
             .ok_or_else(|| anyhow::anyhow!("Invalid destination format"))?;
 
         // Resolve using SSH config with CLI taking precedence

@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use anyhow::Context;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
@@ -512,15 +512,24 @@ impl Cli {
 
     /// Parse destination string into components (user, host, port)
     pub fn parse_destination(&self) -> Option<(Option<String>, String, Option<u16>)> {
-        let destination = self.destination.as_ref()?;
-        let destination = destination.strip_prefix("ssh://").unwrap_or(destination);
-        let spec = crate::node::parse_node_spec(destination).ok()?;
+        self.parse_destination_result().ok().flatten()
+    }
 
-        Some((
+    /// Parse destination string into components while preserving parse errors.
+    pub fn parse_destination_result(
+        &self,
+    ) -> Result<Option<(Option<String>, String, Option<u16>)>> {
+        let Some(destination) = self.destination.as_ref() else {
+            return Ok(None);
+        };
+        let destination = destination.strip_prefix("ssh://").unwrap_or(destination);
+        let spec = crate::node::parse_node_spec(destination)?;
+
+        Ok(Some((
             spec.user.map(str::to_string),
             spec.host.to_string(),
             spec.port,
-        ))
+        )))
     }
 
     /// Get effective username (from -l option, destination, or environment)
