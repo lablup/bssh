@@ -28,7 +28,9 @@ use bssh::{
     config::InteractiveMode,
     pty::PtyConfig,
     security::{Password, get_password, get_sudo_password},
-    ssh::tokio_client::{DEFAULT_KEEPALIVE_INTERVAL, DEFAULT_KEEPALIVE_MAX, SshConnectionConfig},
+    ssh::tokio_client::{
+        AddressFamily, DEFAULT_KEEPALIVE_INTERVAL, DEFAULT_KEEPALIVE_MAX, SshConnectionConfig,
+    },
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -38,9 +40,12 @@ use super::initialization::determine_use_keychain;
 use super::initialization::{AppContext, determine_ssh_key_path};
 use super::utils::format_duration;
 
-/// Build SSH connection config with keepalive and compression settings.
+/// Build SSH connection config with keepalive, compression, and address
+/// family settings.
 /// Precedence: CLI > SSH config > YAML config > defaults.
 /// `Compression` has no CLI or YAML override; it is read from ssh_config only.
+/// `AddressFamily` has no YAML override; `-4`/`-6` beat the ssh_config keyword,
+/// which beats the `any` default.
 fn build_ssh_connection_config(
     cli: &Cli,
     ctx: &AppContext,
@@ -72,6 +77,8 @@ fn build_ssh_connection_config(
         .get_compression(hostname.unwrap_or("*"))
         .unwrap_or(false);
 
+    let address_family = resolve_address_family(cli, ctx, hostname);
+
     let ssh_connection_config = SshConnectionConfig::new()
         .with_keepalive_interval(if keepalive_interval == 0 {
             None
@@ -79,16 +86,25 @@ fn build_ssh_connection_config(
             Some(keepalive_interval)
         })
         .with_keepalive_max(keepalive_max)
-        .with_compression(compression);
+        .with_compression(compression)
+        .with_address_family(address_family);
 
     tracing::debug!(
-        "SSH keepalive config: interval={:?}s, max={}, compression={}",
+        "SSH keepalive config: interval={:?}s, max={}, compression={}, address_family={}",
         ssh_connection_config.keepalive_interval,
         ssh_connection_config.keepalive_max,
-        ssh_connection_config.compression
+        ssh_connection_config.compression,
+        ssh_connection_config.address_family
     );
 
     ssh_connection_config
+}
+
+/// Resolve the effective address family with OpenSSH precedence:
+/// `-4`/`-6` beat the ssh_config `AddressFamily` keyword, which beats `any`.
+fn resolve_address_family(cli: &Cli, ctx: &AppContext, hostname: Option<&str>) -> AddressFamily {
+    let config_value = ctx.ssh_config.get_address_family(hostname.unwrap_or("*"));
+    AddressFamily::resolve(cli.ipv4, cli.ipv6, config_value.as_deref())
 }
 
 /// Decide whether `-S` (sudo-password) is meaningful for the given dispatch path.
@@ -224,6 +240,13 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
                     .get_cluster_jump_host(ctx.cluster_name.as_deref().or(cli.cluster.as_deref()))
             });
 
+            let ssh_connection_config = build_ssh_connection_config(
+                cli,
+                ctx,
+                hostname_for_ssh_config.as_deref(),
+                ctx.cluster_name.as_deref().or(cli.cluster.as_deref()),
+            );
+
             ping_nodes(
                 ctx.nodes.clone(),
                 ctx.max_parallel,
@@ -237,6 +260,7 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
                 Some(cli.connect_timeout),
                 jump_hosts,
                 ssh_password.clone(),
+                ssh_connection_config,
             )
             .await
         }
@@ -270,6 +294,11 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
                 recursive: *recursive,
                 ssh_config: Some(&ctx.ssh_config),
                 jump_hosts,
+                address_family: resolve_address_family(
+                    cli,
+                    ctx,
+                    hostname_for_ssh_config.as_deref(),
+                ),
             };
             upload_file(params, source, destination).await
         }
@@ -303,6 +332,11 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
                 recursive: *recursive,
                 ssh_config: Some(&ctx.ssh_config),
                 jump_hosts,
+                address_family: resolve_address_family(
+                    cli,
+                    ctx,
+                    hostname_for_ssh_config.as_deref(),
+                ),
             };
             download_file(params, source, destination).await
         }
@@ -620,7 +654,7 @@ async fn handle_exec_command(
             connect_timeout: Some(cli.connect_timeout),
             jump_hosts: jump_hosts.as_deref(),
             port_forwards: if cli.has_port_forwards() {
-                Some(cli.parse_port_forwards()?)
+                Some(cli.parse_port_forwards(ssh_connection_config.address_family)?)
             } else {
                 None
             },

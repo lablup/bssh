@@ -23,6 +23,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::{fmt::Debug, io};
 
+use super::address_family::AddressFamily;
 use super::authentication::{AuthMethod, ServerCheckMethod};
 
 /// Default keepalive interval in seconds.
@@ -81,6 +82,15 @@ pub struct SshConnectionConfig {
     /// [`to_russh_config`](Self::to_russh_config) for why `zlib@openssh.com`
     /// is never advertised regardless of this flag.
     pub compression: bool,
+
+    /// Which IP address family the connection may use.
+    ///
+    /// [`AddressFamily::Any`] (the default) tries every resolved address in
+    /// resolver order, which is the historical behavior. The forced variants
+    /// come from `-4`/`-6` or the ssh_config `AddressFamily` keyword and are
+    /// applied in [`Client::connect_with_ssh_config`]; see `ARCHITECTURE.md`
+    /// ("Address Family Preference") for the scope of that constraint.
+    pub address_family: AddressFamily,
 }
 
 impl Default for SshConnectionConfig {
@@ -89,6 +99,7 @@ impl Default for SshConnectionConfig {
             keepalive_interval: Some(DEFAULT_KEEPALIVE_INTERVAL),
             keepalive_max: DEFAULT_KEEPALIVE_MAX,
             compression: false,
+            address_family: AddressFamily::Any,
         }
     }
 }
@@ -140,6 +151,14 @@ impl SshConnectionConfig {
     #[must_use]
     pub fn with_compression(mut self, enabled: bool) -> Self {
         self.compression = enabled;
+        self
+    }
+
+    /// Constrain the connection to a single IP address family, mirroring
+    /// OpenSSH's `-4` / `-6` flags and the ssh_config `AddressFamily` keyword.
+    #[must_use]
+    pub fn with_address_family(mut self, family: AddressFamily) -> Self {
+        self.address_family = family;
         self
     }
 
@@ -315,6 +334,7 @@ impl Client {
             server_check,
             config,
             tcp_keepalive.as_ref(),
+            ssh_config.address_family,
         )
         .await
     }
@@ -331,9 +351,27 @@ impl Client {
         server_check: ServerCheckMethod,
         config: Config,
     ) -> Result<Self, super::Error> {
-        Self::connect_with_config_inner(addr, username, auth, server_check, config, None).await
+        Self::connect_with_config_inner(
+            addr,
+            username,
+            auth,
+            server_check,
+            config,
+            None,
+            AddressFamily::Any,
+        )
+        .await
     }
 
+    /// Resolve `addr`, apply the address family constraint, and connect to the
+    /// first candidate that answers.
+    ///
+    /// With [`AddressFamily::Any`] the candidate list is the resolver's output
+    /// untouched, in resolver order. A forced family filters that list and, if
+    /// nothing survives, fails with [`Error::NoAddressForFamily`] instead of
+    /// falling back to the other family.
+    ///
+    /// [`Error::NoAddressForFamily`]: super::Error::NoAddressForFamily
     async fn connect_with_config_inner(
         addr: impl ToSocketAddrsWithHostname,
         username: &str,
@@ -341,13 +379,33 @@ impl Client {
         server_check: ServerCheckMethod,
         config: Config,
         tcp_keepalive: Option<&socket2::TcpKeepalive>,
+        address_family: AddressFamily,
     ) -> Result<Self, super::Error> {
         let config = Arc::new(config);
 
         // Connection code inspired from std::net::TcpStream::connect and std::net::each_addr
-        let socket_addrs = addr
+        let resolved = addr
             .to_socket_addrs()
             .map_err(super::Error::AddressInvalid)?;
+        let resolved_count = resolved.len();
+        let socket_addrs = address_family.filter(resolved);
+
+        if address_family.is_forced() {
+            tracing::debug!(
+                "Address family {} forced for '{}': {} of {} resolved address(es) usable",
+                address_family,
+                addr.hostname(),
+                socket_addrs.len(),
+                resolved_count
+            );
+            if socket_addrs.is_empty() {
+                return Err(super::Error::NoAddressForFamily {
+                    host: addr.hostname(),
+                    family: address_family,
+                });
+            }
+        }
+
         let mut connect_res: Result<
             (SocketAddr, russh::client::Handle<ClientHandler>),
             super::Error,

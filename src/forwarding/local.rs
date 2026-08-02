@@ -33,7 +33,7 @@ use super::tunnel::{Tunnel, TunnelStats};
 use super::{
     ForwardingConfig, ForwardingMessage, ForwardingStats, ForwardingStatus, ForwardingType,
 };
-use crate::ssh::tokio_client::Client;
+use crate::ssh::tokio_client::{AddressFamily, Client};
 use anyhow::{Context, Result};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -308,6 +308,7 @@ impl LocalForwarder {
         let stats = Arc::clone(&self.stats);
         let cancel_token = self.cancel_token.clone();
         let buffer_size = self.config.buffer_size;
+        let address_family = self.config.address_family;
 
         tokio::spawn(async move {
             // Acquire connection semaphore permit
@@ -335,6 +336,7 @@ impl LocalForwarder {
                 &ssh_client,
                 cancel_token,
                 buffer_size,
+                address_family,
             )
             .await;
 
@@ -361,6 +363,7 @@ impl LocalForwarder {
     }
 
     /// Handle a single connection by creating SSH channel and starting tunnel
+    #[allow(clippy::too_many_arguments)]
     async fn handle_connection(
         tcp_stream: TcpStream,
         peer_addr: SocketAddr,
@@ -369,13 +372,14 @@ impl LocalForwarder {
         ssh_client: &Client,
         cancel_token: CancellationToken,
         _buffer_size: usize,
+        address_family: AddressFamily,
     ) -> Result<TunnelStats> {
         // Create SSH channel for this connection
         debug!("Creating SSH channel to {}:{}", remote_host, remote_port);
 
         let target = format!("{remote_host}:{remote_port}");
         let ssh_channel = ssh_client
-            .open_direct_tcpip_channel(target, None)
+            .open_direct_tcpip_channel_with_family(target, None, address_family)
             .await
             .with_context(|| {
                 format!("Failed to create SSH channel to {remote_host}:{remote_port}")

@@ -12,13 +12,19 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Tests for [`super::connection::SshConnectionConfig`]'s compression mapping.
+//! Tests for [`super::connection::SshConnectionConfig`]'s compression mapping
+//! and address family constraint.
 //!
 //! Regression coverage for #219: the ssh_config `Compression` directive was
 //! parsed and resolved but never consumed when building the russh client
 //! config, so `Compression yes`/`no` had no effect on the actual connection.
+//!
+//! Regression coverage for #246: `-4`/`-6` and the ssh_config `AddressFamily`
+//! keyword were parsed but never consumed on the connect path.
 
-use super::connection::SshConnectionConfig;
+use super::address_family::AddressFamily;
+use super::authentication::{AuthMethod, ServerCheckMethod};
+use super::connection::{Client, SshConnectionConfig};
 
 #[test]
 fn test_default_compression_advertises_none_only() {
@@ -95,5 +101,114 @@ fn test_with_compression_is_chainable_with_keepalive_settings() {
     assert_eq!(
         russh_config.preferred.compression.as_ref(),
         [russh::compression::ZLIB, russh::compression::NONE]
+    );
+}
+
+#[test]
+fn test_default_address_family_is_unconstrained() {
+    let config = SshConnectionConfig::default();
+    assert_eq!(config.address_family, AddressFamily::Any);
+    assert!(!config.address_family.is_forced());
+}
+
+#[test]
+fn test_with_address_family_is_chainable_and_leaves_other_settings_alone() {
+    let config = SshConnectionConfig::new()
+        .with_keepalive_interval(Some(15))
+        .with_keepalive_max(5)
+        .with_compression(true)
+        .with_address_family(AddressFamily::V6);
+
+    assert_eq!(config.address_family, AddressFamily::V6);
+    assert_eq!(config.keepalive_interval, Some(15));
+    assert_eq!(config.keepalive_max, 5);
+    assert!(config.compression);
+}
+
+/// The empty-after-filter path must fail with a specific error naming the host
+/// and the requested family, not the generic "could not resolve to any
+/// addresses". Passing a `SocketAddr` makes the candidate list exactly one
+/// address of a known family, so this exercises the real connect path in
+/// `connect_with_config_inner` without any network I/O: the filter empties the
+/// list and the function returns before the first `TcpStream::connect`.
+#[tokio::test]
+async fn test_forced_ipv6_with_no_ipv6_candidate_fails_with_specific_error() {
+    let addr: std::net::SocketAddr = "127.0.0.1:22".parse().expect("valid IPv4 socket address");
+    let config = SshConnectionConfig::new().with_address_family(AddressFamily::V6);
+
+    let err = Client::connect_with_ssh_config(
+        addr,
+        "user",
+        AuthMethod::with_password("unused"),
+        ServerCheckMethod::NoCheck,
+        &config,
+    )
+    .await
+    .expect_err("forcing IPv6 against an IPv4-only candidate must fail");
+
+    assert!(
+        matches!(
+            err,
+            super::Error::NoAddressForFamily {
+                family: AddressFamily::V6,
+                ..
+            }
+        ),
+        "expected NoAddressForFamily, got: {err:?}"
+    );
+    assert_eq!(err.to_string(), "no IPv6 address found for 127.0.0.1");
+}
+
+#[tokio::test]
+async fn test_forced_ipv4_with_no_ipv4_candidate_fails_with_specific_error() {
+    let addr: std::net::SocketAddr = "[::1]:22".parse().expect("valid IPv6 socket address");
+    let config = SshConnectionConfig::new().with_address_family(AddressFamily::V4);
+
+    let err = Client::connect_with_ssh_config(
+        addr,
+        "user",
+        AuthMethod::with_password("unused"),
+        ServerCheckMethod::NoCheck,
+        &config,
+    )
+    .await
+    .expect_err("forcing IPv4 against an IPv6-only candidate must fail");
+
+    assert!(
+        matches!(
+            err,
+            super::Error::NoAddressForFamily {
+                family: AddressFamily::V4,
+                ..
+            }
+        ),
+        "expected NoAddressForFamily, got: {err:?}"
+    );
+    assert_eq!(err.to_string(), "no IPv4 address found for ::1");
+}
+
+/// With no family forced, an unreachable address must still produce the
+/// ordinary connection error rather than the new family-specific one, proving
+/// the default path is unchanged.
+#[tokio::test]
+async fn test_unforced_family_does_not_produce_the_family_error() {
+    // Port 0 is never connectable, so this fails fast at the TCP layer without
+    // depending on anything being reachable.
+    let addr: std::net::SocketAddr = "127.0.0.1:0".parse().expect("valid IPv4 socket address");
+    let config = SshConnectionConfig::default();
+
+    let err = Client::connect_with_ssh_config(
+        addr,
+        "user",
+        AuthMethod::with_password("unused"),
+        ServerCheckMethod::NoCheck,
+        &config,
+    )
+    .await
+    .expect_err("connecting to port 0 must fail");
+
+    assert!(
+        !matches!(err, super::Error::NoAddressForFamily { .. }),
+        "the unconstrained path must never report a family mismatch, got: {err:?}"
     );
 }

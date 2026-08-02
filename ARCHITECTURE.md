@@ -111,6 +111,7 @@ Built on russh and russh-sftp with custom tokio_client wrapper:
 - SFTP file transfers (upload/download)
 - Connection timeout handling
 - Configurable SSH keepalive (ServerAliveInterval, ServerAliveCountMax)
+- Address family selection (-4/-6, AddressFamily); see [Address Family Preference](#address-family-preference)
 
 ### Terminal User Interface (TUI)
 **Documentation**: [docs/architecture/tui.md](./docs/architecture/tui.md)
@@ -735,6 +736,61 @@ User Input → CLI Parser → Mode Detection → Node Resolution
                                                  ▼
                                           User Output
 ```
+
+### Address Family Preference
+
+The OpenSSH-compatible `-4` / `-6` flags and the ssh_config `AddressFamily`
+keyword share one representation, `AddressFamily` in
+`src/ssh/tokio_client/address_family.rs`:
+
+```rust
+pub enum AddressFamily { Any, V4, V6 }
+```
+
+**Resolution.** `AddressFamily::resolve(ipv4_flag, ipv6_flag, config_value)`
+implements the OpenSSH precedence rule: command line flag, then config keyword,
+then the `any` default. `AddressFamily::from_config_value` accepts
+`any | inet | inet6` case-insensitively and warns (via `tracing`) rather than
+failing on an unrecognized value, so a configuration file OpenSSH would tolerate
+does not become a hard error. The dispatcher resolves the preference once per
+dispatch path in `app::dispatcher::resolve_address_family`.
+
+**Threading.** The preference rides on `SshConnectionConfig`, the struct every
+connection path already carries. `Client::connect_with_ssh_config` passes it to
+`connect_with_config_inner`, which resolves the target, filters the candidate
+list, and connects. `Any` returns the resolver's list untouched, which is what
+keeps the unflagged path byte-for-byte identical to the previous behavior.
+`JumpHostChain` and the exec, interactive, ping, and port-forwarding paths all
+inherit the setting from the same struct.
+
+The SFTP paths (`upload` / `download`) never carried a `SshConnectionConfig`;
+they relied on `establish_connection` substituting the default. They thread the
+`AddressFamily` value alone (it is `Copy`, so it crosses the per-node
+`tokio::spawn` boundary without an allocation) and rebuild that same default
+with the family applied at the connect call. `ForwardingConfig` carries its own
+copy for the forwarding-target filter, since forwarders run detached from the
+connect config.
+
+**Scope.** The constraint is a hard filter where bssh opens the socket, and a
+hint where the remote server does:
+
+| Path | Behavior |
+| --- | --- |
+| Direct connect (exec, interactive, ping, SFTP) | Hard filter in `connect_with_config_inner` |
+| First jump hop | Hard filter (shares the direct connect path) |
+| `-L` / `-D` listener | Selects the implicit bind address (`::1` / `::` under `-6`); an explicit bind address wins |
+| `-L` / SOCKS5 `-D` target | Filters the `direct-tcpip` candidate list; the remote sshd still performs the connect, so this is advisory |
+| SOCKS4 `-D` target | Unfiltered; SOCKS4 carries a literal IPv4 destination by protocol definition |
+| Jump hops past the first, and the destination behind a chain | Not constrained; those connections ride an existing channel with no local TCP connect. The family still selects the address recorded for host key verification, so known_hosts diagnostics stay consistent |
+| `-R` listener | Not constrained; the server binds it |
+| `bssh-server` | Out of scope; separate CLI |
+
+**Failure mode.** A forced family with no matching resolved address is a hard
+failure with no fallback to the other family, matching OpenSSH. It surfaces as
+the dedicated `Error::NoAddressForFamily { host, family }` variant, rendered as
+`no IPv6 address found for <host>`, which replaces the generic
+`could not resolve to any addresses` so a family mismatch is distinguishable
+from a genuine resolution failure.
 
 ### Error Handling Strategy
 

@@ -22,8 +22,14 @@ use crate::executor::ParallelExecutor;
 use crate::node::Node;
 use crate::security::Password;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
+use crate::ssh::tokio_client::SshConnectionConfig;
 use crate::ui::OutputFormatter;
 
+/// Test connectivity to every node.
+///
+/// `ssh_connection_config` carries the resolved keepalive, compression, and
+/// address family settings so `bssh ping -6` tests the same address family the
+/// real connection would use.
 #[allow(clippy::too_many_arguments)]
 pub async fn ping_nodes(
     nodes: Vec<Node>,
@@ -37,6 +43,7 @@ pub async fn ping_nodes(
     connect_timeout: Option<u64>,
     jump_hosts: Option<String>,
     ssh_password: Option<Arc<Password>>,
+    ssh_connection_config: SshConnectionConfig,
 ) -> Result<()> {
     println!(
         "{}",
@@ -60,7 +67,8 @@ pub async fn ping_nodes(
     .with_timeout(ping_timeout)
     .with_connect_timeout(connect_timeout)
     .with_jump_hosts(jump_hosts)
-    .with_ssh_password(ssh_password);
+    .with_ssh_password(ssh_password)
+    .with_ssh_connection_config(ssh_connection_config);
 
     #[cfg(target_os = "macos")]
     let executor = executor.with_keychain(use_keychain);

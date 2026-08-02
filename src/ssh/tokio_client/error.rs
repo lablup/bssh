@@ -1,3 +1,4 @@
+use super::AddressFamily;
 use std::io;
 
 /// This is the `thiserror` error for all crate errors.
@@ -19,6 +20,13 @@ pub enum Error {
     PasswordWrong,
     #[error("Invalid address was provided: {0}")]
     AddressInvalid(io::Error),
+    /// An address family was forced (`-4`/`-6`, or ssh_config `AddressFamily`)
+    /// and name resolution produced no address of that family. This is a hard
+    /// failure with no fallback to the other family, matching OpenSSH, and it
+    /// replaces the generic "could not resolve to any addresses" so the user
+    /// can tell a forced-family mismatch from a genuine resolution failure.
+    #[error("no {family} address found for {host}")]
+    NoAddressForFamily { host: String, family: AddressFamily },
     #[error("The executed command didn't send an exit code")]
     CommandDidntExit,
     #[error("Server check failed")]

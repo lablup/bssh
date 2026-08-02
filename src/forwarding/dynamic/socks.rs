@@ -1,6 +1,9 @@
 //! SOCKS protocol implementation for dynamic port forwarding
 
-use crate::{forwarding::tunnel::Tunnel, ssh::tokio_client::Client};
+use crate::{
+    forwarding::tunnel::Tunnel,
+    ssh::tokio_client::{AddressFamily, Client},
+};
 use anyhow::Result;
 use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -108,6 +111,7 @@ pub async fn handle_socks5_connection(
     peer_addr: SocketAddr,
     ssh_client: &Client,
     cancel_token: CancellationToken,
+    address_family: AddressFamily,
 ) -> Result<super::super::tunnel::TunnelStats> {
     debug!("Handling SOCKS5 connection from {}", peer_addr);
 
@@ -208,9 +212,11 @@ pub async fn handle_socks5_connection(
 
     debug!("SOCKS5 CONNECT to {} from {}", destination, peer_addr);
 
-    // Create SSH channel to destination
+    // Create SSH channel to destination. A SOCKS5 request may name a domain,
+    // so the forced address family narrows which resolved address is offered
+    // to the server.
     let ssh_channel = match ssh_client
-        .open_direct_tcpip_channel(destination.as_str(), None)
+        .open_direct_tcpip_channel_with_family(destination.as_str(), None, address_family)
         .await
     {
         Ok(channel) => channel,

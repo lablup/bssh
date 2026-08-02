@@ -29,6 +29,7 @@ use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tokio::task::JoinHandle;
 
 use super::ToSocketAddrsWithHostname;
+use super::address_family::AddressFamily;
 use super::connection::Client;
 use crate::security::{SudoPassword, contains_sudo_failure, contains_sudo_prompt};
 
@@ -156,7 +157,10 @@ impl Client {
 
     /// Open a TCP/IP forwarding channel.
     ///
-    /// This opens a `direct-tcpip` channel to the given target.
+    /// This opens a `direct-tcpip` channel to the given target, with no
+    /// address family constraint. Use
+    /// [`open_direct_tcpip_channel_with_family`](Self::open_direct_tcpip_channel_with_family)
+    /// to honor `-4` / `-6`.
     pub async fn open_direct_tcpip_channel<
         T: ToSocketAddrsWithHostname,
         S: Into<Option<SocketAddr>>,
@@ -165,9 +169,39 @@ impl Client {
         target: T,
         src: S,
     ) -> Result<Channel<Msg>, super::Error> {
-        let targets = target
+        self.open_direct_tcpip_channel_with_family(target, src, AddressFamily::Any)
+            .await
+    }
+
+    /// Open a `direct-tcpip` channel, restricting the candidate target
+    /// addresses to `address_family`.
+    ///
+    /// The target address is resolved locally only to pick which address to
+    /// name in the channel-open request; the remote sshd performs the actual
+    /// connect and may resolve the name differently. Filtering here is
+    /// therefore a best-effort hint, not a guarantee, and it is why port
+    /// forwarding documents `-4` / `-6` as advisory for the far end.
+    pub async fn open_direct_tcpip_channel_with_family<
+        T: ToSocketAddrsWithHostname,
+        S: Into<Option<SocketAddr>>,
+    >(
+        &self,
+        target: T,
+        src: S,
+        address_family: AddressFamily,
+    ) -> Result<Channel<Msg>, super::Error> {
+        let resolved = target
             .to_socket_addrs()
             .map_err(super::Error::AddressInvalid)?;
+        let targets = address_family.filter(resolved);
+
+        if address_family.is_forced() && targets.is_empty() {
+            return Err(super::Error::NoAddressForFamily {
+                host: target.hostname(),
+                family: address_family,
+            });
+        }
+
         let src = src
             .into()
             .map(|src| (src.ip().to_string(), src.port().into()))

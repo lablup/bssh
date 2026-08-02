@@ -14,6 +14,7 @@
 //! * Multiple authentication methods
 
 // Module declarations
+pub mod address_family;
 pub mod authentication;
 pub mod channel_manager;
 pub mod connection;
@@ -27,6 +28,7 @@ pub(crate) mod host_verification;
 mod to_socket_addrs_with_hostname;
 
 // Re-export public API types for backward compatibility
+pub use address_family::AddressFamily;
 pub use authentication::{AuthKeyboardInteractive, AuthMethod, ServerCheckMethod};
 pub use channel_manager::{CommandExecutedResult, CommandOutput};
 pub use connection::{

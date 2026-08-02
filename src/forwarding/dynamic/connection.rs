@@ -4,7 +4,7 @@ use super::socks::{handle_socks4_connection, handle_socks5_connection};
 use super::stats::DynamicForwarderStats;
 use crate::{
     forwarding::{ForwardingConfig, SocksVersion},
-    ssh::tokio_client::Client,
+    ssh::tokio_client::{AddressFamily, Client},
 };
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -23,6 +23,7 @@ pub struct ConnectionHandler {
     stats: Arc<DynamicForwarderStats>,
     cancel_token: CancellationToken,
     buffer_size: usize,
+    address_family: AddressFamily,
 }
 
 impl ConnectionHandler {
@@ -42,6 +43,7 @@ impl ConnectionHandler {
             stats,
             cancel_token,
             buffer_size: config.buffer_size,
+            address_family: config.address_family,
         }
     }
 
@@ -58,6 +60,7 @@ impl ConnectionHandler {
         let stats = Arc::clone(&self.stats);
         let cancel_token = self.cancel_token.clone();
         let buffer_size = self.buffer_size;
+        let address_family = self.address_family;
 
         tokio::spawn(async move {
             // Acquire connection semaphore permit
@@ -92,6 +95,7 @@ impl ConnectionHandler {
                 &ssh_client,
                 cancel_token,
                 buffer_size,
+                address_family,
             )
             .await;
 
@@ -116,6 +120,7 @@ impl ConnectionHandler {
     }
 
     /// Handle individual SOCKS connection
+    #[allow(clippy::too_many_arguments)]
     async fn handle_socks_connection(
         tcp_stream: TcpStream,
         peer_addr: SocketAddr,
@@ -123,13 +128,24 @@ impl ConnectionHandler {
         ssh_client: &Client,
         cancel_token: CancellationToken,
         _buffer_size: usize,
+        address_family: AddressFamily,
     ) -> anyhow::Result<crate::forwarding::tunnel::TunnelStats> {
         match socks_version {
+            // SOCKS4 carries a literal IPv4 destination by protocol
+            // definition, so there is no candidate list an address family
+            // could narrow. The request is passed through unfiltered.
             SocksVersion::V4 => {
                 handle_socks4_connection(tcp_stream, peer_addr, ssh_client, cancel_token).await
             }
             SocksVersion::V5 => {
-                handle_socks5_connection(tcp_stream, peer_addr, ssh_client, cancel_token).await
+                handle_socks5_connection(
+                    tcp_stream,
+                    peer_addr,
+                    ssh_client,
+                    cancel_token,
+                    address_family,
+                )
+                .await
             }
         }
     }

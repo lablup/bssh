@@ -79,12 +79,30 @@ Example: -J jump1@proxy1,jump2@proxy2
 Query SSH configuration options (cipher, kex, mac, key, protocol-version, help)
 
 .TP
-.BR \-4
-Force use of IPv4 addresses only
+.BR \-4 ", " \-\-ipv4
+Force use of IPv4 addresses only. Equivalent to
+.I AddressFamily inet
+in the SSH configuration, and overrides it when both are present.
+Mutually exclusive with
+.BR \-6 .
+See
+.B ADDRESS FAMILY SELECTION
+below for exactly which connections this affects.
 
 .TP
-.BR \-6
-Force use of IPv6 addresses only
+.BR \-6 ", " \-\-ipv6
+Force use of IPv6 addresses only. Equivalent to
+.I AddressFamily inet6
+in the SSH configuration, and overrides it when both are present.
+Mutually exclusive with
+.BR \-4 .
+Also changes the default listen address of
+.B \-L
+and
+.B \-D
+forwards from 127.0.0.1 to ::1. See
+.B ADDRESS FAMILY SELECTION
+below.
 
 .TP
 .BR \-x
@@ -518,6 +536,28 @@ flag or default SSH config files (~/.ssh/config, /etc/ssh/ssh_config).
 
 In addition to standard SSH configuration directives, bssh supports advanced options for
 certificate-based authentication and port forwarding control:
+
+.SS Connection Options
+.TP
+.B AddressFamily
+Restricts the IP address family used for connections. Accepted values are
+.IR any ", " inet " (IPv4 only), and " inet6 " (IPv6 only),"
+matched case-insensitively. The default is
+.IR any .
+An unrecognized value logs a warning and is treated as
+.IR any ,
+rather than failing, so a configuration file OpenSSH would tolerate keeps working.
+.br
+The
+.B \-4
+and
+.B \-6
+command line flags override this keyword. See
+.B ADDRESS FAMILY SELECTION
+for the scope of the constraint.
+.br
+Example:
+.I AddressFamily inet6
 
 .SS Certificate Authentication Options
 .TP
@@ -1091,6 +1131,83 @@ Host legacy.example.com
     FingerprintHash md5
     RequiredRSASize 1024
 .fi
+
+.SH ADDRESS FAMILY SELECTION
+.B \-4
+and
+.B \-6
+(and the equivalent
+.I AddressFamily
+configuration keyword) restrict which resolved addresses bssh will use.
+Precedence is the OpenSSH one: the command line flag wins over the configuration
+keyword, which wins over the
+.I any
+default. With no constraint, every resolved address is tried in resolver order,
+which is the historical behavior.
+
+.SS What the constraint covers
+.IP \[bu] 2
+Direct SSH connections for
+.BR exec ,
+interactive sessions,
+.BR ping ,
+and SFTP
+.RB ( upload / download ).
+Addresses of the other family are removed from the candidate list before any
+connection is attempted.
+.IP \[bu] 2
+The first hop of a
+.B \-J
+jump host chain, which uses the same connect path.
+.IP \[bu] 2
+The local listener created by
+.B \-L
+and
+.BR \-D .
+With
+.BR \-6 ,
+a specification that does not name a bind address listens on ::1 instead of
+127.0.0.1, and the
+.I *:port
+wildcard form listens on :: instead of 0.0.0.0. A specification that names a
+bind address explicitly always overrides the flag.
+
+.SS What the constraint only hints at
+.IP \[bu] 2
+Forwarding targets. bssh resolves the target of a
+.B \-L
+forward or a SOCKS5
+.B \-D
+request locally to decide which address to name in the
+.I direct-tcpip
+channel request, and the address family filters that candidate list. The remote
+SSH server performs the actual connection and may resolve the name differently,
+so this is a best-effort hint rather than a guarantee. SOCKS4 requests carry a
+literal IPv4 destination by protocol definition and are passed through
+unfiltered.
+
+.SS What the constraint does not cover
+.IP \[bu] 2
+Jump host hops after the first one, and the final destination reached through a
+jump chain. Those connections ride an SSH channel opened by the previous hop
+rather than a local TCP socket, so the remote server resolves the address and
+bssh cannot influence which family it picks. The address family is still applied
+when selecting the address recorded for host key verification on those hops, so
+known_hosts diagnostics name the family that was requested.
+.IP \[bu] 2
+The remote listener created by
+.BR \-R ,
+which the server binds. Its default stays IPv4 loopback.
+.IP \[bu] 2
+.BR bssh\-server ,
+which has its own command line and does not accept these flags.
+
+.SS Failure behavior
+When a family is forced and name resolution produces no address of that family,
+bssh fails with
+.I no IPv6 address found for <host>
+(or the IPv4 equivalent) and exits non-zero. There is no fallback to the other
+family, matching OpenSSH.
 
 .SH PDSH COMPATIBILITY MODE
 .B bssh

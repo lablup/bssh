@@ -281,7 +281,7 @@ pub struct Cli {
         short = '4',
         long = "ipv4",
         conflicts_with = "ipv6",
-        help = "Force use of IPv4 addresses only"
+        help = "Force use of IPv4 addresses only\nOverrides the ssh_config AddressFamily keyword."
     )]
     pub ipv4: bool,
 
@@ -289,7 +289,7 @@ pub struct Cli {
         short = '6',
         long = "ipv6",
         conflicts_with = "ipv4",
-        help = "Force use of IPv6 addresses only"
+        help = "Force use of IPv6 addresses only\nOverrides the ssh_config AddressFamily keyword.\nAlso makes -L/-D listen on ::1 instead of 127.0.0.1 when no bind address is given."
     )]
     pub ipv6: bool,
 
@@ -596,8 +596,14 @@ impl Cli {
     ///
     /// Returns a Result containing a vector of all parsed forwarding specifications
     /// or an error if any specification is invalid.
+    ///
+    /// `address_family` is the already-resolved preference (`-4`/`-6` over the
+    /// ssh_config `AddressFamily` keyword). It selects the implicit listen
+    /// address for `-L` and `-D` specifications that do not name a bind
+    /// address; `-R` listens on the server and is unaffected.
     pub fn parse_port_forwards(
         &self,
+        address_family: crate::ssh::tokio_client::AddressFamily,
     ) -> Result<Vec<crate::forwarding::ForwardingType>, anyhow::Error> {
         use crate::forwarding::spec::ForwardingSpec;
 
@@ -605,7 +611,7 @@ impl Cli {
 
         // Parse local forwards (-L options)
         for spec in &self.local_forwards {
-            let forward = ForwardingSpec::parse_local(spec)
+            let forward = ForwardingSpec::parse_local(spec, address_family)
                 .with_context(|| format!("Invalid local forwarding specification: {spec}"))?;
             forwards.push(forward);
         }
@@ -619,7 +625,7 @@ impl Cli {
 
         // Parse dynamic forwards (-D options)
         for spec in &self.dynamic_forwards {
-            let forward = ForwardingSpec::parse_dynamic(spec)
+            let forward = ForwardingSpec::parse_dynamic(spec, address_family)
                 .with_context(|| format!("Invalid dynamic forwarding specification: {spec}"))?;
             forwards.push(forward);
         }

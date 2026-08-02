@@ -151,6 +151,17 @@ impl SshConfig {
         resolver::get_compression(&self.hosts, hostname)
     }
 
+    /// Get the raw `AddressFamily` value (`any`/`inet`/`inet6`) for a hostname.
+    ///
+    /// Returns `None` when the keyword is unset for the resolved host. Parse
+    /// the value with
+    /// [`AddressFamily::from_config_value`](crate::ssh::tokio_client::AddressFamily::from_config_value),
+    /// which is case-insensitive and warns rather than failing on an
+    /// unrecognized value.
+    pub fn get_address_family(&self, hostname: &str) -> Option<String> {
+        resolver::get_address_family(&self.hosts, hostname)
+    }
+
     /// Get an integer option value for a hostname.
     ///
     /// Currently supports:

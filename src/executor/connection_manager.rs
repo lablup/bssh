@@ -24,7 +24,7 @@ use crate::ssh::{
     SshClient, SshConfig,
     client::{CommandResult, ConnectionConfig},
     known_hosts::StrictHostKeyChecking,
-    tokio_client::SshConnectionConfig,
+    tokio_client::{AddressFamily, SshConnectionConfig},
 };
 
 /// Configuration for node execution.
@@ -140,6 +140,7 @@ pub(crate) async fn upload_to_node(
     connect_timeout_seconds: Option<u64>,
     ssh_config: Option<&SshConfig>,
     pre_collected_password: Option<Arc<Password>>,
+    address_family: AddressFamily,
 ) -> Result<()> {
     let mut client = SshClient::new(node.host.clone(), node.port, node.username.clone());
 
@@ -168,6 +169,7 @@ pub(crate) async fn upload_to_node(
                 effective_jump_hosts,
                 connect_timeout_seconds,
                 pre_collected_password,
+                address_family,
             )
             .await
     } else {
@@ -182,6 +184,7 @@ pub(crate) async fn upload_to_node(
                 effective_jump_hosts,
                 connect_timeout_seconds,
                 pre_collected_password,
+                address_family,
             )
             .await
     }
@@ -201,6 +204,7 @@ pub(crate) async fn download_from_node(
     connect_timeout_seconds: Option<u64>,
     ssh_config: Option<&SshConfig>,
     pre_collected_password: Option<Arc<Password>>,
+    address_family: AddressFamily,
 ) -> Result<PathBuf> {
     let mut client = SshClient::new(node.host.clone(), node.port, node.username.clone());
 
@@ -229,6 +233,7 @@ pub(crate) async fn download_from_node(
             effective_jump_hosts,
             connect_timeout_seconds,
             pre_collected_password,
+            address_family,
         )
         .await?;
 
@@ -249,6 +254,7 @@ pub async fn download_dir_from_node(
     connect_timeout_seconds: Option<u64>,
     ssh_config: Option<&SshConfig>,
     pre_collected_password: Option<Arc<Password>>,
+    address_family: AddressFamily,
 ) -> Result<PathBuf> {
     let mut client = SshClient::new(node.host.clone(), node.port, node.username.clone());
 
@@ -275,6 +281,7 @@ pub async fn download_dir_from_node(
             effective_jump_hosts,
             connect_timeout_seconds,
             pre_collected_password,
+            address_family,
         )
         .await?;
 
