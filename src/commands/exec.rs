@@ -94,8 +94,13 @@ async fn execute_command_with_forwarding(params: ExecuteCommandParams<'_>) -> Re
         println!("  {forward}");
     }
 
-    // Create forwarding manager
-    let forwarding_config = ForwardingConfig::default();
+    // Create forwarding manager. The resolved address family narrows which
+    // resolved target address bssh names in each `direct-tcpip` request; the
+    // listener side was already constrained when the spec was parsed.
+    let forwarding_config = ForwardingConfig {
+        address_family: params.ssh_connection_config.address_family,
+        ..ForwardingConfig::default()
+    };
     let mut manager = ForwardingManager::new(forwarding_config);
 
     // Create SSH client for forwarding
@@ -160,13 +165,17 @@ async fn execute_command_with_forwarding(params: ExecuteCommandParams<'_>) -> Re
     // hosts instead of recording them.
     let server_check = crate::ssh::known_hosts::get_check_method(params.strict_mode);
 
-    // Create SSH client
+    // Create SSH client. Going through `connect_with_ssh_config` rather than
+    // `connect` gives this path the resolved keepalive, compression, and
+    // address family settings instead of the struct defaults, so `-4`/`-6`
+    // constrain the carrier connection too (#246).
     let ssh_client = Arc::new(
-        Client::connect(
+        Client::connect_with_ssh_config(
             (node.host.as_str(), node.port),
             &node.username,
             auth_method,
             server_check,
+            &params.ssh_connection_config,
         )
         .await?,
     );

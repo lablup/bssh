@@ -31,9 +31,10 @@ pub mod tunnel;
 pub use manager::{ForwardingId, ForwardingManager, ForwardingMessage};
 pub use spec::ForwardingSpec;
 
+use crate::ssh::tokio_client::AddressFamily;
 use anyhow::{Context, Result};
 use std::fmt;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::{IpAddr, SocketAddr};
 
 /// Port forwarding specification types
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,6 +119,14 @@ pub struct ForwardingConfig {
     pub max_reconnect_delay_ms: u64,
     /// Buffer size for data transfer operations
     pub buffer_size: usize,
+    /// Address family constraint applied to forwarding *targets*.
+    ///
+    /// The remote sshd performs the actual connect, so this only narrows which
+    /// resolved address bssh names in the `direct-tcpip` request: a
+    /// best-effort hint, not a guarantee. The *listener* side is constrained
+    /// separately, at specification parse time, by
+    /// [`parse_bind_spec_with_family`].
+    pub address_family: AddressFamily,
 }
 
 impl Default for ForwardingConfig {
@@ -130,12 +139,16 @@ impl Default for ForwardingConfig {
             reconnect_delay_ms: 1000,
             max_reconnect_delay_ms: 30000,
             buffer_size: 8192,
+            address_family: AddressFamily::Any,
         }
     }
 }
 
 impl fmt::Display for ForwardingType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // `SocketAddr`'s own `Display` brackets IPv6 addresses ([::1]:8080)
+        // and leaves IPv4 addresses unbracketed (127.0.0.1:8080), so building
+        // one from `bind_addr`/`bind_port` keeps both forms unambiguous.
         match self {
             ForwardingType::Local {
                 bind_addr,
@@ -143,7 +156,11 @@ impl fmt::Display for ForwardingType {
                 remote_host,
                 remote_port,
             } => {
-                write!(f, "{bind_addr}:{bind_port}→{remote_host}:{remote_port}")
+                write!(
+                    f,
+                    "{}→{remote_host}:{remote_port}",
+                    SocketAddr::new(*bind_addr, *bind_port)
+                )
             }
             ForwardingType::Remote {
                 bind_addr,
@@ -151,14 +168,22 @@ impl fmt::Display for ForwardingType {
                 local_host,
                 local_port,
             } => {
-                write!(f, "{bind_addr}:{bind_port}←{local_host}:{local_port}")
+                write!(
+                    f,
+                    "{}←{local_host}:{local_port}",
+                    SocketAddr::new(*bind_addr, *bind_port)
+                )
             }
             ForwardingType::Dynamic {
                 bind_addr,
                 bind_port,
                 socks_version,
             } => {
-                write!(f, "SOCKS{socks_version:?} proxy on {bind_addr}:{bind_port}")
+                write!(
+                    f,
+                    "SOCKS{socks_version:?} proxy on {}",
+                    SocketAddr::new(*bind_addr, *bind_port)
+                )
             }
         }
     }
@@ -189,17 +214,28 @@ impl SocksVersion {
     }
 }
 
-/// Parse a bind address specification
+/// Parse a bind address specification with no address family constraint.
+///
+/// Equivalent to [`parse_bind_spec_with_family`] with [`AddressFamily::Any`].
+pub fn parse_bind_spec(spec: &str) -> Result<SocketAddr> {
+    parse_bind_spec_with_family(spec, AddressFamily::Any)
+}
+
+/// Parse a bind address specification, using `address_family` to pick the
+/// default when the specification does not name an address.
 ///
 /// Formats supported:
-/// - `port` -> 127.0.0.1:port
-/// - `address:port` -> address:port
-/// - `*:port` -> 0.0.0.0:port (bind to all interfaces)
-pub fn parse_bind_spec(spec: &str) -> Result<SocketAddr> {
+/// - `port` -> loopback:port (`127.0.0.1` by default, `::1` under `-6`)
+/// - `address:port` -> address:port (explicit address always wins)
+/// - `*:port` -> wildcard:port (`0.0.0.0` by default, `::` under `-6`)
+pub fn parse_bind_spec_with_family(
+    spec: &str,
+    address_family: AddressFamily,
+) -> Result<SocketAddr> {
     // Handle different bind specification formats
     if let Ok(port) = spec.parse::<u16>() {
-        // Just a port number, bind to localhost
-        return Ok(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port));
+        // Just a port number, bind to the family's loopback address
+        return Ok(SocketAddr::new(address_family.loopback(), port));
     }
 
     // Check for wildcard binding
@@ -207,10 +243,11 @@ pub fn parse_bind_spec(spec: &str) -> Result<SocketAddr> {
         let port = port_str
             .parse::<u16>()
             .with_context(|| format!("Invalid port in bind specification: {spec}"))?;
-        return Ok(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port));
+        return Ok(SocketAddr::new(address_family.unspecified(), port));
     }
 
-    // Parse as full socket address
+    // Parse as full socket address. An explicit bind address always wins over
+    // the address family flag, matching the decision recorded in issue #246.
     spec.parse::<SocketAddr>()
         .with_context(|| format!("Invalid bind specification: {spec}"))
 }
@@ -218,6 +255,31 @@ pub fn parse_bind_spec(spec: &str) -> Result<SocketAddr> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    #[test]
+    fn test_parse_bind_spec_with_forced_family() {
+        // -6 moves the implicit loopback default from 127.0.0.1 to ::1.
+        let addr = parse_bind_spec_with_family("8080", AddressFamily::V6).unwrap();
+        assert_eq!(addr.ip(), IpAddr::V6(Ipv6Addr::LOCALHOST));
+        assert_eq!(addr.port(), 8080);
+
+        // -6 moves the wildcard default from 0.0.0.0 to ::.
+        let addr = parse_bind_spec_with_family("*:8080", AddressFamily::V6).unwrap();
+        assert_eq!(addr.ip(), IpAddr::V6(Ipv6Addr::UNSPECIFIED));
+
+        // -4 keeps the historical IPv4 defaults.
+        let addr = parse_bind_spec_with_family("8080", AddressFamily::V4).unwrap();
+        assert_eq!(addr.ip(), IpAddr::V4(Ipv4Addr::LOCALHOST));
+        let addr = parse_bind_spec_with_family("*:8080", AddressFamily::V4).unwrap();
+        assert_eq!(addr.ip(), IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+
+        // An explicit bind address always wins over the flag.
+        let addr = parse_bind_spec_with_family("192.168.1.1:8080", AddressFamily::V6).unwrap();
+        assert_eq!(addr.ip(), IpAddr::V4(Ipv4Addr::new(192, 168, 1, 1)));
+        let addr = parse_bind_spec_with_family("[::1]:8080", AddressFamily::V4).unwrap();
+        assert_eq!(addr.ip(), IpAddr::V6(Ipv6Addr::LOCALHOST));
+    }
 
     #[test]
     fn test_parse_bind_spec() {
@@ -265,5 +327,41 @@ mod tests {
             socks_version: SocksVersion::V5,
         };
         assert!(format!("{dynamic}").contains("SOCKS"));
+    }
+
+    #[test]
+    fn test_forwarding_type_display_brackets_ipv6() {
+        // IPv4 stays unbracketed.
+        let local_v4 = ForwardingType::Local {
+            bind_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            bind_port: 8080,
+            remote_host: "example.com".to_string(),
+            remote_port: 80,
+        };
+        assert_eq!(format!("{local_v4}"), "127.0.0.1:8080→example.com:80");
+
+        // IPv6 must be bracketed so `host:port` is unambiguous.
+        let local_v6 = ForwardingType::Local {
+            bind_addr: IpAddr::V6(Ipv6Addr::LOCALHOST),
+            bind_port: 8080,
+            remote_host: "example.com".to_string(),
+            remote_port: 80,
+        };
+        assert_eq!(format!("{local_v6}"), "[::1]:8080→example.com:80");
+
+        let remote_v6 = ForwardingType::Remote {
+            bind_addr: IpAddr::V6(Ipv6Addr::LOCALHOST),
+            bind_port: 9090,
+            local_host: "localhost".to_string(),
+            local_port: 22,
+        };
+        assert_eq!(format!("{remote_v6}"), "[::1]:9090←localhost:22");
+
+        let dynamic_v6 = ForwardingType::Dynamic {
+            bind_addr: IpAddr::V6(Ipv6Addr::LOCALHOST),
+            bind_port: 1080,
+            socks_version: SocksVersion::V5,
+        };
+        assert_eq!(format!("{dynamic_v6}"), "SOCKSV5 proxy on [::1]:1080");
     }
 }

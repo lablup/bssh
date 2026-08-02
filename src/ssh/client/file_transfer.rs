@@ -15,7 +15,7 @@
 use super::core::SshClient;
 use crate::security::Password;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
-use crate::ssh::tokio_client::Client;
+use crate::ssh::tokio_client::{AddressFamily, Client, SshConnectionConfig};
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::sync::Arc;
@@ -333,6 +333,7 @@ impl SshClient {
         jump_hosts_spec: Option<&str>,
         connect_timeout_seconds: Option<u64>,
         pre_collected_password: Option<Arc<Password>>,
+        address_family: AddressFamily,
     ) -> Result<()> {
         tracing::debug!(
             "Uploading file to {}:{} (jump hosts: {:?})",
@@ -350,6 +351,7 @@ impl SshClient {
                 jump_hosts_spec,
                 connect_timeout_seconds,
                 pre_collected_password,
+                address_family,
             )
             .await?;
 
@@ -411,6 +413,7 @@ impl SshClient {
         jump_hosts_spec: Option<&str>,
         connect_timeout_seconds: Option<u64>,
         pre_collected_password: Option<Arc<Password>>,
+        address_family: AddressFamily,
     ) -> Result<()> {
         tracing::debug!(
             "Downloading file from {}:{} (jump hosts: {:?})",
@@ -428,6 +431,7 @@ impl SshClient {
                 jump_hosts_spec,
                 connect_timeout_seconds,
                 pre_collected_password,
+                address_family,
             )
             .await?;
 
@@ -485,6 +489,7 @@ impl SshClient {
         jump_hosts_spec: Option<&str>,
         connect_timeout_seconds: Option<u64>,
         pre_collected_password: Option<Arc<Password>>,
+        address_family: AddressFamily,
     ) -> Result<()> {
         tracing::debug!(
             "Uploading directory to {}:{} (jump hosts: {:?})",
@@ -502,6 +507,7 @@ impl SshClient {
                 jump_hosts_spec,
                 connect_timeout_seconds,
                 pre_collected_password,
+                address_family,
             )
             .await?;
 
@@ -561,6 +567,7 @@ impl SshClient {
         jump_hosts_spec: Option<&str>,
         connect_timeout_seconds: Option<u64>,
         pre_collected_password: Option<Arc<Password>>,
+        address_family: AddressFamily,
     ) -> Result<()> {
         tracing::debug!(
             "Downloading directory from {}:{} (jump hosts: {:?})",
@@ -578,6 +585,7 @@ impl SshClient {
                 jump_hosts_spec,
                 connect_timeout_seconds,
                 pre_collected_password,
+                address_family,
             )
             .await?;
 
@@ -694,6 +702,7 @@ impl SshClient {
         jump_hosts_spec: Option<&str>,
         connect_timeout_seconds: Option<u64>,
         pre_collected_password: Option<Arc<Password>>,
+        address_family: AddressFamily,
     ) -> Result<Client> {
         // Determine authentication method
         // Note: use_keychain is set to false for file transfers to avoid prompts
@@ -710,6 +719,12 @@ impl SshClient {
 
         let strict_mode = strict_mode.unwrap_or(StrictHostKeyChecking::AcceptNew);
 
+        // SFTP transfers never carried a full `SshConnectionConfig`; they
+        // relied on `establish_connection` substituting the default. Building
+        // that default explicitly here lets the resolved address family ride
+        // along without changing any keepalive or compression behavior.
+        let connection_config = SshConnectionConfig::default().with_address_family(address_family);
+
         // Create client connection - either direct or through jump hosts.
         // Threading `pre_collected_password` here ensures jump-host auth
         // (when `--password` is combined with `-J`) consumes the dispatcher's
@@ -722,7 +737,7 @@ impl SshClient {
             use_agent,
             use_password,
             connect_timeout_seconds,
-            None,
+            Some(&connection_config),
             pre_collected_password,
         )
         .await

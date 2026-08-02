@@ -22,6 +22,7 @@ use crate::node::Node;
 use crate::security::Password;
 use crate::ssh::SshConfig;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
+use crate::ssh::tokio_client::AddressFamily;
 use crate::ui::OutputFormatter;
 use crate::utils::fs::{format_bytes, resolve_source_files};
 
@@ -40,6 +41,11 @@ pub struct FileTransferParams<'a> {
     pub ssh_config: Option<&'a SshConfig>,
     /// Jump hosts specification for connections.
     pub jump_hosts: Option<String>,
+    /// Resolved address family preference (`-4`/`-6`, ssh_config
+    /// `AddressFamily`). SFTP transfers never carried a full
+    /// `SshConnectionConfig`, so only the family is threaded down to the
+    /// connect call.
+    pub address_family: AddressFamily,
 }
 
 pub async fn upload_file(
@@ -95,7 +101,8 @@ pub async fn upload_file(
         params.use_password,
     )
     .with_jump_hosts(params.jump_hosts.clone())
-    .with_ssh_password(params.ssh_password.clone());
+    .with_ssh_password(params.ssh_password.clone())
+    .with_address_family(params.address_family);
     if let Some(ssh_config) = params.ssh_config {
         executor = executor.with_ssh_config(Some(ssh_config.clone()));
     }

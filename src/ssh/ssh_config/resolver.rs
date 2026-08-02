@@ -434,6 +434,17 @@ pub(super) fn get_compression(hosts: &[SshHostConfig], hostname: &str) -> Option
     config.compression
 }
 
+/// Get the raw `AddressFamily` value for a hostname.
+///
+/// The value is returned unparsed; interpretation (and the warn-and-fall-back
+/// handling of an unrecognized value) lives in
+/// [`AddressFamily::from_config_value`](crate::ssh::tokio_client::AddressFamily::from_config_value)
+/// so the CLI flag and the config keyword share one parser.
+pub(super) fn get_address_family(hosts: &[SshHostConfig], hostname: &str) -> Option<String> {
+    let config = find_host_config(hosts, hostname);
+    config.address_family
+}
+
 /// Get ProxyJump configuration
 pub(super) fn get_proxy_jump(hosts: &[SshHostConfig], hostname: &str) -> Option<String> {
     let config = find_host_config(hosts, hostname);

@@ -25,7 +25,7 @@ use crate::node::Node;
 use crate::security::{Password, SudoPassword};
 use crate::ssh::SshConfig;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
-use crate::ssh::tokio_client::SshConnectionConfig;
+use crate::ssh::tokio_client::{AddressFamily, SshConnectionConfig};
 
 use super::connection_manager::{ExecutionConfig, download_from_node};
 use super::execution_strategy::{
@@ -254,6 +254,18 @@ impl ParallelExecutor {
     /// ```
     pub fn with_ssh_connection_config(mut self, config: SshConnectionConfig) -> Self {
         self.ssh_connection_config = config;
+        self
+    }
+
+    /// Constrain every connection this executor opens to one IP address
+    /// family (`-4` / `-6`, or the ssh_config `AddressFamily` keyword).
+    ///
+    /// This overrides only the address family of the current connection
+    /// config, leaving keepalive and compression settings alone, so callers
+    /// that never build a full `SshConnectionConfig` (the SFTP paths) can
+    /// still honor the flag.
+    pub fn with_address_family(mut self, family: AddressFamily) -> Self {
+        self.ssh_connection_config.address_family = family;
         self
     }
 
@@ -660,6 +672,7 @@ impl ParallelExecutor {
                 let pb = setup_progress_bar(&multi_progress, &node, style.clone(), "Connecting...");
 
                 let ssh_config_ref = self.ssh_config.clone();
+                let address_family = self.ssh_connection_config.address_family;
 
                 tokio::spawn(upload_file_task(
                     node,
@@ -673,6 +686,7 @@ impl ParallelExecutor {
                     connect_timeout,
                     ssh_config_ref,
                     ssh_password,
+                    address_family,
                     semaphore,
                     pb,
                 ))
@@ -774,6 +788,7 @@ impl ParallelExecutor {
                 let semaphore = Arc::clone(&semaphore);
                 let pb = setup_progress_bar(&multi_progress, &node, style.clone(), "Connecting...");
                 let ssh_config_ref = self.ssh_config.clone();
+                let address_family = self.ssh_connection_config.address_family;
 
                 tokio::spawn(download_file_task(
                     node,
@@ -787,6 +802,7 @@ impl ParallelExecutor {
                     connect_timeout,
                     ssh_config_ref,
                     ssh_password,
+                    address_family,
                     semaphore,
                     pb,
                 ))
@@ -909,6 +925,7 @@ impl ParallelExecutor {
                     let connect_timeout = self.connect_timeout;
                     let ssh_config_ref = self.ssh_config.clone();
                     let ssh_password = self.ssh_password.clone();
+                    let address_family = self.ssh_connection_config.address_family;
 
                     tokio::spawn(async move {
                         let _permit = match semaphore.acquire().await {
@@ -936,6 +953,7 @@ impl ParallelExecutor {
                             connect_timeout,
                             ssh_config_ref.as_ref(),
                             ssh_password,
+                            address_family,
                         )
                         .await;
 

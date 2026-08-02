@@ -23,6 +23,7 @@ use tokio::sync::Semaphore;
 
 use crate::node::Node;
 use crate::security::Password;
+use crate::ssh::tokio_client::AddressFamily;
 
 use super::connection_manager::{
     ExecutionConfig, download_from_node, execute_on_node_with_jump_hosts, upload_to_node,
@@ -119,6 +120,7 @@ pub(crate) async fn upload_file_task(
     connect_timeout: Option<u64>,
     ssh_config: Option<crate::ssh::SshConfig>,
     ssh_password: Option<Arc<Password>>,
+    address_family: AddressFamily,
     semaphore: Arc<Semaphore>,
     pb: ProgressBar,
 ) -> UploadResult {
@@ -147,6 +149,7 @@ pub(crate) async fn upload_file_task(
         connect_timeout,
         ssh_config.as_ref(),
         ssh_password,
+        address_family,
     )
     .await;
 
@@ -183,6 +186,7 @@ pub(crate) async fn download_file_task(
     connect_timeout: Option<u64>,
     ssh_config: Option<crate::ssh::SshConfig>,
     ssh_password: Option<Arc<Password>>,
+    address_family: AddressFamily,
     semaphore: Arc<Semaphore>,
     pb: ProgressBar,
 ) -> DownloadResult {
@@ -223,6 +227,7 @@ pub(crate) async fn download_file_task(
         connect_timeout,
         ssh_config.as_ref(),
         ssh_password,
+        address_family,
     )
     .await;
 
