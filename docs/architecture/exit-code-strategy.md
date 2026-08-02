@@ -8,6 +8,7 @@
 - [Main Rank Detection](#main-rank-detection)
 - [Exit Code Strategies](#exit-code-strategies)
 - [Strategy Comparison](#strategy-comparison)
+- [The ping Contract](#the-ping-contract)
 - [Implementation Details](#implementation-details)
 - [Migration Guide](#migration-guide)
 
@@ -194,6 +195,39 @@ ExitCodeStrategy::MainRankWithFailureCheck => {
 
 **Bold** values show where strategies differ.
 
+## The ping Contract
+
+`bssh ping` does not use `ExitCodeStrategy` directly, because it runs no user command whose status could be forwarded. `MainRank` is therefore meaningless for it. Instead it reuses the `RequireAllSuccess` semantics for the 0/1 boundary (a health check is green only when every host is green) and adds one value that no other path produces: 255.
+
+| Scenario | Exit code |
+|----------|-----------|
+| Every targeted host connected and authenticated | 0 |
+| At least one host reachable, at least one failed | 1 |
+| No host succeeded | 255 |
+| bssh failed before attempting any connection (config load failure, no host resolved) | 255 |
+
+**Why 255**: OpenSSH reserves 255 for "ssh itself encountered an error" as opposed to a status forwarded from the remote command. Since ping has no remote command, every total failure is by definition an ssh-level failure. The split lets a caller distinguish a partially degraded cluster (1) from one it could not reach at all, or could not even start against (255).
+
+**Implementation**: `src/commands/ping.rs` returns a `PingOutcome { total, succeeded, failed }` instead of `Result<()>`, and `PingOutcome::exit_code()` applies the table above:
+
+```rust
+pub fn exit_code(&self) -> i32 {
+    if self.succeeded == 0 {
+        PING_SSH_LEVEL_FAILURE // 255, including an empty host list
+    } else if self.failed > 0 {
+        1 // RequireAllSuccess: any failure is a failure
+    } else {
+        0
+    }
+}
+```
+
+A unit test asserts that `PingOutcome::exit_code()` equals `ExitCodeStrategy::RequireAllSuccess.calculate()` for every case where at least one host answered, so the two cannot drift apart.
+
+**Error propagation**: an `Err` returned from the ping path is a hard failure raised before any per-host tally exists, so it maps to 255 rather than to the 1 that means "some hosts answered and some did not". `main::map_hard_failure` applies that mapping on the ping path only; every other subcommand keeps the default, where returning `Err` from `main` prints the chain and exits 1. Command-line usage errors are rejected by clap before this contract applies and keep clap's own exit code 2, as they do for every subcommand.
+
+**Exit code plumbing**: `dispatch_command` returns `Result<i32>` and `main::dispatch_and_exit` is the single place that turns a nonzero command-level code into the process exit status. The `exec` path predates this and still calls `std::process::exit` itself from `src/commands/exec.rs` after applying its `ExitCodeStrategy`.
+
 ## Implementation Details
 
 ### File Structure
@@ -207,7 +241,11 @@ src/executor/
 └── parallel.rs # Marks main rank in results
 
 src/commands/
-└── exec.rs # Applies exit strategy based on CLI flags
+├── exec.rs # Applies exit strategy based on CLI flags
+└── ping.rs # PingOutcome and the 0/1/255 ping contract
+
+src/app/
+└── dispatcher.rs # Returns the command-level exit code to main
 
 src/
 └── cli.rs # CLI flags: --require-all-success, --check-all-nodes

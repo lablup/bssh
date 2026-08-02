@@ -1867,6 +1867,34 @@ Main rank succeeded but other nodes failed
 .B 2-255
 Main rank failed with this exit code
 
+.SS ping Subcommand
+The
+.B ping
+subcommand runs no remote command, so there is no remote exit status to
+forward and the main rank strategy does not apply. Its 0/1 boundary follows
+.B --require-all-success
+(a health check is green only when every host is green), and total failure is
+reported as 255 following OpenSSH's convention that 255 means ssh itself
+encountered an error:
+
+.TP
+.B 0
+Every targeted host connected and authenticated
+
+.TP
+.B 1
+At least one host was reachable and at least one failed
+
+.TP
+.B 255
+No host was reachable, or bssh failed before it could attempt any connection
+(configuration file could not be loaded, no host resolved, and similar)
+
+.PP
+Command-line usage errors are rejected by the argument parser before this
+contract applies and keep the parser's own exit code 2, as they do for every
+subcommand.
+
 .SH OUTPUT FILES
 When using the
 .B --output-dir

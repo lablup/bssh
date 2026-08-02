@@ -40,6 +40,10 @@ use super::initialization::determine_use_keychain;
 use super::initialization::{AppContext, determine_ssh_key_path};
 use super::utils::format_duration;
 
+/// Exit code for a subcommand that completed without a per-host failure to
+/// report.
+const EXIT_SUCCESS: i32 = 0;
+
 /// Build SSH connection config with keepalive, compression, and address
 /// family settings.
 /// Precedence: CLI > SSH config > YAML config > defaults.
@@ -154,8 +158,14 @@ fn subcommand_name(command: &Option<Commands>) -> &'static str {
     }
 }
 
-/// Dispatch commands to their appropriate handlers
-pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
+/// Dispatch commands to their appropriate handlers.
+///
+/// Returns the exit code the process should report. Most subcommands either
+/// succeed (0) or return `Err`, but `ping` completes normally while still
+/// having per-host failures to report, so the count has to survive the return.
+/// The caller (`main`) is the single place that turns a nonzero value into the
+/// process exit status.
+pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<i32> {
     // Get command to execute
     let command = cli.get_command();
 
@@ -219,7 +229,7 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
     match &cli.command {
         Some(Commands::List) => {
             list_clusters(&ctx.config);
-            Ok(())
+            Ok(EXIT_SUCCESS)
         }
         Some(Commands::Ping) => {
             let key_path = determine_ssh_key_path(
@@ -247,7 +257,10 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
                 ctx.cluster_name.as_deref().or(cli.cluster.as_deref()),
             );
 
-            ping_nodes(
+            // `ping` is the one subcommand whose exit code depends on how many
+            // hosts answered, so the outcome is translated here rather than
+            // discarded. See `PingOutcome` for the 0/1/255 contract.
+            let outcome = ping_nodes(
                 ctx.nodes.clone(),
                 ctx.max_parallel,
                 key_path.as_deref(),
@@ -262,7 +275,9 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
                 ssh_password.clone(),
                 ssh_connection_config,
             )
-            .await
+            .await?;
+
+            Ok(outcome.exit_code())
         }
         Some(Commands::Upload {
             source,
@@ -300,7 +315,8 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
                     hostname_for_ssh_config.as_deref(),
                 ),
             };
-            upload_file(params, source, destination).await
+            upload_file(params, source, destination).await?;
+            Ok(EXIT_SUCCESS)
         }
         Some(Commands::Download {
             source,
@@ -338,7 +354,8 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
                     hostname_for_ssh_config.as_deref(),
                 ),
             };
-            download_file(params, source, destination).await
+            download_file(params, source, destination).await?;
+            Ok(EXIT_SUCCESS)
         }
         Some(Commands::Interactive {
             single_node,
@@ -357,15 +374,20 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<()> {
                 work_dir.as_deref(),
                 ssh_password.clone(),
             )
-            .await
+            .await?;
+            Ok(EXIT_SUCCESS)
         }
         Some(Commands::CacheStats { .. }) => {
             // This is handled in main.rs before node resolution
             unreachable!("CacheStats should be handled before dispatch")
         }
         None => {
-            // Execute command (auto-exec or interactive shell)
-            handle_exec_command(cli, ctx, &command, ssh_password.clone()).await
+            // Execute command (auto-exec or interactive shell). This path owns
+            // its own exit code strategy (`ExitCodeStrategy`, selected by
+            // `--require-all-success` / `--check-all-nodes`) and exits the
+            // process itself when the strategy yields a nonzero code.
+            handle_exec_command(cli, ctx, &command, ssh_password.clone()).await?;
+            Ok(EXIT_SUCCESS)
         }
     }
 }
