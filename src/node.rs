@@ -12,8 +12,65 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use anyhow::{Context, Result};
 use std::fmt;
+use std::net::Ipv6Addr;
+
+use anyhow::{Context, Result};
+
+/// Parsed components of a `[user@]host[:port]` node specification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NodeSpec<'a> {
+    pub user: Option<&'a str>,
+    pub host: &'a str,
+    pub port: Option<u16>,
+}
+
+/// Parse a node specification while preserving IPv6 address boundaries.
+///
+/// IPv6 literals must use brackets because an unbracketed trailing numeric
+/// segment is indistinguishable from a port. The returned host never includes
+/// the brackets, so callers can pass `(host, port)` directly to a resolver.
+pub fn parse_node_spec(node_str: &str) -> Result<NodeSpec<'_>> {
+    let (user, host_part) = if let Some((user, host)) = node_str.split_once('@') {
+        (Some(user), host)
+    } else {
+        (None, node_str)
+    };
+
+    if let Some(bracketed) = host_part.strip_prefix('[') {
+        let closing = bracketed
+            .find(']')
+            .context("Bracketed IPv6 address is missing a closing ']'")?;
+        let host = &bracketed[..closing];
+        host.parse::<Ipv6Addr>()
+            .context("Invalid bracketed IPv6 address")?;
+
+        let suffix = &bracketed[closing + 1..];
+        let port = if suffix.is_empty() {
+            None
+        } else {
+            let port_str = suffix
+                .strip_prefix(':')
+                .context("Unexpected text after bracketed IPv6 address")?;
+            Some(port_str.parse::<u16>().context("Invalid port number")?)
+        };
+
+        return Ok(NodeSpec { user, host, port });
+    }
+
+    if host_part.parse::<Ipv6Addr>().is_ok() {
+        anyhow::bail!("IPv6 address literals must be enclosed in brackets, for example '[::1]'");
+    }
+
+    let (host, port) = if let Some((host, port_str)) = host_part.rsplit_once(':') {
+        let port = port_str.parse::<u16>().context("Invalid port number")?;
+        (host, Some(port))
+    } else {
+        (host_part, None)
+    };
+
+    Ok(NodeSpec { user, host, port })
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Node {
@@ -38,24 +95,10 @@ impl Node {
         // - user@host
         // - user@host:port
 
-        let (user_part, host_part) = if let Some(at_pos) = node_str.find('@') {
-            let user = &node_str[..at_pos];
-            let rest = &node_str[at_pos + 1..];
-            (Some(user), rest)
-        } else {
-            (None, node_str)
-        };
+        let spec = parse_node_spec(node_str)?;
 
-        let (host, port) = if let Some(colon_pos) = host_part.rfind(':') {
-            let host = &host_part[..colon_pos];
-            let port_str = &host_part[colon_pos + 1..];
-            let port = port_str.parse::<u16>().context("Invalid port number")?;
-            (host, port)
-        } else {
-            (host_part, 22)
-        };
-
-        let username = user_part
+        let username = spec
+            .user
             .or(default_user)
             .map(|s| s.to_string())
             .unwrap_or_else(|| {
@@ -66,20 +109,28 @@ impl Node {
             });
 
         Ok(Node {
-            host: host.to_string(),
-            port,
+            host: spec.host.to_string(),
+            port: spec.port.unwrap_or(22),
             username,
         })
     }
 
     pub fn address(&self) -> String {
-        format!("{}:{}", self.host, self.port)
+        if self.host.parse::<Ipv6Addr>().is_ok() {
+            format!("[{}]:{}", self.host, self.port)
+        } else {
+            format!("{}:{}", self.host, self.port)
+        }
     }
 }
 
 impl fmt::Display for Node {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}@{}:{}", self.username, self.host, self.port)
+        if self.host.parse::<Ipv6Addr>().is_ok() {
+            write!(f, "{}@[{}]:{}", self.username, self.host, self.port)
+        } else {
+            write!(f, "{}@{}:{}", self.username, self.host, self.port)
+        }
     }
 }
 
@@ -115,6 +166,27 @@ mod tests {
         assert_eq!(node.username, "admin");
         assert_eq!(node.host, "example.com");
         assert_eq!(node.port, 2222);
+    }
+
+    #[test]
+    fn test_parse_bracketed_ipv6_forms() {
+        let node = Node::parse("[::1]", Some("default_user")).unwrap();
+        assert_eq!(node.host, "::1");
+        assert_eq!(node.port, 22);
+        assert_eq!(node.username, "default_user");
+        assert_eq!(node.address(), "[::1]:22");
+        assert_eq!(node.to_string(), "default_user@[::1]:22");
+
+        let node = Node::parse("admin@[2001:db8::1]:2222", None).unwrap();
+        assert_eq!(node.host, "2001:db8::1");
+        assert_eq!(node.port, 2222);
+        assert_eq!(node.username, "admin");
+    }
+
+    #[test]
+    fn test_parse_unbracketed_ipv6_explains_required_syntax() {
+        let error = Node::parse("::1", None).unwrap_err();
+        assert!(error.to_string().contains("must be enclosed in brackets"));
     }
 
     #[test]

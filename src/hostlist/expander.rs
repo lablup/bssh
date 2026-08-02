@@ -17,6 +17,8 @@
 //! This module expands parsed host patterns into lists of hostnames
 //! using cartesian product for multiple range expressions.
 
+use std::net::Ipv6Addr;
+
 use super::error::HostlistError;
 use super::parser::{PatternSegment, parse_host_pattern};
 
@@ -188,6 +190,12 @@ pub fn expand_host_spec(spec: &str) -> Result<Vec<String>, HostlistError> {
     } else {
         (None, spec)
     };
+
+    if rest.parse::<Ipv6Addr>().is_ok() {
+        return Err(HostlistError::UnbracketedIpv6 {
+            expression: spec.to_string(),
+        });
+    }
 
     // Parse port suffix (find last : that's not inside brackets)
     let (host_pattern, port_suffix) = parse_port_suffix(rest)?;
@@ -397,6 +405,35 @@ mod tests {
     fn test_expand_host_spec_no_expansion() {
         let hosts = expand_host_spec("user@host.com:2222").unwrap();
         assert_eq!(hosts, vec!["user@host.com:2222"]);
+    }
+
+    #[test]
+    fn test_expand_bracketed_ipv6_forms() {
+        for (spec, expected) in [
+            ("[::1]", "[::1]"),
+            ("[::1]:2222", "[::1]:2222"),
+            ("user@[::1]", "user@[::1]"),
+            ("user@[::1]:2222", "user@[::1]:2222"),
+            ("[2001:db8::1]", "[2001:db8::1]"),
+        ] {
+            assert_eq!(expand_host_spec(spec).unwrap(), vec![expected]);
+        }
+    }
+
+    #[test]
+    fn test_unbracketed_ipv6_requires_brackets() {
+        let error = expand_host_spec("::1").unwrap_err();
+        assert!(matches!(error, HostlistError::UnbracketedIpv6 { .. }));
+        assert!(error.to_string().contains("must be enclosed in brackets"));
+    }
+
+    #[test]
+    fn test_ipv6_capable_hostnames_remain_literals() {
+        assert_eq!(expand_host_spec("localhost").unwrap(), vec!["localhost"]);
+        assert_eq!(
+            expand_host_spec("ip6-localhost").unwrap(),
+            vec!["ip6-localhost"]
+        );
     }
 
     #[test]

@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 
 use super::types::{Config, InteractiveMode, NodeConfig};
 use super::utils::{expand_env_vars, expand_tilde};
+use crate::node::Node;
 use crate::test_helpers::EnvGuard;
 use serial_test::serial;
 
@@ -220,6 +221,39 @@ fn test_backendai_env_parsing() {
         }
         _ => panic!("Expected Simple node config"),
     }
+}
+
+#[test]
+fn test_cluster_nodes_accept_bracketed_ipv6_literals() {
+    let yaml = r#"
+defaults:
+  user: default-user
+  port: 2200
+clusters:
+  ipv6:
+    nodes:
+      - "[::1]"
+      - "admin@[2001:db8::1]:2222"
+      - host: "[2001:db8::2]"
+        port: 2223
+        user: detailed-user
+"#;
+
+    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let nodes = config.resolve_nodes("ipv6").unwrap();
+
+    assert_eq!(
+        nodes[0],
+        Node::new("::1".into(), 2200, "default-user".into())
+    );
+    assert_eq!(
+        nodes[1],
+        Node::new("2001:db8::1".into(), 2222, "admin".into())
+    );
+    assert_eq!(
+        nodes[2],
+        Node::new("2001:db8::2".into(), 2223, "detailed-user".into())
+    );
 }
 
 #[test]

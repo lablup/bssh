@@ -15,7 +15,13 @@
 //! Node resolution and filtering functionality
 
 use anyhow::{Context, Result};
-use bssh::{cli::Cli, config::Config, hostlist, node::Node, ssh::SshConfig};
+use bssh::{
+    cli::Cli,
+    config::Config,
+    hostlist,
+    node::{Node, parse_node_spec},
+    ssh::SshConfig,
+};
 use glob::Pattern;
 
 /// Parse a node string with SSH config integration
@@ -37,22 +43,10 @@ pub fn parse_node_with_ssh_config(node_str: &str, ssh_config: &SshConfig) -> Res
     }
 
     // First parse the raw node string to extract user, host, port from CLI
-    let (user_part, host_part) = if let Some(at_pos) = node_str.find('@') {
-        let user = &node_str[..at_pos];
-        let rest = &node_str[at_pos + 1..];
-        (Some(user), rest)
-    } else {
-        (None, node_str)
-    };
-
-    let (raw_host, cli_port) = if let Some(colon_pos) = host_part.rfind(':') {
-        let host = &host_part[..colon_pos];
-        let port_str = &host_part[colon_pos + 1..];
-        let port = port_str.parse::<u16>().context("Invalid port number")?;
-        (host, Some(port))
-    } else {
-        (host_part, None)
-    };
+    let spec = parse_node_spec(node_str)?;
+    let user_part = spec.user;
+    let raw_host = spec.host;
+    let cli_port = spec.port;
 
     // Security: Validate hostname
     let validated_host = bssh::security::validate_hostname(raw_host)
@@ -86,6 +80,69 @@ pub fn parse_node_with_ssh_config(node_str: &str, ssh_config: &SshConfig) -> Res
         effective_port,
         effective_user,
     ))
+}
+
+#[cfg(test)]
+mod ipv6_tests {
+    use super::*;
+    use clap::Parser;
+
+    #[test]
+    fn cli_node_parser_accepts_all_bracketed_ipv6_forms() {
+        let ssh_config = SshConfig::new();
+
+        for (spec, expected_user, expected_port) in [
+            ("[::1]", None, 22),
+            ("[::1]:2222", None, 2222),
+            ("user@[::1]", Some("user"), 22),
+            ("user@[::1]:2222", Some("user"), 2222),
+        ] {
+            let node = parse_node_with_ssh_config(spec, &ssh_config).unwrap();
+            assert_eq!(node.host, "::1");
+            assert_eq!(node.port, expected_port);
+            if let Some(user) = expected_user {
+                assert_eq!(node.username, user);
+            }
+        }
+    }
+
+    #[test]
+    fn cli_node_parser_rejects_unbracketed_ipv6_with_guidance() {
+        let error = parse_node_with_ssh_config("::1", &SshConfig::new()).unwrap_err();
+        assert!(error.to_string().contains("must be enclosed in brackets"));
+    }
+
+    #[tokio::test]
+    async fn hosts_option_resolves_bracketed_ipv6_through_the_real_flow() {
+        for (host_spec, expected_user, expected_port) in [
+            ("[::1]", None, 22),
+            ("[::1]:2222", None, 2222),
+            ("user@[::1]", Some("user"), 22),
+            ("user@[::1]:2222", Some("user"), 2222),
+        ] {
+            let cli = Cli::parse_from(["bssh", "-H", host_spec, "true"]);
+            let (nodes, _) = resolve_nodes(&cli, &Config::default(), &SshConfig::new())
+                .await
+                .unwrap();
+
+            assert_eq!(nodes.len(), 1);
+            assert_eq!(nodes[0].host, "::1");
+            assert_eq!(nodes[0].port, expected_port);
+            if let Some(user) = expected_user {
+                assert_eq!(nodes[0].username, user);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn hosts_option_rejects_bare_ipv6_with_bracket_guidance() {
+        let cli = Cli::parse_from(["bssh", "-H", "::1", "true"]);
+        let error = resolve_nodes(&cli, &Config::default(), &SshConfig::new())
+            .await
+            .unwrap_err();
+
+        assert!(format!("{error:#}").contains("must be enclosed in brackets"));
+    }
 }
 
 /// Resolve nodes from CLI arguments and configuration

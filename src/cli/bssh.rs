@@ -38,7 +38,7 @@ pub struct Cli {
         short = 'H',
         long,
         value_delimiter = ',',
-        help = "Comma-separated list of hosts with hostlist expansion support\nFormat: [user@]hostname[:port] with optional range expressions\nRange expressions:\n  node[1-5]        -> node1, node2, node3, node4, node5\n  node[01-03]      -> node01, node02, node03 (zero-padded)\n  node[1,3,5]      -> node1, node3, node5\n  rack[1-2]-node[1-3] -> 6 hosts (cartesian product)\n  ^/path/to/file   -> read hosts from file\nExamples:\n  'web[1-3].example.com' for web1-web3\n  'admin@db[01-03]:5432' for db01-db03 with user and port"
+        help = "Comma-separated list of hosts with hostlist expansion support\nFormat: [user@]hostname[:port] with optional range expressions\nIPv6 literals must be bracketed, for example '[::1]' or 'user@[::1]:2222'. A bracket group is IPv6 only when its contents parse as an IPv6 address; numeric groups remain ranges.\nRange expressions:\n  node[1-5]        -> node1, node2, node3, node4, node5\n  node[01-03]      -> node01, node02, node03 (zero-padded)\n  node[1,3,5]      -> node1, node3, node5\n  rack[1-2]-node[1-3] -> 6 hosts (cartesian product)\n  ^/path/to/file   -> read hosts from file\nExamples:\n  'web[1-3].example.com' for web1-web3\n  'admin@db[01-03]:5432' for db01-db03 with user and port\n  '[2001:db8::1]:2222' for an IPv6 literal with a port"
     )]
     pub hosts: Option<Vec<String>>,
 
@@ -512,32 +512,15 @@ impl Cli {
 
     /// Parse destination string into components (user, host, port)
     pub fn parse_destination(&self) -> Option<(Option<String>, String, Option<u16>)> {
-        self.destination.as_ref().map(|dest| {
-            // Handle ssh:// prefix
-            let dest = dest.strip_prefix("ssh://").unwrap_or(dest);
+        let destination = self.destination.as_ref()?;
+        let destination = destination.strip_prefix("ssh://").unwrap_or(destination);
+        let spec = crate::node::parse_node_spec(destination).ok()?;
 
-            // Parse [user@]hostname[:port]
-            let parts: Vec<&str> = dest.splitn(2, '@').collect();
-            let (user, host_port) = if parts.len() == 2 {
-                (Some(parts[0].to_string()), parts[1])
-            } else {
-                (None, parts[0])
-            };
-
-            // Parse hostname[:port]
-            if let Some(idx) = host_port.rfind(':') {
-                // Check if this is actually a port number (not IPv6 address)
-                if let Ok(port) = host_port[idx + 1..].parse::<u16>() {
-                    let host = host_port[..idx].to_string();
-                    (user, host, Some(port))
-                } else {
-                    // Not a valid port, treat entire string as hostname
-                    (user, host_port.to_string(), None)
-                }
-            } else {
-                (user, host_port.to_string(), None)
-            }
-        })
+        Some((
+            spec.user.map(str::to_string),
+            spec.host.to_string(),
+            spec.port,
+        ))
     }
 
     /// Get effective username (from -l option, destination, or environment)

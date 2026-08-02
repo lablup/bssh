@@ -26,7 +26,12 @@
 //! - Mixed ranges and values: `node[1-3,7,9-10]` -> 7 hosts
 //! - Multiple ranges (cartesian product): `rack[1-2]-node[1-3]` -> 6 hosts
 //! - Domain suffix: `web[1-3].example.com` -> 3 hosts
+//! - IPv6 literal: `[2001:db8::1]` -> one literal host (brackets required)
 //! - File input: `^/path/to/file` -> read hosts from file
+//!
+//! A bracket group is treated as IPv6 only when its complete contents parse as
+//! an IPv6 address. Numeric groups such as `[1]` and `[1-3]` therefore retain
+//! their range meaning without ambiguity.
 //!
 //! # Examples
 //!

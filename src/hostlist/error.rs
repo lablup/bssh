@@ -76,6 +76,12 @@ pub enum HostlistError {
     /// IPv6 address disambiguation failure
     #[error("cannot distinguish IPv6 literal from range expression in '{expression}'")]
     Ipv6Ambiguity { expression: String },
+
+    /// An IPv6 literal was supplied without the brackets required by host specs.
+    #[error(
+        "IPv6 address literal '{expression}' must be enclosed in brackets, for example '[::1]'"
+    )]
+    UnbracketedIpv6 { expression: String },
 }
 
 #[cfg(test)]

@@ -17,8 +17,10 @@
 //! This module parses hostlist expressions into structured representations
 //! that can be expanded into lists of hostnames.
 
-use super::error::HostlistError;
+use std::net::Ipv6Addr;
 use std::path::Path;
+
+use super::error::HostlistError;
 
 /// Represents a parsed range item (single value or range)
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -162,12 +164,17 @@ pub fn parse_host_pattern(pattern: &str) -> Result<HostPattern, HostlistError> {
                     });
                 }
 
-                // Check for IPv6 literal (starts with digit or colon after [)
-                if let Some(&next_ch) = chars.peek()
-                    && is_ipv6_start(next_ch, &chars)
-                {
-                    // This might be an IPv6 literal, collect until matching ]
+                // A bracket group is an IPv6 literal only when its complete
+                // contents parse as IPv6. Numeric groups remain hostlist ranges,
+                // so inputs such as `[1]` and `[1-3]` are never ambiguous.
+                if current_literal.is_empty() && is_bracketed_ipv6(&chars) {
                     current_literal.push(ch);
+                    for ipv6_ch in chars.by_ref() {
+                        current_literal.push(ipv6_ch);
+                        if ipv6_ch == ']' {
+                            break;
+                        }
+                    }
                     continue;
                 }
 
@@ -233,13 +240,20 @@ pub fn parse_host_pattern(pattern: &str) -> Result<HostPattern, HostlistError> {
     Ok(HostPattern { segments })
 }
 
-/// Check if a character sequence might be the start of an IPv6 literal
-fn is_ipv6_start(next_ch: char, _chars: &std::iter::Peekable<std::str::Chars>) -> bool {
-    // IPv6 literals start with a colon (e.g., [::1] or [2001:db8::1])
-    // We use a conservative heuristic: only treat as IPv6 if we see a colon
-    // This means hex digits like 'a' will be treated as potential hostlist content
-    // and will fail with InvalidNumber if they're not valid numeric ranges
-    next_ch == ':'
+/// Return whether the characters after `[` contain a complete IPv6 literal.
+fn is_bracketed_ipv6(chars: &std::iter::Peekable<std::str::Chars<'_>>) -> bool {
+    let mut lookahead = chars.clone();
+    let mut address = String::new();
+
+    for ch in lookahead.by_ref() {
+        match ch {
+            ']' => return address.parse::<Ipv6Addr>().is_ok(),
+            '[' => return false,
+            _ => address.push(ch),
+        }
+    }
+
+    false
 }
 
 /// Parse a range expression (content between brackets)
@@ -541,6 +555,18 @@ mod tests {
         assert_eq!(pattern.segments.len(), 1);
         assert!(!pattern.has_ranges());
         assert_eq!(pattern.expansion_count(), 1);
+    }
+
+    #[test]
+    fn test_parse_bracketed_ipv6_as_literal() {
+        for address in ["[::1]", "[2001:db8::1]"] {
+            let pattern = parse_host_pattern(address).unwrap();
+            assert_eq!(
+                pattern.segments,
+                vec![PatternSegment::Literal(address.to_string())]
+            );
+            assert!(!pattern.has_ranges());
+        }
     }
 
     #[test]
