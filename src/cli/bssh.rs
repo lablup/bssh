@@ -512,24 +512,23 @@ impl Cli {
 
     /// Parse destination string into components (user, host, port)
     pub fn parse_destination(&self) -> Option<(Option<String>, String, Option<u16>)> {
-        self.parse_destination_result().ok().flatten()
+        let spec = self.parse_destination_result().ok().flatten()?;
+        Some((
+            spec.user.map(str::to_string),
+            spec.host.to_string(),
+            spec.port,
+        ))
     }
 
     /// Parse destination string into components while preserving parse errors.
-    pub fn parse_destination_result(
-        &self,
-    ) -> Result<Option<(Option<String>, String, Option<u16>)>> {
+    pub fn parse_destination_result(&self) -> Result<Option<crate::node::NodeSpec<'_>>> {
         let Some(destination) = self.destination.as_ref() else {
             return Ok(None);
         };
         let destination = destination.strip_prefix("ssh://").unwrap_or(destination);
         let spec = crate::node::parse_node_spec(destination)?;
 
-        Ok(Some((
-            spec.user.map(str::to_string),
-            spec.host.to_string(),
-            spec.port,
-        )))
+        Ok(Some(spec))
     }
 
     /// Get effective username (from -l option, destination, or environment)

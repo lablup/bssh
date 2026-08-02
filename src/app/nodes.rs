@@ -189,17 +189,20 @@ pub async fn resolve_nodes(
 
     // Handle SSH compatibility mode (single host)
     if cli.is_ssh_mode() {
-        let (user, host, port) = cli
+        let spec = cli
             .parse_destination_result()?
             .ok_or_else(|| anyhow::anyhow!("Invalid destination format"))?;
+        let user = spec.user;
+        let host = spec.host;
+        let port = spec.port;
 
         // Resolve using SSH config with CLI taking precedence
-        let effective_hostname = ssh_config.get_effective_hostname(&host);
+        let effective_hostname = ssh_config.get_effective_hostname(host);
         let effective_user = if let Some(u) = user {
-            u
+            u.to_string()
         } else if let Some(cli_user) = cli.get_effective_user() {
             cli_user
-        } else if let Some(ssh_user) = ssh_config.get_effective_user(&host, None) {
+        } else if let Some(ssh_user) = ssh_config.get_effective_user(host, None) {
             ssh_user
         } else if let Ok(env_user) = std::env::var("USER") {
             env_user
@@ -207,7 +210,7 @@ pub async fn resolve_nodes(
             "root".to_string()
         };
         let effective_port =
-            ssh_config.get_effective_port(&host, port.or_else(|| cli.get_effective_port()));
+            ssh_config.get_effective_port(host, port.or_else(|| cli.get_effective_port()));
 
         let node = Node::new(effective_hostname, effective_port, effective_user);
         nodes.push(node);
