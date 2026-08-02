@@ -28,9 +28,7 @@ use bssh::{
     config::InteractiveMode,
     pty::PtyConfig,
     security::{Password, get_password, get_sudo_password},
-    ssh::tokio_client::{
-        AddressFamily, DEFAULT_KEEPALIVE_INTERVAL, DEFAULT_KEEPALIVE_MAX, SshConnectionConfig,
-    },
+    ssh::tokio_client::{AddressFamily, SshConnectionConfigResolver},
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -44,71 +42,24 @@ use super::utils::format_duration;
 /// report.
 const EXIT_SUCCESS: i32 = 0;
 
-/// Build SSH connection config with keepalive, compression, and address
-/// family settings.
+/// Build an SSH connection config resolver with keepalive, compression, and
+/// address family settings.
 /// Precedence: CLI > SSH config > YAML config > defaults.
 /// `Compression` has no CLI or YAML override; it is read from ssh_config only.
 /// `AddressFamily` has no YAML override; `-4`/`-6` beat the ssh_config keyword,
 /// which beats the `any` default.
-fn build_ssh_connection_config(
+fn build_ssh_connection_config_resolver(
     cli: &Cli,
     ctx: &AppContext,
-    hostname: Option<&str>,
     cluster_name: Option<&str>,
-) -> SshConnectionConfig {
-    let keepalive_interval = cli
-        .server_alive_interval
-        .or_else(|| {
-            ctx.ssh_config
-                .get_int_option(hostname, "serveraliveinterval")
-                .map(|v| v as u64)
-        })
-        .or_else(|| ctx.config.get_server_alive_interval(cluster_name))
-        .unwrap_or(DEFAULT_KEEPALIVE_INTERVAL);
-
-    let keepalive_max = cli
-        .server_alive_count_max
-        .or_else(|| {
-            ctx.ssh_config
-                .get_int_option(hostname, "serveralivecountmax")
-                .map(|v| v as usize)
-        })
-        .or_else(|| ctx.config.get_server_alive_count_max(cluster_name))
-        .unwrap_or(DEFAULT_KEEPALIVE_MAX);
-
-    let compression = ctx
-        .ssh_config
-        .get_compression(hostname.unwrap_or("*"))
-        .unwrap_or(false);
-
-    let address_family = resolve_address_family(cli, ctx, hostname);
-
-    let ssh_connection_config = SshConnectionConfig::new()
-        .with_keepalive_interval(if keepalive_interval == 0 {
-            None
-        } else {
-            Some(keepalive_interval)
-        })
-        .with_keepalive_max(keepalive_max)
-        .with_compression(compression)
-        .with_address_family(address_family);
-
-    tracing::debug!(
-        "SSH keepalive config: interval={:?}s, max={}, compression={}, address_family={}",
-        ssh_connection_config.keepalive_interval,
-        ssh_connection_config.keepalive_max,
-        ssh_connection_config.compression,
-        ssh_connection_config.address_family
-    );
-
-    ssh_connection_config
-}
-
-/// Resolve the effective address family with OpenSSH precedence:
-/// `-4`/`-6` beat the ssh_config `AddressFamily` keyword, which beats `any`.
-fn resolve_address_family(cli: &Cli, ctx: &AppContext, hostname: Option<&str>) -> AddressFamily {
-    let config_value = ctx.ssh_config.get_address_family(hostname.unwrap_or("*"));
-    AddressFamily::resolve(cli.ipv4, cli.ipv6, config_value.as_deref())
+) -> SshConnectionConfigResolver {
+    SshConnectionConfigResolver::new()
+        .with_ssh_config(Some(ctx.ssh_config.clone()))
+        .with_cli_keepalive_interval(cli.server_alive_interval)
+        .with_cli_keepalive_max(cli.server_alive_count_max)
+        .with_yaml_keepalive_interval(ctx.config.get_server_alive_interval(cluster_name))
+        .with_yaml_keepalive_max(ctx.config.get_server_alive_count_max(cluster_name))
+        .with_cli_address_family(AddressFamily::from_flags(cli.ipv4, cli.ipv6))
 }
 
 /// Decide whether `-S` (sudo-password) is meaningful for the given dispatch path.
@@ -250,10 +201,9 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<i32> {
                     .get_cluster_jump_host(ctx.cluster_name.as_deref().or(cli.cluster.as_deref()))
             });
 
-            let ssh_connection_config = build_ssh_connection_config(
+            let ssh_connection_config_resolver = build_ssh_connection_config_resolver(
                 cli,
                 ctx,
-                hostname_for_ssh_config.as_deref(),
                 ctx.cluster_name.as_deref().or(cli.cluster.as_deref()),
             );
 
@@ -273,7 +223,7 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<i32> {
                 Some(cli.connect_timeout),
                 jump_hosts,
                 ssh_password.clone(),
-                ssh_connection_config,
+                ssh_connection_config_resolver,
             )
             .await?;
 
@@ -309,10 +259,10 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<i32> {
                 recursive: *recursive,
                 ssh_config: Some(&ctx.ssh_config),
                 jump_hosts,
-                address_family: resolve_address_family(
+                ssh_connection_config_resolver: build_ssh_connection_config_resolver(
                     cli,
                     ctx,
-                    hostname_for_ssh_config.as_deref(),
+                    ctx.cluster_name.as_deref().or(cli.cluster.as_deref()),
                 ),
             };
             upload_file(params, source, destination).await?;
@@ -348,10 +298,10 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<i32> {
                 recursive: *recursive,
                 ssh_config: Some(&ctx.ssh_config),
                 jump_hosts,
-                address_family: resolve_address_family(
+                ssh_connection_config_resolver: build_ssh_connection_config_resolver(
                     cli,
                     ctx,
-                    hostname_for_ssh_config.as_deref(),
+                    ctx.cluster_name.as_deref().or(cli.cluster.as_deref()),
                 ),
             };
             download_file(params, source, destination).await?;
@@ -479,8 +429,13 @@ async fn handle_interactive_command(
 
     // Build SSH connection config with keepalive settings for interactive mode
     let effective_cluster_name = ctx.cluster_name.as_deref().or(cli.cluster.as_deref());
-    let ssh_connection_config =
-        build_ssh_connection_config(cli, ctx, hostname.as_deref(), effective_cluster_name);
+    let ssh_connection_config_resolver =
+        build_ssh_connection_config_resolver(cli, ctx, effective_cluster_name);
+    let config_hostname = hostname
+        .as_deref()
+        .or_else(|| ctx.nodes.first().map(|node| node.host.as_str()))
+        .unwrap_or("*");
+    let ssh_connection_config = ssh_connection_config_resolver.resolve_for_host(config_hostname);
 
     let interactive_cmd = InteractiveCommand {
         single_node: merged_mode.0,
@@ -559,8 +514,14 @@ async fn handle_exec_command(
 
         // Build SSH connection config with keepalive settings for SSH mode interactive session
         let effective_cluster_name = ctx.cluster_name.as_deref().or(cli.cluster.as_deref());
+        let ssh_connection_config_resolver =
+            build_ssh_connection_config_resolver(cli, ctx, effective_cluster_name);
+        let config_hostname = hostname
+            .as_deref()
+            .or_else(|| ctx.nodes.first().map(|node| node.host.as_str()))
+            .unwrap_or("*");
         let ssh_connection_config =
-            build_ssh_connection_config(cli, ctx, hostname.as_deref(), effective_cluster_name);
+            ssh_connection_config_resolver.resolve_for_host(config_hostname);
 
         let interactive_cmd = InteractiveCommand {
             single_node: true,
@@ -653,9 +614,18 @@ async fn handle_exec_command(
             tracing::info!("Using jump host: {}", jh);
         }
 
-        // Build SSH connection config with keepalive settings for exec mode
-        let ssh_connection_config =
-            build_ssh_connection_config(cli, ctx, hostname.as_deref(), effective_cluster_name);
+        // Build SSH connection config resolver for exec mode. Each executor
+        // task resolves it against that task's node host.
+        let ssh_connection_config_resolver =
+            build_ssh_connection_config_resolver(cli, ctx, effective_cluster_name);
+        let forwarding_config_hostname = ctx
+            .nodes
+            .first()
+            .map(|node| node.host.as_str())
+            .or(hostname.as_deref())
+            .unwrap_or("*");
+        let forwarding_ssh_connection_config =
+            ssh_connection_config_resolver.resolve_for_host(forwarding_config_hostname);
 
         let params = ExecuteCommandParams {
             nodes: ctx.nodes.clone(),
@@ -676,7 +646,7 @@ async fn handle_exec_command(
             connect_timeout: Some(cli.connect_timeout),
             jump_hosts: jump_hosts.as_deref(),
             port_forwards: if cli.has_port_forwards() {
-                Some(cli.parse_port_forwards(ssh_connection_config.address_family)?)
+                Some(cli.parse_port_forwards(forwarding_ssh_connection_config.address_family)?)
             } else {
                 None
             },
@@ -686,7 +656,7 @@ async fn handle_exec_command(
             batch: cli.batch,
             fail_fast: cli.fail_fast,
             ssh_config: Some(&ctx.ssh_config),
-            ssh_connection_config,
+            ssh_connection_config_resolver,
         };
         execute_command(params).await
     }

@@ -25,7 +25,7 @@ use crate::node::Node;
 use crate::security::{Password, SudoPassword};
 use crate::ssh::SshConfig;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
-use crate::ssh::tokio_client::{AddressFamily, SshConnectionConfig};
+use crate::ssh::tokio_client::{AddressFamily, SshConnectionConfig, SshConnectionConfigResolver};
 
 use super::connection_manager::{ExecutionConfig, download_from_node};
 use super::execution_strategy::{
@@ -57,8 +57,8 @@ pub struct ParallelExecutor {
     pub(crate) batch: bool,
     pub(crate) fail_fast: bool,
     pub(crate) ssh_config: Option<SshConfig>,
-    /// SSH connection configuration (keepalive settings)
-    pub(crate) ssh_connection_config: SshConnectionConfig,
+    /// Per-host SSH connection configuration resolver.
+    pub(crate) ssh_connection_config_resolver: SshConnectionConfigResolver,
 }
 
 impl ParallelExecutor {
@@ -96,7 +96,7 @@ impl ParallelExecutor {
             batch: false,
             fail_fast: false,
             ssh_config: None,
-            ssh_connection_config: SshConnectionConfig::default(),
+            ssh_connection_config_resolver: SshConnectionConfigResolver::default(),
         }
     }
 
@@ -125,7 +125,7 @@ impl ParallelExecutor {
             batch: false,
             fail_fast: false,
             ssh_config: None,
-            ssh_connection_config: SshConnectionConfig::default(),
+            ssh_connection_config_resolver: SshConnectionConfigResolver::default(),
         }
     }
 
@@ -155,7 +155,7 @@ impl ParallelExecutor {
             batch: false,
             fail_fast: false,
             ssh_config: None,
-            ssh_connection_config: SshConnectionConfig::default(),
+            ssh_connection_config_resolver: SshConnectionConfigResolver::default(),
         }
     }
 
@@ -253,7 +253,16 @@ impl ParallelExecutor {
     ///     .with_ssh_connection_config(config);
     /// ```
     pub fn with_ssh_connection_config(mut self, config: SshConnectionConfig) -> Self {
-        self.ssh_connection_config = config;
+        self.ssh_connection_config_resolver = SshConnectionConfigResolver::fixed(config);
+        self
+    }
+
+    /// Set a per-host SSH connection configuration resolver.
+    pub fn with_ssh_connection_config_resolver(
+        mut self,
+        resolver: SshConnectionConfigResolver,
+    ) -> Self {
+        self.ssh_connection_config_resolver = resolver;
         self
     }
 
@@ -265,8 +274,15 @@ impl ParallelExecutor {
     /// that never build a full `SshConnectionConfig` (the SFTP paths) can
     /// still honor the flag.
     pub fn with_address_family(mut self, family: AddressFamily) -> Self {
-        self.ssh_connection_config.address_family = family;
+        self.ssh_connection_config_resolver = self
+            .ssh_connection_config_resolver
+            .with_cli_address_family(Some(family));
         self
+    }
+
+    pub(crate) fn connection_config_for_node(&self, node: &Node) -> SshConnectionConfig {
+        self.ssh_connection_config_resolver
+            .resolve_for_host(&node.host)
     }
 
     /// Execute a command on all nodes in parallel.
@@ -304,7 +320,8 @@ impl ParallelExecutor {
                 let pb = setup_progress_bar(&multi_progress, &node, style.clone(), "Connecting...");
 
                 let ssh_config_ref = self.ssh_config.clone();
-                let ssh_connection_config = self.ssh_connection_config.clone();
+                let ssh_connection_config_resolver = self.ssh_connection_config_resolver.clone();
+                let ssh_connection_config = self.connection_config_for_node(&node);
 
                 tokio::spawn(async move {
                     let config = ExecutionConfig {
@@ -321,6 +338,7 @@ impl ParallelExecutor {
                         ssh_password: ssh_password.clone(),
                         ssh_config: ssh_config_ref.as_ref(),
                         ssh_connection_config: Some(&ssh_connection_config),
+                        ssh_connection_config_resolver: Some(&ssh_connection_config_resolver),
                     };
 
                     execute_command_task(node, command, config, semaphore, pb).await
@@ -413,7 +431,7 @@ impl ParallelExecutor {
             Vec::with_capacity(self.nodes.len());
 
         let ssh_config_for_tasks = self.ssh_config.clone();
-        let ssh_connection_config_for_tasks = self.ssh_connection_config.clone();
+        let ssh_connection_config_resolver_for_tasks = self.ssh_connection_config_resolver.clone();
 
         // Spawn tasks for each node
         for node in &self.nodes {
@@ -434,7 +452,9 @@ impl ParallelExecutor {
             let pb = setup_progress_bar(&multi_progress, &node, style.clone(), "Connecting...");
             let mut cancel_rx = cancel_rx.clone();
             let ssh_config_ref = ssh_config_for_tasks.clone();
-            let ssh_connection_config_ref = ssh_connection_config_for_tasks.clone();
+            let ssh_connection_config_resolver_ref =
+                ssh_connection_config_resolver_for_tasks.clone();
+            let ssh_connection_config = self.connection_config_for_node(&node);
 
             let handle = tokio::spawn(async move {
                 // Check if already cancelled before acquiring semaphore
@@ -499,7 +519,8 @@ impl ParallelExecutor {
                     sudo_password: sudo_password.clone(),
                     ssh_password: ssh_password.clone(),
                     ssh_config: ssh_config_ref.as_ref(),
-                    ssh_connection_config: Some(&ssh_connection_config_ref),
+                    ssh_connection_config: Some(&ssh_connection_config),
+                    ssh_connection_config_resolver: Some(&ssh_connection_config_resolver_ref),
                 };
 
                 // Execute the command (keeping the permit alive)
@@ -672,7 +693,8 @@ impl ParallelExecutor {
                 let pb = setup_progress_bar(&multi_progress, &node, style.clone(), "Connecting...");
 
                 let ssh_config_ref = self.ssh_config.clone();
-                let address_family = self.ssh_connection_config.address_family;
+                let ssh_connection_config_resolver = self.ssh_connection_config_resolver.clone();
+                let ssh_connection_config = self.connection_config_for_node(&node);
 
                 tokio::spawn(upload_file_task(
                     node,
@@ -686,7 +708,8 @@ impl ParallelExecutor {
                     connect_timeout,
                     ssh_config_ref,
                     ssh_password,
-                    address_family,
+                    ssh_connection_config,
+                    ssh_connection_config_resolver,
                     semaphore,
                     pb,
                 ))
@@ -788,7 +811,8 @@ impl ParallelExecutor {
                 let semaphore = Arc::clone(&semaphore);
                 let pb = setup_progress_bar(&multi_progress, &node, style.clone(), "Connecting...");
                 let ssh_config_ref = self.ssh_config.clone();
-                let address_family = self.ssh_connection_config.address_family;
+                let ssh_connection_config_resolver = self.ssh_connection_config_resolver.clone();
+                let ssh_connection_config = self.connection_config_for_node(&node);
 
                 tokio::spawn(download_file_task(
                     node,
@@ -802,7 +826,8 @@ impl ParallelExecutor {
                     connect_timeout,
                     ssh_config_ref,
                     ssh_password,
-                    address_family,
+                    ssh_connection_config,
+                    ssh_connection_config_resolver,
                     semaphore,
                     pb,
                 ))
@@ -925,7 +950,9 @@ impl ParallelExecutor {
                     let connect_timeout = self.connect_timeout;
                     let ssh_config_ref = self.ssh_config.clone();
                     let ssh_password = self.ssh_password.clone();
-                    let address_family = self.ssh_connection_config.address_family;
+                    let ssh_connection_config_resolver =
+                        self.ssh_connection_config_resolver.clone();
+                    let ssh_connection_config = self.connection_config_for_node(&node);
 
                     tokio::spawn(async move {
                         let _permit = match semaphore.acquire().await {
@@ -953,7 +980,8 @@ impl ParallelExecutor {
                             connect_timeout,
                             ssh_config_ref.as_ref(),
                             ssh_password,
-                            address_family,
+                            &ssh_connection_config,
+                            &ssh_connection_config_resolver,
                         )
                         .await;
 
@@ -1180,7 +1208,8 @@ impl ParallelExecutor {
             let sudo_password = self.sudo_password.clone();
             let ssh_password = self.ssh_password.clone();
             let semaphore = Arc::clone(&semaphore);
-            let ssh_connection_config = self.ssh_connection_config.clone();
+            let ssh_connection_config_resolver = self.ssh_connection_config_resolver.clone();
+            let ssh_connection_config = self.connection_config_for_node(node);
 
             let handle = tokio::spawn(async move {
                 // Use defer pattern to ensure cleanup even on panic
@@ -1227,6 +1256,7 @@ impl ParallelExecutor {
                     connect_timeout_seconds: connect_timeout,
                     jump_hosts_spec: jump_hosts.as_deref(),
                     ssh_connection_config: Some(&ssh_connection_config),
+                    ssh_connection_config_resolver: Some(&ssh_connection_config_resolver),
                     ssh_password: ssh_password.clone(),
                 };
 
@@ -1780,5 +1810,54 @@ impl ParallelExecutor {
         }
 
         self.collect_results(results.into_iter().map(Ok).collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ssh::SshConfig;
+
+    #[test]
+    fn connection_config_for_node_resolves_each_node_host_block() {
+        let ssh_config = SshConfig::parse(
+            r#"
+Host v4node
+    AddressFamily inet
+    Compression yes
+    ServerAliveInterval 11
+    ServerAliveCountMax 2
+
+Host v6node
+    AddressFamily inet6
+    Compression no
+    ServerAliveInterval 22
+    ServerAliveCountMax 4
+"#,
+        )
+        .expect("valid ssh_config");
+
+        let nodes = vec![
+            Node::new("v4node".to_string(), 22, "user".to_string()),
+            Node::new("v6node".to_string(), 22, "user".to_string()),
+        ];
+        let resolver = SshConnectionConfigResolver::new()
+            .with_ssh_config(Some(ssh_config))
+            .with_yaml_keepalive_interval(Some(30))
+            .with_yaml_keepalive_max(Some(3));
+        let executor = ParallelExecutor::new(nodes.clone(), 2, None)
+            .with_ssh_connection_config_resolver(resolver);
+
+        let v4 = executor.connection_config_for_node(&nodes[0]);
+        assert_eq!(v4.address_family, AddressFamily::V4);
+        assert!(v4.compression);
+        assert_eq!(v4.keepalive_interval, Some(11));
+        assert_eq!(v4.keepalive_max, 2);
+
+        let v6 = executor.connection_config_for_node(&nodes[1]);
+        assert_eq!(v6.address_family, AddressFamily::V6);
+        assert!(!v6.compression);
+        assert_eq!(v6.keepalive_interval, Some(22));
+        assert_eq!(v6.keepalive_max, 4);
     }
 }

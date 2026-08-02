@@ -26,7 +26,7 @@ use super::parser::{JumpHost, get_max_jump_hosts};
 use super::rate_limiter::ConnectionRateLimiter;
 use crate::security::Password;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
-use crate::ssh::tokio_client::{AuthMethod, SshConnectionConfig};
+use crate::ssh::tokio_client::{AuthMethod, SshConnectionConfig, SshConnectionConfigResolver};
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::sync::Arc;
@@ -69,6 +69,8 @@ pub struct JumpHostChain {
     auth_mutex: Arc<Mutex<()>>,
     /// SSH connection configuration (keepalive settings)
     ssh_connection_config: SshConnectionConfig,
+    /// Per-host SSH connection configuration resolver.
+    ssh_connection_config_resolver: Option<SshConnectionConfigResolver>,
     /// Pre-collected SSH password (from the dispatcher's single up-front prompt).
     /// When `use_password` is set on a per-call basis, this is consumed by every
     /// jump-host auth step instead of prompting per-call, which would otherwise
@@ -111,6 +113,7 @@ impl JumpHostChain {
             max_connection_age: Duration::from_secs(1800), // 30 minutes
             auth_mutex: Arc::new(Mutex::new(())),
             ssh_connection_config: SshConnectionConfig::default(),
+            ssh_connection_config_resolver: None,
             ssh_password: None,
         }
     }
@@ -130,7 +133,24 @@ impl JumpHostChain {
     /// idle connection timeouts during jump host operations.
     pub fn with_ssh_connection_config(mut self, config: SshConnectionConfig) -> Self {
         self.ssh_connection_config = config;
+        self.ssh_connection_config_resolver = None;
         self
+    }
+
+    /// Set per-host SSH connection configuration resolver.
+    pub fn with_ssh_connection_config_resolver(
+        mut self,
+        resolver: SshConnectionConfigResolver,
+    ) -> Self {
+        self.ssh_connection_config_resolver = Some(resolver);
+        self
+    }
+
+    fn connection_config_for_host(&self, host: &str) -> SshConnectionConfig {
+        self.ssh_connection_config_resolver
+            .as_ref()
+            .map(|resolver| resolver.resolve_for_host(host))
+            .unwrap_or_else(|| self.ssh_connection_config.clone())
     }
 
     /// Create a direct connection chain (no jump hosts)
@@ -210,6 +230,7 @@ impl JumpHostChain {
         }
 
         if self.is_direct() {
+            let ssh_connection_config = self.connection_config_for_host(destination_host);
             chain_connection::connect_direct(
                 destination_host,
                 destination_port,
@@ -218,7 +239,7 @@ impl JumpHostChain {
                 dest_strict_mode,
                 self.connect_timeout,
                 &self.rate_limiter,
-                &self.ssh_connection_config,
+                &ssh_connection_config,
             )
             .await
         } else {
@@ -280,6 +301,7 @@ impl JumpHostChain {
 
         // Step 2: Chain through intermediate jump hosts
         for (i, jump_host) in self.jump_hosts.iter().skip(1).enumerate() {
+            let ssh_connection_config = self.connection_config_for_host(&jump_host.host);
             debug!(
                 "Connecting to intermediate jump host {} of {}: {}",
                 i + 2,
@@ -298,7 +320,7 @@ impl JumpHostChain {
                 self.connect_timeout,
                 &self.rate_limiter,
                 &self.auth_mutex,
-                &self.ssh_connection_config,
+                &ssh_connection_config,
             )
             .await
             .with_context(|| intermediate_jump_hop_context(jump_host, i + 2))?;
@@ -307,6 +329,7 @@ impl JumpHostChain {
         }
 
         // Step 3: Connect to final destination through the last jump host
+        let ssh_connection_config = self.connection_config_for_host(destination_host);
         let final_client = tunnel::connect_to_destination(
             &current_client,
             destination_host,
@@ -316,7 +339,7 @@ impl JumpHostChain {
             dest_strict_mode.unwrap_or(StrictHostKeyChecking::AcceptNew),
             self.connect_timeout,
             &self.rate_limiter,
-            &self.ssh_connection_config,
+            &ssh_connection_config,
         )
         .await
         .with_context(|| {
@@ -355,6 +378,7 @@ impl JumpHostChain {
         use_password: bool,
     ) -> Result<crate::ssh::tokio_client::Client> {
         let jump_host = &self.jump_hosts[0];
+        let ssh_connection_config = self.connection_config_for_host(&jump_host.host);
 
         debug!(
             "Connecting to first jump host: {} ({}:{})",
@@ -405,7 +429,7 @@ impl JumpHostChain {
                 &effective_user,
                 auth_method,
                 check_method,
-                &self.ssh_connection_config,
+                &ssh_connection_config,
             ),
         )
         .await
@@ -458,6 +482,8 @@ fn intermediate_jump_hop_context(jump_host: &JumpHost, hop: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ssh::SshConfig;
+    use crate::ssh::tokio_client::AddressFamily;
 
     #[test]
     fn test_jump_host_chain_creation() {
@@ -509,5 +535,41 @@ mod tests {
 
         assert!(message.contains("hop 3"));
         assert!(message.contains("relay.example.com"));
+    }
+
+    #[test]
+    fn test_chain_resolves_connection_config_per_jump_host() {
+        let ssh_config = SshConfig::parse(
+            r#"
+Host bastion
+    AddressFamily inet
+    Compression yes
+    ServerAliveInterval 11
+    ServerAliveCountMax 2
+
+Host target
+    AddressFamily inet6
+    Compression no
+    ServerAliveInterval 22
+    ServerAliveCountMax 4
+"#,
+        )
+        .expect("valid ssh_config");
+        let resolver = SshConnectionConfigResolver::new().with_ssh_config(Some(ssh_config));
+
+        let chain = JumpHostChain::new(vec![JumpHost::new("bastion".to_string(), None, None)])
+            .with_ssh_connection_config_resolver(resolver);
+
+        let bastion = chain.connection_config_for_host("bastion");
+        assert_eq!(bastion.address_family, AddressFamily::V4);
+        assert!(bastion.compression);
+        assert_eq!(bastion.keepalive_interval, Some(11));
+        assert_eq!(bastion.keepalive_max, 2);
+
+        let target = chain.connection_config_for_host("target");
+        assert_eq!(target.address_family, AddressFamily::V6);
+        assert!(!target.compression);
+        assert_eq!(target.keepalive_interval, Some(22));
+        assert_eq!(target.keepalive_max, 4);
     }
 }

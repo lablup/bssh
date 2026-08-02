@@ -16,7 +16,9 @@ use super::core::SshClient;
 use crate::jump::{JumpHostChain, parse_jump_hosts};
 use crate::security::Password;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
-use crate::ssh::tokio_client::{AuthMethod, Client, SshConnectionConfig};
+use crate::ssh::tokio_client::{
+    AuthMethod, Client, SshConnectionConfig, SshConnectionConfigResolver,
+};
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::sync::Arc;
@@ -217,6 +219,7 @@ impl SshClient {
         use_password: bool,
         connect_timeout_seconds: Option<u64>,
         ssh_connection_config: Option<&SshConnectionConfig>,
+        ssh_connection_config_resolver: Option<&SshConnectionConfigResolver>,
         pre_collected_password: Option<Arc<Password>>,
     ) -> Result<Client> {
         // Create jump host chain with user-specified or default connect timeout
@@ -228,6 +231,9 @@ impl SshClient {
             .with_ssh_password(pre_collected_password);
         if let Some(cfg) = ssh_connection_config {
             chain = chain.with_ssh_connection_config(cfg.clone());
+        }
+        if let Some(resolver) = ssh_connection_config_resolver {
+            chain = chain.with_ssh_connection_config_resolver(resolver.clone());
         }
 
         // Connect through the chain
@@ -270,6 +276,7 @@ impl SshClient {
         use_password: bool,
         connect_timeout_seconds: Option<u64>,
         ssh_connection_config: Option<&SshConnectionConfig>,
+        ssh_connection_config_resolver: Option<&SshConnectionConfigResolver>,
         pre_collected_password: Option<Arc<Password>>,
     ) -> Result<Client> {
         if let Some(jump_spec) = jump_hosts_spec {
@@ -309,6 +316,7 @@ impl SshClient {
                     use_password,
                     connect_timeout_seconds,
                     ssh_connection_config,
+                    ssh_connection_config_resolver,
                     pre_collected_password,
                 )
                 .await

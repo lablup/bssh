@@ -22,7 +22,7 @@ use crate::executor::{ExecutionResult, ParallelExecutor};
 use crate::node::Node;
 use crate::security::Password;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
-use crate::ssh::tokio_client::SshConnectionConfig;
+use crate::ssh::tokio_client::SshConnectionConfigResolver;
 use crate::ui::OutputFormatter;
 
 /// Exit code reported when bssh itself could not complete the connectivity
@@ -94,9 +94,9 @@ impl PingOutcome {
 
 /// Test connectivity to every node.
 ///
-/// `ssh_connection_config` carries the resolved keepalive, compression, and
-/// address family settings so `bssh ping -6` tests the same address family the
-/// real connection would use.
+/// `ssh_connection_config_resolver` carries the keepalive, compression, and
+/// address family sources so every ping target resolves settings against its
+/// own ssh_config Host block.
 ///
 /// Returns the per-host tally as a [`PingOutcome`]; the caller turns it into the
 /// process exit status. An `Err` means bssh failed before it could evaluate any
@@ -115,7 +115,7 @@ pub async fn ping_nodes(
     connect_timeout: Option<u64>,
     jump_hosts: Option<String>,
     ssh_password: Option<Arc<Password>>,
-    ssh_connection_config: SshConnectionConfig,
+    ssh_connection_config_resolver: SshConnectionConfigResolver,
 ) -> Result<PingOutcome> {
     println!(
         "{}",
@@ -140,7 +140,7 @@ pub async fn ping_nodes(
     .with_connect_timeout(connect_timeout)
     .with_jump_hosts(jump_hosts)
     .with_ssh_password(ssh_password)
-    .with_ssh_connection_config(ssh_connection_config);
+    .with_ssh_connection_config_resolver(ssh_connection_config_resolver);
 
     #[cfg(target_os = "macos")]
     let executor = executor.with_keychain(use_keychain);

@@ -22,7 +22,7 @@ use crate::node::Node;
 use crate::security::{Password, SudoPassword};
 use crate::ssh::SshConfig;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
-use crate::ssh::tokio_client::SshConnectionConfig;
+use crate::ssh::tokio_client::SshConnectionConfigResolver;
 use crate::ui::OutputFormatter;
 use crate::utils::output::save_outputs_to_files;
 
@@ -54,8 +54,8 @@ pub struct ExecuteCommandParams<'a> {
     pub batch: bool,
     pub fail_fast: bool,
     pub ssh_config: Option<&'a SshConfig>,
-    /// SSH connection configuration (keepalive settings)
-    pub ssh_connection_config: SshConnectionConfig,
+    /// Per-host SSH connection configuration resolver.
+    pub ssh_connection_config_resolver: SshConnectionConfigResolver,
 }
 
 pub async fn execute_command(params: ExecuteCommandParams<'_>) -> Result<()> {
@@ -97,8 +97,11 @@ async fn execute_command_with_forwarding(params: ExecuteCommandParams<'_>) -> Re
     // Create forwarding manager. The resolved address family narrows which
     // resolved target address bssh names in each `direct-tcpip` request; the
     // listener side was already constrained when the spec was parsed.
+    let ssh_connection_config = params
+        .ssh_connection_config_resolver
+        .resolve_for_host(&node.host);
     let forwarding_config = ForwardingConfig {
-        address_family: params.ssh_connection_config.address_family,
+        address_family: ssh_connection_config.address_family,
         ..ForwardingConfig::default()
     };
     let mut manager = ForwardingManager::new(forwarding_config);
@@ -175,7 +178,7 @@ async fn execute_command_with_forwarding(params: ExecuteCommandParams<'_>) -> Re
             &node.username,
             auth_method,
             server_check,
-            &params.ssh_connection_config,
+            &ssh_connection_config,
         )
         .await?,
     );
@@ -245,7 +248,7 @@ async fn execute_command_without_forwarding(params: ExecuteCommandParams<'_>) ->
     .with_batch_mode(params.batch)
     .with_fail_fast(params.fail_fast)
     .with_ssh_config(params.ssh_config.cloned())
-    .with_ssh_connection_config(params.ssh_connection_config);
+    .with_ssh_connection_config_resolver(params.ssh_connection_config_resolver);
 
     // Set keychain usage if on macOS
     #[cfg(target_os = "macos")]
