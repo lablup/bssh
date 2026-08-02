@@ -183,7 +183,7 @@ pub async fn ping_nodes(
 
     println!(
         "{}",
-        OutputFormatter::format_summary(nodes.len(), outcome.succeeded, outcome.failed)
+        OutputFormatter::format_summary(outcome.total, outcome.succeeded, outcome.failed)
     );
 
     Ok(outcome)
