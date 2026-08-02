@@ -197,7 +197,7 @@ ExitCodeStrategy::MainRankWithFailureCheck => {
 
 ## The ping Contract
 
-`bssh ping` does not use `ExitCodeStrategy` directly, because it runs no user command whose status could be forwarded. `MainRank` is therefore meaningless for it. Instead it reuses the `RequireAllSuccess` semantics for the 0/1 boundary (a health check is green only when every host is green) and adds one value that no other path produces: 255.
+`bssh ping` does not use `ExitCodeStrategy` directly, because it runs no user command whose status could be forwarded. `MainRank` is therefore meaningless for it. Instead it reuses the `RequireAllSuccess` semantics for the 0/1 boundary (a health check is green only when every host is green) and adds one value it generates itself as a bssh-level signal: 255. The exec path can still report 255, but only when the default `MainRank` strategy forwards that exact status from a remote command.
 
 | Scenario | Exit code |
 |----------|-----------|
