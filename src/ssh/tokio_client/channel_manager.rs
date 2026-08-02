@@ -147,6 +147,25 @@ pub struct CommandExecutedResult {
 }
 
 impl Client {
+    fn direct_tcpip_targets<T: ToSocketAddrsWithHostname>(
+        target: &T,
+        address_family: AddressFamily,
+    ) -> Result<Vec<SocketAddr>, super::Error> {
+        let resolved = target
+            .to_socket_addrs()
+            .map_err(super::Error::AddressInvalid)?;
+        let targets = address_family.filter(resolved);
+
+        if address_family.is_forced() && targets.is_empty() {
+            return Err(super::Error::NoAddressForFamily {
+                host: target.hostname(),
+                family: address_family,
+            });
+        }
+
+        Ok(targets)
+    }
+
     /// Get a new SSH channel for communication.
     pub async fn get_channel(&self) -> Result<Channel<Msg>, super::Error> {
         self.connection_handle
@@ -190,17 +209,7 @@ impl Client {
         src: S,
         address_family: AddressFamily,
     ) -> Result<Channel<Msg>, super::Error> {
-        let resolved = target
-            .to_socket_addrs()
-            .map_err(super::Error::AddressInvalid)?;
-        let targets = address_family.filter(resolved);
-
-        if address_family.is_forced() && targets.is_empty() {
-            return Err(super::Error::NoAddressForFamily {
-                host: target.hostname(),
-                family: address_family,
-            });
-        }
+        let targets = Self::direct_tcpip_targets(&target, address_family)?;
 
         let src = src
             .into()
@@ -655,5 +664,57 @@ impl Client {
             .window_change(width, height, 0, 0)
             .await
             .map_err(super::Error::SshError)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn v4(s: &str) -> SocketAddr {
+        s.parse().expect("valid IPv4 socket address")
+    }
+
+    fn v6(s: &str) -> SocketAddr {
+        s.parse().expect("valid IPv6 socket address")
+    }
+
+    fn multi_hop_candidates() -> Vec<SocketAddr> {
+        vec![
+            v6("[2001:db8::10]:22"),
+            v4("192.0.2.10:22"),
+            v6("[2001:db8::11]:22"),
+            v4("192.0.2.11:22"),
+        ]
+    }
+
+    #[test]
+    fn direct_tcpip_targets_preserve_any_family_candidates_for_tunneled_hops() {
+        let candidates = multi_hop_candidates();
+        let targets = Client::direct_tcpip_targets(&candidates.as_slice(), AddressFamily::Any)
+            .expect("unconstrained direct-tcpip target selection must succeed");
+
+        assert_eq!(targets, candidates);
+    }
+
+    #[test]
+    fn direct_tcpip_targets_filter_ipv4_candidates_for_tunneled_hops() {
+        let candidates = multi_hop_candidates();
+        let targets = Client::direct_tcpip_targets(&candidates.as_slice(), AddressFamily::V4)
+            .expect("IPv4 direct-tcpip target selection must succeed");
+
+        assert_eq!(targets, vec![v4("192.0.2.10:22"), v4("192.0.2.11:22")]);
+    }
+
+    #[test]
+    fn direct_tcpip_targets_filter_ipv6_candidates_for_tunneled_hops() {
+        let candidates = multi_hop_candidates();
+        let targets = Client::direct_tcpip_targets(&candidates.as_slice(), AddressFamily::V6)
+            .expect("IPv6 direct-tcpip target selection must succeed");
+
+        assert_eq!(
+            targets,
+            vec![v6("[2001:db8::10]:22"), v6("[2001:db8::11]:22")]
+        );
     }
 }

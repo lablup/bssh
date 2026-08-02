@@ -1174,11 +1174,12 @@ bind address explicitly always overrides the flag.
 
 .SS What the constraint only hints at
 .IP \[bu] 2
-Forwarding targets. bssh resolves the target of a
+Forwarding targets and tunneled jump-chain targets. bssh resolves the target of a
 .B \-L
 forward or a SOCKS5
 .B \-D
-request locally to decide which address to name in the
+request, later jump-chain hop, or final destination behind a jump chain locally
+to decide which address to name in the
 .I direct-tcpip
 channel request, and the address family filters that candidate list. The remote
 SSH server performs the actual connection and may resolve the name differently,
@@ -1187,21 +1188,6 @@ literal IPv4 destination by protocol definition and are passed through
 unfiltered.
 
 .SS What the constraint does not cover
-.IP \[bu] 2
-Jump host hops after the first one, and the final destination reached through a
-jump chain. Those connections still ride a
-.I direct-tcpip
-channel opened through the previous hop, resolved locally by bssh the same way
-a
-.B \-L
-or SOCKS5
-.B \-D
-target is, but this change does not yet apply the address family filter to
-that resolution. That is a scope limitation of this change, not a technical
-one, and is tracked as a follow-up (issue #248). The address family is still
-applied when selecting the address recorded for host key verification on
-those hops, so known_hosts diagnostics name the family that was requested.
-.IP \[bu] 2
 The remote listener created by
 .BR \-R ,
 which the server binds. Its default stays IPv4 loopback.

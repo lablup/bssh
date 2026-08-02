@@ -31,14 +31,11 @@ use tracing::debug;
 /// Hops past the first one connect over an already-open channel, so this
 /// particular address is never dialed: it only supplies host key verification
 /// context and display text. The channel itself is still opened locally
-/// through `open_direct_tcpip_channel` on the previous hop, but that call does
-/// not yet take the address family filter (issue #248), so the family
-/// preference resolved here has no effect on which candidate that call picks.
-/// When a family is forced, this function still prefers a candidate of that
-/// family so known_hosts diagnostics name the family the user asked for. If no
-/// candidate matches, fall back to the first resolved address rather than
-/// failing, since the connection this address describes is never dialed
-/// regardless.
+/// through `open_direct_tcpip_channel_with_family` on the previous hop. When a
+/// family is forced, this function mirrors that preference for the address
+/// recorded in known_hosts diagnostics. If no candidate matches, fall back to
+/// the first resolved address rather than failing here; the channel-open path
+/// is the authoritative family filter for the real connection attempt.
 // `host:port` is deliberately left out of the messages below: every caller
 // already wraps this function with a `.with_context()` that names the host
 // and port, and repeating it here would print the same wording twice in the
@@ -100,8 +97,11 @@ pub(super) async fn connect_through_tunnel(
     // Create a direct-tcpip channel through the previous connection
     let channel = tokio::time::timeout(
         connect_timeout,
-        previous_client
-            .open_direct_tcpip_channel((jump_host.host.as_str(), jump_host.effective_port()), None),
+        previous_client.open_direct_tcpip_channel_with_family(
+            (jump_host.host.as_str(), jump_host.effective_port()),
+            None,
+            ssh_connection_config.address_family,
+        ),
     )
     .await
     .with_context(|| {
@@ -238,7 +238,11 @@ pub(super) async fn connect_to_destination(
     // Create a direct-tcpip channel to the final destination
     let channel = tokio::time::timeout(
         connect_timeout,
-        jump_client.open_direct_tcpip_channel((destination_host, destination_port), None),
+        jump_client.open_direct_tcpip_channel_with_family(
+            (destination_host, destination_port),
+            None,
+            ssh_connection_config.address_family,
+        ),
     )
     .await
     .with_context(|| {
