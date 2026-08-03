@@ -37,7 +37,13 @@
 //! `node1` and is otherwise invisible to [`lookup_known_host`].
 
 use russh::keys::{Algorithm, HashAlg, PublicKey};
-use std::path::Path;
+use std::{
+    collections::HashMap,
+    fs::{File, OpenOptions},
+    io,
+    path::{Path, PathBuf},
+    sync::LazyLock,
+};
 use tokio::sync::Mutex;
 
 /// Serializes every known_hosts check-then-record sequence in this process.
@@ -57,6 +63,48 @@ use tokio::sync::Mutex;
 /// blocking runtime worker threads.
 static KNOWN_HOSTS_LOCK: Mutex<()> = Mutex::const_new(());
 
+/// Host keys accepted earlier in this process, keyed by normalized host and
+/// port.
+///
+/// This is a second line of defense for `accept-new`: when no known_hosts path
+/// can be determined, this is the only trust state available; when a
+/// known_hosts file exists, it catches a conflicting key that another process
+/// appended after this run already accepted a different key.
+static PROCESS_HOST_PINS: LazyLock<Mutex<HashMap<ProcessPinKey, PublicKey>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ProcessPinKey {
+    hostname: String,
+    port: u16,
+    trust_scope: Option<String>,
+}
+
+impl ProcessPinKey {
+    fn new(hostname: &str, port: u16, trust_scope: Option<&str>) -> Self {
+        Self {
+            hostname: hostname.to_string(),
+            port,
+            trust_scope: trust_scope.map(str::to_string),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CertAuthorityPolicy {
+    WarnAndTofu,
+    Reject,
+}
+
+impl CertAuthorityPolicy {
+    fn from_env() -> Self {
+        match std::env::var("BSSH_CERT_AUTHORITY_POLICY") {
+            Ok(value) if value.eq_ignore_ascii_case("reject") => Self::Reject,
+            _ => Self::WarnAndTofu,
+        }
+    }
+}
+
 /// The outcome of looking a host up in a known_hosts file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum KnownHostLookup {
@@ -67,6 +115,203 @@ enum KnownHostLookup {
     Conflict { line: usize },
     /// The host has no recorded keys at all.
     Unknown,
+}
+
+/// Whether the known_hosts path can be read as a regular file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum KnownHostsPathState {
+    Missing,
+    ReadableFile,
+}
+
+fn probe_known_hosts_path(known_hosts_path: &str) -> Result<KnownHostsPathState, super::Error> {
+    let path = Path::new(known_hosts_path);
+    match std::fs::metadata(path) {
+        Ok(metadata) if !metadata.is_file() => {
+            tracing::error!(
+                "Host key verification failed: {known_hosts_path} is not a regular file"
+            );
+            eprintln!(
+                "Host key verification failed: {known_hosts_path} exists but is not a regular file"
+            );
+            Err(super::Error::ServerCheckFailed)
+        }
+        Ok(_) => match File::open(path) {
+            Ok(_) => Ok(KnownHostsPathState::ReadableFile),
+            Err(e) => {
+                tracing::error!(
+                    "Host key verification failed: cannot read {known_hosts_path}: {e}"
+                );
+                eprintln!("Host key verification failed: cannot read {known_hosts_path}: {e}");
+                Err(super::Error::ServerCheckFailed)
+            }
+        },
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            if std::fs::symlink_metadata(path).is_ok() {
+                tracing::error!(
+                    "Host key verification failed: {known_hosts_path} exists but cannot be resolved"
+                );
+                eprintln!(
+                    "Host key verification failed: {known_hosts_path} exists but cannot be resolved"
+                );
+                Err(super::Error::ServerCheckFailed)
+            } else {
+                Ok(KnownHostsPathState::Missing)
+            }
+        }
+        Err(e) => {
+            tracing::error!("Host key verification failed: cannot inspect {known_hosts_path}: {e}");
+            eprintln!("Host key verification failed: cannot inspect {known_hosts_path}: {e}");
+            Err(super::Error::ServerCheckFailed)
+        }
+    }
+}
+
+struct KnownHostsFileLock {
+    file: File,
+}
+
+impl Drop for KnownHostsFileLock {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
+fn known_hosts_lock_path(known_hosts_path: &str) -> PathBuf {
+    let path = Path::new(known_hosts_path);
+    let filename = path
+        .file_name()
+        .map(|name| format!("{}.lock", name.to_string_lossy()))
+        .unwrap_or_else(|| ".known_hosts.lock".to_string());
+    match path.parent() {
+        Some(parent) => parent.join(filename),
+        None => PathBuf::from(filename),
+    }
+}
+
+fn acquire_known_hosts_file_lock(
+    known_hosts_path: &str,
+) -> Result<KnownHostsFileLock, super::Error> {
+    let lock_path = known_hosts_lock_path(known_hosts_path);
+    if let Some(parent) = lock_path.parent()
+        && !parent.exists()
+    {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            if let Err(e) = std::fs::DirBuilder::new().mode(0o700).create(parent)
+                && e.kind() != io::ErrorKind::AlreadyExists
+            {
+                tracing::error!(
+                    "Host key verification failed: cannot create lock directory {}: {e}",
+                    parent.display()
+                );
+                eprintln!(
+                    "Host key verification failed: cannot create lock directory {}: {e}",
+                    parent.display()
+                );
+                return Err(super::Error::ServerCheckFailed);
+            }
+        }
+        #[cfg(not(unix))]
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            tracing::error!(
+                "Host key verification failed: cannot create lock directory {}: {e}",
+                parent.display()
+            );
+            eprintln!(
+                "Host key verification failed: cannot create lock directory {}: {e}",
+                parent.display()
+            );
+            return Err(super::Error::ServerCheckFailed);
+        }
+    } else if let Some(parent) = lock_path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
+        tracing::error!(
+            "Host key verification failed: cannot create lock directory {}: {e}",
+            parent.display()
+        );
+        eprintln!(
+            "Host key verification failed: cannot create lock directory {}: {e}",
+            parent.display()
+        );
+        return Err(super::Error::ServerCheckFailed);
+    }
+
+    let existed = lock_path.exists();
+    let file = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|e| {
+            tracing::error!(
+                "Host key verification failed: cannot open lock file {}: {e}",
+                lock_path.display()
+            );
+            eprintln!(
+                "Host key verification failed: cannot open lock file {}: {e}",
+                lock_path.display()
+            );
+            super::Error::ServerCheckFailed
+        })?;
+
+    #[cfg(unix)]
+    if !existed {
+        use std::os::unix::fs::PermissionsExt;
+        if let Err(e) = file.set_permissions(std::fs::Permissions::from_mode(0o600)) {
+            tracing::warn!("Failed to set mode 0600 on {}: {e}", lock_path.display());
+        }
+    }
+
+    file.lock().map_err(|e| {
+        tracing::error!(
+            "Host key verification failed: cannot lock {}: {e}",
+            lock_path.display()
+        );
+        eprintln!(
+            "Host key verification failed: cannot lock {}: {e}",
+            lock_path.display()
+        );
+        super::Error::ServerCheckFailed
+    })?;
+
+    Ok(KnownHostsFileLock { file })
+}
+
+async fn verify_process_pin(
+    hostname: &str,
+    port: u16,
+    trust_scope: Option<&str>,
+    server_public_key: &PublicKey,
+) -> Result<(), super::Error> {
+    let pins = PROCESS_HOST_PINS.lock().await;
+    match pins.get(&ProcessPinKey::new(hostname, port, trust_scope)) {
+        Some(pinned) if pinned != server_public_key => {
+            print_process_pin_changed_warning(hostname, port, server_public_key);
+            Err(super::Error::HostKeyChanged {
+                host: hostname.to_string(),
+                port,
+                line: 0,
+            })
+        }
+        _ => Ok(()),
+    }
+}
+
+async fn remember_process_pin(
+    hostname: &str,
+    port: u16,
+    trust_scope: Option<&str>,
+    server_public_key: &PublicKey,
+) {
+    PROCESS_HOST_PINS
+        .lock()
+        .await
+        .entry(ProcessPinKey::new(hostname, port, trust_scope))
+        .or_insert_with(|| server_public_key.clone());
 }
 
 /// Look `hostname`/`port` up in `known_hosts_path` using OpenSSH's matching
@@ -274,6 +519,22 @@ fn check_marker_lines(
     server_public_key: &PublicKey,
     known_hosts_path: &str,
 ) -> Result<(), super::Error> {
+    check_marker_lines_with_policy(
+        hostname,
+        port,
+        server_public_key,
+        known_hosts_path,
+        CertAuthorityPolicy::from_env(),
+    )
+}
+
+fn check_marker_lines_with_policy(
+    hostname: &str,
+    port: u16,
+    server_public_key: &PublicKey,
+    known_hosts_path: &str,
+    cert_authority_policy: CertAuthorityPolicy,
+) -> Result<(), super::Error> {
     match scan_known_hosts_markers(hostname, port, server_public_key, known_hosts_path) {
         MarkerScan::Revoked { line } => {
             let entry = known_hosts_entry_name(hostname, port);
@@ -296,13 +557,26 @@ fn check_marker_lines(
         }
         MarkerScan::CertAuthority { line } => {
             let entry = known_hosts_entry_name(hostname, port);
-            tracing::warn!(
-                "'{entry}' has a @cert-authority entry at {known_hosts_path}:{line}, which bssh does not validate; falling back to trust-on-first-use for the offered key"
-            );
-            eprintln!(
-                "Warning: {known_hosts_path}:{line} marks '{entry}' as a certificate authority (@cert-authority); bssh cannot validate CA-signed host keys, so the offered key is being trusted on first use instead"
-            );
-            Ok(())
+            match cert_authority_policy {
+                CertAuthorityPolicy::WarnAndTofu => {
+                    tracing::warn!(
+                        "'{entry}' has a @cert-authority entry at {known_hosts_path}:{line}, which bssh does not validate; falling back to trust-on-first-use for the offered key"
+                    );
+                    eprintln!(
+                        "Warning: {known_hosts_path}:{line} marks '{entry}' as a certificate authority (@cert-authority); bssh cannot validate CA-signed host keys, so the offered key is being trusted on first use instead"
+                    );
+                    Ok(())
+                }
+                CertAuthorityPolicy::Reject => {
+                    tracing::error!(
+                        "Refusing host key for '{entry}': @cert-authority at {known_hosts_path}:{line} cannot be validated"
+                    );
+                    eprintln!(
+                        "Host key verification failed: {known_hosts_path}:{line} marks '{entry}' as a certificate authority (@cert-authority), but bssh cannot validate CA-signed host keys"
+                    );
+                    Err(super::Error::ServerCheckFailed)
+                }
+            }
         }
         MarkerScan::None => Ok(()),
     }
@@ -400,11 +674,16 @@ pub(super) async fn verify_accept_new(
     ensure_recordable_hostname(hostname)?;
 
     let _guard = KNOWN_HOSTS_LOCK.lock().await;
+    let _file_lock = acquire_known_hosts_file_lock(known_hosts_path)?;
 
+    probe_known_hosts_path(known_hosts_path)?;
     check_marker_lines(hostname, port, server_public_key, known_hosts_path)?;
 
     match lookup_known_host(hostname, port, server_public_key, known_hosts_path) {
-        Ok(KnownHostLookup::Match) => Ok(true),
+        Ok(KnownHostLookup::Match) => {
+            verify_process_pin(hostname, port, Some(known_hosts_path), server_public_key).await?;
+            Ok(true)
+        }
         // The host is pinned and the offered key is not one of its recorded
         // keys. That covers both a genuine key change and a key offered under
         // an algorithm the host has not used yet: recording the latter
@@ -424,7 +703,9 @@ pub(super) async fn verify_accept_new(
         // file also lands here because russh treats an unopenable file as
         // empty; `learn_known_hosts_path` creates it on demand.
         Ok(KnownHostLookup::Unknown) => {
+            verify_process_pin(hostname, port, Some(known_hosts_path), server_public_key).await?;
             record_host_key(hostname, port, server_public_key, known_hosts_path);
+            remember_process_pin(hostname, port, Some(known_hosts_path), server_public_key).await;
             Ok(true)
         }
         // Unreadable or malformed known_hosts: fail closed rather than record.
@@ -436,6 +717,29 @@ pub(super) async fn verify_accept_new(
             e,
         )),
     }
+}
+
+/// Verify a server key in accept-new mode when no persistent known_hosts path
+/// can be determined.
+///
+/// The first key seen for a normalized host:port is accepted and kept in
+/// memory for the lifetime of this bssh process. A different key later in the
+/// same run is rejected, so the default mode no longer degrades to
+/// unconditional `NoCheck` in service/container environments without a home
+/// directory.
+pub(super) async fn verify_accept_new_in_memory(
+    hostname: &str,
+    port: u16,
+    server_public_key: &PublicKey,
+) -> Result<bool, super::Error> {
+    let hostname = hostname.to_ascii_lowercase();
+    let hostname = hostname.as_str();
+    ensure_recordable_hostname(hostname)?;
+
+    let _guard = KNOWN_HOSTS_LOCK.lock().await;
+    verify_process_pin(hostname, port, None, server_public_key).await?;
+    remember_process_pin(hostname, port, None, server_public_key).await;
+    Ok(true)
 }
 
 /// Verify a server key against `known_hosts_path` without recording anything,
@@ -463,6 +767,7 @@ pub(super) fn verify_known_hosts_file(
     let hostname = hostname.as_str();
 
     ensure_recordable_hostname(hostname)?;
+    probe_known_hosts_path(known_hosts_path)?;
     check_marker_lines(hostname, port, server_public_key, known_hosts_path)?;
 
     match lookup_known_host(hostname, port, server_public_key, known_hosts_path) {
@@ -710,6 +1015,21 @@ fn print_host_key_changed_warning(
          Offending key in {known_hosts_display}:{line}\n\
          If the key change is expected, remove the old entry with:\n\
          \x20 ssh-keygen -f \"{known_hosts_display}\" -R \"{entry_name}\""
+    );
+}
+
+fn print_process_pin_changed_warning(hostname: &str, port: u16, server_public_key: &PublicKey) {
+    let algo = algorithm_display_name(server_public_key);
+    let fingerprint = server_public_key.fingerprint(HashAlg::Sha256);
+    let entry_name = known_hosts_entry_name(hostname, port);
+    eprintln!(
+        "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n\
+         @    WARNING: REMOTE HOST IDENTIFICATION HAS CHANGED!     @\n\
+         @@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\n\
+         The key offered by '{entry_name}' differs from a host key already accepted earlier in this bssh process.\n\
+         The fingerprint for the {algo} key sent by the remote host is\n\
+         {fingerprint}.\n\
+         Connecting is refused because this may indicate a mid-run man-in-the-middle attack or a conflicting known_hosts update from another process."
     );
 }
 
@@ -1092,6 +1412,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_cert_authority_policy_can_reject() {
+        let (_dir, path, path_str) = temp_known_hosts();
+        let key = generate_key();
+
+        std::fs::write(
+            &path,
+            "@cert-authority *.example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ\n",
+        )
+        .unwrap();
+
+        let result = check_marker_lines_with_policy(
+            "node1.example.com",
+            22,
+            key.public_key(),
+            &path_str,
+            CertAuthorityPolicy::Reject,
+        );
+        assert!(
+            matches!(result, Err(Error::ServerCheckFailed)),
+            "reject policy must fail closed for unsupported @cert-authority lines, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn test_accept_new_revoked_marker_matches_comma_list_and_glob() {
         let revoked = generate_key();
 
@@ -1306,6 +1650,107 @@ mod tests {
             1,
             "parallel first-time connections must record exactly one entry"
         );
+    }
+
+    #[tokio::test]
+    async fn test_accept_new_process_pin_detects_external_conflicting_append() {
+        let (_dir, path, path_str) = temp_known_hosts();
+        let original = generate_key();
+        let imposter = generate_key();
+
+        let result =
+            verify_accept_new("node1.example.com", 22, original.public_key(), &path_str).await;
+        assert!(matches!(result, Ok(true)));
+
+        std::fs::write(
+            &path,
+            format!(
+                "{}\nnode1.example.com {}\n",
+                entry_lines(&path).join("\n"),
+                imposter.public_key().to_openssh().unwrap()
+            ),
+        )
+        .unwrap();
+
+        let result =
+            verify_accept_new("node1.example.com", 22, imposter.public_key(), &path_str).await;
+        assert!(
+            matches!(result, Err(Error::HostKeyChanged { line: 0, .. })),
+            "a key appended by another process must not override this process's existing pin, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_accept_new_in_memory_rejects_changed_key_in_same_run() {
+        let original = generate_key();
+        let imposter = generate_key();
+
+        let result =
+            verify_accept_new_in_memory("memory-only.example.com", 22, original.public_key()).await;
+        assert!(matches!(result, Ok(true)));
+
+        let result =
+            verify_accept_new_in_memory("memory-only.example.com", 22, imposter.public_key()).await;
+        assert!(
+            matches!(result, Err(Error::HostKeyChanged { line: 0, .. })),
+            "process-only accept-new must reject a changed key in the same run, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_accept_new_rejects_existing_directory_known_hosts_path() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("known_hosts");
+        std::fs::create_dir(&path).unwrap();
+        let path_str = path.to_str().unwrap().to_string();
+        let key = generate_key();
+
+        let result = verify_accept_new("node1.example.com", 22, key.public_key(), &path_str).await;
+        assert!(
+            matches!(result, Err(Error::ServerCheckFailed)),
+            "an existing non-file known_hosts path must fail closed, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_strict_mode_rejects_existing_directory_known_hosts_path() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("known_hosts");
+        std::fs::create_dir(&path).unwrap();
+        let path_str = path.to_str().unwrap().to_string();
+        let key = generate_key();
+
+        let result = verify_known_hosts_file("node1.example.com", 22, key.public_key(), &path_str);
+        assert!(
+            matches!(result, Err(Error::ServerCheckFailed)),
+            "strict mode must fail closed for an existing non-file known_hosts path, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn test_known_hosts_file_lock_blocks_independent_handles() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let (_dir, _path, path_str) = temp_known_hosts();
+        let first = acquire_known_hosts_file_lock(&path_str).expect("lock must be acquired");
+        let (tx, rx) = mpsc::channel();
+        let path_for_thread = path_str.clone();
+
+        let handle = std::thread::spawn(move || {
+            let _second = acquire_known_hosts_file_lock(&path_for_thread)
+                .expect("second lock must eventually be acquired");
+            tx.send(()).unwrap();
+        });
+
+        assert!(
+            rx.recv_timeout(Duration::from_millis(100)).is_err(),
+            "the second independent file handle must wait while the first lock is held"
+        );
+        drop(first);
+        rx.recv_timeout(Duration::from_secs(2))
+            .expect("the second lock must acquire after the first is released");
+        handle.join().unwrap();
     }
 
     #[tokio::test]

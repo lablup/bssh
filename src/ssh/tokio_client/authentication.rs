@@ -200,6 +200,13 @@ pub enum ServerCheckMethod {
     /// matching keys are accepted, unknown hosts are recorded and accepted,
     /// changed keys are rejected (OpenSSH `StrictHostKeyChecking=accept-new`)
     AcceptNewKnownHostsFile(String),
+    /// Trust On First Use for the lifetime of this process only.
+    ///
+    /// Used when `StrictHostKeyChecking=accept-new` is requested but no
+    /// default known_hosts path can be determined. This keeps the default from
+    /// becoming unconditional `NoCheck`: the first key seen for a host:port is
+    /// accepted, and a different key later in the same run is rejected.
+    AcceptNewInMemory,
 }
 
 impl ServerCheckMethod {
