@@ -63,6 +63,12 @@ const MAX_SUDO_PROMPT_BUFFER_SIZE: usize = 64 * 1024;
 /// Set to 10 to support reasonable multi-sudo command chains.
 const MAX_SUDO_PASSWORD_SENDS: u32 = 10;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DirectTcpipRequestTarget {
+    host: String,
+    port: u32,
+}
+
 /// Command output variants for streaming
 #[derive(Debug, Clone)]
 pub enum CommandOutput {
@@ -166,6 +172,29 @@ impl Client {
         Ok(targets)
     }
 
+    fn direct_tcpip_request_targets<T: ToSocketAddrsWithHostname>(
+        target: &T,
+        address_family: AddressFamily,
+    ) -> Result<Vec<DirectTcpipRequestTarget>, super::Error> {
+        if !address_family.is_forced() {
+            let (host, port) = target.host_port().map_err(super::Error::AddressInvalid)?;
+            return Ok(vec![DirectTcpipRequestTarget {
+                host,
+                port: port.into(),
+            }]);
+        }
+
+        Self::direct_tcpip_targets(target, address_family).map(|targets| {
+            targets
+                .into_iter()
+                .map(|target| DirectTcpipRequestTarget {
+                    host: target.ip().to_string(),
+                    port: target.port().into(),
+                })
+                .collect()
+        })
+    }
+
     /// Get a new SSH channel for communication.
     pub async fn get_channel(&self) -> Result<Channel<Msg>, super::Error> {
         self.connection_handle
@@ -192,14 +221,15 @@ impl Client {
             .await
     }
 
-    /// Open a `direct-tcpip` channel, restricting the candidate target
-    /// addresses to `address_family`.
+    /// Open a `direct-tcpip` channel, optionally restricting the candidate
+    /// target addresses to `address_family`.
     ///
-    /// The target address is resolved locally only to pick which address to
-    /// name in the channel-open request; the remote sshd performs the actual
-    /// connect and may resolve the name differently. Filtering here is
-    /// therefore a best-effort hint, not a guarantee, and it is why port
-    /// forwarding documents `-4` / `-6` as advisory for the far end.
+    /// With [`AddressFamily::Any`] bssh sends the hostname exactly as supplied,
+    /// and the remote sshd resolves and connects it. With a forced family
+    /// (`-4`, `-6`, or ssh_config `AddressFamily inet|inet6`), bssh resolves
+    /// locally, filters to the requested family, and sends the matching numeric
+    /// address so the family request has a concrete effect on the server-side
+    /// connection.
     pub async fn open_direct_tcpip_channel_with_family<
         T: ToSocketAddrsWithHostname,
         S: Into<Option<SocketAddr>>,
@@ -209,7 +239,7 @@ impl Client {
         src: S,
         address_family: AddressFamily,
     ) -> Result<Channel<Msg>, super::Error> {
-        let targets = Self::direct_tcpip_targets(&target, address_family)?;
+        let targets = Self::direct_tcpip_request_targets(&target, address_family)?;
 
         let src = src
             .into()
@@ -220,15 +250,10 @@ impl Client {
             io::ErrorKind::InvalidInput,
             "could not resolve to any addresses",
         ));
-        for target in targets {
+        for DirectTcpipRequestTarget { host, port } in targets {
             match self
                 .connection_handle
-                .channel_open_direct_tcpip(
-                    target.ip().to_string(),
-                    target.port().into(),
-                    src.0.clone(),
-                    src.1,
-                )
+                .channel_open_direct_tcpip(host, port, src.0.clone(), src.1)
                 .await
             {
                 Ok(channel) => return Ok(channel),
@@ -715,6 +740,82 @@ mod tests {
         assert_eq!(
             targets,
             vec![v6("[2001:db8::10]:22"), v6("[2001:db8::11]:22")]
+        );
+    }
+
+    #[test]
+    fn direct_tcpip_request_targets_send_unforced_hostname_without_resolution() {
+        let targets =
+            Client::direct_tcpip_request_targets(&"server-only.internal:5432", AddressFamily::Any)
+                .expect("unforced direct-tcpip targets must not require local DNS");
+
+        assert_eq!(
+            targets,
+            vec![DirectTcpipRequestTarget {
+                host: "server-only.internal".to_string(),
+                port: 5432,
+            }]
+        );
+    }
+
+    #[test]
+    fn direct_tcpip_request_targets_send_unforced_tuple_hostname_for_jump_hops() {
+        let targets = Client::direct_tcpip_request_targets(
+            &("jump-private.internal", 2222),
+            AddressFamily::Any,
+        )
+        .expect("unforced jump-hop targets must not require local DNS");
+
+        assert_eq!(
+            targets,
+            vec![DirectTcpipRequestTarget {
+                host: "jump-private.internal".to_string(),
+                port: 2222,
+            }]
+        );
+    }
+
+    #[test]
+    fn direct_tcpip_request_targets_send_forced_ipv4_address() {
+        let candidates = multi_hop_candidates();
+        let targets =
+            Client::direct_tcpip_request_targets(&candidates.as_slice(), AddressFamily::V4)
+                .expect("forced IPv4 direct-tcpip targets must resolve to numeric addresses");
+
+        assert_eq!(
+            targets,
+            vec![
+                DirectTcpipRequestTarget {
+                    host: "192.0.2.10".to_string(),
+                    port: 22,
+                },
+                DirectTcpipRequestTarget {
+                    host: "192.0.2.11".to_string(),
+                    port: 22,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn direct_tcpip_request_targets_send_forced_ipv6_address() {
+        let candidates = multi_hop_candidates();
+        let targets =
+            Client::direct_tcpip_request_targets(&candidates.as_slice(), AddressFamily::V6)
+                .expect("forced IPv6 direct-tcpip targets must resolve to numeric addresses");
+
+        assert_eq!(
+            targets,
+            vec![
+                DirectTcpipRequestTarget {
+                    host: "2001:db8::10".to_string(),
+                    port: 22,
+                },
+                DirectTcpipRequestTarget {
+                    host: "2001:db8::11".to_string(),
+                    port: 22,
+                },
+            ]
         );
     }
 }

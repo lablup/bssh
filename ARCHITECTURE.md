@@ -773,17 +773,19 @@ as exec and ping. `ForwardingConfig` carries its own copy of the resolved
 address family for the forwarding-target filter, since forwarders run detached
 from the connect config.
 
-**Scope.** The constraint is a hard filter where bssh opens the socket, and a
-hint where the remote server does:
+**Scope.** The constraint is a hard filter where bssh opens the socket. For
+forwarding targets the unforced path preserves server-side resolution, while a
+forced family switches to locally resolved numeric addresses so the family
+request has an observable effect:
 
 | Path | Behavior |
 | --- | --- |
 | Direct connect (exec, interactive, ping, SFTP) | Hard filter in `connect_with_config_inner` |
 | First jump hop | Hard filter (shares the direct connect path) |
 | `-L` / `-D` listener | Selects the implicit bind address (`::1` / `::` under `-6`); an explicit bind address wins |
-| `-L` / SOCKS5 `-D` target | Filters the `direct-tcpip` candidate list; the remote sshd still performs the connect, so this is advisory |
+| `-L` / SOCKS5 `-D` target | With `Any`, sends the requested hostname in `direct-tcpip` and lets the remote sshd resolve it. With `V4` / `V6`, resolves locally, filters the candidate list, and sends the matching numeric address |
 | SOCKS4 `-D` target | Unfiltered; SOCKS4 carries a literal IPv4 destination by protocol definition |
-| Jump hops past the first, and the destination behind a chain | Filters the `direct-tcpip` candidate list through the same advisory mechanism as `-L`/SOCKS5 `-D` targets. The family also selects the address recorded for host key verification, so known_hosts diagnostics stay consistent |
+| Jump hops past the first, and the destination behind a chain | Uses the same `direct-tcpip` model as `-L`/SOCKS5 `-D` targets: hostname with `Any`, locally filtered numeric address with `V4` / `V6`. The family also selects the best-effort address recorded for host key verification diagnostics |
 | `-R` listener | Not constrained; the server binds it |
 | `bssh-server` | Out of scope; separate CLI |
 
