@@ -1,3 +1,44 @@
+bssh (2.4.1-1~jammy1) jammy; urgency=medium
+
+  * v2.4.1
+  ### Security
+  - Keep a process-lifetime host key pin in accept-new mode when no
+    known_hosts path can be determined, instead of disabling
+    verification entirely (#242).
+  - Fail closed when the known_hosts path exists but is not a readable
+    regular file, instead of treating it as absent (#242).
+  - Serialize accept-new first-use recording across bssh processes
+    with a sibling advisory lock file (#242).
+  - Allow BSSH_CERT_AUTHORITY_POLICY=reject to fail closed on matching
+    known_hosts @cert-authority lines (#242).
+  ### Fixed
+  - Send forwarding target hostnames to the server instead of
+    resolving them locally, so names that only resolve from the server
+    work again; forced -4/-6 still resolves locally (#257).
+  - Honor the address family preference in SOCKS4 dynamic forwarding,
+    which previously ignored -4/-6 and AddressFamily (#255).
+  - Parse SOCKS5 IPv6 destination literals (ATYP 0x04) instead of
+    replying address type not supported (#256).
+  - Record the first address rather than a comma-joined list as the
+    hostname for a socket address slice (#243).
+  - Remove the leading blank line from a known_hosts file created by
+    the first recording (#243).
+  ### Performance
+  - Skip the known_hosts write locks when the offered key already
+    matches a recorded entry (#243).
+  ### Tests
+  - Fix the nondeterministic test_expand_path_with_tilde failure by
+    locking HOME across mutating and reading tests (#243).
+  ### Changed
+  - Lib API additions only, no source break from 2.4.0:
+    ServerCheckMethod gained two variants on non_exhaustive enums and
+    ToSocketAddrsWithHostname gained a defaulted host_port method.
+  ### Dependencies
+  - Refresh the locked dependency graph; no Cargo.toml requirement
+    changed and no crate entered or left.
+
+ -- Jeongkyu Shin <inureyes@gmail.com>  Mon, 03 Aug 2026 22:15:22 +0900
+
 bssh (2.4.0-1~jammy1) jammy; urgency=medium
 
   * v2.4.0
