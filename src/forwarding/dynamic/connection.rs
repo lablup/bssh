@@ -131,11 +131,15 @@ impl ConnectionHandler {
         address_family: AddressFamily,
     ) -> anyhow::Result<crate::forwarding::tunnel::TunnelStats> {
         match socks_version {
-            // SOCKS4 carries a literal IPv4 destination by protocol
-            // definition, so there is no candidate list an address family
-            // could narrow. The request is passed through unfiltered.
             SocksVersion::V4 => {
-                handle_socks4_connection(tcp_stream, peer_addr, ssh_client, cancel_token).await
+                handle_socks4_connection(
+                    tcp_stream,
+                    peer_addr,
+                    ssh_client,
+                    cancel_token,
+                    address_family,
+                )
+                .await
             }
             SocksVersion::V5 => {
                 handle_socks5_connection(

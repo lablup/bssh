@@ -2,10 +2,10 @@
 
 use crate::{
     forwarding::tunnel::Tunnel,
-    ssh::tokio_client::{AddressFamily, Client},
+    ssh::tokio_client::{AddressFamily, Client, Error as SshError},
 };
 use anyhow::Result;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_util::sync::CancellationToken;
@@ -17,6 +17,7 @@ pub async fn handle_socks4_connection(
     peer_addr: SocketAddr,
     ssh_client: &Client,
     cancel_token: CancellationToken,
+    address_family: AddressFamily,
 ) -> Result<super::super::tunnel::TunnelStats> {
     debug!("Handling SOCKS4 connection from {}", peer_addr);
 
@@ -68,7 +69,18 @@ pub async fn handle_socks4_connection(
         }
     }
 
-    let destination = format!("{dest_ip}:{dest_port}");
+    let destination = match socks4_destination_for_family(dest_ip, dest_port, address_family) {
+        Ok(destination) => destination,
+        Err(e) => {
+            debug!(
+                "Rejected SOCKS4 CONNECT to {}:{} for forced {} from {}: {}",
+                dest_ip, dest_port, address_family, peer_addr, e
+            );
+            let response = [0, 0x5B, 0, 0, 0, 0, 0, 0]; // Request rejected
+            tcp_stream.write_all(&response).await?;
+            return Err(e.into());
+        }
+    };
     debug!("SOCKS4 CONNECT to {} from {}", destination, peer_addr);
 
     // Create SSH channel to destination
@@ -103,6 +115,22 @@ pub async fn handle_socks4_connection(
 
     // Start bidirectional tunnel
     Tunnel::run(tcp_stream, ssh_channel, cancel_token).await
+}
+
+fn socks4_destination_for_family(
+    dest_ip: Ipv4Addr,
+    dest_port: u16,
+    address_family: AddressFamily,
+) -> Result<String, SshError> {
+    let destination = SocketAddr::new(IpAddr::V4(dest_ip), dest_port);
+    if address_family.is_forced() && !address_family.matches(&destination) {
+        return Err(SshError::NoAddressForFamily {
+            host: dest_ip.to_string(),
+            family: address_family,
+        });
+    }
+
+    Ok(format!("{dest_ip}:{dest_port}"))
 }
 
 /// Handle SOCKS5 connection protocol
@@ -261,3 +289,41 @@ pub async fn handle_socks5_connection(
 //    - No authentication (method 0x00)
 //    - Username/password authentication (method 0x02)
 //    - Future: GSSAPI authentication (method 0x01)
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn socks4_destination_accepts_ipv4_when_unforced_or_ipv4_forced() {
+        let dest_ip = Ipv4Addr::new(192, 0, 2, 25);
+        let dest_port = 8080;
+
+        assert_eq!(
+            socks4_destination_for_family(dest_ip, dest_port, AddressFamily::Any)
+                .expect("unforced SOCKS4 must preserve the IPv4 destination"),
+            "192.0.2.25:8080"
+        );
+        assert_eq!(
+            socks4_destination_for_family(dest_ip, dest_port, AddressFamily::V4)
+                .expect("forced IPv4 must still allow the SOCKS4 IPv4 destination"),
+            "192.0.2.25:8080"
+        );
+    }
+
+    #[test]
+    fn socks4_destination_rejects_forced_ipv6() {
+        let err =
+            socks4_destination_for_family(Ipv4Addr::new(192, 0, 2, 25), 8080, AddressFamily::V6)
+                .expect_err("forced IPv6 must reject the SOCKS4 IPv4 literal");
+
+        assert!(matches!(
+            err,
+            SshError::NoAddressForFamily {
+                ref host,
+                family: AddressFamily::V6,
+            } if host == "192.0.2.25"
+        ));
+        assert_eq!(err.to_string(), "no IPv6 address found for 192.0.2.25");
+    }
+}
