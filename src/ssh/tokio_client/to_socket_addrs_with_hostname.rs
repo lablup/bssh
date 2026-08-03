@@ -4,7 +4,9 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV
 pub trait ToSocketAddrsWithHostname {
     fn to_socket_addrs(&self) -> io::Result<Vec<SocketAddr>>;
     fn hostname(&self) -> String;
-    fn host_port(&self) -> io::Result<(String, u16)>;
+    fn host_port(&self) -> io::Result<(String, u16)> {
+        parse_host_port(&self.hostname())
+    }
 }
 
 impl ToSocketAddrsWithHostname for String {
