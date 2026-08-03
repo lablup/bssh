@@ -37,6 +37,8 @@
 //! `node1` and is otherwise invisible to [`lookup_known_host`].
 
 use russh::keys::{Algorithm, HashAlg, PublicKey};
+#[cfg(test)]
+use std::sync::Mutex as StdMutex;
 use std::{
     collections::HashMap,
     fs::{File, OpenOptions},
@@ -72,6 +74,10 @@ static KNOWN_HOSTS_LOCK: Mutex<()> = Mutex::const_new(());
 /// appended after this run already accepted a different key.
 static PROCESS_HOST_PINS: LazyLock<Mutex<HashMap<ProcessPinKey, PublicKey>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+#[cfg(test)]
+static FILE_LOCK_ACQUISITIONS: LazyLock<StdMutex<Vec<String>>> =
+    LazyLock::new(|| StdMutex::new(Vec::new()));
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ProcessPinKey {
@@ -277,6 +283,11 @@ fn acquire_known_hosts_file_lock(
         );
         super::Error::ServerCheckFailed
     })?;
+    #[cfg(test)]
+    FILE_LOCK_ACQUISITIONS
+        .lock()
+        .unwrap()
+        .push(known_hosts_path.to_string());
 
     Ok(KnownHostsFileLock { file })
 }
@@ -673,6 +684,34 @@ pub(super) async fn verify_accept_new(
     // rejected would only make every other connection wait on it.
     ensure_recordable_hostname(hostname)?;
 
+    probe_known_hosts_path(known_hosts_path)?;
+    check_marker_lines(hostname, port, server_public_key, known_hosts_path)?;
+    match lookup_known_host(hostname, port, server_public_key, known_hosts_path) {
+        Ok(KnownHostLookup::Match) => {
+            verify_process_pin(hostname, port, Some(known_hosts_path), server_public_key).await?;
+            return Ok(true);
+        }
+        Ok(KnownHostLookup::Conflict { line }) => {
+            return Err(map_known_hosts_error(
+                hostname,
+                port,
+                server_public_key,
+                known_hosts_path,
+                russh::keys::Error::KeyChanged { line },
+            ));
+        }
+        Ok(KnownHostLookup::Unknown) => {}
+        Err(e) => {
+            return Err(map_known_hosts_error(
+                hostname,
+                port,
+                server_public_key,
+                known_hosts_path,
+                e,
+            ));
+        }
+    }
+
     let _guard = KNOWN_HOSTS_LOCK.lock().await;
     let _file_lock = acquire_known_hosts_file_lock(known_hosts_path)?;
 
@@ -865,6 +904,10 @@ fn record_host_key(
         return;
     }
 
+    if !file_preexisted {
+        remove_leading_blank_line(path);
+    }
+
     #[cfg(unix)]
     restrict_created_permissions(path, dir_preexisted, file_preexisted);
     #[cfg(not(unix))]
@@ -875,6 +918,26 @@ fn record_host_key(
         known_hosts_entry_name(hostname, port),
         algorithm_display_name(server_public_key)
     );
+}
+
+fn remove_leading_blank_line(path: &Path) {
+    match std::fs::read_to_string(path) {
+        Ok(contents) if contents.starts_with('\n') => {
+            if let Err(e) = std::fs::write(path, contents.trim_start_matches('\n')) {
+                tracing::warn!(
+                    "Failed to remove leading blank line from {}: {e}",
+                    path.display()
+                );
+            }
+        }
+        Ok(_) => {}
+        Err(e) => {
+            tracing::warn!(
+                "Failed to inspect {} for leading blank line cleanup: {e}",
+                path.display()
+            );
+        }
+    }
 }
 
 /// The host as it appears in the known_hosts entry: `[host]:port` for
@@ -1106,6 +1169,21 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_accept_new_fresh_file_does_not_start_with_blank_line() {
+        let (_dir, path, path_str) = temp_known_hosts();
+        let key = generate_key();
+
+        let result = verify_accept_new("node1.example.com", 22, key.public_key(), &path_str).await;
+        assert!(matches!(result, Ok(true)));
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !contents.starts_with('\n'),
+            "fresh known_hosts must not start with a blank line, got {contents:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn test_accept_new_second_connection_does_not_duplicate() {
         let (_dir, path, path_str) = temp_known_hosts();
         let key = generate_key();
@@ -1237,6 +1315,29 @@ mod tests {
             "a key matching the first entry must be accepted, got {result:?}"
         );
         assert_eq!(entry_lines(&path), recorded);
+    }
+
+    #[tokio::test]
+    async fn test_accept_new_known_match_avoids_file_lock() {
+        let (_dir, path, path_str) = temp_known_hosts();
+        let key = generate_key();
+        std::fs::write(
+            &path,
+            format!(
+                "node1.example.com {}\n",
+                key.public_key().to_openssh().unwrap()
+            ),
+        )
+        .unwrap();
+
+        FILE_LOCK_ACQUISITIONS.lock().unwrap().clear();
+        let result = verify_accept_new("node1.example.com", 22, key.public_key(), &path_str).await;
+        assert!(matches!(result, Ok(true)));
+        let acquisitions = FILE_LOCK_ACQUISITIONS.lock().unwrap();
+        assert!(
+            !acquisitions.iter().any(|path| path == &path_str),
+            "a definite known-host match must return before acquiring the file lock"
+        );
     }
 
     #[tokio::test]
