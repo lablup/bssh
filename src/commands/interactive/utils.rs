@@ -74,6 +74,7 @@ mod tests {
 
     #[test]
     fn test_expand_path_with_tilde() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let cmd = InteractiveCommand {
             single_node: false,
             multiplex: true,

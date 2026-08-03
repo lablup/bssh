@@ -67,7 +67,23 @@
 
 #![cfg(test)]
 
-use std::ffi::{OsStr, OsString};
+use std::{
+    ffi::{OsStr, OsString},
+    sync::{Mutex, MutexGuard},
+};
+
+static HOME_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+/// Guard for tests that read `HOME` without mutating it.
+///
+/// `HOME` is process-global state and several tests temporarily repoint it.
+/// Readers that call `dirs::home_dir()` or otherwise inspect `HOME` must hold
+/// the same lock as `EnvGuard::set("HOME", ...)` so parallel test execution
+/// cannot observe two different homes within one assertion.
+#[must_use = "HomeEnvLock must be held for the whole HOME-sensitive assertion"]
+pub struct HomeEnvLock {
+    _guard: MutexGuard<'static, ()>,
+}
 
 /// RAII guard that sets or removes an environment variable on construction
 /// and restores the previous value (or unset state) on drop.
@@ -79,6 +95,7 @@ use std::ffi::{OsStr, OsString};
 pub struct EnvGuard {
     key: OsString,
     original: Option<OsString>,
+    _home_lock: Option<MutexGuard<'static, ()>>,
 }
 
 // `#[allow(dead_code)]` is applied per-method so integration tests that only
@@ -90,6 +107,7 @@ impl EnvGuard {
     #[allow(dead_code)]
     pub fn set(key: impl Into<OsString>, value: impl AsRef<OsStr>) -> Self {
         let key = key.into();
+        let home_lock = lock_home_if_needed(&key);
         let original = std::env::var_os(&key);
         // SAFETY: `#[serial]`-annotated tests that construct `EnvGuard` do not
         // run concurrently with each other, so cross-serial races on the env
@@ -101,20 +119,46 @@ impl EnvGuard {
         unsafe {
             std::env::set_var(&key, value);
         }
-        Self { key, original }
+        Self {
+            key,
+            original,
+            _home_lock: home_lock,
+        }
     }
 
     /// Remove an environment variable, saving its prior value for restoration.
     #[allow(dead_code)]
     pub fn remove(key: impl Into<OsString>) -> Self {
         let key = key.into();
+        let home_lock = lock_home_if_needed(&key);
         let original = std::env::var_os(&key);
         // SAFETY: same rationale as `EnvGuard::set`; see the full comment
         // there and the module-level soundness contract.
         unsafe {
             std::env::remove_var(&key);
         }
-        Self { key, original }
+        Self {
+            key,
+            original,
+            _home_lock: home_lock,
+        }
+    }
+
+    /// Lock the process-global `HOME` environment variable for tests that only
+    /// read it.
+    #[allow(dead_code)]
+    pub fn lock_home() -> HomeEnvLock {
+        HomeEnvLock {
+            _guard: HOME_ENV_LOCK.lock().unwrap(),
+        }
+    }
+}
+
+fn lock_home_if_needed(key: &OsStr) -> Option<MutexGuard<'static, ()>> {
+    if key == OsStr::new("HOME") {
+        Some(HOME_ENV_LOCK.lock().unwrap())
+    } else {
+        None
     }
 }
 
