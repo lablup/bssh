@@ -124,6 +124,7 @@ Example: -R 8080:localhost:80 (remote:8080 → localhost:80)
 .BR \-D " " \fI[bind_address:]port[/socks_version]\fR
 Dynamic port forwarding (SOCKS proxy). Creates a local SOCKS proxy that dynamically forwards connections via SSH.
 Supports SOCKS4 and SOCKS5 protocols. Default is SOCKS5.
+SOCKS5 accepts IPv4 literals, domain names, and IPv6 literals.
 Multiple -D options can be specified for multiple SOCKS proxies.
 Example: -D 1080 (SOCKS5 proxy on localhost:1080), -D *:1080/4 (SOCKS4 on all interfaces)
 
@@ -1213,7 +1214,10 @@ but are rejected under
 .B \-6
 or
 .I AddressFamily inet6
-with the usual forced-family error instead of silently tunneling IPv4.
+with the usual forced-family error instead of silently tunneling IPv4. SOCKS5
+literal IPv4 and IPv6 requests likewise already carry numeric destinations; when
+a forced family excludes that literal, the request fails with the same
+no-address-for-family error instead of silently falling back to the other family.
 
 .SS What the constraint does not cover
 The remote listener created by

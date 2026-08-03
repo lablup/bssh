@@ -12,6 +12,11 @@ use tokio::net::TcpStream;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
+const SOCKS5_IPV4_BOUND_REPLY: [u8; 10] = [5, 0x00, 0, 1, 0, 0, 0, 0, 0, 0];
+const SOCKS5_CONNECTION_REFUSED_REPLY: [u8; 10] = [5, 0x05, 0, 1, 0, 0, 0, 0, 0, 0];
+const SOCKS5_COMMAND_NOT_SUPPORTED_REPLY: [u8; 10] = [5, 0x07, 0, 1, 0, 0, 0, 0, 0, 0];
+const SOCKS5_ADDRESS_TYPE_NOT_SUPPORTED_REPLY: [u8; 10] = [5, 0x08, 0, 1, 0, 0, 0, 0, 0, 0];
+
 /// Handle SOCKS4 connection protocol
 pub async fn handle_socks4_connection(
     tcp_stream: TcpStream,
@@ -173,12 +178,44 @@ fn socks4_destination_for_family(
 
 /// Handle SOCKS5 connection protocol
 pub async fn handle_socks5_connection(
-    mut tcp_stream: TcpStream,
+    tcp_stream: TcpStream,
     peer_addr: SocketAddr,
     ssh_client: &Client,
     cancel_token: CancellationToken,
     address_family: AddressFamily,
 ) -> Result<super::super::tunnel::TunnelStats> {
+    handle_socks5_connection_with(
+        tcp_stream,
+        peer_addr,
+        address_family,
+        |destination, address_family| async move {
+            ssh_client
+                .open_direct_tcpip_channel_with_family(destination.as_str(), None, address_family)
+                .await
+                .map_err(anyhow::Error::from)
+        },
+        |tcp_stream, ssh_channel, cancel_token| async move {
+            Tunnel::run(tcp_stream, ssh_channel, cancel_token).await
+        },
+        cancel_token,
+    )
+    .await
+}
+
+async fn handle_socks5_connection_with<OpenChannel, OpenFuture, RunTunnel, RunFuture, Channel>(
+    mut tcp_stream: TcpStream,
+    peer_addr: SocketAddr,
+    address_family: AddressFamily,
+    mut open_channel: OpenChannel,
+    run_tunnel: RunTunnel,
+    cancel_token: CancellationToken,
+) -> Result<super::super::tunnel::TunnelStats>
+where
+    OpenChannel: FnMut(String, AddressFamily) -> OpenFuture,
+    OpenFuture: Future<Output = Result<Channel>>,
+    RunTunnel: FnOnce(TcpStream, Channel, CancellationToken) -> RunFuture,
+    RunFuture: Future<Output = Result<super::super::tunnel::TunnelStats>>,
+{
     debug!("Handling SOCKS5 connection from {}", peer_addr);
 
     // Step 1: Authentication negotiation
@@ -229,8 +266,9 @@ pub async fn handle_socks5_connection(
     // Only support CONNECT command (0x01)
     if command != 0x01 {
         // Send error response
-        let response = [5, 0x07, 0, 1, 0, 0, 0, 0, 0, 0]; // Command not supported
-        tcp_stream.write_all(&response).await?;
+        tcp_stream
+            .write_all(&SOCKS5_COMMAND_NOT_SUPPORTED_REPLY)
+            .await?;
         return Err(anyhow::anyhow!("Unsupported SOCKS5 command: {command}"));
     }
 
@@ -264,14 +302,19 @@ pub async fn handle_socks5_connection(
             format!("{domain}:{port}")
         }
         0x04 => {
-            // IPv6 address: 16 bytes + 2 bytes port (not fully implemented)
-            let response = [5, 0x08, 0, 1, 0, 0, 0, 0, 0, 0]; // Address type not supported
-            tcp_stream.write_all(&response).await?;
-            return Err(anyhow::anyhow!("IPv6 address type not yet supported"));
+            let mut addr_bytes = [0u8; 16];
+            tcp_stream.read_exact(&mut addr_bytes).await?;
+            let mut port_bytes = [0u8; 2];
+            tcp_stream.read_exact(&mut port_bytes).await?;
+
+            let ip = std::net::Ipv6Addr::from(addr_bytes);
+            let port = u16::from_be_bytes(port_bytes);
+            format!("[{ip}]:{port}")
         }
         _ => {
-            let response = [5, 0x08, 0, 1, 0, 0, 0, 0, 0, 0]; // Address type not supported
-            tcp_stream.write_all(&response).await?;
+            tcp_stream
+                .write_all(&SOCKS5_ADDRESS_TYPE_NOT_SUPPORTED_REPLY)
+                .await?;
             return Err(anyhow::anyhow!("Unsupported address type: {address_type}"));
         }
     };
@@ -281,28 +324,27 @@ pub async fn handle_socks5_connection(
     // Create SSH channel to destination. Domain requests stay as names unless
     // an address family is forced, in which case the channel manager resolves
     // and sends a matching numeric address.
-    let ssh_channel = match ssh_client
-        .open_direct_tcpip_channel_with_family(destination.as_str(), None, address_family)
-        .await
-    {
+    let ssh_channel = match open_channel(destination.clone(), address_family).await {
         Ok(channel) => channel,
         Err(e) => {
             debug!("Failed to create SSH channel to {}: {}", destination, e);
-            // Send failure response: VER + REP + RSV + ATYP + BND.ADDR + BND.PORT
-            let response = [5, 0x05, 0, 1, 0, 0, 0, 0, 0, 0]; // Connection refused
-            tcp_stream.write_all(&response).await?;
-            return Err(e.into());
+            tcp_stream
+                .write_all(&SOCKS5_CONNECTION_REFUSED_REPLY)
+                .await?;
+            return Err(e);
         }
     };
 
-    // Send success response: VER(1) + REP(1) + RSV(1) + ATYP(1) + BND.ADDR(4) + BND.PORT(2)
-    let response = [5, 0x00, 0, 1, 0, 0, 0, 0, 0, 0]; // Success, bound to 0.0.0.0:0
-    tcp_stream.write_all(&response).await?;
+    // RFC 1928 allows the reply BND.ADDR/BND.PORT to describe the server-side
+    // bound endpoint, not the requested destination. bssh does not expose a
+    // meaningful remote bind address here, so it intentionally keeps the
+    // OpenSSH-compatible 0.0.0.0:0 placeholder even for IPv6 requests.
+    tcp_stream.write_all(&SOCKS5_IPV4_BOUND_REPLY).await?;
 
     debug!("SOCKS5 tunnel established: {} ↔ {}", peer_addr, destination);
 
     // Start bidirectional tunnel
-    Tunnel::run(tcp_stream, ssh_channel, cancel_token).await
+    run_tunnel(tcp_stream, ssh_channel, cancel_token).await
 }
 
 // **SOCKS Protocol Implementation Notes:**
@@ -331,11 +373,11 @@ pub async fn handle_socks5_connection(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::forwarding::tunnel::TunnelStats;
-    use anyhow::anyhow;
-    use std::sync::Arc;
+    use crate::ssh::tokio_client::Error as SshError;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
 
     fn socks4_request(dest_ip: Ipv4Addr, dest_port: u16, userid: &[u8]) -> Vec<u8> {
         let mut frame = Vec::with_capacity(8 + userid.len() + 1);
@@ -367,11 +409,11 @@ mod tests {
                     async move {
                         open_count.fetch_add(1, Ordering::Relaxed);
                         assert_eq!(destination, "192.0.2.25:8080");
-                        Err(anyhow!("synthetic channel-open stop"))
+                        Err(anyhow::anyhow!("synthetic channel-open stop"))
                     }
                 },
                 |_tcp_stream, _channel_target: (), _cancel_token| async move {
-                    Ok(TunnelStats::default())
+                    Ok(super::super::tunnel::TunnelStats::default())
                 },
             )
             .await
@@ -466,6 +508,251 @@ mod tests {
         assert!(
             err.to_string().contains("synthetic channel-open stop"),
             "the injected channel-open seam error must surface"
+        );
+    }
+
+    async fn tcp_pair() -> (TcpStream, TcpStream) {
+        let listener = TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
+            .await
+            .expect("listener binds");
+        let addr = listener.local_addr().expect("listener addr");
+        let client = TcpStream::connect(addr).await.expect("client connects");
+        let (server, _) = listener.accept().await.expect("listener accepts");
+        (client, server)
+    }
+
+    #[tokio::test]
+    async fn socks5_ipv6_literal_requests_use_bracketed_destinations() {
+        let (mut client, server) = tcp_pair().await;
+        let captured = Arc::new(Mutex::new(None));
+        let server_addr = server.peer_addr().expect("peer addr");
+        let captured_for_handler = Arc::clone(&captured);
+
+        let server_task = tokio::spawn(async move {
+            handle_socks5_connection_with(
+                server,
+                server_addr,
+                AddressFamily::Any,
+                move |destination, family| {
+                    let captured = Arc::clone(&captured_for_handler);
+                    async move {
+                        *captured.lock().expect("capture lock") = Some((destination, family));
+                        Ok::<(), anyhow::Error>(())
+                    }
+                },
+                |_, (), _| async { Ok(super::super::tunnel::TunnelStats::new()) },
+                CancellationToken::new(),
+            )
+            .await
+        });
+
+        let ip = std::net::Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
+        let mut request = vec![5, 1, 0, 5, 1, 0, 0, 0x04];
+        request.extend_from_slice(&ip.octets());
+        request.extend_from_slice(&443u16.to_be_bytes());
+        client.write_all(&request).await.expect("request writes");
+
+        let mut auth_reply = [0u8; 2];
+        client
+            .read_exact(&mut auth_reply)
+            .await
+            .expect("auth reply reads");
+        assert_eq!(auth_reply, [5, 0]);
+
+        let mut connect_reply = [0u8; 10];
+        client
+            .read_exact(&mut connect_reply)
+            .await
+            .expect("connect reply reads");
+        assert_eq!(connect_reply, SOCKS5_IPV4_BOUND_REPLY);
+
+        server_task
+            .await
+            .expect("task joins")
+            .expect("handler succeeds");
+
+        let captured = captured.lock().expect("capture lock");
+        assert_eq!(
+            *captured,
+            Some(("[2001:db8::1]:443".to_string(), AddressFamily::Any))
+        );
+    }
+
+    #[tokio::test]
+    async fn socks5_ipv6_literals_fail_closed_under_forced_ipv4() {
+        let (mut client, server) = tcp_pair().await;
+        let captured = Arc::new(Mutex::new(None));
+        let server_addr = server.peer_addr().expect("peer addr");
+        let captured_for_handler = Arc::clone(&captured);
+
+        let server_task = tokio::spawn(async move {
+            handle_socks5_connection_with(
+                server,
+                server_addr,
+                AddressFamily::V4,
+                move |destination, family| {
+                    let captured = Arc::clone(&captured_for_handler);
+                    async move {
+                        *captured.lock().expect("capture lock") = Some((destination, family));
+                        Err::<(), anyhow::Error>(
+                            SshError::NoAddressForFamily {
+                                host: "2001:db8::1".to_string(),
+                                family: AddressFamily::V4,
+                            }
+                            .into(),
+                        )
+                    }
+                },
+                |_, (), _| async { Ok(super::super::tunnel::TunnelStats::new()) },
+                CancellationToken::new(),
+            )
+            .await
+        });
+
+        let ip = std::net::Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
+        let mut request = vec![5, 1, 0, 5, 1, 0, 0, 0x04];
+        request.extend_from_slice(&ip.octets());
+        request.extend_from_slice(&8080u16.to_be_bytes());
+        client.write_all(&request).await.expect("request writes");
+
+        let mut auth_reply = [0u8; 2];
+        client
+            .read_exact(&mut auth_reply)
+            .await
+            .expect("auth reply reads");
+        assert_eq!(auth_reply, [5, 0]);
+
+        let mut connect_reply = [0u8; 10];
+        client
+            .read_exact(&mut connect_reply)
+            .await
+            .expect("connect reply reads");
+        assert_eq!(connect_reply, SOCKS5_CONNECTION_REFUSED_REPLY);
+
+        let err = server_task
+            .await
+            .expect("task joins")
+            .expect_err("forced IPv4 must fail closed");
+        assert_eq!(err.to_string(), "no IPv4 address found for 2001:db8::1");
+
+        let captured = captured.lock().expect("capture lock");
+        assert_eq!(
+            *captured,
+            Some(("[2001:db8::1]:8080".to_string(), AddressFamily::V4))
+        );
+    }
+
+    #[tokio::test]
+    async fn socks5_ipv4_literal_requests_keep_existing_destination_format() {
+        let (mut client, server) = tcp_pair().await;
+        let captured = Arc::new(Mutex::new(None));
+        let server_addr = server.peer_addr().expect("peer addr");
+        let captured_for_handler = Arc::clone(&captured);
+
+        let server_task = tokio::spawn(async move {
+            handle_socks5_connection_with(
+                server,
+                server_addr,
+                AddressFamily::Any,
+                move |destination, family| {
+                    let captured = Arc::clone(&captured_for_handler);
+                    async move {
+                        *captured.lock().expect("capture lock") = Some((destination, family));
+                        Ok::<(), anyhow::Error>(())
+                    }
+                },
+                |_, (), _| async { Ok(super::super::tunnel::TunnelStats::new()) },
+                CancellationToken::new(),
+            )
+            .await
+        });
+
+        let ip = std::net::Ipv4Addr::new(192, 0, 2, 10);
+        let mut request = vec![5, 1, 0, 5, 1, 0, 0, 0x01];
+        request.extend_from_slice(&ip.octets());
+        request.extend_from_slice(&8080u16.to_be_bytes());
+        client.write_all(&request).await.expect("request writes");
+
+        let mut auth_reply = [0u8; 2];
+        client
+            .read_exact(&mut auth_reply)
+            .await
+            .expect("auth reply reads");
+        assert_eq!(auth_reply, [5, 0]);
+
+        let mut connect_reply = [0u8; 10];
+        client
+            .read_exact(&mut connect_reply)
+            .await
+            .expect("connect reply reads");
+        assert_eq!(connect_reply, SOCKS5_IPV4_BOUND_REPLY);
+
+        server_task
+            .await
+            .expect("task joins")
+            .expect("handler succeeds");
+
+        let captured = captured.lock().expect("capture lock");
+        assert_eq!(
+            *captured,
+            Some(("192.0.2.10:8080".to_string(), AddressFamily::Any))
+        );
+    }
+
+    #[tokio::test]
+    async fn socks5_domain_requests_keep_existing_destination_format() {
+        let (mut client, server) = tcp_pair().await;
+        let captured = Arc::new(Mutex::new(None));
+        let server_addr = server.peer_addr().expect("peer addr");
+        let captured_for_handler = Arc::clone(&captured);
+
+        let server_task = tokio::spawn(async move {
+            handle_socks5_connection_with(
+                server,
+                server_addr,
+                AddressFamily::Any,
+                move |destination, family| {
+                    let captured = Arc::clone(&captured_for_handler);
+                    async move {
+                        *captured.lock().expect("capture lock") = Some((destination, family));
+                        Ok::<(), anyhow::Error>(())
+                    }
+                },
+                |_, (), _| async { Ok(super::super::tunnel::TunnelStats::new()) },
+                CancellationToken::new(),
+            )
+            .await
+        });
+
+        let domain = b"example.com";
+        let mut request = vec![5, 1, 0, 5, 1, 0, 0, 0x03, domain.len() as u8];
+        request.extend_from_slice(domain);
+        request.extend_from_slice(&8443u16.to_be_bytes());
+        client.write_all(&request).await.expect("request writes");
+
+        let mut auth_reply = [0u8; 2];
+        client
+            .read_exact(&mut auth_reply)
+            .await
+            .expect("auth reply reads");
+        assert_eq!(auth_reply, [5, 0]);
+
+        let mut connect_reply = [0u8; 10];
+        client
+            .read_exact(&mut connect_reply)
+            .await
+            .expect("connect reply reads");
+        assert_eq!(connect_reply, SOCKS5_IPV4_BOUND_REPLY);
+
+        server_task
+            .await
+            .expect("task joins")
+            .expect("handler succeeds");
+
+        let captured = captured.lock().expect("capture lock");
+        assert_eq!(
+            *captured,
+            Some(("example.com:8443".to_string(), AddressFamily::Any))
         );
     }
 }
