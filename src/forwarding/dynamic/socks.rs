@@ -373,6 +373,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::forwarding::tunnel::TunnelStats;
     use crate::ssh::tokio_client::Error as SshError;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
@@ -413,7 +414,7 @@ mod tests {
                     }
                 },
                 |_tcp_stream, _channel_target: (), _cancel_token| async move {
-                    Ok(super::super::tunnel::TunnelStats::default())
+                    Ok(TunnelStats::default())
                 },
             )
             .await
@@ -540,14 +541,14 @@ mod tests {
                         Ok::<(), anyhow::Error>(())
                     }
                 },
-                |_, (), _| async { Ok(super::super::tunnel::TunnelStats::new()) },
+                |_, (), _| async { Ok(TunnelStats::new()) },
                 CancellationToken::new(),
             )
             .await
         });
 
         let ip = std::net::Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
-        let mut request = vec![5, 1, 0, 5, 1, 0, 0, 0x04];
+        let mut request = vec![5, 1, 0, 5, 1, 0, 0x04];
         request.extend_from_slice(&ip.octets());
         request.extend_from_slice(&443u16.to_be_bytes());
         client.write_all(&request).await.expect("request writes");
@@ -603,14 +604,14 @@ mod tests {
                         )
                     }
                 },
-                |_, (), _| async { Ok(super::super::tunnel::TunnelStats::new()) },
+                |_, (), _| async { Ok(TunnelStats::new()) },
                 CancellationToken::new(),
             )
             .await
         });
 
         let ip = std::net::Ipv6Addr::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1);
-        let mut request = vec![5, 1, 0, 5, 1, 0, 0, 0x04];
+        let mut request = vec![5, 1, 0, 5, 1, 0, 0x04];
         request.extend_from_slice(&ip.octets());
         request.extend_from_slice(&8080u16.to_be_bytes());
         client.write_all(&request).await.expect("request writes");
@@ -661,14 +662,14 @@ mod tests {
                         Ok::<(), anyhow::Error>(())
                     }
                 },
-                |_, (), _| async { Ok(super::super::tunnel::TunnelStats::new()) },
+                |_, (), _| async { Ok(TunnelStats::new()) },
                 CancellationToken::new(),
             )
             .await
         });
 
         let ip = std::net::Ipv4Addr::new(192, 0, 2, 10);
-        let mut request = vec![5, 1, 0, 5, 1, 0, 0, 0x01];
+        let mut request = vec![5, 1, 0, 5, 1, 0, 0x01];
         request.extend_from_slice(&ip.octets());
         request.extend_from_slice(&8080u16.to_be_bytes());
         client.write_all(&request).await.expect("request writes");
@@ -718,14 +719,14 @@ mod tests {
                         Ok::<(), anyhow::Error>(())
                     }
                 },
-                |_, (), _| async { Ok(super::super::tunnel::TunnelStats::new()) },
+                |_, (), _| async { Ok(TunnelStats::new()) },
                 CancellationToken::new(),
             )
             .await
         });
 
         let domain = b"example.com";
-        let mut request = vec![5, 1, 0, 5, 1, 0, 0, 0x03, domain.len() as u8];
+        let mut request = vec![5, 1, 0, 5, 1, 0, 0x03, domain.len() as u8];
         request.extend_from_slice(domain);
         request.extend_from_slice(&8443u16.to_be_bytes());
         client.write_all(&request).await.expect("request writes");
