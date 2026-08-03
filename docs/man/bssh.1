@@ -1204,8 +1204,16 @@ requested family, and sends the matching numeric address in the
 .I direct-tcpip
 request. This gives the family request a concrete effect on the server-side
 connection, but it necessarily uses the client's resolver view for that forced
-path. SOCKS4 requests carry a literal IPv4 destination by protocol definition and
-are passed through unfiltered.
+path. SOCKS4 requests carry a literal IPv4 destination by protocol definition, so
+they still work under
+.B any
+and
+.BR \-4 ,
+but are rejected under
+.B \-6
+or
+.I AddressFamily inet6
+with the usual forced-family error instead of silently tunneling IPv4.
 
 .SS What the constraint does not cover
 The remote listener created by

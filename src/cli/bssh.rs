@@ -325,7 +325,7 @@ pub struct Cli {
         long = "dynamic-forward",
         value_name = "dynamic_forward_spec",
         action = clap::ArgAction::Append,
-        help = "Dynamic port forwarding (SOCKS proxy) [bind_address:]port[/socks_version]\nCreates a local SOCKS proxy that dynamically forwards connections via SSH.\nMultiple -D options can be specified for multiple SOCKS proxies.\nExample: -D 1080 (SOCKS5 proxy on localhost:1080), -D *:1080/4 (SOCKS4 on all interfaces)"
+        help = "Dynamic port forwarding (SOCKS proxy) [bind_address:]port[/socks_version]\nCreates a local SOCKS proxy that dynamically forwards connections via SSH.\nMultiple -D options can be specified for multiple SOCKS proxies.\nSOCKS4 destinations are IPv4-only by protocol and are rejected when -6 or AddressFamily inet6 is forced.\nExample: -D 1080 (SOCKS5 proxy on localhost:1080), -D *:1080/4 (SOCKS4 on all interfaces)"
     )]
     pub dynamic_forwards: Vec<String>,
 }
