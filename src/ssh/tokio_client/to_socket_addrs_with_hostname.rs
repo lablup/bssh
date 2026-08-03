@@ -139,29 +139,7 @@ impl ToSocketAddrsWithHostname for &[SocketAddr] {
             .map(|addr| addr.ip().to_string())
             .unwrap_or_default()
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::ToSocketAddrsWithHostname;
-    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-
-    #[test]
-    fn socket_addr_slice_hostname_uses_first_address_only() {
-        let addrs = [
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 22),
-            SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 22),
-        ];
-
-        assert_eq!(addrs.as_slice().hostname(), "127.0.0.1");
-    }
-
-    #[test]
-    fn empty_socket_addr_slice_hostname_is_empty() {
-        let addrs: [SocketAddr; 0] = [];
-
-        assert_eq!(addrs.as_slice().hostname(), "");
-    }
     fn host_port(&self) -> io::Result<(String, u16)> {
         self.first()
             .map(|addr| (addr.ip().to_string(), addr.port()))
@@ -200,6 +178,24 @@ fn parse_host_port(target: &str) -> io::Result<(String, u16)> {
 #[cfg(test)]
 mod tests {
     use super::{ToSocketAddrsWithHostname, parse_host_port};
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+
+    #[test]
+    fn socket_addr_slice_hostname_uses_first_address_only() {
+        let addrs = [
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 22),
+            SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 22),
+        ];
+
+        assert_eq!(addrs.as_slice().hostname(), "127.0.0.1");
+    }
+
+    #[test]
+    fn empty_socket_addr_slice_hostname_is_empty() {
+        let addrs: [SocketAddr; 0] = [];
+
+        assert_eq!(addrs.as_slice().hostname(), "");
+    }
 
     #[test]
     fn host_port_parses_domain_without_resolution() {
