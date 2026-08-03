@@ -170,7 +170,7 @@ pub struct Cli {
     #[arg(
         long,
         default_value = "accept-new",
-        help = "Host key checking mode (yes/no/accept-new) [default: accept-new]\n  yes        - Strict checking against known_hosts (most secure)\n  no         - Accept all host keys (insecure, testing only)\n  accept-new - Accept new hosts, reject changed keys (recommended)"
+        help = "Host key checking mode (yes/no/accept-new) [default: accept-new]\n  yes        - Strict checking against known_hosts (most secure)\n  no         - Accept all host keys (insecure, testing only)\n  accept-new - Accept new hosts, reject changed keys; falls back to process-only pinning when no known_hosts path is available. @cert-authority lines warn and use TOFU unless BSSH_CERT_AUTHORITY_POLICY=reject"
     )]
     pub strict_host_key_checking: String,
 

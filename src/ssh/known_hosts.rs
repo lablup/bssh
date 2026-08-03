@@ -64,16 +64,17 @@ pub fn get_check_method(strict_mode: StrictHostKeyChecking) -> ServerCheckMethod
             }
             None => {
                 // Without a home directory there is no persistent trust state,
-                // so first-use recording and change detection are impossible:
-                // every host is "new" and accept-new semantics accept it. Warn
-                // loudly that nothing can be recorded or verified.
+                // but accept-new must still avoid becoming unconditional
+                // NoCheck. The client will pin host keys in memory for this
+                // process so parallel fan-out can detect a changed key during
+                // the same run.
                 tracing::warn!(
-                    "Could not determine known_hosts path; host keys cannot be recorded or verified"
+                    "Could not determine known_hosts path; host keys will be pinned only for this bssh process"
                 );
                 eprintln!(
-                    "Warning: could not determine the known_hosts path; host keys cannot be recorded or verified in accept-new mode"
+                    "Warning: could not determine the known_hosts path; host keys will be pinned only for this bssh process"
                 );
-                ServerCheckMethod::NoCheck
+                ServerCheckMethod::AcceptNewInMemory
             }
         },
     }

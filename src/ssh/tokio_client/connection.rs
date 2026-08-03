@@ -761,6 +761,14 @@ impl Handler for ClientHandler {
                 )
                 .await
             }
+            ServerCheckMethod::AcceptNewInMemory => {
+                super::host_verification::verify_accept_new_in_memory(
+                    &self.hostname,
+                    self.host.port(),
+                    server_public_key,
+                )
+                .await
+            }
         }
     }
 }
