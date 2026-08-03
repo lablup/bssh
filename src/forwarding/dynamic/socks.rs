@@ -5,20 +5,61 @@ use crate::{
     ssh::tokio_client::{AddressFamily, Client, Error as SshError},
 };
 use anyhow::Result;
+use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
 /// Handle SOCKS4 connection protocol
 pub async fn handle_socks4_connection(
-    mut tcp_stream: TcpStream,
+    tcp_stream: TcpStream,
     peer_addr: SocketAddr,
     ssh_client: &Client,
     cancel_token: CancellationToken,
     address_family: AddressFamily,
 ) -> Result<super::super::tunnel::TunnelStats> {
+    handle_socks4_connection_with(
+        tcp_stream,
+        peer_addr,
+        cancel_token,
+        address_family,
+        |destination| async move {
+            ssh_client
+                .open_direct_tcpip_channel(destination.as_str(), None)
+                .await
+                .map_err(anyhow::Error::from)
+        },
+        |tcp_stream, ssh_channel, cancel_token| async move {
+            Tunnel::run(tcp_stream, ssh_channel, cancel_token).await
+        },
+    )
+    .await
+}
+
+async fn handle_socks4_connection_with<
+    IoStream,
+    OpenChannel,
+    OpenFuture,
+    ChannelTarget,
+    RunTunnel,
+    RunFuture,
+>(
+    mut tcp_stream: IoStream,
+    peer_addr: SocketAddr,
+    cancel_token: CancellationToken,
+    address_family: AddressFamily,
+    open_channel: OpenChannel,
+    run_tunnel: RunTunnel,
+) -> Result<super::super::tunnel::TunnelStats>
+where
+    IoStream: AsyncRead + AsyncWrite + Unpin,
+    OpenChannel: FnOnce(String) -> OpenFuture,
+    OpenFuture: Future<Output = Result<ChannelTarget>>,
+    RunTunnel: FnOnce(IoStream, ChannelTarget, CancellationToken) -> RunFuture,
+    RunFuture: Future<Output = Result<super::super::tunnel::TunnelStats>>,
+{
     debug!("Handling SOCKS4 connection from {}", peer_addr);
 
     // Read SOCKS4 request: VER(1) + CMD(1) + DSTPORT(2) + DSTIP(4) + USERID(variable) + NULL(1)
@@ -84,17 +125,14 @@ pub async fn handle_socks4_connection(
     debug!("SOCKS4 CONNECT to {} from {}", destination, peer_addr);
 
     // Create SSH channel to destination
-    let ssh_channel = match ssh_client
-        .open_direct_tcpip_channel(destination.as_str(), None)
-        .await
-    {
+    let ssh_channel = match open_channel(destination.clone()).await {
         Ok(channel) => channel,
         Err(e) => {
             debug!("Failed to create SSH channel to {}: {}", destination, e);
             // Send failure response
             let response = [0, 0x5B, 0, 0, 0, 0, 0, 0]; // Request rejected
             tcp_stream.write_all(&response).await?;
-            return Err(e.into());
+            return Err(e);
         }
     };
 
@@ -114,7 +152,7 @@ pub async fn handle_socks4_connection(
     debug!("SOCKS4 tunnel established: {} ↔ {}", peer_addr, destination);
 
     // Start bidirectional tunnel
-    Tunnel::run(tcp_stream, ssh_channel, cancel_token).await
+    run_tunnel(tcp_stream, ssh_channel, cancel_token).await
 }
 
 fn socks4_destination_for_family(
@@ -293,6 +331,71 @@ pub async fn handle_socks5_connection(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::forwarding::tunnel::TunnelStats;
+    use anyhow::anyhow;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    fn socks4_request(dest_ip: Ipv4Addr, dest_port: u16, userid: &[u8]) -> Vec<u8> {
+        let mut frame = Vec::with_capacity(8 + userid.len() + 1);
+        frame.push(0x04);
+        frame.push(0x01);
+        frame.extend_from_slice(&dest_port.to_be_bytes());
+        frame.extend_from_slice(&dest_ip.octets());
+        frame.extend_from_slice(userid);
+        frame.push(0x00);
+        frame
+    }
+
+    async fn run_socks4_protocol_case(
+        address_family: AddressFamily,
+    ) -> Result<([u8; 8], usize, anyhow::Error)> {
+        let open_count = Arc::new(AtomicUsize::new(0));
+        let open_count_for_task = Arc::clone(&open_count);
+        let peer_addr: SocketAddr = "127.0.0.1:4242".parse().expect("peer address parses");
+        let (mut client_stream, server_stream) = tokio::io::duplex(128);
+
+        let server = tokio::spawn(async move {
+            handle_socks4_connection_with(
+                server_stream,
+                peer_addr,
+                CancellationToken::new(),
+                address_family,
+                move |destination| {
+                    let open_count = Arc::clone(&open_count_for_task);
+                    async move {
+                        open_count.fetch_add(1, Ordering::Relaxed);
+                        assert_eq!(destination, "192.0.2.25:8080");
+                        Err(anyhow!("synthetic channel-open stop"))
+                    }
+                },
+                |_tcp_stream, _channel_target: (), _cancel_token| async move {
+                    Ok(TunnelStats::default())
+                },
+            )
+            .await
+            .expect_err("the synthetic seam stop must surface as an error")
+        });
+
+        client_stream
+            .write_all(&socks4_request(
+                Ipv4Addr::new(192, 0, 2, 25),
+                8080,
+                b"acceptance-user",
+            ))
+            .await
+            .expect("client sends SOCKS4 request");
+
+        let mut response = [0u8; 8];
+        client_stream
+            .read_exact(&mut response)
+            .await
+            .expect("client reads SOCKS4 response");
+
+        let err = server.await.expect("server task joins");
+        Ok((response, open_count.load(Ordering::Relaxed), err))
+    }
 
     #[test]
     fn socks4_destination_accepts_ipv4_when_unforced_or_ipv4_forced() {
@@ -325,5 +428,44 @@ mod tests {
             } if host == "192.0.2.25"
         ));
         assert_eq!(err.to_string(), "no IPv6 address found for 192.0.2.25");
+    }
+
+    #[tokio::test]
+    async fn socks4_protocol_rejects_forced_ipv6_before_channel_open() {
+        let (response, open_count, err) = run_socks4_protocol_case(AddressFamily::V6)
+            .await
+            .expect("protocol case completes");
+
+        assert_eq!(response, [0, 0x5B, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(open_count, 0, "forced IPv6 must reject before channel open");
+        assert_eq!(err.to_string(), "no IPv6 address found for 192.0.2.25");
+    }
+
+    #[tokio::test]
+    async fn socks4_protocol_any_reaches_channel_open_seam() {
+        let (response, open_count, err) = run_socks4_protocol_case(AddressFamily::Any)
+            .await
+            .expect("protocol case completes");
+
+        assert_eq!(response, [0, 0x5B, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(open_count, 1, "unforced SOCKS4 must reach channel open");
+        assert!(
+            err.to_string().contains("synthetic channel-open stop"),
+            "the injected channel-open seam error must surface"
+        );
+    }
+
+    #[tokio::test]
+    async fn socks4_protocol_ipv4_reaches_channel_open_seam() {
+        let (response, open_count, err) = run_socks4_protocol_case(AddressFamily::V4)
+            .await
+            .expect("protocol case completes");
+
+        assert_eq!(response, [0, 0x5B, 0, 0, 0, 0, 0, 0]);
+        assert_eq!(open_count, 1, "forced IPv4 must reach channel open");
+        assert!(
+            err.to_string().contains("synthetic channel-open stop"),
+            "the injected channel-open seam error must surface"
+        );
     }
 }
