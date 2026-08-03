@@ -1178,20 +1178,34 @@ a specification that does not name a bind address listens on ::1 instead of
 wildcard form listens on :: instead of 0.0.0.0. A specification that names a
 bind address explicitly always overrides the flag.
 
-.SS What the constraint only hints at
+.SS Forwarding target resolution
 .IP \[bu] 2
-Forwarding targets and tunneled jump-chain targets. bssh resolves the target of a
+Forwarding targets and tunneled jump-chain targets. Without
+.B \-4
+or
+.BR \-6 ,
+bssh sends the target hostname from a
 .B \-L
-forward or a SOCKS5
+forward, SOCKS5
 .B \-D
-request, later jump-chain hop, or final destination behind a jump chain locally
-to decide which address to name in the
+domain request, later jump-chain hop, or final destination behind a jump chain
+as written in the
 .I direct-tcpip
-channel request, and the address family filters that candidate list. The remote
-SSH server performs the actual connection and may resolve the name differently,
-so this is a best-effort hint rather than a guarantee. SOCKS4 requests carry a
-literal IPv4 destination by protocol definition and are passed through
-unfiltered.
+channel request. The remote SSH server resolves that name and performs the
+actual connection, matching OpenSSH and allowing names that exist only from the
+server's network position.
+.IP \[bu] 2
+When a family is forced with
+.B \-4
+or
+.BR \-6 ,
+bssh resolves the forwarding target locally, filters the candidate list to the
+requested family, and sends the matching numeric address in the
+.I direct-tcpip
+request. This gives the family request a concrete effect on the server-side
+connection, but it necessarily uses the client's resolver view for that forced
+path. SOCKS4 requests carry a literal IPv4 destination by protocol definition and
+are passed through unfiltered.
 
 .SS What the constraint does not cover
 The remote listener created by

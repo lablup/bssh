@@ -212,9 +212,9 @@ pub async fn handle_socks5_connection(
 
     debug!("SOCKS5 CONNECT to {} from {}", destination, peer_addr);
 
-    // Create SSH channel to destination. A SOCKS5 request may name a domain,
-    // so the forced address family narrows which resolved address is offered
-    // to the server.
+    // Create SSH channel to destination. Domain requests stay as names unless
+    // an address family is forced, in which case the channel manager resolves
+    // and sends a matching numeric address.
     let ssh_channel = match ssh_client
         .open_direct_tcpip_channel_with_family(destination.as_str(), None, address_family)
         .await
