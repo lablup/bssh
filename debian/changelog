@@ -1,3 +1,44 @@
+bssh (2.4.0-1~jammy1) jammy; urgency=medium
+
+  * v2.4.0
+  ### Security
+  - Implement real TOFU verification for the default accept-new host
+    key mode, which previously accepted any server key without
+    checking or recording it (#239).
+  - Accept a host key matching any recorded known_hosts entry instead
+    of rejecting on the first differing same-algorithm line (#239).
+  - Reject hostnames that cannot round-trip through a known_hosts
+    entry rather than recording them verbatim (#239).
+  - Honor known_hosts @revoked and @cert-authority markers, match
+    hostnames case-insensitively, and create ~/.ssh and known_hosts
+    with restrictive permissions from the start (#239).
+  ### Changed
+  - Breaking, lib API: address family selection and per-target
+    ssh_config resolution changed several public function signatures
+    (#246, #249).
+  ### Fixed
+  - Make bssh ping report a 0/1/255 exit code instead of always
+    exiting 0 (#245).
+  - Wire up the -4/-6 flags and the ssh_config AddressFamily keyword,
+    which were parsed and then discarded (#246).
+  - Apply the address family preference to port forwarding, changing
+    the default -L/-D listen address under -6 (#246).
+  - Apply the address family preference to jump hops past the first,
+    which could silently tunnel over the wrong family (#248).
+  - Resolve ssh_config settings against the actual target host rather
+    than once per dispatch, so per-host Host blocks apply (#249).
+  - Accept bracketed IPv6 address literals in host specifications,
+    which were unusable in every form (#251).
+  - Show the full error context chain when an interactive connection
+    fails, and fix related error-message defects (#238).
+  ### Documentation
+  - Remove release history and migration guidance from the man page.
+  ### Dependencies
+  - Refresh the locked dependency graph; no Cargo.toml requirement
+    changed.
+
+ -- Jeongkyu Shin <inureyes@gmail.com>  Mon, 03 Aug 2026 17:42:46 +0900
+
 bssh (2.3.1-1~jammy1) jammy; urgency=medium
 
   * v2.3.1

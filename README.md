@@ -12,6 +12,7 @@ A high-performance SSH client with **SSH-compatible syntax** for both single-hos
 
 ## Recent Updates
 
+- **v2.4.0 (2026/08/03):** Implement real TOFU verification for the default `accept-new` host key mode, make `bssh ping` report a 0/1/255 exit code, wire up the `-4`/`-6` flags and ssh_config `AddressFamily` across connect, forwarding, and jump chains, resolve ssh_config settings per target host, and accept bracketed IPv6 host literals (#238, #239, #245, #246, #248, #249, #251).
 - **v2.3.1 (2026/07/29):** Restore keyboard protocols leaked by disconnected PTY applications, preserve an outer TUI's keyboard state, raise the MSRV and Debian/Launchpad toolchain to Rust 1.96, and make Homebrew formula updates safer (#231, #232, #233, #235, #237).
 - **v2.3.0 (2026/07/18):** Roughly double bssh-server SFTP write throughput, fix the paramiko prefetch deadlock (with TCP_NODELAY), make `sftp.root`/`scp.root` chroot usable, make server SSH compression configurable, and drop the vendored `bssh-russh` fork for upstream russh 0.62.1 (#187, #212, #214, #215, #227).
 - **v2.2.3 (2026/05/25):** Sync both internal russh forks to upstream stable and patch RUSTSEC-2026-0009 (a `time` stack-exhaustion DoS), raising the minimum supported Rust to 1.88 (#207, #208).
