@@ -23,7 +23,20 @@ jobs:
     runs-on: macos-latest
     environment: packaging
 
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
+    # No job-level `if` here, on purpose. This job used to carry
+    #
+    #     if: github.event_name == 'workflow_dispatch' || github.event_name == 'workflow_call'
+    #
+    # which is unsatisfiable on the `uses:` path. Inside a called workflow
+    # `github.event_name` reports the *caller's* originating event, which is
+    # `release` during a release run, and never `workflow_call`. So the job was
+    # skipped in 0s on every release (v2.4.1 job 91700817094, v2.4.2 job
+    # 94746343757) and the tap had to be bumped afterwards by hand.
+    #
+    # The `on:` block above already declares the only two ways this workflow can
+    # start, so an event gate here can only exclude legitimate runs. Whether the
+    # formula should be updated at all is the caller's decision; see the
+    # `update-homebrew` job in release.yml.
 
     steps:
       - name: Checkout this repository
