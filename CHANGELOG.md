@@ -5,6 +5,16 @@ All notable changes to bssh will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.2] - 2026-08-14
+
+Republishes the macOS binaries with a working code signature. No source changed between 2.4.1 and 2.4.2, so the Linux binaries behave identically and only macOS users need this release.
+
+### Fixed
+- **Sign the macOS binaries with a Developer ID Application certificate and notarize them** (#264). Every macOS release through 2.4.1 was signed with an `Apple Distribution` certificate, an App Store submission identity whose leaf carries the App Store extension (1.2.840.113635.100.6.1.7) but not the Developer ID extension (1.2.840.113635.100.6.1.13) that Gatekeeper requires outside the App Store, and none was ever submitted to notarytool. `codesign --sign "Distribution"` matches identity names by substring, so it picked that certificate out of the keychain. Downloads were refused with a security warning for eight months; when the certificate was revoked on 2026-08-12, the failure escalated from a warning to `CSSMERR_TP_CERT_REVOKED`, and macOS began killing installed binaries on launch and deleting them as malware, which broke every Homebrew installation. All three released binaries (`bssh`, `bssh-server`, `bssh-keygen`) are now signed with a Developer ID Application certificate under the hardened runtime and notarized. A bare Mach-O cannot be stapled, so the ticket stays on Apple's servers and Gatekeeper resolves it online.
+
+### CI/CD
+- **Fail the release when the signing certificate is the wrong type** (#264). Nothing in the release workflow inspected the resulting signature, which is why the wrong certificate shipped unnoticed for eight months. Signing now runs through two composite actions under `.github/actions/`: the setup action rejects a p12 that holds no Developer ID Application certificate before anything is signed, and the signing action asserts the `Developer ID Application` authority, the hardened runtime flag, and the pinned code signature identifier after signing, then gates on notarization reaching `status: Accepted`. rcodesign replaces Apple's `codesign` so the identity comes from the supplied certificate rather than from a substring match against the keychain.
+
 ## [2.4.1] - 2026-08-03
 
 Closes the four items listed as known issues in the 2.4.0 release notes.
@@ -994,6 +1004,7 @@ None
 - russh library for native SSH implementation
 - Cross-platform support (Linux and macOS)
 
+[2.4.2]: https://github.com/lablup/bssh/compare/v2.4.1...v2.4.2
 [2.4.1]: https://github.com/lablup/bssh/compare/v2.4.0...v2.4.1
 [2.4.0]: https://github.com/lablup/bssh/compare/v2.3.1...v2.4.0
 [2.3.1]: https://github.com/lablup/bssh/compare/v2.3.0...v2.3.1

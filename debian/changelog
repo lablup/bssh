@@ -1,3 +1,23 @@
+bssh (2.4.2-1~jammy1) jammy; urgency=medium
+
+  * v2.4.2
+  ### Fixed
+  - Sign the macOS release binaries with a Developer ID Application
+    certificate and notarize them, replacing the revoked Apple
+    Distribution certificate that made macOS kill and delete
+    installed binaries on launch (#264).
+  ### CI/CD
+  - Reject a signing certificate that is not a Developer ID
+    Application identity before signing, assert the resulting
+    authority and hardened runtime flag, and gate the release on
+    notarization reaching Accepted (#264).
+  ### Technical Details
+  - No source changed between 2.4.1 and 2.4.2. This package is
+    functionally identical to 2.4.1; the release exists to republish
+    the macOS binaries.
+
+ -- Jeongkyu Shin <inureyes@gmail.com>  Fri, 14 Aug 2026 18:04:51 +0800
+
 bssh (2.4.1-1~jammy1) jammy; urgency=medium
 
   * v2.4.1
