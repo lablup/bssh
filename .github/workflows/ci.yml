@@ -1,10 +1,69 @@
 name: CI
 
+# Both jobs below are pure Rust (`cargo fmt`, `cargo clippy`, `cargo test`,
+# `cargo check --workspace`). They can say nothing useful about a diff that
+# contains no Rust, so the paths below skip the workflow entirely for those.
+#
+# The list is a blocklist (`paths-ignore`), never an allowlist (`paths`).
+# An allowlist fails unsafe: a new crate, workspace member, or build script
+# that nobody remembered to add would silently stop being built. A blocklist
+# fails safe: anything unrecognized still runs the full build, and the worst
+# case is a wasted run rather than an unvalidated merge.
+#
+# Two rules for anyone editing this list:
+#
+# 1. `.github/workflows/ci.yml` must never appear below. A change to the CI
+#    definition has to validate itself, otherwise a broken edit merges green
+#    because the workflow declined to run on its own change. The sibling
+#    workflows are listed individually for the same reason: a new workflow
+#    added later is NOT ignored by default.
+# 2. `'**.md'` is only safe while no Markdown is compiled into the binary.
+#    Nothing in the workspace uses `include_str!`, `include_bytes!`, or
+#    `#[doc = include_str!(...)]` today. If that changes, narrow this entry
+#    so the embedded file is no longer ignored.
+#
+# GitHub applies these per file across the whole diff: the workflow is skipped
+# only when EVERY changed file matches. A PR touching a doc and a `.rs` file
+# still runs both jobs.
+#
+# NOTE ON BRANCH PROTECTION: `main` currently has no branch protection, so
+# neither `ci` nor `msrv` is a required status check and a skipped run blocks
+# nothing. If required status checks are ever enabled, this workflow-level
+# `paths-ignore` must be migrated first: GitHub does not treat "not run" as
+# "passed", so a doc-only PR would sit un-mergeable forever. The migration is
+# either an always-reporting gate job that carries the required-check name and
+# depends on the conditional Rust jobs, or per-step `if:` conditions driven by
+# a cheap path-detection job. See issue #265.
+#
+# The two lists below are duplicated on purpose: GitHub Actions does not
+# support YAML anchors and aliases, so they cannot be shared. Keep them in
+# sync. Filtering only `pull_request` would leave the merge commit running on
+# `main` the very build its PR had just skipped.
 on:
   push:
     branches: [ main, develop ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - 'NOTICE'
+      - '.github/actions/**'
+      - '.github/workflows/release.yml'
+      - '.github/workflows/update_homebrew_formula.yml'
+      - '.github/workflows/debian_build.yml'
+      - '.github/workflows/launchpad_ppa.yml'
   pull_request:
     branches: [ main ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
+      - 'NOTICE'
+      - '.github/actions/**'
+      - '.github/workflows/release.yml'
+      - '.github/workflows/update_homebrew_formula.yml'
+      - '.github/workflows/debian_build.yml'
+      - '.github/workflows/launchpad_ppa.yml'
 
 env:
   CARGO_TERM_COLOR: always
