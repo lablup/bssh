@@ -1,8 +1,23 @@
 name: Release
 
 on:
+  # Both ways of cutting a release are supported, and both end with the Homebrew
+  # tap bumped automatically:
+  #
+  #   prereleased - the release is published as a pre-release. `build` uploads
+  #     every asset, `publish-release` then flips the release to official, and
+  #     `update-homebrew` bumps the tap.
+  #   released - the release is published directly as official (or an existing
+  #     pre-release is flipped by hand). `publish-release` is skipped because
+  #     there is nothing to convert, so `update-homebrew` keys off `build`.
+  #
+  # Before `released` was listed here, a release published directly as official
+  # started no run at all: no binaries, no assets, no formula bump. Listing it
+  # cannot loop back on us either, because `publish-release` performs its flip
+  # with the default GITHUB_TOKEN and events raised by GITHUB_TOKEN do not start
+  # new workflow runs.
   release:
-    types: [prereleased]
+    types: [prereleased, released]
   workflow_dispatch:
     inputs:
       update_homebrew:
@@ -263,14 +278,38 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   # ============================================================================
-  # Update Homebrew formula (after publish converts pre-release to official)
+  # Update Homebrew formula (after every release asset has been uploaded)
   # ============================================================================
+  #
+  # `build` is listed in `needs` explicitly rather than relied on transitively
+  # through `publish-release`. The called workflow downloads the published
+  # assets and hashes them, so it must never start before all five build legs
+  # have finished uploading, and that guarantee has to hold on the path where
+  # `publish-release` does not run at all. `publish-release` stays in `needs` so
+  # the pre-release path is still ordered behind the flip to official.
+  #
+  # `!cancelled()` is required: `publish-release` is legitimately skipped when
+  # the release was published as official already, and under the implicit
+  # `success()` a job whose dependency was skipped is skipped too. A bare
+  # `always()` would be the wrong way to lift that, since it would also fire
+  # after a failed build and push a formula whose sha256 values point at assets
+  # that were never uploaded, so the build result is asserted explicitly instead
+  # of leaning on job ordering.
+  #
+  # On a manual `workflow_dispatch` of this workflow the formula is updated only
+  # when the `update_homebrew` input asks for it, so rebuilding a tag by hand
+  # does not push a tap commit as a side effect.
   update-homebrew:
     name: Update Homebrew formula
-    needs: [publish-release]
+    needs: [build, publish-release]
+    if: >-
+      !cancelled()
+      && needs.build.result == 'success'
+      && (needs.publish-release.result == 'success' || needs.publish-release.result == 'skipped')
+      && (github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && github.event.inputs.update_homebrew == 'true'))
     uses: ./.github/workflows/update_homebrew_formula.yml
     with:
-      release_tag: ${{ github.event.release.tag_name }}
+      release_tag: ${{ github.event.release.tag_name || github.event.inputs.release_tag }}
     secrets: inherit
 
   # ============================================================================
