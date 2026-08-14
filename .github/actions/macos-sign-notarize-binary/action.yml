@@ -1,0 +1,241 @@
+name: "Sign and notarize a macOS binary"
+description: >-
+  Take one bare Mach-O executable through Developer ID signing with the hardened
+  runtime, package it into a zip alongside any extra release files, and submit
+  the zip to notarytool. Requires macos-signing-setup to have run earlier in the
+  same job.
+
+inputs:
+  binary-path:
+    description: "Path to the built Mach-O executable. It is copied before signing, never signed in place."
+    required: true
+  zip-name:
+    description: "File name of the zip to produce, for example bssh-macos-aarch64.zip."
+    required: true
+  identifier:
+    description: >-
+      Code signature identifier, in reverse-DNS form, supplied by the caller from
+      the BUNDLE_ID variable or secret. Required whenever the binary is actually
+      signed.
+    required: true
+  extra-files:
+    description: >-
+      Newline-separated list of additional files to place next to the binary in
+      the zip (man page, LICENSE, NOTICE). Not signable content; notarytool
+      ignores them.
+    required: false
+    default: ""
+  apple-id:
+    description: "Apple ID used for notarization (the APPLE_ID secret)."
+    required: false
+  apple-team-id:
+    description: "Apple Developer team identifier (the APPLE_TEAM_ID secret)."
+    required: false
+  apple-password:
+    description: "App-specific password for notarization (the APPLE_PASSWORD secret)."
+    required: false
+
+outputs:
+  zip-path:
+    description: "Path of the produced zip."
+    value: ${{ steps.package.outputs.zip-path }}
+  signed:
+    description: "'true' when the binary carries a Developer ID signature, 'false' when it was packaged unsigned."
+    value: ${{ steps.package.outputs.signed }}
+
+# secrets.* is not readable from inside a composite action, so every secret this
+# action needs is passed in by the caller as an input.
+runs:
+  using: composite
+  steps:
+    - name: Sign and package ${{ inputs.zip-name }}
+      id: package
+      shell: bash
+      env:
+        BINARY_PATH: ${{ inputs.binary-path }}
+        ZIP_NAME: ${{ inputs.zip-name }}
+        EXTRA_FILES: ${{ inputs.extra-files }}
+        IDENTIFIER: ${{ inputs.identifier }}
+      run: |
+        set -euo pipefail
+
+        if [ ! -f "$BINARY_PATH" ]; then
+          echo "::error::binary to sign not found: $BINARY_PATH"
+          exit 1
+        fi
+
+        # Sign a staged copy, never the build output in place, so the signature
+        # is never written back into the cargo target directory that
+        # actions/cache restores across runs.
+        STAGE_DIR="$(mktemp -d "$RUNNER_TEMP/macos-sign.XXXXXX")"
+        # Remove the staging copy on every exit path, not only the success one.
+        # A failed signature assertion below would otherwise leave a
+        # Developer-ID-signed binary sitting in $RUNNER_TEMP.
+        trap 'rm -rf "$STAGE_DIR"' EXIT
+        BIN_NAME="$(basename "$BINARY_PATH")"
+        STAGED="$STAGE_DIR/$BIN_NAME"
+        cp "$BINARY_PATH" "$STAGED"
+        chmod +x "$STAGED"
+
+        SIGNED=false
+        if [ "${SIGNING_READY:-}" != "true" ]; then
+          echo "::warning::SIGNING_READY is not 'true'; packaging $ZIP_NAME without a Developer ID signature"
+        else
+          echo "=== Signing $BIN_NAME with the hardened runtime ==="
+          # No --entitlements-xml-path: bssh's binaries are self-contained Rust
+          # CLIs that link no third-party dylib and need no entitlement, so the
+          # hardened runtime applies cleanly with Apple's defaults.
+          #
+          # rcodesign requests a secure timestamp from Apple's timestamp server
+          # by default, which notarization requires.
+          #
+          # --binary-identifier pins the code signature identifier instead of
+          # letting rcodesign derive it from the file name. This repository
+          # releases three binaries (bssh, bssh-server, bssh-keygen); the
+          # derived value would be the bare file name rather than a stable
+          # reverse-DNS identifier, so each caller pins its own identifier from
+          # the shared BUNDLE_ID base.
+          #
+          # A composite action does not enforce `required: true` on its inputs at
+          # runtime, so the identifier is checked here. Failing is deliberate: an
+          # unset BUNDLE_ID would otherwise fall back to the file name and
+          # reintroduce exactly the drift this pins down.
+          if [ -z "$IDENTIFIER" ]; then
+            echo "::error::no code signature identifier was supplied; set BUNDLE_ID, as either a variable or a secret on the packaging environment, to a reverse-DNS identifier such as com.lablup.bssh"
+            exit 1
+          fi
+
+          rcodesign sign \
+            --pem-file "$PEM_FILE" \
+            --code-signature-flags runtime \
+            --binary-identifier "$IDENTIFIER" \
+            "$STAGED"
+
+          echo "=== Verifying signature ==="
+          # `|| true` so a codesign failure surfaces as the explicit assertion
+          # errors below rather than as a bare non-zero exit under `set -e`.
+          CODESIGN_OUTPUT="$(codesign -dv --verbose=4 "$STAGED" 2>&1 || true)"
+          echo "$CODESIGN_OUTPUT"
+
+          # This assertion is the one that would have caught the defect that
+          # shipped through v2.4.1: releases were signed by an "Apple
+          # Distribution" authority, which Gatekeeper rejects for anything
+          # downloaded outside the App Store, and nothing in the workflow ever
+          # looked at the authority.
+          #
+          # Matched from a here-string, not `echo | grep`: this step runs under
+          # pipefail, where `grep -q` closing the pipe early can surface as a
+          # failed pipeline regardless of whether the pattern matched.
+          if ! grep -q "Authority=Developer ID Application" <<<"$CODESIGN_OUTPUT"; then
+            echo "::error::$BIN_NAME is not signed by a Developer ID Application authority, so Gatekeeper will refuse it on download"
+            exit 1
+          fi
+          # Match the runtime flag by name, not by a literal flags value: other
+          # code signature flags combine into the same hex field.
+          if ! grep -Eq 'flags=0x[0-9a-f]+\(.*runtime.*\)' <<<"$CODESIGN_OUTPUT"; then
+            echo "::error::$BIN_NAME is missing the hardened runtime flag, which notarization requires"
+            exit 1
+          fi
+          if ! grep -qxF "Identifier=$IDENTIFIER" <<<"$CODESIGN_OUTPUT"; then
+            echo "::error::$BIN_NAME was signed with a code signature identifier other than the requested $IDENTIFIER"
+            exit 1
+          fi
+          SIGNED=true
+        fi
+
+        # Stage the non-executable release files next to the signed binary. The
+        # zip stays flat, with one entry per file and no wrapping directory: the
+        # Homebrew formula unzips in place and expects the binary and its man
+        # page at the top level.
+        while IFS= read -r EXTRA; do
+          [ -n "$EXTRA" ] || continue
+          if [ ! -f "$EXTRA" ]; then
+            echo "::error::extra file to package not found: $EXTRA"
+            exit 1
+          fi
+          cp "$EXTRA" "$STAGE_DIR/"
+        done <<<"$EXTRA_FILES"
+
+        ZIP_PATH="$GITHUB_WORKSPACE/$ZIP_NAME"
+        rm -f "$ZIP_PATH"
+        # ditto preserves the exec bit and the embedded signature.
+        ditto -c -k --sequesterRsrc "$STAGE_DIR" "$ZIP_PATH"
+
+        echo "zip-path=$ZIP_PATH" >> "$GITHUB_OUTPUT"
+        echo "signed=$SIGNED" >> "$GITHUB_OUTPUT"
+        echo "Produced $ZIP_PATH (signed=$SIGNED)"
+        unzip -l "$ZIP_PATH"
+
+    - name: Notarize ${{ inputs.zip-name }}
+      shell: bash
+      env:
+        APPLE_ID: ${{ inputs.apple-id }}
+        APPLE_TEAM_ID: ${{ inputs.apple-team-id }}
+        APPLE_PASSWORD: ${{ inputs.apple-password }}
+        ZIP_PATH: ${{ steps.package.outputs.zip-path }}
+        BINARY_PATH: ${{ inputs.binary-path }}
+      run: |
+        set -uo pipefail
+
+        if [ "${SIGNING_READY:-}" != "true" ]; then
+          echo "Binary was packaged unsigned; skipping notarization"
+          exit 0
+        fi
+
+        # Reaching this line means the binary WAS signed with the Developer ID
+        # identity, so skipping notarization here would publish a signed but
+        # unnotarized zip that Gatekeeper still refuses on a quarantined
+        # download. Signing and notarization are one decision: SIGNING_READY
+        # above is the only place a run is allowed to degrade to an unsigned
+        # artifact.
+        if [ -z "$APPLE_ID" ] || [ -z "$APPLE_TEAM_ID" ] || [ -z "$APPLE_PASSWORD" ]; then
+          echo "::error::$(basename "$ZIP_PATH") was signed with the Developer ID identity but the Apple notarization credentials (APPLE_ID, APPLE_TEAM_ID, APPLE_PASSWORD) are missing, so it cannot be notarized"
+          exit 1
+        fi
+
+        echo "=== Submitting $(basename "$ZIP_PATH") for notarization ==="
+        # notarytool accepts a zip of signed bare executables. `stapler staple`
+        # is deliberately not attempted: it supports bundles, disk images, and
+        # installer packages, not a bare Mach-O or a zip. The ticket stays on
+        # Apple's servers and Gatekeeper looks it up online.
+        SUBMISSION_OUTPUT=$(xcrun notarytool submit "$ZIP_PATH" \
+          --apple-id "$APPLE_ID" \
+          --team-id "$APPLE_TEAM_ID" \
+          --password "$APPLE_PASSWORD" \
+          --wait --timeout 30m 2>&1) || true
+
+        echo "$SUBMISSION_OUTPUT"
+
+        SUBMISSION_ID=$(grep "id:" <<<"$SUBMISSION_OUTPUT" | head -1 | awk '{print $2}' || true)
+
+        # Gate positively on Accepted. Testing only for "status: Invalid" would
+        # let Rejected, a timeout, and every other non-Accepted outcome through.
+        # Matched from a here-string for the same pipefail reason as the
+        # codesign assertions above.
+        if ! grep -q "status: Accepted" <<<"$SUBMISSION_OUTPUT"; then
+          echo "::error::notarization of $(basename "$ZIP_PATH") did not reach 'status: Accepted'"
+          if [ -n "$SUBMISSION_ID" ]; then
+            echo "Fetching detailed notarization log..."
+            xcrun notarytool log "$SUBMISSION_ID" \
+              --apple-id "$APPLE_ID" \
+              --team-id "$APPLE_TEAM_ID" \
+              --password "$APPLE_PASSWORD" || true
+          fi
+          exit 1
+        fi
+
+        echo "Notarization accepted"
+
+        # Informational only. A freshly issued ticket takes time to propagate,
+        # so this must not gate the job; the hard gates are the codesign
+        # assertions and the Accepted status above.
+        # `set -uo pipefail` above does not turn -e back off: composite
+        # `shell: bash` already started this as `bash -eo pipefail`. Guard the
+        # whole block, or an unzip failure here would fail the job after
+        # notarization was already accepted, and the zip would never be
+        # uploaded.
+        VERIFY_DIR="$(mktemp -d "$RUNNER_TEMP/macos-spctl.XXXXXX")"
+        if unzip -q -o "$ZIP_PATH" -d "$VERIFY_DIR"; then
+          spctl -a -vv -t exec "$VERIFY_DIR/$(basename "$BINARY_PATH")" || true
+        fi
+        rm -rf "$VERIFY_DIR"

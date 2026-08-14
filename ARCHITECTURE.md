@@ -873,6 +873,36 @@ but not with themselves; omit the key (plain `#[serial]`) when in doubt.
 - Port forwarding for secure tunneling
 - SSH config directive support for security policies
 
+### Release Signing and Notarization (macOS)
+
+Official macOS release binaries (bssh, bssh-server, bssh-keygen) are signed
+with a "Developer ID Application" certificate and notarized through Apple's
+notarytool. This is handled by two composite actions in `.github/actions/`,
+mirrored from continuum-router (originally from backend.ai-go):
+
+- **macos-signing-setup** extracts the Developer ID p12 to a PEM (via
+  `openssl pkcs12 -legacy`, selected by capability since Apple's LibreSSL
+  lacks the option), rejects any p12 that holds no Developer ID Application
+  certificate, and installs rcodesign (keychain-free signing).
+- **macos-sign-notarize-binary** signs a staged copy with the hardened
+  runtime and a pinned reverse-DNS identifier (`BUNDLE_ID` base, with
+  `-server` / `-keygen` suffixes), asserts the resulting authority, runtime
+  flag, and identifier, packages the flat zip with `ditto`, submits it to
+  `notarytool --wait`, and gates on `status: Accepted`. Bare Mach-O binaries
+  cannot be stapled, so Gatekeeper resolves the ticket online.
+
+Rationale: releases up to v2.4.1 were signed with an "Apple Distribution"
+certificate (an App Store submission identity without the Developer ID leaf
+extension) and never notarized. When that certificate was revoked, macOS
+killed installed binaries on launch and deleted them as malware. The
+authority assertion exists so a wrong certificate fails the release instead
+of shipping quietly.
+
+Required release credentials (GitHub `packaging` environment):
+`APPLE_CERTIFICATE` (base64 Developer ID Application p12),
+`APPLE_CERTIFICATE_PASSWORD`, `APPLE_ID`, `APPLE_TEAM_ID`, `APPLE_PASSWORD`
+(app-specific password), and the `BUNDLE_ID` variable (`com.lablup.bssh`).
+
 ## Dependencies and Licensing
 
 ### Core Dependencies

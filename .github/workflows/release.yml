@@ -61,11 +61,8 @@ jobs:
             os: macos-14
             artifact_name: bssh
             asset_name: bssh-macos-aarch64
+            asset_suffix: macos-aarch64
             archive_ext: ".zip"
-
-    env:
-      BIN_NAME: bssh
-      BUNDLE_ID: ${{ vars.BUNDLE_ID }}
 
     steps:
       # 1) Checkout repository
@@ -102,24 +99,84 @@ jobs:
       - name: Build release binaries
         run: cargo build --release --target ${{ matrix.target }} --locked --bin bssh --bin bssh-server --bin bssh-keygen
 
-      # 6) macOS code signing
-      - name: Import Distribution certificate
+      # 6) macOS code signing and notarization
+      #
+      # Gatekeeper accepts a downloaded binary only when BOTH hold: the code is
+      # signed by a "Developer ID Application" authority, and Apple has issued a
+      # notarization ticket for it. Releases up to v2.4.1 satisfied neither.
+      # They were signed with an "Apple Distribution" certificate, which is an
+      # App Store submission identity that carries no Developer ID leaf
+      # extension, and they were never submitted to notarytool. When that
+      # certificate was later revoked, macOS went from warning to actively
+      # killing installed binaries on launch and deleting them as malware.
+      #
+      # The two composite actions below are mirrored from continuum-router
+      # (itself mirrored from backend.ai-go), which takes its binaries through
+      # the same procedure. macos-signing-setup rejects a certificate that is
+      # not Developer ID Application before anything is signed, and
+      # macos-sign-notarize-binary asserts the resulting authority and hardened
+      # runtime flag before it submits, so a wrong certificate now fails the
+      # release instead of shipping quietly.
+      - name: Prepare signing certificate and tools
         if: runner.os == 'macOS'
-        uses: apple-actions/import-codesign-certs@v7
+        uses: ./.github/actions/macos-signing-setup
         with:
-          p12-file-base64: ${{ secrets.DEV_ID_CERT_P12 }}
-          p12-password: ${{ secrets.DEV_ID_CERT_PASSWORD }}
-
-      - name: Code sign macOS binaries
-        if: runner.os == 'macOS'
-        run: |
-          BIN_DIR=target/${{ matrix.target }}/release
-          for bin in bssh bssh-server bssh-keygen; do
-            codesign --force --timestamp --options runtime \
-                     --sign "Distribution" "$BIN_DIR/$bin"
-          done
+          certificate: ${{ secrets.APPLE_CERTIFICATE }}
+          certificate-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          # Official binaries must never ship unsigned, so a missing or wrong
+          # certificate is a hard failure.
+          required: "true"
 
       # 7) Package binaries (separate packages for bssh, bssh-server, and bssh-keygen)
+      #
+      # macOS packaging happens inside the signing action, because each zip has
+      # to be built from the signed copy and then handed to notarytool as a
+      # single artifact. One call per released binary.
+      #
+      # The identifier is passed from BUNDLE_ID (variable preferred over
+      # secret: it is not sensitive, any user can read it with `codesign -dv`,
+      # and a secret would be masked to *** in the verification output). With
+      # BUNDLE_ID=com.lablup.bssh the three binaries seal as com.lablup.bssh,
+      # com.lablup.bssh-server, and com.lablup.bssh-keygen.
+      - name: Sign, package, and notarize bssh (macOS)
+        if: runner.os == 'macOS'
+        uses: ./.github/actions/macos-sign-notarize-binary
+        with:
+          binary-path: target/${{ matrix.target }}/release/bssh
+          zip-name: ${{ matrix.asset_name }}${{ matrix.archive_ext }}
+          identifier: ${{ vars.BUNDLE_ID || secrets.BUNDLE_ID }}
+          extra-files: |
+            docs/man/bssh.1
+          apple-id: ${{ secrets.APPLE_ID }}
+          apple-team-id: ${{ secrets.APPLE_TEAM_ID }}
+          apple-password: ${{ secrets.APPLE_PASSWORD }}
+
+      - name: Sign, package, and notarize bssh-server (macOS)
+        if: runner.os == 'macOS'
+        uses: ./.github/actions/macos-sign-notarize-binary
+        with:
+          binary-path: target/${{ matrix.target }}/release/bssh-server
+          zip-name: bssh-server-${{ matrix.asset_suffix }}${{ matrix.archive_ext }}
+          identifier: ${{ vars.BUNDLE_ID || secrets.BUNDLE_ID }}-server
+          extra-files: |
+            docs/man/bssh-server.8
+          apple-id: ${{ secrets.APPLE_ID }}
+          apple-team-id: ${{ secrets.APPLE_TEAM_ID }}
+          apple-password: ${{ secrets.APPLE_PASSWORD }}
+
+      - name: Sign, package, and notarize bssh-keygen (macOS)
+        if: runner.os == 'macOS'
+        uses: ./.github/actions/macos-sign-notarize-binary
+        with:
+          binary-path: target/${{ matrix.target }}/release/bssh-keygen
+          zip-name: bssh-keygen-${{ matrix.asset_suffix }}${{ matrix.archive_ext }}
+          identifier: ${{ vars.BUNDLE_ID || secrets.BUNDLE_ID }}-keygen
+          extra-files: |
+            docs/man/bssh-keygen.1
+          apple-id: ${{ secrets.APPLE_ID }}
+          apple-team-id: ${{ secrets.APPLE_TEAM_ID }}
+          apple-password: ${{ secrets.APPLE_PASSWORD }}
+
       - name: Package Linux binaries (tar.gz)
         if: runner.os == 'Linux'
         run: |
@@ -145,32 +202,6 @@ jobs:
           cp "$BIN_DIR/bssh-keygen" package-bssh-keygen/
           cp docs/man/bssh-keygen.1 package-bssh-keygen/
           tar -C package-bssh-keygen -czf "${KEYGEN_ASSET_BASE}.tar.gz" .
-
-      - name: Package macOS binaries (zip)
-        if: runner.os == 'macOS'
-        run: |
-          BIN_DIR="target/${{ matrix.target }}/release"
-          ASSET_BASE="${{ matrix.asset_name }}"
-          SERVER_ASSET_BASE="${ASSET_BASE/bssh/bssh-server}"
-          KEYGEN_ASSET_BASE="${ASSET_BASE/bssh/bssh-keygen}"
-
-          # Package bssh
-          mkdir -p package-bssh
-          cp "$BIN_DIR/bssh" package-bssh/
-          cp docs/man/bssh.1 package-bssh/
-          ditto -c -k --sequesterRsrc package-bssh "${ASSET_BASE}.zip"
-
-          # Package bssh-server
-          mkdir -p package-bssh-server
-          cp "$BIN_DIR/bssh-server" package-bssh-server/
-          cp docs/man/bssh-server.8 package-bssh-server/
-          ditto -c -k --sequesterRsrc package-bssh-server "${SERVER_ASSET_BASE}.zip"
-
-          # Package bssh-keygen
-          mkdir -p package-bssh-keygen
-          cp "$BIN_DIR/bssh-keygen" package-bssh-keygen/
-          cp docs/man/bssh-keygen.1 package-bssh-keygen/
-          ditto -c -k --sequesterRsrc package-bssh-keygen "${KEYGEN_ASSET_BASE}.zip"
 
       # 8) Generate checksums
       - name: Generate checksums
