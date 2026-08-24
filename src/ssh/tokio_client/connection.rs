@@ -706,8 +706,34 @@ impl Handler for ClientHandler {
 
     async fn check_server_key(
         &mut self,
-        server_public_key: &russh::keys::PublicKey,
+        server_key: &russh::keys::PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
+        // russh 0.63 widened this callback to also deliver OpenSSH *host
+        // certificates*. bssh never advertises certificate host key algorithms
+        // (both `Preferred` overrides only touch compression, and
+        // `Preferred::DEFAULT.host_key_certificates` is empty), so a server
+        // cannot legitimately negotiate one. Should a peer send one anyway,
+        // fail closed: bssh has no CA signature verification, so the key inside
+        // the certificate has never been vouched for by anything we trust, and
+        // matching it against known_hosts would answer the wrong question.
+        // `NoCheck` still wins, because there the user disabled verification.
+        let server_public_key = match server_key {
+            russh::keys::PublicKeyOrCertificate::PublicKey { key, .. } => key,
+            russh::keys::PublicKeyOrCertificate::Certificate(cert) => {
+                if matches!(self.server_check, ServerCheckMethod::NoCheck) {
+                    return Ok(true);
+                }
+                tracing::error!(
+                    "Host '{}' presented an OpenSSH host certificate (key ID '{}'); \
+                     bssh cannot verify certificate signatures, so the host is rejected. \
+                     Configure the server to offer a plain host key.",
+                    self.hostname,
+                    cert.key_id()
+                );
+                return Err(super::Error::ServerCheckFailed);
+            }
+        };
+
         match &self.server_check {
             ServerCheckMethod::NoCheck => Ok(true),
             ServerCheckMethod::PublicKey(key) => {
