@@ -1149,6 +1149,39 @@ mod tests {
         (dir, path, path_str)
     }
 
+    /// Wrap a plain host key the way russh 0.63 hands it to
+    /// `Handler::check_server_key`, which now takes a `PublicKeyOrCertificate`.
+    fn host_key(key: &PublicKey) -> russh::keys::PublicKeyOrCertificate {
+        russh::keys::PublicKeyOrCertificate::from(key.clone())
+    }
+
+    /// Build the OpenSSH *host certificate* form of `check_server_key`'s
+    /// argument: `subject`'s public key signed by `ca`.
+    ///
+    /// bssh never advertises certificate host key algorithms, so russh cannot
+    /// negotiate one in practice; these tests pin the fail-closed behavior for
+    /// the case where a peer sends one anyway.
+    fn host_certificate(
+        subject: &PrivateKey,
+        ca: &PrivateKey,
+    ) -> russh::keys::PublicKeyOrCertificate {
+        let mut builder = russh::keys::ssh_key::certificate::Builder::new_with_random_nonce(
+            &mut rand::rng(),
+            subject.public_key(),
+            0,
+            u64::MAX,
+        )
+        .expect("certificate builder should accept a valid validity window");
+        builder.key_id("bssh-test").unwrap();
+        builder
+            .cert_type(russh::keys::ssh_key::certificate::CertType::Host)
+            .unwrap();
+        builder.valid_principal("node1.example.com").unwrap();
+        russh::keys::PublicKeyOrCertificate::Certificate(
+            builder.sign(ca).expect("signing with an ED25519 CA works"),
+        )
+    }
+
     #[tokio::test]
     async fn test_accept_new_records_unknown_host_and_accepts() {
         let (_dir, path, path_str) = temp_known_hosts();
@@ -1632,7 +1665,9 @@ mod tests {
         .unwrap();
 
         let mut handler = handler_for(ServerCheckMethod::KnownHostsFile(path_str));
-        let result = handler.check_server_key(revoked.public_key()).await;
+        let result = handler
+            .check_server_key(&host_key(revoked.public_key()))
+            .await;
         assert!(
             matches!(result, Err(Error::HostKeyRevoked { .. })),
             "strict mode must also honor @revoked, got {result:?}"
@@ -1696,7 +1731,7 @@ mod tests {
             "127.0.0.1:22".parse().unwrap(),
             ServerCheckMethod::KnownHostsFile(path_str),
         );
-        let result = handler.check_server_key(key.public_key()).await;
+        let result = handler.check_server_key(&host_key(key.public_key())).await;
         assert!(
             matches!(result, Ok(true)),
             "strict mode must match an existing pin regardless of hostname casing, got {result:?}"
@@ -1984,7 +2019,7 @@ mod tests {
         let key = generate_key();
 
         let mut handler = handler_for(ServerCheckMethod::KnownHostsFile(path_str));
-        let result = handler.check_server_key(key.public_key()).await;
+        let result = handler.check_server_key(&host_key(key.public_key())).await;
         assert!(
             matches!(result, Ok(false)),
             "unknown host must be rejected in strict mode, got {result:?}"
@@ -2006,7 +2041,9 @@ mod tests {
         .unwrap();
 
         let mut handler = handler_for(ServerCheckMethod::KnownHostsFile(path_str.clone()));
-        let result = handler.check_server_key(imposter.public_key()).await;
+        let result = handler
+            .check_server_key(&host_key(imposter.public_key()))
+            .await;
         assert!(
             matches!(result, Err(Error::HostKeyChanged { .. })),
             "strict mode must report a changed key specifically, got {result:?}"
@@ -2014,7 +2051,9 @@ mod tests {
 
         // The original key still verifies.
         let mut handler = handler_for(ServerCheckMethod::KnownHostsFile(path_str));
-        let result = handler.check_server_key(original.public_key()).await;
+        let result = handler
+            .check_server_key(&host_key(original.public_key()))
+            .await;
         assert!(matches!(result, Ok(true)));
     }
 
@@ -2040,7 +2079,9 @@ mod tests {
         .unwrap();
 
         let mut handler = handler_for(ServerCheckMethod::KnownHostsFile(path_str));
-        let result = handler.check_server_key(current.public_key()).await;
+        let result = handler
+            .check_server_key(&host_key(current.public_key()))
+            .await;
         assert!(
             matches!(result, Ok(true)),
             "strict mode must accept a key matching any recorded entry, got {result:?}"
@@ -2053,7 +2094,7 @@ mod tests {
         let key = generate_key();
 
         let mut handler = handler_for(ServerCheckMethod::NoCheck);
-        let result = handler.check_server_key(key.public_key()).await;
+        let result = handler.check_server_key(&host_key(key.public_key())).await;
         assert!(matches!(result, Ok(true)));
         assert!(!path.exists(), "NoCheck must not create a known_hosts file");
     }
@@ -2065,7 +2106,7 @@ mod tests {
         let key = generate_key();
 
         let mut handler = handler_for(ServerCheckMethod::AcceptNewKnownHostsFile(path_str));
-        let result = handler.check_server_key(key.public_key()).await;
+        let result = handler.check_server_key(&host_key(key.public_key())).await;
         assert!(matches!(result, Ok(true)));
         assert_eq!(entry_lines(&path).len(), 1);
     }
@@ -2170,10 +2211,89 @@ mod tests {
             "127.0.0.1:22".parse().unwrap(),
             ServerCheckMethod::KnownHostsFile(path_str),
         );
-        let result = handler.check_server_key(key.public_key()).await;
+        let result = handler.check_server_key(&host_key(key.public_key())).await;
         assert!(
             matches!(result, Err(Error::ServerCheckFailed)),
             "strict mode must refuse an unrecordable hostname, got {result:?}"
+        );
+    }
+
+    // Host certificates (russh 0.63 widened `check_server_key`).
+
+    /// A host certificate carries a key signed by a CA. bssh verifies no CA
+    /// signatures, so every verifying mode must refuse it rather than fall
+    /// back to matching the key inside it against known_hosts.
+    #[tokio::test]
+    async fn test_host_certificate_is_rejected_by_verifying_modes() {
+        let ca = generate_key();
+        let subject = generate_key();
+        let cert = host_certificate(&subject, &ca);
+
+        let (_dir, path, path_str) = temp_known_hosts();
+        // Pin the key *inside* the certificate, so a naive implementation that
+        // unwrapped the certificate would wrongly accept.
+        std::fs::write(
+            &path,
+            format!(
+                "node1.example.com {}\n",
+                subject.public_key().to_openssh().unwrap()
+            ),
+        )
+        .unwrap();
+
+        for check in [
+            ServerCheckMethod::KnownHostsFile(path_str.clone()),
+            ServerCheckMethod::AcceptNewKnownHostsFile(path_str),
+            ServerCheckMethod::AcceptNewInMemory,
+            ServerCheckMethod::PublicKey(
+                subject.public_key().to_openssh().unwrap()[..]
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap()
+                    .to_string(),
+            ),
+        ] {
+            let mut handler = handler_for(check.clone());
+            let result = handler.check_server_key(&cert).await;
+            assert!(
+                matches!(result, Err(Error::ServerCheckFailed)),
+                "{check:?} must refuse an unverifiable host certificate, got {result:?}"
+            );
+        }
+    }
+
+    /// `NoCheck` means the user turned host verification off entirely, so it
+    /// stays permissive for certificates too.
+    #[tokio::test]
+    async fn test_host_certificate_is_accepted_under_no_check() {
+        let ca = generate_key();
+        let subject = generate_key();
+        let cert = host_certificate(&subject, &ca);
+
+        let mut handler = handler_for(ServerCheckMethod::NoCheck);
+        let result = handler.check_server_key(&cert).await;
+        assert!(
+            matches!(result, Ok(true)),
+            "NoCheck disables verification for certificates too, got {result:?}"
+        );
+    }
+
+    /// The certificate rejection must not have been reachable by accident:
+    /// bssh never advertises certificate host key algorithms, so russh cannot
+    /// negotiate one.
+    #[test]
+    fn test_bssh_never_advertises_host_key_certificates() {
+        assert!(
+            russh::Preferred::DEFAULT.host_key_certificates.is_empty(),
+            "bssh's Preferred overrides inherit this field from DEFAULT; a \
+             non-empty default would silently opt bssh into host certificates"
+        );
+        assert!(
+            crate::ssh::tokio_client::Config::default()
+                .preferred
+                .host_key_certificates
+                .is_empty(),
+            "the client config must not advertise certificate host key algorithms"
         );
     }
 }

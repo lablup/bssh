@@ -860,6 +860,30 @@ but not with themselves; omit the key (plain `#[serial]`) when in doubt.
 - Per-host configuration support
 - Host key fingerprint display
 
+#### OpenSSH host certificates
+
+russh 0.63 widened `client::Handler::check_server_key` from `&PublicKey` to
+`&PublicKeyOrCertificate`, so the callback can now also receive an OpenSSH host
+certificate. bssh does not participate in that scheme:
+
+- It never advertises certificate host key algorithms. Both `Preferred`
+  overrides (`src/ssh/tokio_client/connection.rs` for the client,
+  `src/server/mod.rs` for the server) change only `compression` and inherit
+  `host_key_certificates` from `Preferred::DEFAULT`, which is empty. A server
+  therefore cannot negotiate a certificate with bssh.
+- If a peer sends one regardless, `ClientHandler::check_server_key` refuses it
+  and returns `ServerCheckFailed`. bssh verifies no CA signatures (the
+  `@cert-authority` scan in `src/ssh/tokio_client/host_verification.rs` only
+  warns and falls back to TOFU), so the key inside a certificate has never been
+  vouched for by anything bssh trusts. Matching it against known_hosts would
+  answer a different question than the one the certificate poses.
+- `ServerCheckMethod::NoCheck` still accepts, because there the operator has
+  turned host verification off outright.
+
+`server::Config` likewise gained a `certificates` field; bssh's construction
+ends in `..Default::default()`, so it stays empty and the server keeps
+presenting a plain host key.
+
 ### Data Protection
 
 - No credential logging
