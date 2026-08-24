@@ -34,9 +34,10 @@ tokio = { version = "1.52.3", features = ["full"] }
 # handler in src/ssh/tokio_client/connection.rs refuses certificates because
 # bssh verifies no CA signatures.
 russh = "0.63.1"
-# Use our internal russh-sftp fork tracking upstream 2.3.0
-# (adds pipelined File I/O; serde_bytes perf fix is now upstreamed)
-russh-sftp = { package = "bssh-russh-sftp", version = "2.3.0", path = "crates/bssh-russh-sftp" }
+# Use our internal russh-sftp fork tracking upstream 2.4.0
+# (adds pipelined File I/O and the server read-ahead / write-coalescing loop;
+# the serde_bytes perf fix is now upstreamed)
+russh-sftp = { package = "bssh-russh-sftp", version = "2.4.0", path = "crates/bssh-russh-sftp" }
 clap = { version = "4.6.1", features = ["derive", "env"] }
 anyhow = "1.0.102"
 thiserror = "2.0.18"

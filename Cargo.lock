@@ -451,7 +451,7 @@ dependencies = [
 
 [[package]]
 name = "bssh-russh-sftp"
-version = "2.3.0"
+version = "2.4.0"
 dependencies = [
  "async-trait",
  "bitflags 2.13.1",
