@@ -265,3 +265,107 @@ async fn read_to_writer_retries_short_reads_before_known_eof() {
         .await
         .expect("short-read session should shut down cleanly");
 }
+
+struct EmptyDataBeforeEofHandler {
+    data: Vec<u8>,
+}
+
+impl russh_sftp::server::Handler for EmptyDataBeforeEofHandler {
+    type Error = SftpError;
+
+    fn unimplemented(&self) -> Self::Error {
+        SftpError::not_supported()
+    }
+
+    async fn init(
+        &mut self,
+        _version: u32,
+        _extensions: HashMap<String, String>,
+    ) -> Result<Version, Self::Error> {
+        Ok(Version::new())
+    }
+
+    async fn open(
+        &mut self,
+        id: u32,
+        _filename: String,
+        _pflags: OpenFlags,
+        _attrs: FileAttributes,
+    ) -> Result<Handle, Self::Error> {
+        Ok(Handle {
+            id,
+            handle: "empty".to_owned(),
+        })
+    }
+
+    async fn fstat(&mut self, id: u32, handle: String) -> Result<Attrs, Self::Error> {
+        if handle != "empty" {
+            return Err(SftpError::invalid_handle());
+        }
+        Ok(Attrs {
+            id,
+            attrs: FileAttributes {
+                size: Some(self.data.len() as u64),
+                ..FileAttributes::default()
+            },
+        })
+    }
+
+    async fn read(
+        &mut self,
+        id: u32,
+        handle: String,
+        offset: u64,
+        _len: u32,
+    ) -> Result<Data, Self::Error> {
+        if handle != "empty" {
+            return Err(SftpError::invalid_handle());
+        }
+        if offset == 0 {
+            return Ok(Data {
+                id,
+                data: Vec::new(),
+            });
+        }
+        Err(SftpError::eof())
+    }
+
+    async fn close(&mut self, id: u32, _handle: String) -> Result<Status, Self::Error> {
+        Ok(Status {
+            id,
+            status_code: StatusCode::Ok,
+            error_message: String::new(),
+            language_tag: "en-US".to_owned(),
+        })
+    }
+}
+
+#[tokio::test]
+async fn read_to_writer_rejects_empty_data_before_known_eof() {
+    let expected = payload(1024);
+    let sftp = sftp_session_with_handler(EmptyDataBeforeEofHandler { data: expected }).await;
+    let mut remote = sftp
+        .open("ignored.bin")
+        .await
+        .expect("empty-read file should open");
+    let mut downloaded = Vec::new();
+
+    let err = remote
+        .read_to_writer_pipelined(&mut downloaded, 4)
+        .await
+        .expect_err("empty DATA before known EOF must not truncate successfully");
+
+    assert!(
+        err.to_string()
+            .contains("unexpected empty read before file size"),
+        "unexpected error: {err}"
+    );
+    assert!(downloaded.is_empty());
+    remote
+        .close()
+        .await
+        .expect("empty-read handle should close");
+    sftp.close()
+        .await
+        .expect("empty-read session should shut down cleanly");
+}

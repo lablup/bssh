@@ -71,6 +71,59 @@ impl File {
         }
     }
 
+    fn effective_read_len(&self) -> SftpResult<usize> {
+        let packet_payload = self
+            .features
+            .max_packet_len
+            .saturating_sub(READ_OVERHEAD_LENGTH);
+        let advertised = self
+            .features
+            .limits
+            .and_then(|limits| limits.read_len)
+            .unwrap_or(u64::from(packet_payload));
+        let effective = advertised
+            .min(u64::from(packet_payload))
+            .min(u64::from(u32::MAX));
+
+        if effective == 0 {
+            return Err(Error::UnexpectedBehavior(
+                "effective SFTP read payload length is zero".to_owned(),
+            ));
+        }
+
+        Ok(effective as usize)
+    }
+
+    fn effective_write_len(&self) -> SftpResult<usize> {
+        let handle_len = u32::try_from(self.handle.len()).map_err(|_| {
+            Error::UnexpectedBehavior("SFTP handle length exceeds protocol limit".to_owned())
+        })?;
+        let overhead = WRITE_OVERHEAD_LENGTH
+            .checked_add(handle_len)
+            .ok_or_else(|| {
+                Error::UnexpectedBehavior(
+                    "SFTP write packet overhead exceeds protocol limit".to_owned(),
+                )
+            })?;
+        let packet_payload = self.features.max_packet_len.saturating_sub(overhead);
+        let advertised = self
+            .features
+            .limits
+            .and_then(|limits| limits.write_len)
+            .unwrap_or(u64::from(packet_payload));
+        let effective = advertised
+            .min(u64::from(packet_payload))
+            .min(u64::from(u32::MAX));
+
+        if effective == 0 {
+            return Err(Error::UnexpectedBehavior(
+                "effective SFTP write payload length is zero".to_owned(),
+            ));
+        }
+
+        Ok(effective as usize)
+    }
+
     /// Queries metadata about the remote file.
     pub async fn metadata(&self) -> SftpResult<Metadata> {
         Ok(self.session.fstat(self.handle.as_str()).await?.attrs)
@@ -126,14 +179,7 @@ impl File {
             ));
         }
 
-        let chunk_size = self
-            .features
-            .limits
-            .and_then(|l| l.write_len)
-            .unwrap_or_else(|| {
-                let overhead = WRITE_OVERHEAD_LENGTH + self.handle.len() as u32;
-                self.features.max_packet_len.saturating_sub(overhead) as u64
-            }) as usize;
+        let chunk_size = self.effective_write_len()?;
 
         let mut total: u64 = 0;
         let mut offset = self.pos;
@@ -203,15 +249,7 @@ impl File {
             ));
         }
 
-        let chunk_size = self
-            .features
-            .limits
-            .and_then(|l| l.read_len)
-            .unwrap_or_else(|| {
-                self.features
-                    .max_packet_len
-                    .saturating_sub(READ_OVERHEAD_LENGTH) as u64
-            }) as usize;
+        let chunk_size = self.effective_read_len()?;
         let file_end = self
             .metadata()
             .await
@@ -255,6 +293,11 @@ impl File {
             match in_flight.next().await {
                 Some(Ok((off, len, Some(data)))) => {
                     if data.is_empty() {
+                        if file_end.is_some_and(|end| off < end) {
+                            return Err(Error::UnexpectedBehavior(format!(
+                                "unexpected empty read before file size at offset {off}"
+                            )));
+                        }
                         eof = true;
                     } else {
                         if data.len() > len as usize {
@@ -377,15 +420,13 @@ impl AsyncRead for File {
             Some(f) => f,
             None => {
                 let session = self.session.clone();
-                let max_read_len = self
-                    .features
-                    .limits
-                    .and_then(|l| l.read_len)
-                    .unwrap_or_else(|| {
-                        self.features
-                            .max_packet_len
-                            .saturating_sub(READ_OVERHEAD_LENGTH) as u64
-                    }) as usize;
+                let max_read_len = match self.effective_read_len() {
+                    Ok(len) => len,
+                    Err(e) => {
+                        let message = e.to_string();
+                        return Poll::Ready(Err(io::Error::other(message)));
+                    }
+                };
 
                 let file_handle = self.handle.clone();
 
@@ -494,14 +535,10 @@ impl AsyncWrite for File {
             }
         }
 
-        let max_write_len = self
-            .features
-            .limits
-            .and_then(|l| l.write_len)
-            .unwrap_or_else(|| {
-                let overhead = WRITE_OVERHEAD_LENGTH + self.handle.len() as u32;
-                self.features.max_packet_len.saturating_sub(overhead) as u64
-            }) as usize;
+        let max_write_len = match self.effective_write_len() {
+            Ok(len) => len,
+            Err(e) => return Poll::Ready(Err(io::Error::other(e.to_string()))),
+        };
 
         let len = usize::min(buf.len(), max_write_len);
         let data = buf[..len].to_vec();
