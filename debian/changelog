@@ -1,3 +1,34 @@
+bssh (2.4.3-1~jammy1) jammy; urgency=medium
+
+  * v2.4.3
+  ### Security
+  - Upgrade russh to 0.63.1 for fixes to invalid channel callbacks and
+    a cipher/MAC negotiation panic, and reject host certificates in
+    every verifying mode because bssh does not validate CA signatures
+    (#270).
+  ### Fixed
+  - Complete bssh-to-bssh SFTP downloads above 255 KiB by advertising
+    server limits, recovering from legal short reads, clamping peer
+    limits, and rejecting empty data before a known EOF (#273).
+  ### Changed
+  - Sync bssh-russh-sftp with upstream 2.4.0 while preserving both
+    local performance patches and adding drift detection for future
+    upstream syncs (#272).
+  ### CI/CD
+  - Skip Rust CI when every changed path is documentation, licensing
+    text, a composite action, or a listed release workflow (#267).
+  - Run Homebrew formula updates after successful release builds for
+    pre-release, direct official, and opted-in manual paths (#268).
+  - Authenticate notarization with an App Store Connect API key rather
+    than Apple ID credentials (#269).
+  - Promote a manually dispatched release after artifact upload and
+    fail when its release state cannot be read (#269).
+  ### Dependencies
+  - Upgrade mockall to 0.15.0 and serial_test to 4.0.1 without runtime
+    code or dependency changes (#274).
+
+ -- Jeongkyu Shin <inureyes@gmail.com>  Mon, 24 Aug 2026 16:47:00 +0900
+
 bssh (2.4.2-1~jammy1) jammy; urgency=medium
 
   * v2.4.2

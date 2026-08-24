@@ -5,6 +5,28 @@ All notable changes to bssh will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.3] - 2026-08-24
+
+Fixes bssh-to-bssh SFTP downloads above 255 KiB and updates the SSH stack and release automation.
+
+### Security
+- **Upgrade to russh 0.63.1 and refuse unverified host certificates** (#270). The upgrade includes fixes for callbacks on never-opened channel IDs (GHSA-47hw-gvq5-r2gm) and a cipher/MAC negotiation panic (GHSA-p8qx-h547-fjw9). Verifying modes reject unexpected certificates because bssh does not validate host-certificate CA signatures; explicit no-check mode remains unchanged.
+
+### Fixed
+- **Complete bssh-to-bssh SFTP downloads above 255 KiB** (#273). The server advertises its enforced limits through `limits@openssh.com`, and pipelined reads recover from legal short replies. Peer limits are clamped to packet and protocol ceilings, and empty data before a known EOF is rejected as an integrity error.
+
+### Changed
+- **Sync bssh-russh-sftp with upstream 2.4.0** (#272). The sync adds explicit file closing and `expand-path@openssh.com` support, corrects `FileAttributes::default()`, preserves both local performance patches, and detects untracked fork drift before future syncs.
+
+### CI/CD
+- **Skip Rust CI when every changed path is documentation, licensing text, a composite action, or a listed release workflow** (#267). Build-relevant and unrecognized paths continue to run CI and MSRV jobs.
+- **Run the Homebrew formula update after successful release builds** (#268). Pre-release promotion, direct official releases, and opted-in manual dispatches now share the same ordered update path.
+- **Authenticate macOS notarization with an App Store Connect API key** (#269). The organization-managed key replaces Apple ID and app-specific password credentials.
+- **Promote releases created through manual dispatch** (#269). A dispatched rebuild now changes a pre-release to the latest official release after asset upload and fails if release state cannot be read.
+
+### Dependencies
+- **Upgrade mockall to 0.15.0 and serial_test to 4.0.1** (#274). Runtime dependencies and application code are unchanged.
+
 ## [2.4.2] - 2026-08-14
 
 Republishes the macOS binaries with a working code signature. No source changed between 2.4.1 and 2.4.2, so the Linux binaries behave identically and only macOS users need this release.
@@ -1004,6 +1026,7 @@ None
 - russh library for native SSH implementation
 - Cross-platform support (Linux and macOS)
 
+[2.4.3]: https://github.com/lablup/bssh/compare/v2.4.2...v2.4.3
 [2.4.2]: https://github.com/lablup/bssh/compare/v2.4.1...v2.4.2
 [2.4.1]: https://github.com/lablup/bssh/compare/v2.4.0...v2.4.1
 [2.4.0]: https://github.com/lablup/bssh/compare/v2.3.1...v2.4.0
