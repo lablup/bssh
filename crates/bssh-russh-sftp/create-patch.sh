@@ -17,11 +17,13 @@ UPSTREAM_URL="https://github.com/AspectUnk/russh-sftp.git"
 TEMP_DIR="/tmp/russh-sftp-createpatch-$$"
 PATCH_DIR="$SCRIPT_DIR/patches"
 
+RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $1" >&2; }
 
 cleanup() { [ -d "$TEMP_DIR" ] && rm -rf "$TEMP_DIR"; }
 trap cleanup EXIT
@@ -33,14 +35,28 @@ git clone --quiet "$UPSTREAM_URL" "$TEMP_DIR"
 cd "$TEMP_DIR"
 
 if [ -z "$VERSION" ]; then
-    VERSION=$(git describe --tags --abbrev=0 2>/dev/null || echo "master")
+    VERSION="master"
 fi
+
+# Same resolution as sync-upstream.sh: russh-sftp publishes no git tags, and
+# marks releases with a "bump to <version>" commit. A patch must be generated
+# against the exact base the vendored tree was synced from, so an unresolvable
+# version is an error rather than a silent fall back to the default branch.
 if [ "$VERSION" != "master" ]; then
-    # russh-sftp publishes no git tags, so a version string may not be a ref.
-    if ! { git checkout --quiet "v$VERSION" 2>/dev/null || git checkout --quiet "$VERSION" 2>/dev/null; }; then
-        log_warn "No git ref '$VERSION' (russh-sftp publishes no tags); diffing against the default branch."
-        VERSION="master"
+    if git rev-parse --verify -q "v$VERSION^{commit}" > /dev/null; then
+        REF="v$VERSION"
+    elif git rev-parse --verify -q "$VERSION^{commit}" > /dev/null; then
+        REF="$VERSION"
+    else
+        REF=$(git log --format='%H' --grep="^bump to $VERSION\$" -1)
+        if [ -z "$REF" ]; then
+            log_error "Cannot resolve upstream version '$VERSION': no tag, no ref, and no 'bump to $VERSION' commit."
+            log_error "Available release commits:"
+            git log --oneline --grep='^bump to' | head -10 >&2
+            exit 1
+        fi
     fi
+    git checkout --quiet "$REF"
 fi
 log_info "Diffing against upstream $VERSION ($(git rev-parse --short HEAD))"
 

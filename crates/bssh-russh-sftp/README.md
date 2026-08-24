@@ -37,7 +37,11 @@ cd crates/bssh-russh-sftp
 ./sync-upstream.sh 2.4.0   # omit the version to use upstream's default branch
 ```
 
-`sync-upstream.sh` copies upstream `src` verbatim and re-applies every patch directly under `patches/` (anything under `patches/historical/` is excluded). Patches already merged upstream are detected via reverse-apply and skipped.
+`sync-upstream.sh` copies upstream `src` verbatim and re-applies every patch directly under `patches/` (anything under `patches/historical/` is excluded), then verifies each patch is present in the result, builds, and runs the fork tests.
+
+Upstream publishes **no git tags**, and marks releases with a `bump to <version>` commit instead, so both scripts resolve a version argument to that commit. An unresolvable version is a hard error listing the available release commits: falling back to the default branch would vendor unreleased code while stamping `Cargo.toml` with the requested version. Resolution happens before anything is copied, so a bad version leaves the tree untouched.
+
+Patch state is detected with `git apply --check`, not `patch --dry-run`. Apple's bundled `patch` silently auto-corrects direction and exits 0 whether a patch applies, is reversed, or is already applied, so its exit status cannot distinguish "already upstream" from "not applied yet".
 
 Because the sync deletes `src/**/*.rs` before copying upstream over it, **a fork change with no patch file is silently lost**. Regenerate the patches with `./create-patch.sh <version>` after editing vendored code; it diffs every file listed in its `PATCH_TARGETS` and warns about any other file that drifts from upstream without an entry.
 
