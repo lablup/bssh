@@ -225,6 +225,15 @@ impl File {
         let mut pending: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
         let mut in_flight = FuturesUnordered::new();
         let mut eof = false;
+        let read_request = |session: Arc<RawSftpSession>, handle: String, off: u64, len: u32| async move {
+            match session.read(handle, off, len).await {
+                Ok(data) => SftpResult::Ok((off, len, Some(data.data))),
+                Err(Error::Status(s)) if s.status_code == StatusCode::Eof => {
+                    SftpResult::Ok((off, len, None))
+                }
+                Err(e) => Err(e),
+            }
+        };
 
         loop {
             while !eof
@@ -238,15 +247,7 @@ impl File {
                     (end - next_offset).min(chunk_size as u64)
                 }) as u32;
 
-                in_flight.push(async move {
-                    match session.read(handle, off, len).await {
-                        Ok(data) => SftpResult::Ok((off, len, Some(data.data))),
-                        Err(Error::Status(s)) if s.status_code == StatusCode::Eof => {
-                            SftpResult::Ok((off, len, None))
-                        }
-                        Err(e) => Err(e),
-                    }
-                });
+                in_flight.push(read_request(session, handle, off, len));
 
                 next_offset += u64::from(len);
             }
@@ -256,13 +257,27 @@ impl File {
                     if data.is_empty() {
                         eof = true;
                     } else {
+                        if data.len() > len as usize {
+                            return Err(Error::UnexpectedBehavior(format!(
+                                "read returned more data than requested at offset {off}: requested {len} bytes, received {} bytes",
+                                data.len()
+                            )));
+                        }
+
                         if let Some(end) = file_end {
                             let got_end = off.saturating_add(data.len() as u64);
-                            if data.len() != len as usize || got_end > end {
+                            if got_end > end {
                                 return Err(Error::UnexpectedBehavior(format!(
-                                    "short read before EOF at offset {off}: requested {len} bytes, received {} bytes",
+                                    "read returned data past known EOF at offset {off}: requested {len} bytes, received {} bytes",
                                     data.len()
                                 )));
+                            }
+                            if data.len() < len as usize && got_end < end {
+                                let remaining = u64::from(len) - data.len() as u64;
+                                let retry_len = remaining.min(u64::from(u32::MAX)) as u32;
+                                let session = self.session.clone();
+                                let handle = self.handle.clone();
+                                in_flight.push(read_request(session, handle, got_end, retry_len));
                             }
                         } else if data.len() < len as usize {
                             eof = true;

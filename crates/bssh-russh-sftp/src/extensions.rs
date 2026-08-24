@@ -26,6 +26,8 @@ pub struct LimitsExtension {
     pub max_open_handles: u64,
 }
 
+impl_try_into_bytes!(LimitsExtension);
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct HardlinkExtension {
     pub oldpath: String,

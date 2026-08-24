@@ -47,8 +47,12 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use russh_sftp::protocol::{
-    Attrs, Data, FileAttributes, Handle, Name, OpenFlags, Status, StatusCode, Version,
+use russh_sftp::{
+    extensions::{self, LimitsExtension},
+    protocol::{
+        Attrs, Data, ExtendedReply, FileAttributes, Handle, Name, OpenFlags, Packet, Status,
+        StatusCode, Version,
+    },
 };
 use tokio::fs::{self, File, OpenOptions};
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
@@ -188,6 +192,17 @@ const MAX_HANDLES: usize = 1000;
 /// [`MAX_HANDLES`] per session and each in-flight read uses a single
 /// per-request buffer of this size.
 const MAX_READ_SIZE: u32 = 261120;
+
+/// Version string required by OpenSSH's `limits@openssh.com` extension.
+const LIMITS_EXTENSION_VERSION: &str = "1";
+
+/// Maximum write payload size advertised to clients via `limits@openssh.com`.
+///
+/// The server's packet reader still enforces the true frame ceiling from
+/// `russh_sftp::server::Config::max_client_packet_len`; advertising the same
+/// 255 KiB payload ceiling used for reads leaves room for SFTP write packet
+/// overhead and keeps pipelined uploads below that frame ceiling.
+const MAX_ADVERTISED_WRITE_SIZE: u32 = MAX_READ_SIZE;
 
 /// Normalize a path's `..` and `.` components without touching the filesystem.
 ///
@@ -402,6 +417,30 @@ impl SftpHandler {
         }
     }
 
+    /// Build the SFTP version reply with extensions supported by this server.
+    fn version_with_extensions() -> Version {
+        let mut version = Version::new();
+        version.extensions.insert(
+            extensions::LIMITS.to_owned(),
+            LIMITS_EXTENSION_VERSION.to_owned(),
+        );
+        version
+    }
+
+    /// Build the limits advertised through OpenSSH's `limits@openssh.com`.
+    fn limits_extension() -> LimitsExtension {
+        let server_config = russh_sftp::server::Config::default();
+        let max_write_len =
+            (MAX_ADVERTISED_WRITE_SIZE as usize).min(server_config.max_write_coalesce_len);
+
+        LimitsExtension {
+            max_packet_len: u64::from(server_config.max_client_packet_len),
+            max_read_len: u64::from(MAX_READ_SIZE),
+            max_write_len: max_write_len as u64,
+            max_open_handles: MAX_HANDLES as u64,
+        }
+    }
+
     /// Generate a new unique handle ID.
     fn new_handle(&mut self) -> String {
         self.handle_counter += 1;
@@ -584,7 +623,25 @@ impl russh_sftp::server::Handler for SftpHandler {
             "SFTP session initialized"
         );
 
-        async move { Ok(Version::new()) }
+        async move { Ok(SftpHandler::version_with_extensions()) }
+    }
+
+    /// Handle SFTP extension requests.
+    async fn extended(
+        &mut self,
+        id: u32,
+        request: String,
+        _data: Vec<u8>,
+    ) -> Result<Packet, Self::Error> {
+        if request != extensions::LIMITS {
+            return Err(SftpError::not_supported());
+        }
+
+        let data = russh_sftp::ser::to_bytes(&SftpHandler::limits_extension())
+            .map(|bytes| bytes.to_vec())
+            .map_err(|err| SftpError::failure(err.to_string()))?;
+
+        Ok(Packet::ExtendedReply(ExtendedReply { id, data }))
     }
 
     /// Open a file.

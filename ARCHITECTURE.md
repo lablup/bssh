@@ -595,6 +595,7 @@ SSH server implementation using the russh library for accepting incoming connect
 
 - **SftpHandler**: SFTP subsystem handler (`src/server/sftp.rs`)
   - Implements `russh_sftp::server::Handler` trait for file transfer operations
+  - Advertises and serves `limits@openssh.com` so clients negotiate the server's packet, read, write, and handle ceilings before bulk transfers
   - Path traversal prevention with chroot-like isolation
   - File operations: open, read, write, close
   - Directory operations: opendir, readdir, mkdir, rmdir
@@ -603,6 +604,7 @@ SSH server implementation using the russh library for accepting incoming connect
   - Symlink validation ensures targets remain within root directory
   - Handle limit enforcement to prevent resource exhaustion
   - Read size capping to prevent memory exhaustion
+  - Pipelined downloads tolerate legal short `READ` replies by re-requesting the missing byte range before ordered reassembly
 
 - **ScpHandler**: SCP protocol handler (`src/server/scp.rs`)
   - Implements SCP server protocol for file transfers via the `scp` command
