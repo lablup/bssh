@@ -604,7 +604,7 @@ SSH server implementation using the russh library for accepting incoming connect
   - Symlink validation ensures targets remain within root directory
   - Handle limit enforcement to prevent resource exhaustion
   - Read size capping to prevent memory exhaustion
-  - Pipelined downloads tolerate legal short `READ` replies by re-requesting the missing byte range before ordered reassembly
+  - Pipelined downloads tolerate legal short `READ` replies by re-requesting the missing byte range before ordered reassembly, and clamp advertised transfer ceilings to the negotiated packet payload budget
 
 - **ScpHandler**: SCP protocol handler (`src/server/scp.rs`)
   - Implements SCP server protocol for file transfers via the `scp` command

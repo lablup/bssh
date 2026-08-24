@@ -1,25 +1,54 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 
 use bssh::server::sftp::{SftpError, SftpHandler};
 use bssh::shared::auth_types::UserInfo;
-use russh_sftp::client::{RawSftpSession, SftpSession};
+use russh_sftp::client::{Config as ClientConfig, RawSftpSession, SftpSession};
+use russh_sftp::extensions::{self, LimitsExtension};
 use russh_sftp::protocol::{
-    Attrs, Data, FileAttributes, Handle, OpenFlags, Packet, Status, StatusCode, Version,
+    Attrs, Data, ExtendedReply, FileAttributes, Handle, OpenFlags, Packet, Status, StatusCode,
+    Version,
 };
 use tokio::io::AsyncWriteExt;
 
 const BSSH_MAX_READ_LEN: u64 = 261_120;
 const BSSH_MAX_HANDLES: u64 = 1_000;
 const MAX_INFLIGHT: usize = 64;
+const READ_OVERHEAD_LEN: u32 = 9;
+const WRITE_OVERHEAD_LEN: u32 = 21;
+const SMALL_CLIENT_PACKET_LEN: u32 = 1_024;
 
 async fn sftp_session_with_handler<H>(handler: H) -> SftpSession
 where
     H: russh_sftp::server::Handler + Send + 'static,
 {
+    sftp_session_with_handler_and_configs(
+        handler,
+        ClientConfig::default(),
+        russh_sftp::server::Config::default(),
+    )
+    .await
+}
+
+async fn sftp_session_with_handler_and_config<H>(handler: H, cfg: ClientConfig) -> SftpSession
+where
+    H: russh_sftp::server::Handler + Send + 'static,
+{
+    sftp_session_with_handler_and_configs(handler, cfg, russh_sftp::server::Config::default()).await
+}
+
+async fn sftp_session_with_handler_and_configs<H>(
+    handler: H,
+    cfg: ClientConfig,
+    server_cfg: russh_sftp::server::Config,
+) -> SftpSession
+where
+    H: russh_sftp::server::Handler + Send + 'static,
+{
     let (client, server) = tokio::io::duplex(1 << 20);
-    russh_sftp::server::run(server, handler).await;
-    SftpSession::new(client)
+    russh_sftp::server::run_with_config(server, handler, server_cfg).await;
+    SftpSession::new_with_config(client, cfg)
         .await
         .expect("SFTP session should initialize")
 }
@@ -96,6 +125,151 @@ async fn download_payload(sftp: &SftpSession, path: &str) -> Vec<u8> {
     downloaded
 }
 
+#[derive(Clone, Default)]
+struct ObservedChunks {
+    reads: Arc<Mutex<Vec<u32>>>,
+    writes: Arc<Mutex<Vec<usize>>>,
+}
+
+struct HugeAdvertisedLimitsHandler {
+    data: Vec<u8>,
+    observed: ObservedChunks,
+}
+
+impl HugeAdvertisedLimitsHandler {
+    fn new(data: Vec<u8>, observed: ObservedChunks) -> Self {
+        Self { data, observed }
+    }
+}
+
+impl russh_sftp::server::Handler for HugeAdvertisedLimitsHandler {
+    type Error = SftpError;
+
+    fn unimplemented(&self) -> Self::Error {
+        SftpError::not_supported()
+    }
+
+    async fn init(
+        &mut self,
+        _version: u32,
+        _extensions: HashMap<String, String>,
+    ) -> Result<Version, Self::Error> {
+        let mut version = Version::new();
+        version
+            .extensions
+            .insert(extensions::LIMITS.to_owned(), "1".to_owned());
+        Ok(version)
+    }
+
+    async fn extended(
+        &mut self,
+        id: u32,
+        request: String,
+        _data: Vec<u8>,
+    ) -> Result<Packet, Self::Error> {
+        if request != extensions::LIMITS {
+            return Err(SftpError::not_supported());
+        }
+
+        let data = russh_sftp::ser::to_bytes(&LimitsExtension {
+            max_packet_len: u64::MAX,
+            max_read_len: u64::MAX,
+            max_write_len: u64::MAX,
+            max_open_handles: u64::MAX,
+        })
+        .map(|bytes| bytes.to_vec())
+        .map_err(|err| SftpError::failure(err.to_string()))?;
+
+        Ok(Packet::ExtendedReply(ExtendedReply { id, data }))
+    }
+
+    async fn open(
+        &mut self,
+        id: u32,
+        _filename: String,
+        _pflags: OpenFlags,
+        _attrs: FileAttributes,
+    ) -> Result<Handle, Self::Error> {
+        Ok(Handle {
+            id,
+            handle: "huge".to_owned(),
+        })
+    }
+
+    async fn fstat(&mut self, id: u32, handle: String) -> Result<Attrs, Self::Error> {
+        if handle != "huge" {
+            return Err(SftpError::invalid_handle());
+        }
+
+        Ok(Attrs {
+            id,
+            attrs: FileAttributes {
+                size: Some(self.data.len() as u64),
+                ..FileAttributes::default()
+            },
+        })
+    }
+
+    async fn read(
+        &mut self,
+        id: u32,
+        handle: String,
+        offset: u64,
+        len: u32,
+    ) -> Result<Data, Self::Error> {
+        if handle != "huge" {
+            return Err(SftpError::invalid_handle());
+        }
+        self.observed
+            .reads
+            .lock()
+            .expect("reads mutex poisoned")
+            .push(len);
+        if offset >= self.data.len() as u64 {
+            return Err(SftpError::eof());
+        }
+
+        let start = offset as usize;
+        let end = start.saturating_add(len as usize).min(self.data.len());
+        Ok(Data {
+            id,
+            data: self.data[start..end].to_vec(),
+        })
+    }
+
+    async fn write(
+        &mut self,
+        id: u32,
+        handle: String,
+        _offset: u64,
+        data: Vec<u8>,
+    ) -> Result<Status, Self::Error> {
+        if handle != "huge" {
+            return Err(SftpError::invalid_handle());
+        }
+        self.observed
+            .writes
+            .lock()
+            .expect("writes mutex poisoned")
+            .push(data.len());
+        Ok(Status {
+            id,
+            status_code: StatusCode::Ok,
+            error_message: String::new(),
+            language_tag: "en-US".to_owned(),
+        })
+    }
+
+    async fn close(&mut self, id: u32, _handle: String) -> Result<Status, Self::Error> {
+        Ok(Status {
+            id,
+            status_code: StatusCode::Ok,
+            error_message: String::new(),
+            language_tag: "en-US".to_owned(),
+        })
+    }
+}
+
 #[tokio::test]
 async fn bssh_server_advertises_limits_extension() {
     let dir = tempfile::tempdir().expect("tempdir should be created");
@@ -150,6 +324,105 @@ async fn bssh_to_bssh_pipelined_round_trip_above_read_cap() {
     sftp.close()
         .await
         .expect("high-level SFTP session should shut down cleanly");
+}
+
+#[tokio::test]
+async fn client_clamps_advertised_read_limit_to_packet_payload() {
+    let observed = ObservedChunks::default();
+    let expected = payload((SMALL_CLIENT_PACKET_LEN as usize * 3) + 17);
+    let sftp = sftp_session_with_handler_and_config(
+        HugeAdvertisedLimitsHandler::new(expected.clone(), observed.clone()),
+        ClientConfig {
+            max_packet_len: SMALL_CLIENT_PACKET_LEN,
+            ..ClientConfig::default()
+        },
+    )
+    .await;
+
+    let mut remote = sftp
+        .open("ignored.bin")
+        .await
+        .expect("read-limit file should open");
+    let mut downloaded = Vec::new();
+    remote
+        .read_to_writer_pipelined(&mut downloaded, 3)
+        .await
+        .expect("oversized advertised read limit should be clamped");
+
+    let expected_max = SMALL_CLIENT_PACKET_LEN - READ_OVERHEAD_LEN;
+    let read_lengths = observed.reads.lock().expect("reads mutex poisoned").clone();
+    assert!(
+        !read_lengths.is_empty(),
+        "handler should observe at least one read"
+    );
+    assert_eq!(read_lengths[0], expected_max);
+    assert!(
+        read_lengths.iter().all(|&len| len <= expected_max),
+        "read requests exceeded packet payload ceiling: {read_lengths:?}"
+    );
+    assert_eq!(downloaded, expected);
+}
+
+#[tokio::test]
+async fn client_clamps_advertised_write_limit_to_packet_payload() {
+    let observed = ObservedChunks::default();
+    let data = payload((SMALL_CLIENT_PACKET_LEN as usize * 3) + 29);
+    let sftp = sftp_session_with_handler_and_configs(
+        HugeAdvertisedLimitsHandler::new(Vec::new(), observed.clone()),
+        ClientConfig {
+            max_packet_len: SMALL_CLIENT_PACKET_LEN,
+            ..ClientConfig::default()
+        },
+        russh_sftp::server::Config {
+            max_write_coalesce_len: 0,
+            ..russh_sftp::server::Config::default()
+        },
+    )
+    .await;
+
+    let mut remote = sftp
+        .create("ignored.bin")
+        .await
+        .expect("write-limit file should open");
+    let (mut reader, mut writer) = tokio::io::duplex(2 * SMALL_CLIENT_PACKET_LEN as usize);
+    let payload_for_writer = data.clone();
+    let writer_task = tokio::spawn(async move {
+        writer
+            .write_all(&payload_for_writer)
+            .await
+            .expect("payload should feed upload reader");
+        writer
+            .shutdown()
+            .await
+            .expect("payload reader should close");
+    });
+
+    let written = remote
+        .write_all_pipelined(&mut reader, 3)
+        .await
+        .expect("oversized advertised write limit should be clamped");
+    writer_task
+        .await
+        .expect("payload writer task should finish");
+
+    let expected_max = SMALL_CLIENT_PACKET_LEN - (WRITE_OVERHEAD_LEN + 4);
+    let write_lengths = observed
+        .writes
+        .lock()
+        .expect("writes mutex poisoned")
+        .clone();
+    assert_eq!(written as usize, data.len());
+    assert!(
+        !write_lengths.is_empty(),
+        "handler should observe at least one write"
+    );
+    assert_eq!(write_lengths[0], expected_max as usize);
+    assert!(
+        write_lengths
+            .iter()
+            .all(|&len| len <= expected_max as usize),
+        "write requests exceeded packet payload ceiling: {write_lengths:?}"
+    );
 }
 
 struct ShortReadHandler {
