@@ -73,6 +73,11 @@ shell-words = "1.1.1"
 libc = "0.2"
 ipnetwork = "0.21"
 bcrypt = "0.19"
+# `argon2` 0.5 uses `crypto-common` 0.1.7, which deliberately pins
+# `generic-array` to 0.14.7 to avoid the 0.14.9 deprecation-only release.
+# Revisit this transitive hold when the stable RustCrypto stack migrates to
+# hybrid-array:
+# https://github.com/RustCrypto/traits/issues/2036
 argon2 = { version = "0.5", features = ["std"] }
 rand = "0.10"
 # Pinned to match russh's ssh-key (0.63.x uses =0.7.0-rc.11) so the workspace
@@ -94,10 +99,10 @@ security-framework = "3.7.0"
 tempfile = "3.27.0"
 mockito = "1.7.2"
 tokio-test = "0.4"
-serial_test = "3.4"
+serial_test = "4.0.1"
 insta = "1.47"
 criterion = { version = "0.8", features = ["html_reports"] }
-mockall = "0.14"
+mockall = "0.15.0"
 
 [[bench]]
 name = "large_output_benchmark"
