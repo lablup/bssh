@@ -162,9 +162,9 @@ jobs:
           identifier: ${{ vars.BUNDLE_ID || secrets.BUNDLE_ID }}
           extra-files: |
             docs/man/bssh.1
-          apple-id: ${{ secrets.APPLE_ID }}
-          apple-team-id: ${{ secrets.APPLE_TEAM_ID }}
-          apple-password: ${{ secrets.APPLE_PASSWORD }}
+          api-key-id: ${{ secrets.AC_API_KEY_ID }}
+          api-issuer-id: ${{ secrets.AC_API_ISSUER_ID }}
+          api-private-key: ${{ secrets.AC_API_PRIVATE_KEY_P8 }}
 
       - name: Sign, package, and notarize bssh-server (macOS)
         if: runner.os == 'macOS'
@@ -175,9 +175,9 @@ jobs:
           identifier: ${{ vars.BUNDLE_ID || secrets.BUNDLE_ID }}-server
           extra-files: |
             docs/man/bssh-server.8
-          apple-id: ${{ secrets.APPLE_ID }}
-          apple-team-id: ${{ secrets.APPLE_TEAM_ID }}
-          apple-password: ${{ secrets.APPLE_PASSWORD }}
+          api-key-id: ${{ secrets.AC_API_KEY_ID }}
+          api-issuer-id: ${{ secrets.AC_API_ISSUER_ID }}
+          api-private-key: ${{ secrets.AC_API_PRIVATE_KEY_P8 }}
 
       - name: Sign, package, and notarize bssh-keygen (macOS)
         if: runner.os == 'macOS'
@@ -188,9 +188,9 @@ jobs:
           identifier: ${{ vars.BUNDLE_ID || secrets.BUNDLE_ID }}-keygen
           extra-files: |
             docs/man/bssh-keygen.1
-          apple-id: ${{ secrets.APPLE_ID }}
-          apple-team-id: ${{ secrets.APPLE_TEAM_ID }}
-          apple-password: ${{ secrets.APPLE_PASSWORD }}
+          api-key-id: ${{ secrets.AC_API_KEY_ID }}
+          api-issuer-id: ${{ secrets.AC_API_ISSUER_ID }}
+          api-private-key: ${{ secrets.AC_API_PRIVATE_KEY_P8 }}
 
       - name: Package Linux binaries (tar.gz)
         if: runner.os == 'Linux'
@@ -261,7 +261,13 @@ jobs:
   publish-release:
     name: Publish pre-release as official
     needs: [build]
-    if: github.event_name == 'release' && github.event.release.prerelease
+    # A dispatch has to be able to finish a release too, not only build one.
+    # Rebuilding a tag by hand previously stopped at "artifacts uploaded", so a
+    # release rescued that way stayed a pre-release, and the Homebrew formula
+    # job resolves through `releases/latest`, which never returns one.
+    if: >-
+      (github.event_name == 'release' && github.event.release.prerelease) ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.release_tag != '')
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -271,11 +277,38 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Convert pre-release to official release
-        run: |
-          TAG="${{ github.event.release.tag_name }}"
-          gh release edit "$TAG" --prerelease=false
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.release.tag_name || github.event.inputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$TAG" ]; then
+            echo "::error::no release tag to promote"
+            exit 1
+          fi
+
+          # Read the state into a variable rather than testing the command
+          # substitution inline. A failing `gh` there yields an empty string,
+          # `set -e` does not fire inside a test, and empty is not "true", so
+          # the guard would conclude "already promoted" and exit 0 having done
+          # nothing while reporting success.
+          IS_PRERELEASE="$(gh release view "$TAG" --json isPrerelease -q .isPrerelease)"
+          if [ -z "$IS_PRERELEASE" ]; then
+            echo "::error::could not read the release state for $TAG; refusing to guess whether it needs promoting"
+            exit 1
+          fi
+
+          # Idempotent: re-running a dispatch against an already-promoted tag
+          # is a normal thing to do while recovering, and must not fail.
+          if [ "$IS_PRERELEASE" != "true" ]; then
+            echo "$TAG is already a full release; nothing to promote"
+            exit 0
+          fi
+
+          # `--latest` is explicit rather than left to GitHub's own ordering,
+          # so the tag Homebrew resolves is the one this run promoted.
+          gh release edit "$TAG" --prerelease=false --latest
 
   # ============================================================================
   # Update Homebrew formula (after every release asset has been uploaded)

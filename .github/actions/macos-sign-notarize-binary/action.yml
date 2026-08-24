@@ -25,14 +25,18 @@ inputs:
       ignores them.
     required: false
     default: ""
-  apple-id:
-    description: "Apple ID used for notarization (the APPLE_ID secret)."
+  api-key-id:
+    description: "App Store Connect API key id (the AC_API_KEY_ID secret)."
     required: false
-  apple-team-id:
-    description: "Apple Developer team identifier (the APPLE_TEAM_ID secret)."
+  api-issuer-id:
+    description: >-
+      App Store Connect API issuer id, UUID form (the AC_API_ISSUER_ID secret).
+      Required for a Team key; notarytool rejects it for an Individual key.
     required: false
-  apple-password:
-    description: "App-specific password for notarization (the APPLE_PASSWORD secret)."
+  api-private-key:
+    description: >-
+      The App Store Connect .p8 private key (the AC_API_PRIVATE_KEY_P8 secret),
+      base64-encoded. A raw .p8 pasted verbatim is also accepted.
     required: false
 
 outputs:
@@ -169,9 +173,9 @@ runs:
     - name: Notarize ${{ inputs.zip-name }}
       shell: bash
       env:
-        APPLE_ID: ${{ inputs.apple-id }}
-        APPLE_TEAM_ID: ${{ inputs.apple-team-id }}
-        APPLE_PASSWORD: ${{ inputs.apple-password }}
+        AC_API_KEY_ID: ${{ inputs.api-key-id }}
+        AC_API_ISSUER_ID: ${{ inputs.api-issuer-id }}
+        AC_API_PRIVATE_KEY_P8: ${{ inputs.api-private-key }}
         ZIP_PATH: ${{ steps.package.outputs.zip-path }}
         BINARY_PATH: ${{ inputs.binary-path }}
       run: |
@@ -188,9 +192,47 @@ runs:
         # download. Signing and notarization are one decision: SIGNING_READY
         # above is the only place a run is allowed to degrade to an unsigned
         # artifact.
-        if [ -z "$APPLE_ID" ] || [ -z "$APPLE_TEAM_ID" ] || [ -z "$APPLE_PASSWORD" ]; then
-          echo "::error::$(basename "$ZIP_PATH") was signed with the Developer ID identity but the Apple notarization credentials (APPLE_ID, APPLE_TEAM_ID, APPLE_PASSWORD) are missing, so it cannot be notarized"
+        #
+        # Authentication is an App Store Connect API key, not an Apple ID with
+        # an app-specific password. The name misleads: notarization is for
+        # distribution *outside* the App Store, App Store submissions are not
+        # notarized by the developer at all, and `notarytool` documents the key
+        # as a first-class credential next to `--apple-id`. What the key buys is
+        # ownership. An app-specific password belongs to one person's Apple ID,
+        # so it dies when they leave the team, rotate their password, or reset
+        # 2FA; an API key is issued and revoked by the organisation.
+        if [ -z "$AC_API_KEY_ID" ] || [ -z "$AC_API_PRIVATE_KEY_P8" ]; then
+          echo "::error::$(basename "$ZIP_PATH") was signed with the Developer ID identity but the App Store Connect API credentials (AC_API_KEY_ID, AC_API_PRIVATE_KEY_P8) are missing, so it cannot be notarized"
           exit 1
+        fi
+
+        KEY_FILE="$RUNNER_TEMP/AuthKey.p8"
+        # Wipe the key on every exit path, not only the success one.
+        cleanup() { rm -f "$KEY_FILE"; }
+        trap cleanup EXIT
+
+        # The secret holds the .p8 base64-encoded. A raw .p8 pasted verbatim is
+        # tolerated too, and CR is stripped so a CRLF-mangled paste still
+        # parses. Writing the secret out without decoding makes notarytool fail
+        # with the opaque "Error: invalidAsn1".
+        if grep -q 'BEGIN PRIVATE KEY' <<<"$AC_API_PRIVATE_KEY_P8"; then
+          printf '%s\n' "$AC_API_PRIVATE_KEY_P8" | tr -d '\r' > "$KEY_FILE"
+        else
+          printf '%s' "$AC_API_PRIVATE_KEY_P8" | tr -d '[:space:]' | base64 --decode > "$KEY_FILE"
+        fi
+        chmod 600 "$KEY_FILE"
+
+        # Say so here rather than letting notarytool report "invalidAsn1" much
+        # later, which names neither the secret nor the encoding.
+        if command -v openssl >/dev/null 2>&1 && ! openssl pkey -in "$KEY_FILE" -noout 2>/dev/null; then
+          echo "::warning::AC_API_PRIVATE_KEY_P8 did not parse as a PKCS#8 private key after decoding; notarization will likely fail. Re-store it as base64 of the .p8 file (base64 -i AuthKey_XXXX.p8 | pbcopy)."
+        fi
+
+        # `--issuer` belongs to a Team key and must be omitted for an
+        # Individual key, which notarytool rejects it for.
+        ISSUER_ARGS=()
+        if [ -n "$AC_API_ISSUER_ID" ]; then
+          ISSUER_ARGS=(--issuer "$AC_API_ISSUER_ID")
         fi
 
         echo "=== Submitting $(basename "$ZIP_PATH") for notarization ==="
@@ -199,9 +241,9 @@ runs:
         # installer packages, not a bare Mach-O or a zip. The ticket stays on
         # Apple's servers and Gatekeeper looks it up online.
         SUBMISSION_OUTPUT=$(xcrun notarytool submit "$ZIP_PATH" \
-          --apple-id "$APPLE_ID" \
-          --team-id "$APPLE_TEAM_ID" \
-          --password "$APPLE_PASSWORD" \
+          --key "$KEY_FILE" \
+          --key-id "$AC_API_KEY_ID" \
+          "${ISSUER_ARGS[@]}" \
           --wait --timeout 30m 2>&1) || true
 
         echo "$SUBMISSION_OUTPUT"
@@ -217,9 +259,9 @@ runs:
           if [ -n "$SUBMISSION_ID" ]; then
             echo "Fetching detailed notarization log..."
             xcrun notarytool log "$SUBMISSION_ID" \
-              --apple-id "$APPLE_ID" \
-              --team-id "$APPLE_TEAM_ID" \
-              --password "$APPLE_PASSWORD" || true
+              --key "$KEY_FILE" \
+              --key-id "$AC_API_KEY_ID" \
+              "${ISSUER_ARGS[@]}" || true
           fi
           exit 1
         fi
@@ -229,11 +271,10 @@ runs:
         # Informational only. A freshly issued ticket takes time to propagate,
         # so this must not gate the job; the hard gates are the codesign
         # assertions and the Accepted status above.
-        # `set -uo pipefail` above does not turn -e back off: composite
-        # `shell: bash` already started this as `bash -eo pipefail`. Guard the
-        # whole block, or an unzip failure here would fail the job after
-        # notarization was already accepted, and the zip would never be
-        # uploaded.
+        #
+        # `spctl -t exec` assesses app bundles, so a bare Mach-O draws "does not
+        # seem to be an app" even when it is correctly signed and notarized.
+        # That is why this is a report, not a check.
         VERIFY_DIR="$(mktemp -d "$RUNNER_TEMP/macos-spctl.XXXXXX")"
         if unzip -q -o "$ZIP_PATH" -d "$VERIFY_DIR"; then
           spctl -a -vv -t exec "$VERIFY_DIR/$(basename "$BINARY_PATH")" || true
