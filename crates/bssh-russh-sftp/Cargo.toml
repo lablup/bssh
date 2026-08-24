@@ -1,8 +1,8 @@
 [package]
 name = "bssh-russh-sftp"
-version = "2.3.0"
+version = "2.4.0"
 authors = ["Jeongkyu Shin <inureyes@gmail.com>"]
-description = "Temporary fork of russh-sftp 2.3.0 adding pipelined SFTP File I/O (write_all_pipelined / read_to_writer_pipelined). These helpers hide per-request RTT for fast bulk transfers and are the only value-add over upstream russh-sftp."
+description = "Temporary fork of russh-sftp 2.4.0 adding pipelined SFTP File I/O (write_all_pipelined / read_to_writer_pipelined). These helpers hide per-request RTT for fast bulk transfers and are the only value-add over upstream russh-sftp."
 documentation = "https://docs.rs/bssh-russh-sftp"
 edition = "2021"
 homepage = "https://github.com/lablup/bssh"
@@ -11,7 +11,7 @@ license = "Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/lablup/bssh"
 
-# Dependency versions mirror upstream russh-sftp 2.3.0 (AspectUnk/russh-sftp).
+# Dependency versions mirror upstream russh-sftp 2.4.0 (AspectUnk/russh-sftp).
 # Update via ./sync-upstream.sh; the only fork addition is the `futures` dep,
 # needed by the forward-ported pipelined helpers in src/client/fs/file.rs.
 [dependencies]

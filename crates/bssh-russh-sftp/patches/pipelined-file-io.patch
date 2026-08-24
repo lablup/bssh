@@ -1,10 +1,9 @@
 --- a/src/client/fs/file.rs
 +++ b/src/client/fs/file.rs
-@@ -91,6 +91,205 @@
- 
+@@ -96,6 +96,205 @@
          self.session.fsync(self.handle.as_str()).await.map(|_| ())
      }
-+
+ 
 +    /// Streams `reader` to this remote file with up to `max_inflight` concurrent
 +    /// SFTP `WRITE` requests in flight. Each request carries up to the negotiated
 +    /// `write_len` (or the per-handle packet ceiling when no limit is advertised).
@@ -203,6 +202,7 @@
 +        self.pos = next_to_write;
 +        Ok(total)
 +    }
- }
- 
- fn check_write_result(
++
+     /// Closes the file waiting for all pending writes and the close itself
+     /// to be confirmed by the remote party.
+     /// Equivalent to [`shutdown`](tokio::io::AsyncWriteExt::shutdown)
