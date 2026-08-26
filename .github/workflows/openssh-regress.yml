@@ -58,7 +58,6 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
           key: ${{ runner.os }}-openssh-regress-${{ hashFiles('**/Cargo.lock', 'tests/openssh-regress/openssh-version') }}
           restore-keys: |
             ${{ runner.os }}-openssh-regress-

@@ -10,8 +10,10 @@ import os
 import platform
 import re
 import signal
+import shutil
 import subprocess
 import sys
+import threading
 import time
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
@@ -25,9 +27,18 @@ DEFAULT_RESULTS = DEFAULT_WORK_DIR / "results.json"
 DEFAULT_BASELINE = HERE / "baseline.json"
 DEFAULT_SELECTION = HERE / "selection.tsv"
 PIN_FILE = HERE / "openssh-version"
+MAX_CAPTURE_BYTES = 1024 * 1024
+MAX_LOG_BYTES = 16 * 1024 * 1024
+TRUNCATION_NOTICE = b"\n...[output truncated by harness]...\n"
 FAILURE_PATTERN = re.compile(
     r"(?:^|\b)(?:FAIL(?:ED)?|FATAL|ERROR|Error|error|timed out|unexpected argument)(?:\b|:)",
 )
+
+
+@dataclass(frozen=True)
+class Pin:
+    tag: str
+    commit: str
 
 
 @dataclass(frozen=True)
@@ -54,11 +65,16 @@ class TestResult:
     reference_first_failure_line: str | None = None
 
 
-def read_pin() -> str:
-    tag = PIN_FILE.read_text(encoding="utf-8").strip()
+def read_pin() -> Pin:
+    lines = PIN_FILE.read_text(encoding="utf-8").splitlines()
+    if len(lines) != 2:
+        raise ValueError(f"{PIN_FILE} must contain an OpenSSH tag and commit")
+    tag, commit = lines
     if not re.fullmatch(r"V_[0-9]+_[0-9]+_P[0-9]+", tag):
         raise ValueError(f"invalid OpenSSH tag in {PIN_FILE}: {tag!r}")
-    return tag
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError(f"invalid OpenSSH commit in {PIN_FILE}: {commit!r}")
+    return Pin(tag, commit)
 
 
 def read_selection(path: Path) -> list[Selection]:
@@ -95,7 +111,17 @@ def read_selection(path: Path) -> list[Selection]:
 
 def validate_tree_inventory(tree: Path, selection: list[Selection]) -> None:
     declared = {row.test for row in selection}
-    available = {path.stem for path in (tree / "regress").glob("*.sh")}
+    tracked = subprocess.run(
+        ["git", "ls-files", ":(glob)regress/*.sh"],
+        cwd=tree,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if tracked.returncode == 0 and tracked.stdout.strip():
+        available = {Path(line).stem for line in tracked.stdout.splitlines()}
+    else:
+        available = {path.stem for path in (tree / "regress").glob("*.sh")}
     missing = sorted(declared - available)
     unexpected = sorted(available - declared)
     if missing or unexpected:
@@ -127,9 +153,10 @@ def ensure_bssh(path: Path | None) -> Path:
     return resolved
 
 
-def ensure_openssh(path: Path | None, work_dir: Path, tag: str, jobs: int) -> Path:
+def ensure_openssh(path: Path | None, work_dir: Path, pin: Pin, jobs: int) -> Path:
+    managed_clone = path is None
     if path is None:
-        path = work_dir / f"openssh-portable-{tag}"
+        path = work_dir / f"openssh-portable-{pin.tag}"
         if not path.exists():
             path.parent.mkdir(parents=True, exist_ok=True)
             run_checked(
@@ -139,13 +166,25 @@ def ensure_openssh(path: Path | None, work_dir: Path, tag: str, jobs: int) -> Pa
                     "--depth",
                     "1",
                     "--branch",
-                    tag,
+                    pin.tag,
                     "https://github.com/openssh/openssh-portable.git",
                     str(path),
                 ],
                 REPO_ROOT,
             )
     resolved = path.expanduser().resolve()
+    if managed_clone:
+        actual_commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=resolved,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        if actual_commit != pin.commit:
+            raise ValueError(
+                f"OpenSSH {pin.tag} resolved to {actual_commit}, expected {pin.commit}"
+            )
     if not (resolved / "Makefile").exists():
         privsep_path = work_dir / "privsep"
         privsep_path.mkdir(parents=True, exist_ok=True)
@@ -227,35 +266,88 @@ def reference_environment(tree: Path, client: Path) -> dict[str, str]:
     return env
 
 
-def run_process(command: list[str], cwd: Path, env: dict[str, str], timeout: int) -> ProcessResult:
+def run_process(
+    command: list[str],
+    cwd: Path,
+    env: dict[str, str],
+    timeout: int,
+    log_path: Path | None = None,
+) -> ProcessResult:
     started = time.monotonic()
+    capture_head = bytearray()
+    capture_tail = bytearray()
+    capture_truncated = False
+    log_truncated = False
+    log_written = 0
+    log_stream = None
+    if log_path is not None:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_stream = log_path.open("wb")
     process = subprocess.Popen(
         command,
         cwd=cwd,
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True,
-        errors="replace",
         start_new_session=True,
     )
+
+    def drain_output() -> None:
+        nonlocal capture_truncated, log_truncated, log_written
+        assert process.stdout is not None
+        while chunk := process.stdout.read(64 * 1024):
+            raw_chunk = chunk
+            head_remaining = MAX_CAPTURE_BYTES // 2 - len(capture_head)
+            if head_remaining > 0:
+                capture_head.extend(chunk[:head_remaining])
+                chunk = chunk[head_remaining:]
+            if chunk:
+                capture_tail.extend(chunk)
+                tail_limit = MAX_CAPTURE_BYTES // 2
+                if len(capture_tail) > tail_limit:
+                    del capture_tail[:-tail_limit]
+                    capture_truncated = True
+            if log_stream is not None:
+                log_remaining = MAX_LOG_BYTES - log_written
+                if log_remaining > 0:
+                    written = log_stream.write(raw_chunk[:log_remaining])
+                    log_written += written
+                if len(raw_chunk) > log_remaining:
+                    log_truncated = True
+
+    reader = threading.Thread(target=drain_output, name="openssh-regress-log", daemon=True)
+    reader.start()
     timed_out = False
     try:
-        output, _ = process.communicate(timeout=timeout)
+        process.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         timed_out = True
         try:
-            os.killpg(process.pid, signal.SIGTERM)
+            os.killpg(process.pid, signal.SIGINT)
         except ProcessLookupError:
             pass
         try:
-            output, _ = process.communicate(timeout=5)
+            process.wait(timeout=20)
         except subprocess.TimeoutExpired:
             try:
                 os.killpg(process.pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-            output, _ = process.communicate()
+            process.wait()
+    reader.join()
+    assert process.stdout is not None
+    process.stdout.close()
+    if log_stream is not None:
+        if log_truncated:
+            log_stream.seek(max(0, MAX_LOG_BYTES - len(TRUNCATION_NOTICE)))
+            log_stream.write(TRUNCATION_NOTICE)
+            log_stream.truncate()
+        log_stream.close()
+    captured = bytes(capture_head)
+    if capture_truncated:
+        captured += TRUNCATION_NOTICE
+    captured += bytes(capture_tail)
+    output = captured.decode("utf-8", errors="replace")
     duration_ms = round((time.monotonic() - started) * 1000)
     return ProcessResult(process.returncode, duration_ms, output, timed_out)
 
@@ -270,7 +362,9 @@ def first_failure(result: ProcessResult) -> str | None:
     return lines[0][:1000] if result.returncode != 0 and lines else None
 
 
-def run_one(tree: Path, client: Path, name: str, timeout: int, log_dir: Path) -> ProcessResult:
+def run_one(
+    tree: Path, client: Path, name: str, timeout: int, log_dir: Path, client_label: str
+) -> ProcessResult:
     script = tree / "regress" / f"{name}.sh"
     if not script.is_file():
         raise FileNotFoundError(f"selected test is absent from pinned tree: {script}")
@@ -281,25 +375,71 @@ def run_one(tree: Path, client: Path, name: str, timeout: int, log_dir: Path) ->
         str(tree / "regress"),
         str(script),
     ]
-    result = run_process(command, tree / "regress", env, timeout)
-    log_dir.mkdir(parents=True, exist_ok=True)
-    (log_dir / f"{name}-{client.name}.log").write_text(result.output, encoding="utf-8")
+    result = run_process(
+        command,
+        tree / "regress",
+        env,
+        timeout,
+        log_dir / f"{name}-{client_label}.log",
+    )
+    if result.timed_out:
+        stop_stale_sshd(tree)
     return result
+
+
+def stop_stale_sshd(tree: Path) -> None:
+    pidfile = tree / "regress" / "pidfile"
+    if not pidfile.is_file():
+        return
+    raw_pid = pidfile.read_text(encoding="utf-8").strip()
+    if not raw_pid.isdigit() or int(raw_pid) < 2:
+        raise RuntimeError(f"refusing invalid stale sshd pid: {raw_pid!r}")
+    pid = int(raw_pid)
+    command = subprocess.run(
+        ["ps", "-p", str(pid), "-o", "comm="],
+        check=False,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if not command:
+        pidfile.unlink(missing_ok=True)
+        return
+    if not Path(command).name.startswith("sshd"):
+        raise RuntimeError(f"refusing to stop non-sshd process {pid}: {command}")
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pidfile.unlink(missing_ok=True)
+        return
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        if not pidfile.exists():
+            return
+        time.sleep(0.1)
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    pidfile.unlink(missing_ok=True)
 
 
 def classify(
     tree: Path, bssh: Path, reference: Path, name: str, timeout: int, log_dir: Path
 ) -> TestResult:
-    candidate = run_one(tree, bssh, name, timeout, log_dir)
+    candidate = run_one(tree, bssh, name, timeout, log_dir, "candidate")
     skip_line = next(
         (line.strip() for line in candidate.output.splitlines() if line.startswith("SKIPPED:")),
         None,
     )
-    if skip_line is not None:
+    if (
+        skip_line is not None
+        and candidate.returncode == 0
+        and not candidate.timed_out
+    ):
         return TestResult(name, "skip", candidate.duration_ms, skip_line)
     if candidate.returncode == 0 and not candidate.timed_out:
         return TestResult(name, "pass", candidate.duration_ms, None)
-    baseline = run_one(tree, reference, name, timeout, log_dir)
+    baseline = run_one(tree, reference, name, timeout, log_dir, "reference")
     verdict = "fail" if baseline.returncode == 0 and not baseline.timed_out else "environmental"
     return TestResult(
         name,
@@ -335,7 +475,8 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    tag = read_pin()
+    pin = read_pin()
+    tag = pin.tag
     selection = read_selection(args.selection)
     runnable = [row for row in selection if row.disposition == "run"]
     declared_skips = [row for row in selection if row.disposition == "skip"]
@@ -356,16 +497,22 @@ def main() -> int:
         return 0
     if args.timeout < 1:
         raise ValueError("--timeout must be positive")
+    if not 1 <= args.jobs <= 32:
+        raise ValueError("--jobs must be between 1 and 32")
     if args.test and args.update_baseline:
         raise ValueError("--update-baseline requires the complete selected suite")
     work_dir = args.work_dir.resolve()
+    log_dir = work_dir / "logs"
+    if log_dir.exists():
+        shutil.rmtree(log_dir)
+    args.results.resolve().unlink(missing_ok=True)
     bssh = ensure_bssh(args.bssh)
-    tree = ensure_openssh(args.openssh_tree, work_dir, tag, args.jobs)
+    tree = ensure_openssh(args.openssh_tree, work_dir, pin, args.jobs)
     validate_tree_inventory(tree, selection)
     results: list[TestResult] = []
     for index, row in enumerate(runnable, start=1):
         print(f"[{index}/{len(runnable)}] {row.test}", flush=True)
-        result = classify(tree, bssh, tree / "ssh", row.test, args.timeout, work_dir / "logs")
+        result = classify(tree, bssh, tree / "ssh", row.test, args.timeout, log_dir)
         results.append(result)
         print(f"  {result.verdict} ({result.duration_ms} ms)", flush=True)
     verdicts = ["pass", "skip", "fail", "environmental"]
@@ -396,17 +543,30 @@ def main() -> int:
     key = platform_key()
     if args.update_baseline:
         baseline.setdefault("minimum_pass", {})[key] = counts["pass"]
+        baseline.setdefault("minimum_eligible", {})[key] = denominator
         baseline["openssh_tag"] = tag
         write_json(args.baseline, baseline)
     minimum = baseline.get("minimum_pass", {}).get(key)
+    minimum_eligible = baseline.get("minimum_eligible", {}).get(key)
     if minimum is None:
         raise ValueError(f"baseline has no minimum_pass entry for {key}")
+    if minimum_eligible is None:
+        raise ValueError(f"baseline has no minimum_eligible entry for {key}")
     print(
         f"score: {counts['pass']}/{denominator}; suite skips: {counts['skip']}; "
         f"permanent skips: {len(declared_skips)}; environmental: "
-        f"{counts['environmental']}; required pass floor: {minimum}",
+        f"{counts['environmental']}; required pass floor: "
+        f"{minimum}; required eligible floor: {minimum_eligible}",
         flush=True,
     )
+    if args.test:
+        return 0
+    if denominator < minimum_eligible:
+        print(
+            f"eligible result regression: {denominator} < {minimum_eligible}",
+            file=sys.stderr,
+        )
+        return 1
     if counts["pass"] < minimum:
         print(f"score regression: {counts['pass']} < {minimum}", file=sys.stderr)
         return 1
@@ -416,6 +576,6 @@ def main() -> int:
 if __name__ == "__main__":
     try:
         raise SystemExit(main())
-    except (OSError, ValueError, subprocess.CalledProcessError, json.JSONDecodeError) as error:
+    except (OSError, RuntimeError, ValueError, subprocess.CalledProcessError, json.JSONDecodeError) as error:
         print(f"openssh-regress: {error}", file=sys.stderr)
         raise SystemExit(2) from error

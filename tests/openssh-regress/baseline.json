@@ -1,4 +1,8 @@
 {
+  "minimum_eligible": {
+    "linux": 73,
+    "macos": 71
+  },
   "minimum_pass": {
     "linux": 0,
     "macos": 0

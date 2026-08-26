@@ -32,6 +32,20 @@ class ManifestTests(unittest.TestCase):
         )
         self.assertNotIn("pubkey-priority", {row.test for row in selection})
 
+    def test_pin_includes_an_immutable_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            pin_file = Path(directory) / "openssh-version"
+            pin_file.write_text(
+                "V_10_3_P1\n2d98db98331803cbb820211b2fb0d31a6e71e58e\n",
+                encoding="utf-8",
+            )
+            with mock.patch.object(openssh_regress, "PIN_FILE", pin_file):
+                pin = openssh_regress.read_pin()
+            self.assertEqual(pin.tag, "V_10_3_P1")
+            self.assertEqual(
+                pin.commit, "2d98db98331803cbb820211b2fb0d31a6e71e58e"
+            )
+
     def test_manifest_rejects_duplicate_names(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "selection.tsv"
@@ -101,6 +115,30 @@ class EnvironmentTests(unittest.TestCase):
         self.assertTrue(result.timed_out)
         self.assertLess(result.duration_ms, 4_000)
 
+    def test_process_output_and_log_are_bounded(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            log_path = Path(directory) / "output.log"
+            with (
+                mock.patch.object(openssh_regress, "MAX_CAPTURE_BYTES", 128),
+                mock.patch.object(openssh_regress, "MAX_LOG_BYTES", 256),
+            ):
+                result = openssh_regress.run_process(
+                    [
+                        sys.executable,
+                        "-c",
+                        "import sys; sys.stdout.write(chr(120) * 2048)",
+                    ],
+                    Path(directory),
+                    {},
+                    5,
+                    log_path,
+                )
+            log_size = log_path.stat().st_size
+
+        self.assertIn("output truncated by harness", result.output)
+        self.assertLessEqual(len(result.output.encode()), 168)
+        self.assertLessEqual(log_size, 256)
+
 
 class ClassificationTests(unittest.TestCase):
     def test_candidate_failure_is_genuine_only_when_reference_passes(self) -> None:
@@ -134,6 +172,20 @@ class ClassificationTests(unittest.TestCase):
 
         self.assertEqual(result.verdict, "skip")
         run_one.assert_called_once()
+
+
+    def test_failed_skip_marker_is_retried(self) -> None:
+        failed = openssh_regress.ProcessResult(1, 10, "SKIPPED: partial\nFAIL\n", False)
+        passed = openssh_regress.ProcessResult(0, 12, "ok\n", False)
+        with mock.patch.object(
+            openssh_regress, "run_one", side_effect=[failed, passed]
+        ) as run_one:
+            result = openssh_regress.classify(
+                Path("tree"), Path("bssh"), Path("ssh"), "sample", 1, Path("logs")
+            )
+
+        self.assertEqual(result.verdict, "fail")
+        self.assertEqual(run_one.call_count, 2)
 
 
 if __name__ == "__main__":

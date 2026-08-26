@@ -1,6 +1,6 @@
 # OpenSSH compatibility regression harness
 
-The compatibility harness runs a pinned subset of the OpenSSH portable regression suite with bssh as the client and the pinned OpenSSH build as the server and reference client. The pin is stored in `tests/openssh-regress/openssh-version`; changing that file deliberately starts a fresh reference build.
+The compatibility harness runs a pinned subset of the OpenSSH portable regression suite with bssh as the client and the pinned OpenSSH build as the server and reference client. The tag and immutable commit pin are stored together in `tests/openssh-regress/openssh-version`; changing that file deliberately starts a fresh reference build.
 
 ## Run locally
 
@@ -16,7 +16,7 @@ make openssh-regress
 
 The first full invocation builds `target/debug/bssh`, clones `V_10_3_P1` under `target/openssh-regress/`, configures and builds the reference binaries, and runs every selected test. Later invocations reuse both build trees. Use `--bssh` or `--openssh-tree` with `tests/openssh-regress/run.py` to supply prebuilt trees, `--timeout` to change the per-test limit, and repeated `--test NAME` arguments for focused diagnosis.
 
-`make openssh-regress-update` writes the full per-test table to `tests/openssh-regress/results.json` and updates the current platform's minimum passing score in `baseline.json`. Review both diffs before committing them. Never update the baseline merely to make an unexplained regression green.
+`make openssh-regress-update` writes the full per-test table to `tests/openssh-regress/results.json` and updates the current platform's minimum passing and eligible-result floors in `baseline.json`. Review both diffs before committing them. Never update the baseline merely to make an unexplained regression green.
 
 ## Interpret results
 
@@ -28,7 +28,9 @@ Each runnable test receives one of three scored verdict classes:
 
 An upstream `SKIPPED:` result is reported as `skip` and excluded from the eligible denominator. Permanent candidate skips are declared with reasons in `selection.tsv`; tests outside the selected client suite remain listed as `exclude` rows for auditability. Neither class is reported as a bssh failure.
 
-The score is `pass / (pass + fail)`. CI compares the pass count with the platform-specific floor in `baseline.json`, uploads the generated JSON table even on failure, and fails only when the passing count drops below that floor. Durations are milliseconds, and `first_failure_line` is the first diagnostic line selected from the captured combined harness output; the complete per-test logs remain under `target/openssh-regress/logs/`.
+The score is `pass / (pass + fail)`. CI compares both the pass count and the environment-valid result count with platform-specific floors in `baseline.json`, uploads the generated JSON table even on failure, and fails when either count drops below its floor. Durations are milliseconds, and `first_failure_line` is the first diagnostic line selected from the captured combined harness output; per-test logs are streamed under `target/openssh-regress/logs/` and capped at 16 MiB each.
+
+Before #277 adds `-E`, the honest pass floor is zero. A nonzero eligible-result floor still rejects a collapsed all-environmental run; #277 raises the pass floor after the suite becomes runnable. Focused `--test` runs report verdicts without enforcing full-suite floors.
 
 ## Candidate inventory
 
