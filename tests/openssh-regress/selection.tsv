@@ -1,0 +1,116 @@
+test	disposition	reason
+addrmatch	run
+agent-getpeereid	run
+agent-pkcs11-cert	skip	Permanent candidate skip: PKCS#11 and FIDO/security-key middleware are outside the compatibility target.
+agent-pkcs11-restrict	skip	Permanent candidate skip: PKCS#11 and FIDO/security-key middleware are outside the compatibility target.
+agent-pkcs11	skip	Permanent candidate skip: PKCS#11 and FIDO/security-key middleware are outside the compatibility target.
+agent-ptrace	run
+agent-restrict	run
+agent-subprocess	run
+agent-timeout	run
+agent	run
+allow-deny-users	exclude	sshd-side configuration test; outside the client candidate set.
+authinfo	exclude	sshd-side authentication test; outside the client candidate set.
+banner	run
+broken-pipe	run
+brokenkeys	run
+cert-file	run
+cert-hostkey	skip	Permanent candidate skip: certificate authority key signing is outside the compatibility target.
+cert-userkey	skip	Permanent candidate skip: certificate authority key signing is outside the compatibility target.
+cfginclude	run
+cfgmatch	run
+cfgmatchlisten	exclude	sshd-side Match configuration test; outside the client candidate set.
+cfgparse	run
+channel-timeout	run
+cipher-speed	exclude	Non-conformance benchmark; not part of the upstream default t-exec list.
+conch-ciphers	exclude	Permanent exclusion: Twisted Conch interoperability is outside the compatibility target.
+connect-bigconf	run
+connect-privsep	skip	Permanent candidate skip: sshd-side configuration tests are outside the client compatibility target.
+connect-uri	run
+connect	run
+connection-timeout	run
+dhgex	run
+dropbear-ciphers	exclude	Permanent exclusion: Dropbear interoperability is outside the compatibility target.
+dropbear-kex	exclude	Permanent exclusion: Dropbear interoperability is outside the compatibility target.
+dropbear-server	exclude	Permanent exclusion: Dropbear interoperability is outside the compatibility target.
+dynamic-forward	run
+envpass	run
+exit-status-signal	run
+exit-status	run
+forcecommand	exclude	sshd-side ForceCommand test; outside the client candidate set.
+forward-control	run
+forwarding	run
+gss-auth	skip	Permanent candidate skip: GSSAPI authentication is outside the compatibility target.
+host-expand	run
+hostbased	run
+hostkey-agent	run
+hostkey-rotate	run
+integrity	run
+kbdint	run
+kextype	run
+key-options	run
+keygen-change	run
+keygen-comment	run
+keygen-convert	run
+keygen-knownhosts	run
+keygen-moduli	run
+keygen-sshfp	run
+keys-command	exclude	sshd-side AuthorizedKeysCommand test; outside the client candidate set.
+keyscan	run
+keytype	run
+knownhosts-command	run
+knownhosts	run
+krl	skip	Permanent candidate skip: KRL generation is outside the compatibility target.
+limit-keytype	run
+localcommand	run
+login-timeout	run
+match-subsystem	exclude	sshd-side subsystem matching test; outside the client candidate set.
+multiplex	run
+multipubkey	run
+password	run
+penalty-expire	exclude	sshd-side penalty configuration test; outside the client candidate set.
+penalty	exclude	sshd-side penalty configuration test; outside the client candidate set.
+percent	run
+portnum	run
+principals-command	exclude	sshd-side AuthorizedPrincipalsCommand test; outside the client candidate set.
+proto-mismatch	run
+proto-version	run
+proxy-connect	run
+proxyjump	run
+putty-ciphers	exclude	Permanent exclusion: PuTTY interoperability is outside the compatibility target.
+putty-kex	exclude	Permanent exclusion: PuTTY interoperability is outside the compatibility target.
+putty-transfer	exclude	Permanent exclusion: PuTTY interoperability is outside the compatibility target.
+reconfigure	skip	Permanent candidate skip: sshd process reconfiguration is server-side lifecycle behavior.
+reexec	exclude	sshd-side re-exec test; outside the client candidate set.
+rekey	run
+scp-ssh-wrapper	exclude	Upstream helper script; it is not a standalone regression test.
+scp-uri	run
+scp	run
+scp3	run
+servcfginclude	run
+sftp-badcmds	run
+sftp-batch	run
+sftp-chroot	skip	Permanent candidate skip: sshd ChrootDirectory and in-process SFTP behavior are server-side.
+sftp-cmds	run
+sftp-glob	run
+sftp-perm	run
+sftp-resume	run
+sftp-uri	run
+sftp	run
+ssh-com-client	exclude	Permanent exclusion: ssh.com interoperability is outside the compatibility target.
+ssh-com-keygen	exclude	Permanent exclusion: ssh.com interoperability is outside the compatibility target.
+ssh-com-sftp	exclude	Permanent exclusion: ssh.com interoperability is outside the compatibility target.
+ssh-com	exclude	Permanent exclusion: ssh.com interoperability is outside the compatibility target.
+ssh-pkcs11	skip	Permanent candidate skip: PKCS#11 and FIDO/security-key middleware are outside the compatibility target.
+ssh-tty	run
+ssh2putty	exclude	Upstream conversion helper; it is not a standalone regression test.
+sshcfgparse	run
+sshfp-connect	run
+sshsig	run
+stderr-after-eof	run
+stderr-data	run
+test-exec	exclude	Upstream test driver; it is not a standalone regression test.
+transfer	run
+try-ciphers	run
+valgrind-unit	exclude	Upstream unit-test helper; it is not a client regression test.
+yes-head	run
