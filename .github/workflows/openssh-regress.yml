@@ -45,7 +45,12 @@ jobs:
 
       - name: Install macOS build dependencies
         if: runner.os == 'macOS'
-        run: brew install autoconf automake openssl@3
+        run: |
+          brew install autoconf automake openssl@3
+          openssl_prefix="$(brew --prefix openssl@3)"
+          echo "CPPFLAGS=-I${openssl_prefix}/include" >> "$GITHUB_ENV"
+          echo "LDFLAGS=-L${openssl_prefix}/lib" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=${openssl_prefix}/lib/pkgconfig" >> "$GITHUB_ENV"
 
       - name: Cache Cargo files
         uses: actions/cache@v5
