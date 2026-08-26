@@ -291,11 +291,30 @@ def run_process(
         stderr=subprocess.STDOUT,
         start_new_session=True,
     )
+    assert process.stdout is not None
+    os.set_blocking(process.stdout.fileno(), False)
+    stop_reader = threading.Event()
 
     def drain_output() -> None:
         nonlocal capture_truncated, log_truncated, log_written
         assert process.stdout is not None
-        while chunk := process.stdout.read(64 * 1024):
+        empty_after_stop = False
+        while True:
+            try:
+                chunk = os.read(process.stdout.fileno(), 64 * 1024)
+            except BlockingIOError:
+                if stop_reader.is_set():
+                    if empty_after_stop:
+                        break
+                    empty_after_stop = True
+                else:
+                    stop_reader.wait(0.05)
+                continue
+            except (OSError, ValueError):
+                break
+            if not chunk:
+                break
+            empty_after_stop = False
             raw_chunk = chunk
             head_remaining = MAX_CAPTURE_BYTES // 2 - len(capture_head)
             if head_remaining > 0:
@@ -334,9 +353,18 @@ def run_process(
             except ProcessLookupError:
                 pass
             process.wait()
-    reader.join()
+    stop_reader.set()
+    reader.join(timeout=1)
     assert process.stdout is not None
-    process.stdout.close()
+    if reader.is_alive():
+        os.close(process.stdout.fileno())
+        reader.join(timeout=1)
+    if reader.is_alive():
+        raise RuntimeError("output reader did not stop after pipe closure")
+    try:
+        process.stdout.close()
+    except (OSError, ValueError):
+        pass
     if log_stream is not None:
         if log_truncated:
             log_stream.seek(max(0, MAX_LOG_BYTES - len(TRUNCATION_NOTICE)))
@@ -416,10 +444,21 @@ def stop_stale_sshd(tree: Path) -> None:
         if not pidfile.exists():
             return
         time.sleep(0.1)
-    try:
-        os.kill(pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
+    current_command = subprocess.run(
+        ["ps", "-p", str(pid), "-o", "comm="],
+        check=False,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    if current_command and current_command != command:
+        raise RuntimeError(
+            f"refusing to stop reused pid {pid}: {current_command}"
+        )
+    if current_command:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
     pidfile.unlink(missing_ok=True)
 
 
@@ -455,6 +494,18 @@ def write_json(path: Path, value: object) -> None:
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     temporary.replace(path)
+
+
+def reset_log_directory(path: Path) -> None:
+    marker = path / ".bssh-openssh-regress"
+    marker_contents = "bssh OpenSSH regress logs\n"
+    if path.exists():
+        owned = marker.is_file() and marker.read_text(encoding="utf-8") == marker_contents
+        if not owned:
+            raise ValueError(f"refusing to remove unowned log directory: {path}")
+        shutil.rmtree(path)
+    path.mkdir(parents=True, exist_ok=False)
+    marker.write_text(marker_contents, encoding="utf-8")
 
 
 def parse_args() -> argparse.Namespace:
@@ -503,9 +554,8 @@ def main() -> int:
         raise ValueError("--update-baseline requires the complete selected suite")
     work_dir = args.work_dir.resolve()
     log_dir = work_dir / "logs"
-    if log_dir.exists():
-        shutil.rmtree(log_dir)
-    args.results.resolve().unlink(missing_ok=True)
+    reset_log_directory(log_dir)
+    args.results.expanduser().unlink(missing_ok=True)
     bssh = ensure_bssh(args.bssh)
     tree = ensure_openssh(args.openssh_tree, work_dir, pin, args.jobs)
     validate_tree_inventory(tree, selection)

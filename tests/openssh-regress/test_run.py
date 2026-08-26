@@ -140,6 +140,52 @@ class EnvironmentTests(unittest.TestCase):
         self.assertLessEqual(log_size, 256)
 
 
+    def test_detached_output_holder_cannot_defeat_timeout(self) -> None:
+        child_pid = None
+        try:
+            with tempfile.TemporaryDirectory() as directory:
+                result = openssh_regress.run_process(
+                    [
+                        sys.executable,
+                        "-c",
+                        "import subprocess,time; p=subprocess.Popen([chr(47)+chr(98)+chr(105)+chr(110)+chr(47)+chr(115)+chr(108)+chr(101)+chr(101)+chr(112), str(10)], start_new_session=True); print(p.pid, flush=True); time.sleep(10)",
+                    ],
+                    Path(directory),
+                    {},
+                    1,
+                )
+                child_pid = int(result.output.splitlines()[0])
+            self.assertTrue(result.timed_out)
+            self.assertLess(result.duration_ms, 5_000)
+        finally:
+            if child_pid is not None:
+                try:
+                    openssh_regress.os.killpg(
+                        child_pid, openssh_regress.signal.SIGKILL
+                    )
+                except ProcessLookupError:
+                    pass
+
+    def test_log_cleanup_requires_ownership_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            unowned = root / "unowned-logs"
+            unowned.mkdir()
+            important = unowned / "important"
+            important.write_text("keep", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "unowned"):
+                openssh_regress.reset_log_directory(unowned)
+            self.assertEqual(important.read_text(encoding="utf-8"), "keep")
+
+            owned = root / "owned-logs"
+            openssh_regress.reset_log_directory(owned)
+            transient = owned / "old.log"
+            transient.write_text("stale", encoding="utf-8")
+            openssh_regress.reset_log_directory(owned)
+            self.assertFalse(transient.exists())
+            self.assertTrue((owned / ".bssh-openssh-regress").is_file())
+
+
 class ClassificationTests(unittest.TestCase):
     def test_candidate_failure_is_genuine_only_when_reference_passes(self) -> None:
         failed = openssh_regress.ProcessResult(1, 10, "FAIL: candidate\n", False)
