@@ -63,6 +63,30 @@ const MAX_SUDO_PROMPT_BUFFER_SIZE: usize = 64 * 1024;
 /// Set to 10 to support reasonable multi-sudo command chains.
 const MAX_SUDO_PASSWORD_SENDS: u32 = 10;
 
+/// Forward one command event without making receiver lifetime part of the SSH result.
+///
+/// A pager or pipeline such as `head` may close its read end before the remote
+/// command reports an exit status. Continue draining the SSH channel in that
+/// case so a local consumer decision is not misreported as a command failure.
+async fn forward_command_output(sender: &Sender<CommandOutput>, output: CommandOutput) -> bool {
+    match sender.try_send(output) {
+        Ok(()) => true,
+        Err(tokio::sync::mpsc::error::TrySendError::Full(output)) => {
+            tracing::trace!("Output channel full, applying backpressure");
+            if sender.send(output).await.is_ok() {
+                true
+            } else {
+                tracing::debug!("Output receiver dropped; continuing to drain SSH channel");
+                false
+            }
+        }
+        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+            tracing::debug!("Output receiver dropped; continuing to drain SSH channel");
+            false
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DirectTcpipRequestTarget {
     host: String,
@@ -307,6 +331,7 @@ impl Client {
         channel.exec(true, sanitized_command.as_str()).await?;
 
         let mut result: Option<u32> = None;
+        let mut output_receiver_open = true;
 
         // While the channel has messages...
         while let Some(msg) = channel.wait().await {
@@ -314,44 +339,17 @@ impl Client {
                 // If we get data, send it to the streaming channel
                 // Note: We must clone the data here because russh owns it and will reuse the buffer
                 russh::ChannelMsg::Data { ref data } => {
-                    // Try non-blocking send first for better performance
-                    match sender.try_send(CommandOutput::StdOut(data.clone())) {
-                        Ok(_) => {}
-                        Err(tokio::sync::mpsc::error::TrySendError::Full(output)) => {
-                            // Channel is full - apply backpressure by waiting
-                            // This prevents memory exhaustion on high-throughput commands
-                            tracing::trace!("Channel full, applying backpressure for stdout");
-                            if sender.send(output).await.is_err() {
-                                // Receiver dropped - stop processing
-                                tracing::debug!("Receiver dropped, stopping stdout processing");
-                                break;
-                            }
-                        }
-                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                            // Receiver dropped - stop processing
-                            tracing::debug!("Channel closed, stopping stdout processing");
-                            break;
-                        }
+                    if output_receiver_open {
+                        output_receiver_open =
+                            forward_command_output(&sender, CommandOutput::StdOut(data.clone()))
+                                .await;
                     }
                 }
                 russh::ChannelMsg::ExtendedData { ref data, ext: 1 } => {
-                    // Handle backpressure for stderr as well
-                    match sender.try_send(CommandOutput::StdErr(data.clone())) {
-                        Ok(_) => {}
-                        Err(tokio::sync::mpsc::error::TrySendError::Full(output)) => {
-                            // Channel is full - apply backpressure by waiting
-                            tracing::trace!("Channel full, applying backpressure for stderr");
-                            if sender.send(output).await.is_err() {
-                                // Receiver dropped - stop processing
-                                tracing::debug!("Receiver dropped, stopping stderr processing");
-                                break;
-                            }
-                        }
-                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                            // Receiver dropped - stop processing
-                            tracing::debug!("Channel closed, stopping stderr processing");
-                            break;
-                        }
+                    if output_receiver_open {
+                        output_receiver_open =
+                            forward_command_output(&sender, CommandOutput::StdErr(data.clone()))
+                                .await;
                     }
                 }
 
@@ -432,6 +430,7 @@ impl Client {
         let mut result: Option<u32> = None;
         let mut password_send_count: u32 = 0;
         let mut accumulated_output = String::new();
+        let mut output_receiver_open = true;
 
         // While the channel has messages...
         while let Some(msg) = channel.wait().await {
@@ -454,19 +453,10 @@ impl Client {
                     }
 
                     // Send output to streaming channel
-                    match sender.try_send(CommandOutput::StdOut(data.clone())) {
-                        Ok(_) => {}
-                        Err(tokio::sync::mpsc::error::TrySendError::Full(output)) => {
-                            tracing::trace!("Channel full, applying backpressure for stdout");
-                            if sender.send(output).await.is_err() {
-                                tracing::debug!("Receiver dropped, stopping stdout processing");
-                                break;
-                            }
-                        }
-                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                            tracing::debug!("Channel closed, stopping stdout processing");
-                            break;
-                        }
+                    if output_receiver_open {
+                        output_receiver_open =
+                            forward_command_output(&sender, CommandOutput::StdOut(data.clone()))
+                                .await;
                     }
 
                     // Check if we need to send the password (supports multiple sudo prompts)
@@ -530,19 +520,10 @@ impl Client {
                         );
                     }
 
-                    match sender.try_send(CommandOutput::StdErr(data.clone())) {
-                        Ok(_) => {}
-                        Err(tokio::sync::mpsc::error::TrySendError::Full(output)) => {
-                            tracing::trace!("Channel full, applying backpressure for stderr");
-                            if sender.send(output).await.is_err() {
-                                tracing::debug!("Receiver dropped, stopping stderr processing");
-                                break;
-                            }
-                        }
-                        Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
-                            tracing::debug!("Channel closed, stopping stderr processing");
-                            break;
-                        }
+                    if output_receiver_open {
+                        output_receiver_open =
+                            forward_command_output(&sender, CommandOutput::StdErr(data.clone()))
+                                .await;
                     }
 
                     // Check if we need to send the password (sudo can prompt on stderr)
@@ -695,6 +676,20 @@ impl Client {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn closed_output_receiver_is_not_a_command_error() {
+        let (sender, receiver) = channel(1);
+        drop(receiver);
+
+        let receiver_open = forward_command_output(
+            &sender,
+            CommandOutput::StdOut(Bytes::from_static(b"ignored")),
+        )
+        .await;
+
+        assert!(!receiver_open);
+    }
 
     fn v4(s: &str) -> SocketAddr {
         s.parse().expect("valid IPv4 socket address")

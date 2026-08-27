@@ -71,7 +71,7 @@ fn deprecated_alias_is_silent_and_unknown_keyword_uses_log_file() {
     let log = directory.path().join("bssh.log");
     fs::write(
         &config,
-        "Host *\n    ChallengeResponseAuthentication no\n    DefinitelyUnknownOption yes\n",
+        "Host *\n    ChallengeResponseAuthentication no\n    SecurityKeyProvider /usr/lib/ssh/ssh-sk-helper\n    DefinitelyUnknownOption yes\n",
     )
     .expect("ssh config should be written");
 
@@ -91,9 +91,14 @@ fn deprecated_alias_is_silent_and_unknown_keyword_uses_log_file() {
 
     assert!(!output.status.success());
     assert!(!String::from_utf8_lossy(&output.stderr).contains("ChallengeResponseAuthentication"));
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("SecurityKeyProvider"));
 
     let diagnostics = fs::read_to_string(log).expect("diagnostic log should exist");
     assert!(!diagnostics.contains("ChallengeResponseAuthentication"));
+    assert!(
+        !diagnostics.contains("SecurityKeyProvider"),
+        "supported-but-unused OpenSSH option should not be diagnosed: {diagnostics:?}"
+    );
     let unknown = diagnostics
         .lines()
         .find(|line| line.contains("definitelyunknownoption"))
@@ -105,7 +110,7 @@ fn deprecated_alias_is_silent_and_unknown_keyword_uses_log_file() {
         });
     assert_eq!(
         unknown,
-        "Unknown SSH config option 'definitelyunknownoption' at line 4"
+        "Unknown SSH config option 'definitelyunknownoption' at line 5"
     );
     assert!(!unknown.contains("bssh::"));
 }

@@ -124,6 +124,20 @@ Host example.com
 }
 
 #[test]
+fn test_equals_in_proxy_command_value_is_not_option_syntax() {
+    let content = r#"
+Host example.com
+    ProxyCommand env SSH_SK_HELPER="/tmp/ssh-sk-helper" nc %h %p
+"#;
+    let hosts = parse(content).unwrap();
+
+    assert_eq!(
+        hosts[0].proxy_command,
+        Some("env SSH_SK_HELPER=\"/tmp/ssh-sk-helper\" nc %h %p".to_string())
+    );
+}
+
+#[test]
 fn test_parse_mixed_syntax() {
     // Test mixing both syntaxes in same config
     let content = r#"

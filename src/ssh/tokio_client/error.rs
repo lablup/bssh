@@ -20,6 +20,24 @@ pub enum Error {
     PasswordWrong,
     #[error("Invalid address was provided: {0}")]
     AddressInvalid(io::Error),
+    #[error("ProxyCommand '{command}' contains unsupported token '{token}'")]
+    InvalidProxyCommandToken { command: String, token: String },
+    #[error("Failed to start ProxyCommand '{command}': {source}")]
+    ProxyCommandSpawn {
+        command: String,
+        #[source]
+        source: io::Error,
+    },
+    #[error("ProxyCommand '{command}' failed ({status}): {stderr}")]
+    ProxyCommandFailed {
+        command: String,
+        status: String,
+        stderr: String,
+    },
+    #[error(
+        "ProxyUseFdpass yes is not supported for ProxyCommand '{command}'; remove ProxyUseFdpass or set it to no"
+    )]
+    ProxyUseFdpassUnsupported { command: String },
     /// An address family was forced (`-4`/`-6`, or ssh_config `AddressFamily`)
     /// and name resolution produced no address of that family. This is a hard
     /// failure with no fallback to the other family, matching OpenSSH, and it

@@ -26,7 +26,9 @@ use crate::node::Node;
 use crate::security::{Password, SudoPassword};
 use crate::ssh::SshConfig;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
-use crate::ssh::tokio_client::{AddressFamily, SshConnectionConfig, SshConnectionConfigResolver};
+use crate::ssh::tokio_client::{
+    AddressFamily, CommandOutput, SshConnectionConfig, SshConnectionConfigResolver,
+};
 
 use super::connection_manager::{ExecutionConfig, download_from_node};
 use super::execution_strategy::{
@@ -60,6 +62,39 @@ pub struct ParallelExecutor {
     pub(crate) ssh_config: Option<SshConfig>,
     /// Per-host SSH connection configuration resolver.
     pub(crate) ssh_connection_config_resolver: SshConnectionConfigResolver,
+}
+
+async fn report_stream_exit_status(
+    sender: &tokio::sync::mpsc::Sender<CommandOutput>,
+    result: &Result<u32>,
+) {
+    if let Ok(exit_status) = result {
+        let _ = sender.send(CommandOutput::ExitCode(*exit_status)).await;
+    }
+}
+
+fn completed_stream_result(
+    stream: &super::stream_manager::NodeStream,
+) -> Result<crate::ssh::client::CommandResult> {
+    if let Some(exit_status) = stream.exit_code() {
+        return Ok(crate::ssh::client::CommandResult {
+            host: stream.node.host.clone(),
+            output: Vec::new(),
+            stderr: Vec::new(),
+            exit_status,
+        });
+    }
+
+    if let super::stream_manager::ExecutionStatus::Failed(error) = stream.status() {
+        return Err(anyhow::anyhow!("{error}"));
+    }
+
+    Ok(crate::ssh::client::CommandResult {
+        host: stream.node.host.clone(),
+        output: Vec::new(),
+        stderr: Vec::new(),
+        exit_status: 1,
+    })
 }
 
 impl ParallelExecutor {
@@ -283,7 +318,7 @@ impl ParallelExecutor {
 
     pub(crate) fn connection_config_for_node(&self, node: &Node) -> SshConnectionConfig {
         self.ssh_connection_config_resolver
-            .resolve_for_host(&node.host)
+            .resolve_for_host(node.config_host())
     }
 
     /// Execute a command on all nodes in parallel.
@@ -1300,6 +1335,7 @@ impl ParallelExecutor {
                     }
                 };
 
+                report_stream_exit_status(&tx, &result.1).await;
                 // Explicitly drop the channel to signal completion
                 drop(tx);
                 result
@@ -1504,19 +1540,7 @@ impl ParallelExecutor {
         }
         // Collect final results from all streams
         for stream in manager.streams() {
-            use crate::ssh::client::CommandResult;
-
-            let result =
-                if let super::stream_manager::ExecutionStatus::Failed(err) = stream.status() {
-                    Err(anyhow::anyhow!("{err}"))
-                } else {
-                    Ok(CommandResult {
-                        host: stream.node.host.clone(),
-                        output: Vec::new(), // stdout already printed
-                        stderr: Vec::new(), // stderr already printed
-                        exit_status: stream.exit_code().unwrap_or(1),
-                    })
-                };
+            let result = completed_stream_result(stream);
 
             results.push(ExecutionResult {
                 node: stream.node.clone(),
@@ -1851,6 +1875,63 @@ impl ParallelExecutor {
 mod tests {
     use super::*;
     use crate::ssh::SshConfig;
+
+    async fn assert_stream_exit_follows_output(exit_status: u32) {
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(3);
+        sender
+            .send(CommandOutput::StdOut(bytes::Bytes::from_static(b"stdout")))
+            .await
+            .expect("stdout receiver open");
+        sender
+            .send(CommandOutput::StdErr(bytes::Bytes::from_static(b"stderr")))
+            .await
+            .expect("stderr receiver open");
+
+        let result = Ok(exit_status);
+        report_stream_exit_status(&sender, &result).await;
+        drop(sender);
+
+        match receiver.recv().await {
+            Some(CommandOutput::StdOut(data)) => assert_eq!(data, b"stdout"[..]),
+            other => panic!("stdout must be first, got {other:?}"),
+        }
+        match receiver.recv().await {
+            Some(CommandOutput::StdErr(data)) => assert_eq!(data, b"stderr"[..]),
+            other => panic!("stderr must be second, got {other:?}"),
+        }
+        match receiver.recv().await {
+            Some(CommandOutput::ExitCode(actual)) => assert_eq!(actual, exit_status),
+            other => panic!("exit status must follow output, got {other:?}"),
+        }
+        assert!(receiver.recv().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn successful_stream_exit_follows_stdout_and_stderr() {
+        assert_stream_exit_follows_output(0).await;
+    }
+
+    #[tokio::test]
+    async fn nonzero_stream_exit_follows_stdout_and_stderr() {
+        assert_stream_exit_follows_output(23).await;
+    }
+
+    #[tokio::test]
+    async fn nonzero_stream_completion_preserves_remote_status() {
+        let node = Node::new("target".to_string(), 22, "user".to_string());
+        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let mut stream = super::super::stream_manager::NodeStream::new(node, receiver);
+        sender
+            .send(CommandOutput::ExitCode(23))
+            .await
+            .expect("exit receiver open");
+        drop(sender);
+        stream.poll();
+
+        let result = completed_stream_result(&stream).expect("remote command result");
+
+        assert_eq!(result.exit_status, 23);
+    }
 
     #[test]
     fn connection_config_for_node_resolves_each_node_host_block() {

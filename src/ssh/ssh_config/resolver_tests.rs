@@ -331,8 +331,8 @@ Host example.com
     }
 
     #[test]
-    fn test_proxy_use_fdpass_merging() {
-        // Test that ProxyUseFdpass properly merges across multiple host blocks
+    fn test_proxy_settings_keep_first_obtained_values() {
+        // OpenSSH keeps the first value obtained across matching host blocks.
         let content = r#"
 Host *
     ProxyCommand ssh -W %h:%p bastion1.example.com
@@ -345,12 +345,12 @@ Host example.com
         let hosts = parse(content).unwrap();
         let config = find_host_config(&hosts, "example.com");
 
-        // The more specific block should override both ProxyCommand and ProxyUseFdpass
+        // The global block matched first, so the later block cannot override it.
         assert_eq!(
             config.proxy_command,
-            Some("ssh -W %h:%p bastion2.example.com".to_string())
+            Some("ssh -W %h:%p bastion1.example.com".to_string())
         );
-        assert_eq!(config.proxy_use_fdpass, Some(true));
+        assert_eq!(config.proxy_use_fdpass, Some(false));
     }
 
     #[test]

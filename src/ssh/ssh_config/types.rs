@@ -41,8 +41,7 @@ pub struct SshHostConfig {
     pub proxy_jump: Option<String>,
     pub proxy_command: Option<String>,
     /// ProxyUseFdpass option - specifies whether ProxyCommand will pass a file descriptor
-    /// Note: This option is parsed from SSH config but not yet used in the actual SSH
-    /// client implementation as bssh doesn't currently support proxy connections.
+    /// The client rejects `yes` explicitly because descriptor passing is unsupported.
     pub proxy_use_fdpass: Option<bool>,
     pub strict_host_key_checking: Option<String>,
     /// Raw `UserKnownHostsFile` values in OpenSSH lookup order.

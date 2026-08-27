@@ -17,7 +17,7 @@ use crate::jump::{JumpHostChain, parse_jump_hosts};
 use crate::security::Password;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
 use crate::ssh::tokio_client::{
-    AuthMethod, Client, SshConnectionConfig, SshConnectionConfigResolver,
+    AuthMethod, Client, ProxyMode, SshConnectionConfig, SshConnectionConfigResolver,
 };
 use anyhow::{Context, Result};
 use std::path::Path;
@@ -285,6 +285,13 @@ impl SshClient {
         ssh_connection_config_resolver: Option<&SshConnectionConfigResolver>,
         pre_collected_password: Option<Arc<Password>>,
     ) -> Result<Client> {
+        let jump_hosts_spec =
+            match ssh_connection_config.and_then(|config| config.proxy_mode.as_ref()) {
+                Some(ProxyMode::Jump(jump)) => Some(jump.as_str()),
+                Some(ProxyMode::Command(_) | ProxyMode::Direct) => None,
+                None => jump_hosts_spec,
+            };
+
         if let Some(jump_spec) = jump_hosts_spec {
             // Parse jump hosts
             let jump_hosts = parse_jump_hosts(jump_spec).with_context(|| {

@@ -105,13 +105,17 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
         base.identity_files
             .extend(overlay.identity_files.iter().cloned());
     }
-    if overlay.proxy_jump.is_some() {
-        base.proxy_jump = overlay.proxy_jump.clone();
+    // OpenSSH keeps the first obtained proxy directive. ProxyCommand and
+    // ProxyJump compete for the same slot, so either one suppresses all later
+    // occurrences of both directives.
+    if base.proxy_jump.is_none() && base.proxy_command.is_none() {
+        if overlay.proxy_jump.is_some() {
+            base.proxy_jump = overlay.proxy_jump.clone();
+        } else if overlay.proxy_command.is_some() {
+            base.proxy_command = overlay.proxy_command.clone();
+        }
     }
-    if overlay.proxy_command.is_some() {
-        base.proxy_command = overlay.proxy_command.clone();
-    }
-    if overlay.proxy_use_fdpass.is_some() {
+    if base.proxy_use_fdpass.is_none() && overlay.proxy_use_fdpass.is_some() {
         base.proxy_use_fdpass = overlay.proxy_use_fdpass;
     }
     if overlay.strict_host_key_checking.is_some() {

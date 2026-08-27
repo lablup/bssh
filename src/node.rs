@@ -75,17 +75,32 @@ pub fn parse_node_spec(node_str: &str) -> Result<NodeSpec<'_>> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Node {
     pub host: String,
+    /// Host name as supplied before ssh_config `HostName` expansion.
+    pub original_host: String,
     pub port: u16,
     pub username: String,
 }
 
 impl Node {
     pub fn new(host: String, port: u16, username: String) -> Self {
+        let original_host = host.clone();
         Self {
             host,
+            original_host,
             port,
             username,
         }
+    }
+
+    #[must_use]
+    pub fn with_original_host(mut self, original_host: String) -> Self {
+        self.original_host = original_host;
+        self
+    }
+
+    /// Host name used to match ssh_config and expand ProxyCommand `%n`.
+    pub fn config_host(&self) -> &str {
+        &self.original_host
     }
 
     pub fn parse(node_str: &str, default_user: Option<&str>) -> Result<Self> {
@@ -110,6 +125,7 @@ impl Node {
 
         Ok(Node {
             host: spec.host.to_string(),
+            original_host: spec.host.to_string(),
             port: spec.port.unwrap_or(22),
             username,
         })

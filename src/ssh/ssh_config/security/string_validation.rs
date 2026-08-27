@@ -34,6 +34,9 @@ pub fn validate_executable_string(
     option_name: &str,
     line_number: usize,
 ) -> Result<()> {
+    if option_name == "ProxyCommand" {
+        return validate_proxy_command(value, line_number);
+    }
     // Define dangerous shell metacharacters that could enable command injection
     const DANGEROUS_CHARS: &[char] = &[
         ';',  // Command separator
@@ -70,11 +73,6 @@ pub fn validate_executable_string(
     // Additional validation for ControlPath - it should be a path, not a command
     if option_name == "ControlPath" {
         validate_control_path_specific(value, line_number)?;
-    }
-
-    // Additional validation for ProxyCommand
-    if option_name == "ProxyCommand" {
-        validate_proxy_command(value, line_number)?;
     }
 
     // Additional validation for KnownHostsCommand and LocalCommand
@@ -163,45 +161,33 @@ fn validate_control_path_specific(value: &str, line_number: usize) -> Result<()>
 
 /// Additional validation for ProxyCommand
 fn validate_proxy_command(value: &str, line_number: usize) -> Result<()> {
-    // ProxyCommand "none" is a special case to disable proxy
-    if value == "none" {
-        return Ok(());
-    }
-
-    // Check for suspicious executable names or patterns
+    // ProxyCommand is deliberately interpreted by a shell, just as OpenSSH
+    // does. The ssh_config file is the trust boundary, so shell operators and
+    // standard proxy tools such as nc must remain available. Validate only
+    // structural hazards and the percent-token contract here.
     let trimmed = value.trim();
-
-    // Look for common injection patterns
-    if trimmed.starts_with("bash ")
-        || trimmed.starts_with("sh ")
-        || trimmed.starts_with("/bin/")
-        || trimmed.starts_with("python ")
-        || trimmed.starts_with("perl ")
-        || trimmed.starts_with("ruby ")
-    {
-        // These could be legitimate but are commonly used in attacks
-        tracing::warn!(
-            "ProxyCommand at line {} uses potentially risky executable '{}'. \
-             Ensure this is intentional and from a trusted source.",
-            line_number,
-            trimmed.split_whitespace().next().unwrap_or("")
+    if trimmed.is_empty() {
+        anyhow::bail!("ProxyCommand requires a non-empty value at line {line_number}");
+    }
+    if let Some(invalid) = value.chars().find(|ch| matches!(ch, '\0' | '\n' | '\r')) {
+        anyhow::bail!(
+            "ProxyCommand contains invalid control character {invalid:?} at line {line_number}"
         );
     }
 
-    // Block obviously malicious patterns
-    let lower_value = value.to_lowercase();
-    if lower_value.contains("curl ")
-        || lower_value.contains("wget ")
-        || lower_value.contains("nc ")
-        || lower_value.contains("netcat ")
-        || lower_value.contains("rm ")
-        || lower_value.contains("dd ")
-        || lower_value.contains("cat /")
-    {
-        anyhow::bail!(
-            "Security violation: ProxyCommand contains suspicious command pattern at line {line_number}. \
-             Commands like curl, wget, nc, rm, dd are not typical for SSH proxying."
-        );
+    let mut chars = value.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '%' {
+            continue;
+        }
+        let Some(token) = chars.next() else {
+            anyhow::bail!("ProxyCommand ends with an incomplete '%' token at line {line_number}");
+        };
+        if !matches!(token, '%' | 'h' | 'k' | 'n' | 'p' | 'r') {
+            anyhow::bail!(
+                "ProxyCommand contains unsupported token '%{token}' at line {line_number}; supported tokens are %%, %h, %k, %n, %p, and %r"
+            );
+        }
     }
 
     Ok(())

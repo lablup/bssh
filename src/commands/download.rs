@@ -104,7 +104,7 @@ pub async fn download_file(
             let node_dir = validated_destination.join(node.to_string());
             let ssh_connection_config = params
                 .ssh_connection_config_resolver
-                .resolve_for_host(&node.host);
+                .resolve_for_host(node.config_host());
 
             println!(
                 "\n{} {} {} {} {:?}",

