@@ -223,7 +223,7 @@ pub fn get_sudo_password(warn_env: bool) -> Result<SudoPassword> {
     match get_sudo_password_from_env()? {
         Some(password) => {
             if warn_env {
-                eprintln!(
+                crate::diagnosticln!(
                     "Warning: Using sudo password from BSSH_SUDO_PASSWORD environment variable. \
                      This is not recommended for security reasons."
                 );

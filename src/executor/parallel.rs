@@ -21,6 +21,7 @@ use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
+use crate::diagnosticln as eprintln;
 use crate::node::Node;
 use crate::security::{Password, SudoPassword};
 use crate::ssh::SshConfig;

@@ -14,6 +14,8 @@
 
 //! SSH query options handler (-Q option)
 
+use bssh::diagnosticln as eprintln;
+
 /// Handle SSH query options (-Q)
 pub fn handle_query(query: &str) {
     match query {

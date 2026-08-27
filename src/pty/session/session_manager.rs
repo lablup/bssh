@@ -322,7 +322,9 @@ impl PtySession {
                             if let Err(e) = self.channel.data(data.as_slice()).await {
                                 tracing::error!("Failed to send data to SSH channel: {e}");
                                 // Connection likely dead - terminate gracefully
-                                eprintln!("\r\n[bssh] Connection lost: failed to send data to remote host\r");
+                                crate::diagnosticln!(
+                                    "\r\n[bssh] Connection lost: failed to send data to remote host\r"
+                                );
                                 should_terminate = true;
                             }
                         }

@@ -308,6 +308,7 @@ impl PdshCli {
             port: None,
             stream: false,
             output_dir: None,
+            log_file: None,
             verbose: 0,
             strict_host_key_checking: "accept-new".to_string(),
             require_all_success: false,

@@ -16,6 +16,8 @@ use super::tokio_client::ServerCheckMethod;
 use std::path::PathBuf;
 use std::str::FromStr;
 
+use crate::diagnosticln as eprintln;
+
 /// Get the default known_hosts file path
 pub fn get_default_known_hosts_path() -> Option<PathBuf> {
     dirs::home_dir().map(|home| home.join(".ssh").join("known_hosts"))

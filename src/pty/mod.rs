@@ -27,6 +27,8 @@ use terminal_size::{Height, Width, terminal_size};
 use tokio::sync::{mpsc, watch};
 use tokio::time::Duration;
 
+use crate::diagnosticln as eprintln;
+
 pub mod session;
 pub mod terminal;
 mod terminal_protocol;

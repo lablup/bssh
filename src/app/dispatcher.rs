@@ -26,6 +26,7 @@ use bssh::{
         upload::{FileTransferParams, upload_file},
     },
     config::InteractiveMode,
+    diagnosticln as eprintln,
     pty::PtyConfig,
     security::{Password, get_password, get_sudo_password},
     ssh::tokio_client::{AddressFamily, SshConnectionConfigResolver},
