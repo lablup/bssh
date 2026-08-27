@@ -101,10 +101,27 @@ pub fn get_check_method_for_target(
 
     let user_configured = connection_config.user_known_hosts_files.is_some();
     let global_configured = connection_config.global_known_hosts_files.is_some();
-    if !user_configured && !global_configured {
-        return get_check_method(strict_mode);
-    }
+    let method = if !user_configured && !global_configured {
+        get_check_method(strict_mode)
+    } else {
+        configured_check_method(
+            strict_mode,
+            connection_config,
+            hostname,
+            port,
+            remote_username,
+        )
+    };
+    wrap_host_key_alias(method, connection_config.host_key_alias.as_deref())
+}
 
+fn configured_check_method(
+    strict_mode: StrictHostKeyChecking,
+    connection_config: &SshConnectionConfig,
+    hostname: &str,
+    port: u16,
+    remote_username: &str,
+) -> ServerCheckMethod {
     let user_files = expand_known_hosts_files(
         connection_config.user_known_hosts_files.as_deref(),
         hostname,
@@ -126,6 +143,16 @@ pub fn get_check_method_for_target(
             ServerCheckMethod::AcceptNewKnownHostsFiles { files, write_path }
         }
         StrictHostKeyChecking::No => ServerCheckMethod::NoCheck,
+    }
+}
+
+fn wrap_host_key_alias(method: ServerCheckMethod, alias: Option<&str>) -> ServerCheckMethod {
+    match alias {
+        Some(alias) => ServerCheckMethod::HostKeyAlias {
+            alias: alias.to_string(),
+            method: Box::new(method),
+        },
+        None => method,
     }
 }
 
@@ -427,7 +454,7 @@ mod tests {
     #[test]
     fn resolver_preserves_multiple_known_hosts_paths_and_empty_sentinels() {
         let ssh_config = crate::ssh::SshConfig::parse(
-            "Host target\n  UserKnownHostsFile ~/.ssh/one /dev/null none\n  GlobalKnownHostsFile %d/global %h-%p-%r-%u\n",
+            "Host target\n  HostKeyAlias config-alias.example.com\n  UserKnownHostsFile ~/.ssh/one /dev/null none\n  GlobalKnownHostsFile %d/global %h-%p-%r-%u\n",
         )
         .unwrap();
         let host = crate::ssh::tokio_client::SshConnectionConfigResolver::new()
@@ -440,6 +467,42 @@ mod tests {
         assert_eq!(
             host.global_known_hosts_files,
             Some(vec!["%d/global".into(), "%h-%p-%r-%u".into()])
+        );
+        assert_eq!(
+            host.host_key_alias.as_deref(),
+            Some("config-alias.example.com")
+        );
+    }
+
+    #[test]
+    fn cli_host_key_alias_overrides_effective_host_config() {
+        let ssh_config = crate::ssh::SshConfig::parse(
+            "Host target\n  HostKeyAlias config-alias.example.com\n  UserKnownHostsFile /tmp/known_hosts\n",
+        )
+        .unwrap();
+        let config = crate::ssh::tokio_client::SshConnectionConfigResolver::new()
+            .with_ssh_config(Some(ssh_config))
+            .with_cli_host_key_alias(Some("cli-alias.example.com".into()))
+            .resolve_for_host("target");
+
+        assert_eq!(
+            config.host_key_alias.as_deref(),
+            Some("cli-alias.example.com")
+        );
+        assert_eq!(
+            get_check_method_for_target(
+                StrictHostKeyChecking::Yes,
+                &config,
+                "target",
+                4242,
+                "user"
+            ),
+            ServerCheckMethod::HostKeyAlias {
+                alias: "cli-alias.example.com".into(),
+                method: Box::new(ServerCheckMethod::KnownHostsFiles(vec![
+                    "/tmp/known_hosts".into()
+                ])),
+            }
         );
     }
 

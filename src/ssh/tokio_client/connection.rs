@@ -101,6 +101,9 @@ pub struct SshConnectionConfig {
 
     /// Raw `GlobalKnownHostsFile` values selected for this host.
     pub global_known_hosts_files: Option<Vec<String>>,
+
+    /// Explicit known-hosts identity selected by `HostKeyAlias`.
+    pub host_key_alias: Option<String>,
 }
 
 impl Default for SshConnectionConfig {
@@ -112,6 +115,7 @@ impl Default for SshConnectionConfig {
             address_family: AddressFamily::Any,
             user_known_hosts_files: None,
             global_known_hosts_files: None,
+            host_key_alias: None,
         }
     }
 }
@@ -132,6 +136,7 @@ pub struct SshConnectionConfigResolver {
     yaml_keepalive_interval: Option<u64>,
     yaml_keepalive_max: Option<usize>,
     cli_address_family: Option<AddressFamily>,
+    cli_host_key_alias: Option<String>,
 }
 
 impl SshConnectionConfigResolver {
@@ -186,6 +191,16 @@ impl SshConnectionConfigResolver {
         self
     }
 
+    #[must_use]
+    pub fn with_cli_host_key_alias(mut self, alias: Option<String>) -> Self {
+        if let (Some(config), Some(alias)) = (self.fixed_config.as_mut(), alias.as_ref()) {
+            config.host_key_alias = Some(alias.clone());
+            return self;
+        }
+        self.cli_host_key_alias = alias;
+        self
+    }
+
     pub fn resolve_for_host(&self, hostname: &str) -> SshConnectionConfig {
         if let Some(config) = &self.fixed_config {
             return config.clone();
@@ -237,6 +252,11 @@ impl SshConnectionConfigResolver {
         let global_known_hosts_files = host_config
             .as_ref()
             .and_then(|config| config.global_known_hosts_file.clone());
+        let host_key_alias = self.cli_host_key_alias.clone().or_else(|| {
+            host_config
+                .as_ref()
+                .and_then(|config| config.host_key_alias.clone())
+        });
 
         SshConnectionConfig::new()
             .with_keepalive_interval(if keepalive_interval == 0 {
@@ -248,6 +268,7 @@ impl SshConnectionConfigResolver {
             .with_compression(compression)
             .with_address_family(address_family)
             .with_known_hosts_files(user_known_hosts_files, global_known_hosts_files)
+            .with_host_key_alias(host_key_alias)
     }
 }
 
@@ -286,6 +307,13 @@ impl SshConnectionConfig {
     ) -> Self {
         self.user_known_hosts_files = user_files;
         self.global_known_hosts_files = global_files;
+        self
+    }
+
+    /// Set the explicit identity used for known-hosts lookup and recording.
+    #[must_use]
+    pub fn with_host_key_alias(mut self, alias: Option<String>) -> Self {
+        self.host_key_alias = alias;
         self
     }
 
@@ -743,6 +771,21 @@ impl Handler for ClientHandler {
         &mut self,
         server_key: &russh::keys::PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
+        let mut server_check = &self.server_check;
+        let mut host_key_alias = None;
+        while let ServerCheckMethod::HostKeyAlias { alias, method } = server_check {
+            if host_key_alias.is_none() {
+                host_key_alias = Some(alias.as_str());
+            }
+            server_check = method;
+        }
+        let hostname = host_key_alias.unwrap_or(&self.hostname);
+        let port = if host_key_alias.is_some() {
+            22
+        } else {
+            self.host.port()
+        };
+
         // russh 0.63 widened this callback to also deliver OpenSSH *host
         // certificates*. bssh never advertises certificate host key algorithms
         // (both `Preferred` overrides only touch compression, and
@@ -755,21 +798,21 @@ impl Handler for ClientHandler {
         let server_public_key = match server_key {
             russh::keys::PublicKeyOrCertificate::PublicKey { key, .. } => key,
             russh::keys::PublicKeyOrCertificate::Certificate(cert) => {
-                if matches!(self.server_check, ServerCheckMethod::NoCheck) {
+                if matches!(server_check, ServerCheckMethod::NoCheck) {
                     return Ok(true);
                 }
                 tracing::error!(
                     "Host '{}' presented an OpenSSH host certificate (key ID '{}'); \
                      bssh cannot verify certificate signatures, so the host is rejected. \
                      Configure the server to offer a plain host key.",
-                    self.hostname,
+                    hostname,
                     cert.key_id()
                 );
                 return Err(super::Error::ServerCheckFailed);
             }
         };
 
-        match &self.server_check {
+        match server_check {
             ServerCheckMethod::NoCheck => Ok(true),
             ServerCheckMethod::PublicKey(key) => {
                 let pk = russh::keys::parse_public_key_base64(key)
@@ -785,16 +828,16 @@ impl Handler for ClientHandler {
             }
             ServerCheckMethod::KnownHostsFile(known_hosts_path) => {
                 super::host_verification::verify_known_hosts_file(
-                    &self.hostname,
-                    self.host.port(),
+                    hostname,
+                    port,
                     server_public_key,
                     known_hosts_path,
                 )
             }
             ServerCheckMethod::KnownHostsFiles(known_hosts_paths) => {
                 super::host_verification::verify_known_hosts_files(
-                    &self.hostname,
-                    self.host.port(),
+                    hostname,
+                    port,
                     server_public_key,
                     known_hosts_paths,
                 )
@@ -810,21 +853,21 @@ impl Handler for ClientHandler {
                 else {
                     tracing::error!(
                         "Cannot determine the known_hosts path; rejecting host key for '{}'",
-                        self.hostname
+                        hostname
                     );
                     return Err(super::Error::ServerCheckFailed);
                 };
                 super::host_verification::verify_known_hosts_file(
-                    &self.hostname,
-                    self.host.port(),
+                    hostname,
+                    port,
                     server_public_key,
                     &known_hosts_path.to_string_lossy(),
                 )
             }
             ServerCheckMethod::AcceptNewKnownHostsFile(known_hosts_path) => {
                 super::host_verification::verify_accept_new(
-                    &self.hostname,
-                    self.host.port(),
+                    hostname,
+                    port,
                     server_public_key,
                     known_hosts_path,
                 )
@@ -832,8 +875,8 @@ impl Handler for ClientHandler {
             }
             ServerCheckMethod::AcceptNewKnownHostsFiles { files, write_path } => {
                 super::host_verification::verify_accept_new_files(
-                    &self.hostname,
-                    self.host.port(),
+                    hostname,
+                    port,
                     server_public_key,
                     files,
                     write_path.as_deref(),
@@ -842,12 +885,13 @@ impl Handler for ClientHandler {
             }
             ServerCheckMethod::AcceptNewInMemory => {
                 super::host_verification::verify_accept_new_in_memory(
-                    &self.hostname,
-                    self.host.port(),
+                    hostname,
+                    port,
                     server_public_key,
                 )
                 .await
             }
+            ServerCheckMethod::HostKeyAlias { .. } => unreachable!("aliases are unwrapped above"),
         }
     }
 }

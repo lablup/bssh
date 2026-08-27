@@ -602,6 +602,17 @@ impl Cli {
         options
     }
 
+    /// Return the first `-o Key=Value` option matching `key`, case-insensitively.
+    /// OpenSSH keeps the first obtained value for repeated configuration keys.
+    pub fn get_ssh_option(&self, key: &str) -> Option<String> {
+        self.ssh_options.iter().find_map(|option| {
+            let (candidate, value) = option.split_once('=')?;
+            candidate
+                .eq_ignore_ascii_case(key)
+                .then(|| value.to_string())
+        })
+    }
+
     /// Parse port forwarding specifications into ForwardingType instances
     ///
     /// Returns a Result containing a vector of all parsed forwarding specifications
@@ -653,5 +664,27 @@ impl Cli {
     /// Get count of total port forwarding specifications
     pub fn port_forward_count(&self) -> usize {
         self.local_forwards.len() + self.remote_forwards.len() + self.dynamic_forwards.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ssh_option_lookup_is_case_insensitive_and_first_value_wins() {
+        let cli = Cli::try_parse_from([
+            "bssh",
+            "-o",
+            "hostkeyalias=first.example.com",
+            "-o",
+            "HostKeyAlias=final.example.com",
+            "target",
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.get_ssh_option("HostKeyAlias").as_deref(),
+            Some("first.example.com")
+        );
     }
 }

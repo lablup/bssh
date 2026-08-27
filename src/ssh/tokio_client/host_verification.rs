@@ -2379,6 +2379,10 @@ mod tests {
                 files: vec![path_str.clone()],
                 write_path: Some(path_str),
             },
+            ServerCheckMethod::HostKeyAlias {
+                alias: "alias.example.com".into(),
+                method: Box::new(ServerCheckMethod::KnownHostsFiles(Vec::new())),
+            },
             ServerCheckMethod::AcceptNewInMemory,
             ServerCheckMethod::PublicKey(
                 subject.public_key().to_openssh().unwrap()[..]
@@ -2430,6 +2434,112 @@ mod tests {
                 .is_empty(),
             "the client config must not advertise certificate host key algorithms"
         );
+    }
+
+    #[tokio::test]
+    async fn test_host_key_alias_changes_lookup_identity_at_non_default_port() {
+        let (_alias_dir, _alias_path, alias_store) = temp_known_hosts();
+        let (_target_dir, _target_path, target_store) = temp_known_hosts();
+        let key = generate_key();
+        record_host_key(
+            "trust-alias.example.com",
+            22,
+            key.public_key(),
+            &alias_store,
+        );
+        record_host_key(
+            "connection-target.example.com",
+            4242,
+            key.public_key(),
+            &target_store,
+        );
+
+        let mut alias_handler = ClientHandler::new(
+            "connection-target.example.com".into(),
+            "127.0.0.1:4242".parse().unwrap(),
+            ServerCheckMethod::HostKeyAlias {
+                alias: "trust-alias.example.com".into(),
+                method: Box::new(ServerCheckMethod::KnownHostsFiles(vec![
+                    alias_store.clone(),
+                ])),
+            },
+        );
+        assert!(matches!(
+            alias_handler
+                .check_server_key(&host_key(key.public_key()))
+                .await,
+            Ok(true)
+        ));
+
+        let mut target_against_alias_store = ClientHandler::new(
+            "connection-target.example.com".into(),
+            "127.0.0.1:4242".parse().unwrap(),
+            ServerCheckMethod::KnownHostsFiles(vec![alias_store]),
+        );
+        assert!(matches!(
+            target_against_alias_store
+                .check_server_key(&host_key(key.public_key()))
+                .await,
+            Ok(false)
+        ));
+
+        let mut target_handler = ClientHandler::new(
+            "connection-target.example.com".into(),
+            "127.0.0.1:4242".parse().unwrap(),
+            ServerCheckMethod::KnownHostsFiles(vec![target_store.clone()]),
+        );
+        assert!(matches!(
+            target_handler
+                .check_server_key(&host_key(key.public_key()))
+                .await,
+            Ok(true)
+        ));
+
+        let mut alias_against_target_store = ClientHandler::new(
+            "connection-target.example.com".into(),
+            "127.0.0.1:4242".parse().unwrap(),
+            ServerCheckMethod::HostKeyAlias {
+                alias: "trust-alias.example.com".into(),
+                method: Box::new(ServerCheckMethod::KnownHostsFiles(vec![target_store])),
+            },
+        );
+        assert!(matches!(
+            alias_against_target_store
+                .check_server_key(&host_key(key.public_key()))
+                .await,
+            Ok(false)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_host_key_alias_accept_new_records_unbracketed_alias() {
+        let (_dir, path, path_str) = temp_known_hosts();
+        let key = generate_key();
+        let mut handler = ClientHandler::new(
+            "connection-target.example.com".into(),
+            "127.0.0.1:4242".parse().unwrap(),
+            ServerCheckMethod::HostKeyAlias {
+                alias: "record-alias.example.com".into(),
+                method: Box::new(ServerCheckMethod::AcceptNewKnownHostsFiles {
+                    files: vec![path_str.clone()],
+                    write_path: Some(path_str),
+                }),
+            },
+        );
+
+        assert!(matches!(
+            handler.check_server_key(&host_key(key.public_key())).await,
+            Ok(true)
+        ));
+        let lines = entry_lines(&path);
+        assert_eq!(lines.len(), 1);
+        assert!(
+            lines[0].starts_with("record-alias.example.com "),
+            "HostKeyAlias must be recorded verbatim without port brackets: {}",
+            lines[0]
+        );
+        assert!(!lines[0].contains("connection-target.example.com"));
+        assert!(!lines[0].starts_with("[record-alias.example.com]:4242 "));
     }
 
     #[tokio::test]
