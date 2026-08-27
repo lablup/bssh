@@ -39,6 +39,10 @@ pub enum OutputMode {
     /// The bool indicates whether to disable the prefix (no_prefix option).
     Stream { no_prefix: bool },
 
+    /// Byte-transparent streaming for a single SSH-compatible destination.
+    /// Chunks are written unchanged without prefixes or newline synthesis.
+    RawStream,
+
     /// File mode - save per-node output to separate files
     ///
     /// Each node's output is saved to a separate file in the specified
@@ -123,6 +127,11 @@ impl OutputMode {
         }
     }
 
+    /// Create byte-transparent streaming mode for SSH compatibility.
+    pub fn raw_stream() -> Self {
+        OutputMode::RawStream
+    }
+
     /// Check if this is normal mode
     pub fn is_normal(&self) -> bool {
         matches!(self, OutputMode::Normal)
@@ -130,7 +139,7 @@ impl OutputMode {
 
     /// Check if this is stream mode
     pub fn is_stream(&self) -> bool {
-        matches!(self, OutputMode::Stream { .. })
+        matches!(self, OutputMode::Stream { .. } | OutputMode::RawStream)
     }
 
     /// Check if this is file mode
@@ -156,8 +165,14 @@ impl OutputMode {
         match self {
             OutputMode::Stream { no_prefix } => *no_prefix,
             OutputMode::File { no_prefix, .. } => *no_prefix,
+            OutputMode::RawStream => true,
             _ => false,
         }
+    }
+
+    /// Check whether stream chunks must be emitted byte-for-byte.
+    pub fn is_raw_stream(&self) -> bool {
+        matches!(self, OutputMode::RawStream)
     }
 }
 

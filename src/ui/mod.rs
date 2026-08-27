@@ -19,7 +19,9 @@
 //! - `tui`: Interactive terminal UI with ratatui for real-time monitoring
 
 pub mod basic;
+mod color;
 pub mod tui;
 
 // Re-export basic UI components for backward compatibility
 pub use basic::*;
+pub use color::{ColorMode, Colorize, OutputStream, colors_enabled, configure_color};

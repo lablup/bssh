@@ -14,8 +14,8 @@
 
 //! Cache statistics and management functionality
 
+use bssh::ui::Colorize;
 use bssh::{diagnosticln as eprintln, ssh::GLOBAL_CACHE};
-use owo_colors::OwoColorize;
 
 /// Handle cache statistics command
 pub async fn handle_cache_stats(detailed: bool, clear: bool, maintain: bool) {

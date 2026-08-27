@@ -14,9 +14,9 @@
 
 //! Execution strategies and task management for parallel operations.
 
+use crate::ui::Colorize;
 use anyhow::Result;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
-use owo_colors::OwoColorize;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Semaphore;

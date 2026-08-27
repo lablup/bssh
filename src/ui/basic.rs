@@ -14,7 +14,7 @@
 
 use crate::executor::ExecutionResult;
 use crate::node::Node;
-use owo_colors::OwoColorize;
+use crate::ui::Colorize;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub enum NodeStatus {

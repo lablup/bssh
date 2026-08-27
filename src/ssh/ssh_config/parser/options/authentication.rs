@@ -98,7 +98,7 @@ pub(super) fn parse_authentication_option(
                 host.identity_agent = Some(value.to_string());
             }
         }
-        "pubkeyacceptedalgorithms" => {
+        "pubkeyacceptedalgorithms" | "pubkeyacceptedkeytypes" => {
             if args.is_empty() {
                 anyhow::bail!("PubkeyAcceptedAlgorithms requires a value at line {line_number}");
             }
@@ -201,7 +201,7 @@ pub(super) fn parse_authentication_option(
             }
             host.password_authentication = Some(parse_yes_no(&args[0], line_number)?);
         }
-        "kbdinteractiveauthentication" => {
+        "kbdinteractiveauthentication" | "challengeresponseauthentication" => {
             if args.is_empty() {
                 anyhow::bail!(
                     "KbdInteractiveAuthentication requires a value at line {line_number}"
@@ -231,7 +231,7 @@ pub(super) fn parse_authentication_option(
             }
             host.hostbased_authentication = Some(parse_yes_no(&args[0], line_number)?);
         }
-        "hostbasedacceptedalgorithms" => {
+        "hostbasedacceptedalgorithms" | "hostbasedkeytypes" => {
             if args.is_empty() {
                 anyhow::bail!("HostbasedAcceptedAlgorithms requires a value at line {line_number}");
             }

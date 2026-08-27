@@ -122,6 +122,7 @@ async fn run_pdsh_mode(args: &[String]) -> Result<()> {
 
     // Convert to bssh CLI
     let mut cli = pdsh_cli.to_bssh_cli();
+    bssh::ui::configure_color(cli.color);
 
     // Check if we have hosts
     if cli.hosts.is_none() {
@@ -254,6 +255,12 @@ async fn run_bssh_mode(args: &[String]) -> Result<()> {
     }
 
     let mut cli = Cli::parse();
+    bssh::ui::configure_color(cli.color);
+
+    if cli.version {
+        eprintln!("bssh_{}", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    }
 
     if let Some(path) = &cli.log_file {
         bssh::utils::diagnostics::set_log_file(path)?;

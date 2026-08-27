@@ -16,7 +16,6 @@ use anyhow::Result;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::diagnosticln as eprintln;
 use crate::executor::{ExitCodeStrategy, OutputMode, ParallelExecutor, RankDetector};
 use crate::forwarding::ForwardingType;
 use crate::node::Node;
@@ -45,6 +44,7 @@ pub struct ExecuteCommandParams<'a> {
     pub output_dir: Option<&'a Path>,
     pub stream: bool,
     pub no_prefix: bool,
+    pub byte_transparent: bool,
     pub timeout: Option<u64>,
     pub connect_timeout: Option<u64>,
     pub jump_hosts: Option<&'a str>,
@@ -60,11 +60,12 @@ pub struct ExecuteCommandParams<'a> {
 }
 
 pub async fn execute_command(params: ExecuteCommandParams<'_>) -> Result<()> {
-    // Display command header
-    println!(
-        "{}",
-        OutputFormatter::format_command_header(params.command, params.nodes.len())
-    );
+    if !params.byte_transparent {
+        println!(
+            "{}",
+            OutputFormatter::format_command_header(params.command, params.nodes.len())
+        );
+    }
 
     // Handle port forwarding if specified
     if let Some(ref forwards) = params.port_forwards
@@ -85,14 +86,19 @@ async fn execute_command_with_forwarding(params: ExecuteCommandParams<'_>) -> Re
     // Note: This is a simplified implementation for SSH compatibility
     // For full multi-node forwarding, we would need to handle forwarding per node
 
-    println!("Setting up port forwarding...");
+    let byte_transparent = params.byte_transparent;
+    if !byte_transparent {
+        println!("Setting up port forwarding...");
+    }
 
     let forwards = params.port_forwards.as_ref().unwrap();
     let node = &params.nodes[0]; // Use first node for SSH compatibility mode
 
     // Display forwarding information
-    for forward in forwards {
-        println!("  {forward}");
+    if !byte_transparent {
+        for forward in forwards {
+            println!("  {forward}");
+        }
     }
 
     // Create forwarding manager. The resolved address family narrows which
@@ -190,10 +196,12 @@ async fn execute_command_with_forwarding(params: ExecuteCommandParams<'_>) -> Re
         .await?,
     );
 
-    println!(
-        "SSH connection established to {}@{}",
-        node.username, node.host
-    );
+    if !byte_transparent {
+        println!(
+            "SSH connection established to {}@{}",
+            node.username, node.host
+        );
+    }
 
     // Start port forwarding
     let mut forwarding_ids = Vec::new();
@@ -209,7 +217,9 @@ async fn execute_command_with_forwarding(params: ExecuteCommandParams<'_>) -> Re
             .await?;
     }
 
-    println!("Port forwarding active. Executing command...");
+    if !byte_transparent {
+        println!("Port forwarding active. Executing command...");
+    }
 
     // Execute the actual command
     let result = execute_command_without_forwarding(ExecuteCommandParams {
@@ -220,10 +230,12 @@ async fn execute_command_with_forwarding(params: ExecuteCommandParams<'_>) -> Re
     .await;
 
     // Cleanup: stop forwarding
-    println!("Stopping port forwarding...");
+    if !byte_transparent {
+        println!("Stopping port forwarding...");
+    }
     for id in forwarding_ids {
         if let Err(e) = manager.stop_forwarding(id).await {
-            eprintln!("Warning: Failed to stop forwarding {id}: {e}");
+            crate::diagnosticln!("Warning: Failed to stop forwarding {id}: {e}");
         }
     }
 
@@ -261,12 +273,15 @@ async fn execute_command_without_forwarding(params: ExecuteCommandParams<'_>) ->
     #[cfg(target_os = "macos")]
     let executor = executor.with_keychain(params.use_keychain);
 
-    // Determine output mode
-    let output_mode = OutputMode::from_args_with_no_prefix(
-        params.stream,
-        params.output_dir.map(|p| p.to_path_buf()),
-        params.no_prefix,
-    );
+    let output_mode = if params.byte_transparent && params.output_dir.is_none() {
+        OutputMode::raw_stream()
+    } else {
+        OutputMode::from_args_with_no_prefix(
+            params.stream,
+            params.output_dir.map(|p| p.to_path_buf()),
+            params.no_prefix,
+        )
+    };
 
     // Execute with appropriate mode
     let results = if output_mode.is_normal() {
@@ -289,20 +304,21 @@ async fn execute_command_without_forwarding(params: ExecuteCommandParams<'_>) ->
     }
 
     // Print results (skip if already printed in stream mode)
-    if !params.stream {
+    if output_mode.is_normal() {
         for result in &results {
             result.print_output(params.verbose);
         }
     }
 
-    // Print summary
     let success_count = results.iter().filter(|r| r.is_success()).count();
     let failed_count = results.len() - success_count;
 
-    println!(
-        "{}",
-        OutputFormatter::format_summary(results.len(), success_count, failed_count)
-    );
+    if !params.byte_transparent {
+        println!(
+            "{}",
+            OutputFormatter::format_summary(results.len(), success_count, failed_count)
+        );
+    }
 
     // Determine exit code strategy from CLI flags
     let strategy = if params.require_all_success {

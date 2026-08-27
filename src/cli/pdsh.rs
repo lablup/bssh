@@ -307,6 +307,8 @@ impl PdshCli {
             jump_hosts: None,
             port: None,
             stream: false,
+            color: crate::ui::ColorMode::Auto,
+            version: false,
             output_dir: None,
             log_file: None,
             verbose: 0,

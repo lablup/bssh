@@ -51,14 +51,17 @@ pub fn parse_option(
         | "addkeystoagent"
         | "identityagent"
         | "pubkeyacceptedalgorithms"
+        | "pubkeyacceptedkeytypes"
         | "certificatefile"
         | "pubkeyauthentication"
         | "passwordauthentication"
         | "kbdinteractiveauthentication"
+        | "challengeresponseauthentication"
         | "gssapiauthentication"
         | "preferredauthentications"
         | "hostbasedauthentication"
         | "hostbasedacceptedalgorithms"
+        | "hostbasedkeytypes"
         | "numberofpasswordprompts"
         | "enablesshkeysign"
         | "usekeychain" => {
@@ -142,13 +145,17 @@ pub fn parse_option(
         | "sessiontype"
         | "stdinnull" => command::parse_command_option(host, keyword, args, line_number),
 
+        "cipher"
+        | "fallbacktorsh"
+        | "globalknownhostsfile2"
+        | "rhostsauthentication"
+        | "userknownhostsfile2"
+        | "useroaming"
+        | "usersh"
+        | "useprivilegedport" => Ok(()),
+
         _ => {
-            // Unknown option - log a warning but continue
-            tracing::warn!(
-                "Unknown SSH config option '{}' at line {}",
-                keyword,
-                line_number
-            );
+            crate::diagnosticln!("Unknown SSH config option '{keyword}' at line {line_number}");
             Ok(())
         }
     }
