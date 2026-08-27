@@ -25,6 +25,9 @@ use std::{fmt::Debug, io};
 
 use super::address_family::AddressFamily;
 use super::authentication::{AuthMethod, ServerCheckMethod};
+use super::proxy_command::{
+    ProxyCommandConfig, ProxyCommandProcess, ProxyMode, spawn_proxy_command,
+};
 use crate::ssh::SshConfig;
 
 /// Default keepalive interval in seconds.
@@ -104,6 +107,8 @@ pub struct SshConnectionConfig {
 
     /// Explicit known-hosts identity selected by `HostKeyAlias`.
     pub host_key_alias: Option<String>,
+    /// Effective proxy selection for this target.
+    pub proxy_mode: Option<ProxyMode>,
 }
 
 impl Default for SshConnectionConfig {
@@ -116,6 +121,7 @@ impl Default for SshConnectionConfig {
             user_known_hosts_files: None,
             global_known_hosts_files: None,
             host_key_alias: None,
+            proxy_mode: None,
         }
     }
 }
@@ -137,6 +143,8 @@ pub struct SshConnectionConfigResolver {
     yaml_keepalive_max: Option<usize>,
     cli_address_family: Option<AddressFamily>,
     cli_host_key_alias: Option<String>,
+    cli_proxy_jump: Option<String>,
+    yaml_proxy_jump: Option<String>,
 }
 
 impl SshConnectionConfigResolver {
@@ -201,6 +209,22 @@ impl SshConnectionConfigResolver {
         self
     }
 
+    #[must_use]
+    pub fn with_cli_proxy_jump(mut self, jump: Option<String>) -> Self {
+        if let Some(config) = self.fixed_config.as_mut() {
+            config.proxy_mode = jump.as_deref().map(proxy_jump_mode);
+            return self;
+        }
+        self.cli_proxy_jump = jump;
+        self
+    }
+
+    #[must_use]
+    pub fn with_yaml_proxy_jump(mut self, jump: Option<String>) -> Self {
+        self.yaml_proxy_jump = jump;
+        self
+    }
+
     pub fn resolve_for_host(&self, hostname: &str) -> SshConnectionConfig {
         if let Some(config) = &self.fixed_config {
             return config.clone();
@@ -257,6 +281,7 @@ impl SshConnectionConfigResolver {
                 .as_ref()
                 .and_then(|config| config.host_key_alias.clone())
         });
+        let proxy_mode = self.resolve_proxy_mode(hostname, host_key_alias.clone());
 
         SshConnectionConfig::new()
             .with_keepalive_interval(if keepalive_interval == 0 {
@@ -269,6 +294,44 @@ impl SshConnectionConfigResolver {
             .with_address_family(address_family)
             .with_known_hosts_files(user_known_hosts_files, global_known_hosts_files)
             .with_host_key_alias(host_key_alias)
+            .with_proxy_mode(proxy_mode)
+    }
+
+    fn resolve_proxy_mode(
+        &self,
+        hostname: &str,
+        host_key_alias: Option<String>,
+    ) -> Option<ProxyMode> {
+        if let Some(jump) = self.cli_proxy_jump.as_deref() {
+            return Some(proxy_jump_mode(jump));
+        }
+
+        if let Some(ssh_config) = self.ssh_config.as_ref() {
+            let host_config = ssh_config.find_host_config(hostname);
+            if let Some(command) = host_config.proxy_command {
+                if command.eq_ignore_ascii_case("none") {
+                    return Some(ProxyMode::Direct);
+                }
+                return Some(ProxyMode::Command(
+                    ProxyCommandConfig::new(command, hostname)
+                        .with_host_key_alias(host_key_alias)
+                        .with_fdpass(host_config.proxy_use_fdpass.unwrap_or(false)),
+                ));
+            }
+            if let Some(jump) = host_config.proxy_jump {
+                return Some(proxy_jump_mode(&jump));
+            }
+        }
+
+        self.yaml_proxy_jump.as_deref().map(proxy_jump_mode)
+    }
+}
+
+fn proxy_jump_mode(jump: &str) -> ProxyMode {
+    if jump.eq_ignore_ascii_case("none") || jump.is_empty() {
+        ProxyMode::Direct
+    } else {
+        ProxyMode::Jump(jump.to_string())
     }
 }
 
@@ -346,6 +409,12 @@ impl SshConnectionConfig {
     #[must_use]
     pub fn with_address_family(mut self, family: AddressFamily) -> Self {
         self.address_family = family;
+        self
+    }
+
+    #[must_use]
+    pub fn with_proxy_mode(mut self, proxy_mode: Option<ProxyMode>) -> Self {
+        self.proxy_mode = proxy_mode;
         self
     }
 
@@ -445,6 +514,7 @@ pub struct Client {
     /// Public access to the SSH session for jump host operations
     #[allow(private_interfaces)]
     pub session: Arc<Handle<ClientHandler>>,
+    proxy_process: Option<Arc<ProxyCommandProcess>>,
 }
 
 impl Client {
@@ -513,6 +583,19 @@ impl Client {
         ssh_config: &SshConnectionConfig,
     ) -> Result<Self, super::Error> {
         let config = ssh_config.to_russh_config();
+        if let Some(ProxyMode::Command(proxy)) = ssh_config.proxy_mode.as_ref() {
+            let (host, port) = addr.host_port().map_err(super::Error::AddressInvalid)?;
+            return Self::connect_with_proxy_command(
+                &host,
+                port,
+                username,
+                auth,
+                server_check,
+                config,
+                proxy,
+            )
+            .await;
+        }
         let tcp_keepalive = ssh_config.to_tcp_keepalive();
         Self::connect_with_config_inner(
             addr,
@@ -524,6 +607,66 @@ impl Client {
             ssh_config.address_family,
         )
         .await
+    }
+
+    async fn connect_with_proxy_command(
+        host: &str,
+        port: u16,
+        username: &str,
+        auth: AuthMethod,
+        server_check: ServerCheckMethod,
+        config: Config,
+        proxy: &ProxyCommandConfig,
+    ) -> Result<Self, super::Error> {
+        let proxy_session = spawn_proxy_command(proxy, host, port, username)?;
+        let process = Arc::clone(&proxy_session.process);
+        let address = SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED), port);
+        let verification_host = proxy.host_key_alias.as_deref().unwrap_or(host);
+        // OpenSSH looks up HostKeyAlias literally, without adding the target
+        // port even when it is non-standard.
+        let verification_port = if proxy.host_key_alias.is_some() {
+            22
+        } else {
+            port
+        };
+        let verification_address = SocketAddr::new(
+            std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
+            verification_port,
+        );
+        let handler = ClientHandler {
+            hostname: verification_host.to_string(),
+            host: verification_address,
+            server_check,
+        };
+        let mut handle =
+            match russh::client::connect_stream(Arc::new(config), proxy_session.stream, handler)
+                .await
+            {
+                Ok(handle) => handle,
+                Err(error) => {
+                    if let Some(failure) =
+                        process.wait_for_failure(Duration::from_millis(250)).await
+                    {
+                        return Err(super::Error::ProxyCommandFailed {
+                            command: failure.command,
+                            status: failure.status,
+                            stderr: failure.stderr,
+                        });
+                    }
+                    return Err(error);
+                }
+            };
+
+        let username = username.to_string();
+        super::authentication::authenticate(&mut handle, &username, auth).await?;
+        let connection_handle = Arc::new(handle);
+        Ok(Self {
+            connection_handle: Arc::clone(&connection_handle),
+            username,
+            address,
+            session: connection_handle,
+            proxy_process: Some(process),
+        })
     }
 
     /// Same as `connect`, but with the option to specify a non default
@@ -645,6 +788,7 @@ impl Client {
             username,
             address,
             session: connection_handle,
+            proxy_process: None,
         })
     }
 
@@ -662,6 +806,7 @@ impl Client {
             username,
             address,
             session: handle,
+            proxy_process: None,
         }
     }
 
@@ -677,10 +822,15 @@ impl Client {
 
     /// Disconnect from the remote host.
     pub async fn disconnect(&self) -> Result<(), super::Error> {
-        self.connection_handle
+        let result = self
+            .connection_handle
             .disconnect(russh::Disconnect::ByApplication, "", "")
             .await
-            .map_err(super::Error::SshError)
+            .map_err(super::Error::SshError);
+        if let Some(process) = &self.proxy_process {
+            process.terminate();
+        }
+        result
     }
 
     /// Check if the connection is closed.
@@ -740,6 +890,7 @@ impl Debug for Client {
         f.debug_struct("Client")
             .field("username", &self.username)
             .field("address", &self.address)
+            .field("proxy_command", &self.proxy_process.is_some())
             .field("connection_handle", &"Handle<ClientHandler>")
             .finish()
     }

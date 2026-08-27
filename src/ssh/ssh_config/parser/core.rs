@@ -241,15 +241,14 @@ pub(super) fn parse_config_line(
     // Determine if using equals syntax
     let eq_pos = line.find('=');
     let uses_equals_syntax = if let Some(pos) = eq_pos {
-        // Has equals sign - extract first word to check
-        let prefix = &line[..pos];
-        let first_word = prefix
-            .split_whitespace()
-            .next()
-            .unwrap_or("")
-            .to_lowercase();
+        // Only an equals sign immediately following the option name selects
+        // Option=Value syntax. Values such as `ProxyCommand env FOO=bar`
+        // must stay in the ordinary whitespace-separated form.
+        let key_candidate = line[..pos].trim();
+        let equals_follows_option =
+            !key_candidate.is_empty() && !key_candidate.chars().any(char::is_whitespace);
         // Host and Match never use equals syntax
-        !matches!(first_word.as_str(), "host" | "match")
+        equals_follows_option && !matches!(key_candidate.to_lowercase().as_str(), "host" | "match")
     } else {
         false
     };

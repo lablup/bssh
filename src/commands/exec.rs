@@ -106,7 +106,7 @@ async fn execute_command_with_forwarding(params: ExecuteCommandParams<'_>) -> Re
     // listener side was already constrained when the spec was parsed.
     let ssh_connection_config = params
         .ssh_connection_config_resolver
-        .resolve_for_host(&node.host);
+        .resolve_for_host(node.config_host());
     let forwarding_config = ForwardingConfig {
         address_family: ssh_connection_config.address_family,
         ..ForwardingConfig::default()

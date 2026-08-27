@@ -75,11 +75,10 @@ pub fn parse_node_with_ssh_config(node_str: &str, ssh_config: &SshConfig) -> Res
     };
     let effective_port = ssh_config.get_effective_port(raw_host, cli_port);
 
-    Ok(Node::new(
-        effective_hostname,
-        effective_port,
-        effective_user,
-    ))
+    Ok(
+        Node::new(effective_hostname, effective_port, effective_user)
+            .with_original_host(validated_host),
+    )
 }
 
 #[cfg(test)]
@@ -212,7 +211,8 @@ pub async fn resolve_nodes(
         let effective_port =
             ssh_config.get_effective_port(host, port.or_else(|| cli.get_effective_port()));
 
-        let node = Node::new(effective_hostname, effective_port, effective_user);
+        let node = Node::new(effective_hostname, effective_port, effective_user)
+            .with_original_host(host.to_string());
         nodes.push(node);
     } else if let Some(hosts) = &cli.hosts {
         // Parse hosts from CLI with hostlist expression expansion

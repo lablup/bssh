@@ -34,22 +34,28 @@ pub(super) fn parse_proxy_option(
             if args.is_empty() {
                 anyhow::bail!("ProxyJump requires a value at line {line_number}");
             }
-            host.proxy_jump = Some(args.join(" "));
+            if host.proxy_jump.is_none() && host.proxy_command.is_none() {
+                host.proxy_jump = Some(args.join(" "));
+            }
         }
         "proxycommand" => {
             if args.is_empty() {
                 anyhow::bail!("ProxyCommand requires a value at line {line_number}");
             }
-            let command = args.join(" ");
-            validate_executable_string(&command, "ProxyCommand", line_number)?;
-            host.proxy_command = Some(command);
+            if host.proxy_jump.is_none() && host.proxy_command.is_none() {
+                let command = args.join(" ");
+                validate_executable_string(&command, "ProxyCommand", line_number)?;
+                host.proxy_command = Some(command);
+            }
         }
         "proxyusefdpass" => {
             if args.is_empty() {
                 anyhow::bail!("ProxyUseFdpass requires a value at line {line_number}");
             }
             let value = parse_yes_no(&args[0], line_number)?;
-            host.proxy_use_fdpass = Some(value);
+            if host.proxy_use_fdpass.is_none() {
+                host.proxy_use_fdpass = Some(value);
+            }
         }
         _ => unreachable!("Unexpected keyword in parse_proxy_option: {}", keyword),
     }

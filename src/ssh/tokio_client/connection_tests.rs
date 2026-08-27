@@ -22,9 +22,12 @@
 //! Regression coverage for #246: `-4`/`-6` and the ssh_config `AddressFamily`
 //! keyword were parsed but never consumed on the connect path.
 
+use std::time::Duration;
+
 use super::address_family::AddressFamily;
 use super::authentication::{AuthMethod, ServerCheckMethod};
 use super::connection::{Client, SshConnectionConfig, SshConnectionConfigResolver};
+use super::proxy_command::{ProxyCommandConfig, ProxyMode};
 use crate::ssh::SshConfig;
 
 #[test]
@@ -257,9 +260,216 @@ async fn test_forced_ipv4_with_no_ipv4_candidate_fails_with_specific_error() {
     assert_eq!(err.to_string(), "no IPv4 address found for ::1");
 }
 
+#[test]
+fn test_proxy_resolution_keeps_first_ssh_config_directive() {
+    let command_first = SshConfig::parse(
+        r#"
+Host target
+    ProxyCommand nc %h %p
+    ProxyJump ignored.example.com
+"#,
+    )
+    .expect("valid ssh_config");
+    let config = SshConnectionConfigResolver::new()
+        .with_ssh_config(Some(command_first))
+        .resolve_for_host("target");
+    assert!(matches!(config.proxy_mode, Some(ProxyMode::Command(_))));
+
+    let jump_first = SshConfig::parse(
+        r#"
+Host target
+    ProxyJump bastion.example.com
+    ProxyCommand nc %h %p
+"#,
+    )
+    .expect("valid ssh_config");
+    let config = SshConnectionConfigResolver::new()
+        .with_ssh_config(Some(jump_first))
+        .resolve_for_host("target");
+    assert_eq!(
+        config.proxy_mode,
+        Some(ProxyMode::Jump("bastion.example.com".to_string()))
+    );
+}
+
+#[test]
+fn test_cli_proxy_jump_overrides_ssh_config_proxy_command() {
+    let ssh_config = SshConfig::parse(
+        r#"
+Host target
+    ProxyCommand nc %h %p
+"#,
+    )
+    .expect("valid ssh_config");
+    let config = SshConnectionConfigResolver::new()
+        .with_ssh_config(Some(ssh_config))
+        .with_cli_proxy_jump(Some("cli-bastion.example.com".to_string()))
+        .resolve_for_host("target");
+
+    assert_eq!(
+        config.proxy_mode,
+        Some(ProxyMode::Jump("cli-bastion.example.com".to_string()))
+    );
+}
+
+#[test]
+fn test_proxy_tokens_use_effective_alias_original_and_resolved_hosts() {
+    let ssh_config = SshConfig::parse(
+        r#"
+Host original-host
+    HostKeyAlias config-key-alias
+    ProxyCommand printf '%h|%k|%n'
+"#,
+    )
+    .expect("valid ssh_config");
+    let config = SshConnectionConfigResolver::new()
+        .with_ssh_config(Some(ssh_config))
+        .with_cli_host_key_alias(Some("cli-key-alias".to_string()))
+        .resolve_for_host("original-host");
+
+    assert_eq!(config.host_key_alias.as_deref(), Some("cli-key-alias"));
+    let Some(ProxyMode::Command(command)) = config.proxy_mode else {
+        panic!("ProxyCommand must win for original-host");
+    };
+    assert_eq!(
+        command
+            .expand("resolved.internal", 2222, "alice")
+            .expect("valid proxy tokens"),
+        "printf 'resolved.internal|cli-key-alias|original-host'"
+    );
+}
+
+#[test]
+fn test_proxy_none_disables_yaml_jump_fallback() {
+    for directive in ["ProxyCommand none", "ProxyJump none"] {
+        let ssh_config =
+            SshConfig::parse(&format!("Host target\n    {directive}\n")).expect("valid ssh_config");
+        let config = SshConnectionConfigResolver::new()
+            .with_ssh_config(Some(ssh_config))
+            .with_yaml_proxy_jump(Some("yaml-bastion.example.com".to_string()))
+            .resolve_for_host("target");
+        assert_eq!(config.proxy_mode, Some(ProxyMode::Direct));
+    }
+}
+
+#[test]
+fn test_yaml_jump_is_used_only_as_proxy_fallback() {
+    let config = SshConnectionConfigResolver::new()
+        .with_yaml_proxy_jump(Some("yaml-bastion.example.com".to_string()))
+        .resolve_for_host("target");
+
+    assert_eq!(
+        config.proxy_mode,
+        Some(ProxyMode::Jump("yaml-bastion.example.com".to_string()))
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_proxy_command_routes_ssh_transport_through_child() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bind proxy target");
+    let proxy_port = listener.local_addr().unwrap().port();
+    let server = tokio::spawn(async move {
+        let (mut stream, _) = tokio::time::timeout(Duration::from_secs(3), listener.accept())
+            .await
+            .expect("ProxyCommand did not connect")
+            .expect("accept ProxyCommand connection");
+        let mut banner = [0_u8; 256];
+        let read = tokio::time::timeout(Duration::from_secs(3), stream.read(&mut banner))
+            .await
+            .expect("SSH client did not send a banner")
+            .expect("read SSH client banner");
+        assert!(banner[..read].starts_with(b"SSH-2.0-"));
+        stream
+            .write_all(b"SSH-2.0-OpenSSH_9.9\r\n")
+            .await
+            .expect("write test server banner");
+    });
+
+    let command = format!(
+        "sh -c 'test \"$1\" = unresolvable.invalid && test \"$2\" = 2222 && test \"$3\" = alice && test \"$4\" = target-alias && test \"$5\" = key-alias && exec nc 127.0.0.1 \"$6\"' sh %h %p %r %n %k {proxy_port}"
+    );
+    let proxy = ProxyCommandConfig::new(command, "target-alias")
+        .with_host_key_alias(Some("key-alias".to_string()));
+    let config = SshConnectionConfig::new().with_proxy_mode(Some(ProxyMode::Command(proxy)));
+    let connect = Client::connect_with_ssh_config(
+        "unresolvable.invalid:2222",
+        "alice",
+        AuthMethod::with_password("unused"),
+        ServerCheckMethod::NoCheck,
+        &config,
+    );
+    let error = tokio::time::timeout(Duration::from_secs(5), connect)
+        .await
+        .expect("proxy-backed SSH handshake timed out")
+        .expect_err("the deliberately incomplete SSH server must fail");
+    assert!(
+        !matches!(error, super::Error::ProxyCommandFailed { .. }),
+        "proxy child should have transported the SSH banner: {error:?}"
+    );
+    server.await.expect("proxy target task");
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn test_proxy_command_failure_is_actionable_at_connection_boundary() {
+    let proxy = ProxyCommandConfig::new(
+        "sh -c 'printf connection\\ proxy\\ failed >&2; exit 23'",
+        "target-alias",
+    );
+    let config = SshConnectionConfig::new().with_proxy_mode(Some(ProxyMode::Command(proxy)));
+    let error = Client::connect_with_ssh_config(
+        "unresolvable.invalid:2222",
+        "alice",
+        AuthMethod::with_password("unused"),
+        ServerCheckMethod::NoCheck,
+        &config,
+    )
+    .await
+    .expect_err("failed ProxyCommand must fail the connection");
+
+    match error {
+        super::Error::ProxyCommandFailed {
+            command,
+            status,
+            stderr,
+        } => {
+            assert!(command.contains("exit 23"));
+            assert!(status.contains("23"));
+            assert_eq!(stderr, "connection proxy failed");
+        }
+        other => panic!("expected actionable ProxyCommand error, got: {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn test_proxy_use_fdpass_is_rejected_at_connection_boundary() {
+    let proxy = ProxyCommandConfig::new("unused", "target-alias").with_fdpass(true);
+    let config = SshConnectionConfig::new().with_proxy_mode(Some(ProxyMode::Command(proxy)));
+    let error = Client::connect_with_ssh_config(
+        "unresolvable.invalid:2222",
+        "alice",
+        AuthMethod::with_password("unused"),
+        ServerCheckMethod::NoCheck,
+        &config,
+    )
+    .await
+    .expect_err("ProxyUseFdpass must be rejected explicitly");
+
+    assert!(matches!(
+        error,
+        super::Error::ProxyUseFdpassUnsupported { .. }
+    ));
+}
+
 /// With no family forced, an unreachable address must still produce the
 /// ordinary connection error rather than the new family-specific one, proving
 /// the default path is unchanged.
+
 #[tokio::test]
 async fn test_unforced_family_does_not_produce_the_family_error() {
     // Port 0 is never connectable, so this fails fast at the TCP layer without

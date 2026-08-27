@@ -639,27 +639,30 @@ Example:
 
 .SS Proxy Options
 .TP
-.B ProxyUseFdpass
-Specifies that ProxyCommand will pass a connected file descriptor back to ssh(1)
-instead of continuing to execute and relay data.
-This reduces overhead by avoiding an unnecessary lingering process and extra I/O operations.
-When enabled, the proxy command establishes a connection, passes the file descriptor
-to ssh via the fdpass mechanism, and exits. The ssh process then communicates directly
-with the connection, eliminating the intermediate proxy process.
+.B ProxyCommand
+Executes a local command whose standard input and output carry the SSH transport.
+The command is run by the user's shell, preserving OpenSSH-style quoting,
+redirection, and pipelines.
 .br
-Default is no.
+Supported tokens are %%, %h, %k, %n, %p, and %r.
 .br
-Introduced in OpenSSH 6.5 (January 2014).
-.br
-This is particularly useful with proxy commands like netcat that support file descriptor
-passing via the -F option (nc.openbsd).
+.I ProxyCommand none
+explicitly selects a direct connection. When ProxyCommand and ProxyJump both
+appear in ssh_config, the first obtained value is used; command-line -J takes
+precedence over both.
 .br
 Example:
-.I ProxyUseFdpass yes
+.I ProxyCommand nc %h %p
+
+.TP
+.B ProxyUseFdpass
+Requests that ProxyCommand pass a connected file descriptor instead of relaying
+the SSH transport over standard input and output.
 .br
-Note: This option is currently parsed from SSH configuration files for compatibility
-but is not yet utilized in bssh's SSH client implementation, as proxy connections
-are not yet supported.
+Default is no. bssh does not support descriptor passing and rejects
+.I ProxyUseFdpass yes
+with an actionable error before starting the proxy command. Use a streaming
+ProxyCommand without netcat's -F option instead.
 
 .SS Command Execution and Automation Options
 .TP
@@ -1048,15 +1051,13 @@ Host *.secure.prod.example.com
     PermitRemoteOpen localhost:8080
     PermitRemoteOpen db.internal:5432
 
-# Optimized proxy connection with file descriptor passing
+# HTTP CONNECT proxy
 Host internal-server
-    ProxyCommand nc -X connect -x proxy.example.com:1080 -F %h %p
-    ProxyUseFdpass yes
+    ProxyCommand nc -X connect -x proxy.example.com:1080 %h %p
 
-# SOCKS proxy with netcat (reduces overhead)
+# SOCKS proxy with netcat
 Host *.internal.example.com
-    ProxyCommand nc -x socks.example.com:1080 -F %h %p
-    ProxyUseFdpass yes
+    ProxyCommand nc -x socks.example.com:1080 %h %p
 
 # Development server with automatic file sync
 Host dev-server

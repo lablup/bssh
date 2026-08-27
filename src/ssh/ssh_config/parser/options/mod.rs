@@ -149,6 +149,7 @@ pub fn parse_option(
         | "fallbacktorsh"
         | "globalknownhostsfile2"
         | "rhostsauthentication"
+        | "securitykeyprovider"
         | "userknownhostsfile2"
         | "useroaming"
         | "usersh"
