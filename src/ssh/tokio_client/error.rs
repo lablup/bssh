@@ -1,6 +1,35 @@
 use super::AddressFamily;
 use std::io;
 
+/// A fatal packet-integrity failure reported by the SSH transport.
+///
+/// These variants mirror the narrow set of russh errors emitted while
+/// authenticating or decoding an encrypted packet. Keeping this typed avoids
+/// relabeling ordinary authentication or channel failures as corruption.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportIntegrityCause {
+    PacketAuthentication,
+    Decryption,
+    PacketSize(usize),
+    InvalidPadding,
+}
+
+impl std::fmt::Display for TransportIntegrityCause {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PacketAuthentication => {
+                f.write_str("Corrupted MAC: message authentication code incorrect")
+            }
+            Self::Decryption => f.write_str(
+                "Corrupted MAC: authenticated packet decryption failed \
+                 (message authentication code incorrect)",
+            ),
+            Self::PacketSize(size) => write!(f, "Bad packet size: {size}"),
+            Self::InvalidPadding => f.write_str("padding error: invalid packet padding"),
+        }
+    }
+}
+
 /// This is the `thiserror` error for all crate errors.
 ///
 /// Most ssh related error is wrapped in the `SshError` variant,
@@ -41,6 +70,12 @@ pub enum Error {
         #[source]
         source: io::Error,
     },
+    #[error("connection failed after {attempts} carrier attempts: {source}")]
+    ConnectionAttemptsExhausted {
+        attempts: usize,
+        #[source]
+        source: Box<Error>,
+    },
     #[error(
         "ssh: connect to host {host} port {port}: Connection timed out\nbssh: timed out after {seconds} seconds during {stage}"
     )]
@@ -62,6 +97,12 @@ pub enum Error {
     #[error("Failed to start ProxyCommand '{command}': {source}")]
     ProxyCommandSpawn {
         command: String,
+        #[source]
+        source: io::Error,
+    },
+    #[error("failed to configure TCPKeepAlive on socket {address}: {source}")]
+    TcpKeepAlive {
+        address: std::net::SocketAddr,
         #[source]
         source: io::Error,
     },
@@ -115,6 +156,8 @@ pub enum Error {
     SshError(#[from] russh::Error),
     #[error("SSH channel send failed: {0}")]
     SendError(#[from] russh::SendError),
+    #[error("{cause}")]
+    TransportIntegrity { cause: TransportIntegrityCause },
     #[error("SSH agent authentication error: {0}")]
     AgentAuthError(#[from] russh::AgentAuthError),
     #[error("Failed to connect to SSH agent")]
@@ -168,6 +211,7 @@ impl Error {
                 | Self::AddressInvalid(_)
                 | Self::DnsResolution { .. }
                 | Self::TcpConnect { .. }
+                | Self::ConnectionAttemptsExhausted { .. }
                 | Self::ConnectionTimeout { .. }
                 | Self::ProtocolNegotiation { .. }
                 | Self::InvalidProxyCommandToken { .. }
@@ -181,6 +225,7 @@ impl Error {
                 | Self::HostKeyRevoked { .. }
                 | Self::SshError(_)
                 | Self::SendError(_)
+                | Self::TransportIntegrity { .. }
                 | Self::AgentAuthError(_)
                 | Self::AgentConnectionFailed
                 | Self::AgentRequestIdentitiesFailed
@@ -209,7 +254,7 @@ impl Error {
 
 #[cfg(test)]
 mod tests {
-    use super::Error;
+    use super::{Error, TransportIntegrityCause};
     use std::io;
 
     #[test]
@@ -347,5 +392,99 @@ mod tests {
         assert!(rendered.contains("known_hosts entry at line 7"));
         assert!(!rendered.contains("Permission denied"));
         assert!(!rendered.contains("Could not resolve hostname"));
+    }
+
+    #[test]
+    fn retry_exhaustion_preserves_attempt_count_and_typed_source_chain() {
+        let error = Error::ConnectionAttemptsExhausted {
+            attempts: 3,
+            source: Box::new(Error::TcpConnect {
+                host: "host.example".to_string(),
+                port: 2222,
+                source: io::Error::from_raw_os_error(libc::ECONNREFUSED),
+            }),
+        };
+
+        assert!(error.to_string().contains("after 3 carrier attempts"));
+        match error {
+            Error::ConnectionAttemptsExhausted { attempts, source } => {
+                assert_eq!(attempts, 3);
+                assert!(matches!(*source, Error::TcpConnect { port: 2222, .. }));
+            }
+            other => panic!("unexpected retry error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn protocol_context_wraps_only_untyped_ssh_errors() {
+        let protocol = Error::during_protocol_negotiation(
+            "host.example".to_string(),
+            2222,
+            Error::SshError(russh::Error::IO(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                "transport closed",
+            ))),
+        );
+        assert!(matches!(
+            protocol,
+            Error::ProtocolNegotiation { port: 2222, .. }
+        ));
+
+        let host_key = Error::during_protocol_negotiation(
+            "host.example".to_string(),
+            2222,
+            Error::HostKeyChanged {
+                host: "host.example".to_string(),
+                port: 2222,
+                line: 7,
+            },
+        );
+        assert!(matches!(host_key, Error::HostKeyChanged { line: 7, .. }));
+
+        let auth = Error::during_protocol_negotiation(
+            "host.example".to_string(),
+            2222,
+            Error::KeyAuthFailed,
+        );
+        assert!(matches!(auth, Error::KeyAuthFailed));
+    }
+
+    #[test]
+    fn transport_integrity_display_is_specific_to_each_typed_cause() {
+        let packet_auth = Error::TransportIntegrity {
+            cause: TransportIntegrityCause::PacketAuthentication,
+        }
+        .to_string();
+        assert_eq!(
+            packet_auth,
+            "Corrupted MAC: message authentication code incorrect"
+        );
+
+        let decryption = Error::TransportIntegrity {
+            cause: TransportIntegrityCause::Decryption,
+        }
+        .to_string();
+        assert!(decryption.starts_with("Corrupted MAC: authenticated packet decryption failed"));
+        assert!(decryption.contains("message authentication code incorrect"));
+
+        let packet_size = Error::TransportIntegrity {
+            cause: TransportIntegrityCause::PacketSize(262_145),
+        }
+        .to_string();
+        assert_eq!(packet_size, "Bad packet size: 262145");
+        assert!(!packet_size.contains("message authentication code incorrect"));
+
+        let padding = Error::TransportIntegrity {
+            cause: TransportIntegrityCause::InvalidPadding,
+        }
+        .to_string();
+        assert_eq!(padding, "padding error: invalid packet padding");
+        assert!(!padding.contains("message authentication code incorrect"));
+
+        assert!(
+            !Error::KeyAuthFailed
+                .to_string()
+                .contains("message authentication code incorrect")
+        );
     }
 }

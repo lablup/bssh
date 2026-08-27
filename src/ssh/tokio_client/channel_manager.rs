@@ -227,7 +227,7 @@ impl Client {
         self.connection_handle
             .channel_open_session()
             .await
-            .map_err(|source| super::Error::ChannelOpen { source })
+            .map_err(|source| self.session_error_or(super::Error::ChannelOpen { source }))
     }
 
     /// Open a TCP/IP forwarding channel.
@@ -284,7 +284,9 @@ impl Client {
                 .await
             {
                 Ok(channel) => return Ok(channel),
-                Err(source) => connect_err = super::Error::ChannelOpen { source },
+                Err(source) => {
+                    connect_err = self.session_error_or(super::Error::ChannelOpen { source });
+                }
             }
         }
 
@@ -334,13 +336,15 @@ impl Client {
             .connection_handle
             .channel_open_session()
             .await
-            .map_err(|source| super::Error::ChannelOpen { source })?;
+            .map_err(|source| self.session_error_or(super::Error::ChannelOpen { source }))?;
         channel
             .exec(true, sanitized_command.as_str())
             .await
-            .map_err(|source| super::Error::CommandExecution {
-                action: "exec request",
-                source,
+            .map_err(|source| {
+                self.session_error_or(super::Error::CommandExecution {
+                    action: "exec request",
+                    source,
+                })
             })?;
 
         let mut result: Option<u32> = None;
@@ -389,7 +393,7 @@ impl Client {
             Ok(result)
         // Otherwise, report an error
         } else {
-            Err(super::Error::CommandDidntExit)
+            Err(self.session_error_or(super::Error::CommandDidntExit))
         }
     }
 
@@ -427,7 +431,7 @@ impl Client {
             .connection_handle
             .channel_open_session()
             .await
-            .map_err(|source| super::Error::ChannelOpen { source })?;
+            .map_err(|source| self.session_error_or(super::Error::ChannelOpen { source }))?;
 
         // Request PTY with reasonable defaults for sudo
         channel
@@ -441,17 +445,21 @@ impl Client {
                 &[],     // terminal modes (empty for defaults)
             )
             .await
-            .map_err(|source| super::Error::CommandExecution {
-                action: "PTY request",
-                source,
+            .map_err(|source| {
+                self.session_error_or(super::Error::CommandExecution {
+                    action: "PTY request",
+                    source,
+                })
             })?;
 
         channel
             .exec(true, sanitized_command.as_str())
             .await
-            .map_err(|source| super::Error::CommandExecution {
-                action: "exec request",
-                source,
+            .map_err(|source| {
+                self.session_error_or(super::Error::CommandExecution {
+                    action: "exec request",
+                    source,
+                })
             })?;
 
         let mut result: Option<u32> = None;
@@ -500,10 +508,10 @@ impl Client {
                         let password_data = sudo_password.with_newline();
                         if let Err(e) = channel.data(&password_data[..]).await {
                             tracing::error!("Failed to send sudo password: {}", e);
-                            return Err(super::Error::CommandExecution {
+                            return Err(self.session_error_or(super::Error::CommandExecution {
                                 action: "sudo password write",
                                 source: e,
-                            });
+                            }));
                         }
                         // Clear accumulated output after sending password to detect next prompt
                         accumulated_output.clear();
@@ -569,10 +577,10 @@ impl Client {
                         let password_data = sudo_password.with_newline();
                         if let Err(e) = channel.data(&password_data[..]).await {
                             tracing::error!("Failed to send sudo password: {}", e);
-                            return Err(super::Error::CommandExecution {
+                            return Err(self.session_error_or(super::Error::CommandExecution {
                                 action: "sudo password write",
                                 source: e,
-                            });
+                            }));
                         }
                         accumulated_output.clear();
                     }
@@ -611,7 +619,7 @@ impl Client {
         if let Some(result) = result {
             Ok(result)
         } else {
-            Err(super::Error::CommandDidntExit)
+            Err(self.session_error_or(super::Error::CommandDidntExit))
         }
     }
 
@@ -689,7 +697,7 @@ impl Client {
             .connection_handle
             .channel_open_session()
             .await
-            .map_err(|source| super::Error::ChannelOpen { source })?;
+            .map_err(|source| self.session_error_or(super::Error::ChannelOpen { source }))?;
         Ok(channel)
     }
 
@@ -706,9 +714,11 @@ impl Client {
         channel
             .window_change(width, height, 0, 0)
             .await
-            .map_err(|source| super::Error::CommandExecution {
-                action: "window-change request",
-                source,
+            .map_err(|source| {
+                self.session_error_or(super::Error::CommandExecution {
+                    action: "window-change request",
+                    source,
+                })
             })
     }
 }

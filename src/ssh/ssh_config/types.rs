@@ -69,6 +69,10 @@ pub struct SshHostConfig {
     pub kex_algorithms: Vec<String>,
     pub ciphers: Vec<String>,
     pub macs: Vec<String>,
+    pub(crate) resolved_host_key_algorithms: Option<Vec<ssh_key::Algorithm>>,
+    pub(crate) resolved_kex_algorithms: Option<Vec<russh::kex::Name>>,
+    pub(crate) resolved_ciphers: Option<Vec<russh::cipher::Name>>,
+    pub(crate) resolved_macs: Option<Vec<russh::mac::Name>>,
     pub send_env: Vec<String>,
     pub set_env: HashMap<String, String>,
     pub local_forward: Vec<String>,
@@ -132,6 +136,8 @@ pub struct SshHostConfig {
     pub use_keychain: Option<bool>,
     // Security & algorithm management
     pub pubkey_accepted_algorithms: Vec<String>,
+    /// Supported public-key signature policy exposed to authentication.
+    pub resolved_pubkey_accepted_algorithms: Option<Vec<String>>,
     pub required_rsa_size: Option<u32>,
     pub fingerprint_hash: Option<String>, // md5/sha256
 }

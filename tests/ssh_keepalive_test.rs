@@ -373,27 +373,27 @@ Host test
 // =============================================================================
 
 #[test]
-fn test_find_host_config_merges_keepalive() {
+fn test_find_host_config_uses_first_obtained_keepalive_values() {
     let config = r#"
-Host *
-    ServerAliveInterval 60
-    ServerAliveCountMax 3
+Host web.example.com
+    ServerAliveInterval 30
 
 Host *.example.com
     ServerAliveCountMax 5
 
-Host web.example.com
-    ServerAliveInterval 30
+Host *
+    ServerAliveInterval 60
+    ServerAliveCountMax 3
 "#;
 
     let config_parsed = SshConfig::parse(config).unwrap();
 
-    // web.example.com should inherit from * and *.example.com with most specific winning
+    // OpenSSH obtains each scalar from the first matching block that sets it.
     let host_config = config_parsed.find_host_config("web.example.com");
     assert_eq!(
         host_config.server_alive_interval,
         Some(30),
-        "Should use most specific interval (30 from web.example.com)"
+        "Should use the first interval (30 from web.example.com)"
     );
     assert_eq!(
         host_config.server_alive_count_max,
@@ -430,19 +430,18 @@ Host web.example.com
 
 #[test]
 fn test_get_int_option_server_alive_interval() {
-    // SSH config applies matches in order, with later matches overriding earlier ones.
-    // So put specific hosts after wildcards if you want specific values to take precedence.
+    // OpenSSH uses the first obtained scalar, so specific blocks precede fallbacks.
     let config = r#"
-Host *
-    ServerAliveInterval 60
-
 Host test.example.com
     ServerAliveInterval 45
+
+Host *
+    ServerAliveInterval 60
 "#;
 
     let config_parsed = SshConfig::parse(config).unwrap();
 
-    // Test specific host - specific config (45) overrides wildcard (60)
+    // The specific block obtains the value before the wildcard fallback.
     let interval = config_parsed.get_int_option(Some("test.example.com"), "serveraliveinterval");
     assert_eq!(interval, Some(45), "Should return 45 for test.example.com");
 
@@ -457,18 +456,18 @@ Host test.example.com
 
 #[test]
 fn test_get_int_option_server_alive_count_max() {
-    // SSH config applies matches in order, with later matches overriding earlier ones.
+    // OpenSSH uses the first obtained scalar, so specific blocks precede fallbacks.
     let config = r#"
-Host *
-    ServerAliveCountMax 3
-
 Host test.example.com
     ServerAliveCountMax 7
+
+Host *
+    ServerAliveCountMax 3
 "#;
 
     let config_parsed = SshConfig::parse(config).unwrap();
 
-    // Test specific host - specific config (7) overrides wildcard (3)
+    // The specific block obtains the value before the wildcard fallback.
     let count = config_parsed.get_int_option(Some("test.example.com"), "serveralivecountmax");
     assert_eq!(count, Some(7), "Should return 7 for test.example.com");
 

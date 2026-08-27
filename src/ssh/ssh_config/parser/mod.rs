@@ -28,7 +28,7 @@ mod options;
 mod tests;
 
 // Re-export public items from core module
-pub(super) use core::{parse, parse_from_file};
+pub(super) use core::{parse, parse_cli_options, parse_from_file};
 
 // Re-export helper functions that might be used elsewhere
 

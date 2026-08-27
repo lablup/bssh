@@ -148,6 +148,9 @@ pub(super) fn parse_authentication_option(
                             || c == '_'
                             || c == '@'
                             || c == '+'
+                            || c == '^'
+                            || c == '*'
+                            || c == '?'
                     }) {
                         anyhow::bail!(
                             "PubkeyAcceptedAlgorithms at line {line_number} contains invalid characters in algorithm name '{trimmed}'. \
@@ -179,6 +182,10 @@ pub(super) fn parse_authentication_option(
                 );
             }
 
+            let resolved =
+                crate::ssh::tokio_client::algorithms::resolve_pubkey_algorithms(&algorithms)
+                    .map_err(anyhow::Error::msg)?;
+            host.resolved_pubkey_accepted_algorithms = Some(resolved);
             host.pubkey_accepted_algorithms = algorithms;
         }
         "certificatefile" => {

@@ -15,6 +15,7 @@
 
 // Module declarations
 pub mod address_family;
+pub(crate) mod algorithms;
 pub mod authentication;
 pub mod channel_manager;
 pub mod connection;
@@ -36,7 +37,7 @@ pub use connection::{
     Client, ClientHandler, DEFAULT_KEEPALIVE_INTERVAL, DEFAULT_KEEPALIVE_MAX, SshConnectionConfig,
     SshConnectionConfigResolver,
 };
-pub use error::Error;
+pub use error::{Error, TransportIntegrityCause};
 pub use proxy_command::{ProxyCommandConfig, ProxyMode};
 pub use to_socket_addrs_with_hostname::ToSocketAddrsWithHostname;
 

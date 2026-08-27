@@ -267,6 +267,22 @@ pub struct Cli {
     pub ssh_options: Vec<String>,
 
     #[arg(
+        short = 'c',
+        long = "cipher",
+        value_name = "cipher_spec",
+        help = "Select SSH transport ciphers (OpenSSH-compatible -c)"
+    )]
+    pub cipher: Option<String>,
+
+    #[arg(
+        short = 'm',
+        long = "macs",
+        value_name = "mac_spec",
+        help = "Select SSH MAC algorithms (OpenSSH-compatible -m)"
+    )]
+    pub macs: Option<String>,
+
+    #[arg(
         short = 'F',
         long = "ssh-config",
         value_name = "configfile",
@@ -613,6 +629,26 @@ impl Cli {
         })
     }
 
+    /// Build parser-ready command-line ssh_config overrides.
+    ///
+    /// Dedicated OpenSSH flags have explicit precedence over generic `-o`
+    /// forms. Within repeated `-o` options, the parser keeps the first value.
+    pub fn ssh_config_overrides(&self) -> Vec<String> {
+        let mut options = Vec::with_capacity(
+            self.ssh_options.len()
+                + usize::from(self.cipher.is_some())
+                + usize::from(self.macs.is_some()),
+        );
+        if let Some(cipher) = &self.cipher {
+            options.push(format!("Ciphers={cipher}"));
+        }
+        if let Some(macs) = &self.macs {
+            options.push(format!("MACs={macs}"));
+        }
+        options.extend(self.ssh_options.iter().cloned());
+        options
+    }
+
     /// Parse port forwarding specifications into ForwardingType instances
     ///
     /// Returns a Result containing a vector of all parsed forwarding specifications
@@ -686,5 +722,64 @@ mod tests {
             cli.get_ssh_option("HostKeyAlias").as_deref(),
             Some("first.example.com")
         );
+    }
+
+    #[test]
+    fn openssh_cipher_and_mac_flags_become_high_precedence_config_overrides() {
+        let cli = Cli::try_parse_from([
+            "bssh",
+            "-c",
+            "aes128-ctr",
+            "-m",
+            "hmac-sha2-256",
+            "-o",
+            "Ciphers=aes256-ctr",
+            "target",
+        ])
+        .unwrap();
+
+        assert_eq!(
+            cli.ssh_config_overrides(),
+            [
+                "Ciphers=aes128-ctr",
+                "MACs=hmac-sha2-256",
+                "Ciphers=aes256-ctr"
+            ]
+        );
+    }
+    #[test]
+    fn openssh_cipher_flag_rejects_unsupported_and_empty_policies() {
+        for value in ["not-a-supported-cipher", ""] {
+            let cli = Cli::try_parse_from(["bssh", "-c", value, "target"]).unwrap();
+            let error = crate::ssh::SshConfig::new()
+                .apply_cli_options(&cli.ssh_config_overrides())
+                .expect_err("invalid -c policy must fail closed");
+            let message = format!("{error:#}").to_ascii_lowercase();
+            assert!(
+                message.contains("cipher")
+                    && (message.contains("unsupported")
+                        || message.contains("at least one valid cipher")
+                        || message.contains("requires a value")),
+                "unexpected -c error: {message}"
+            );
+        }
+    }
+
+    #[test]
+    fn openssh_mac_flag_rejects_unsupported_and_empty_policies() {
+        for value in ["not-a-supported-mac", ""] {
+            let cli = Cli::try_parse_from(["bssh", "-m", value, "target"]).unwrap();
+            let error = crate::ssh::SshConfig::new()
+                .apply_cli_options(&cli.ssh_config_overrides())
+                .expect_err("invalid -m policy must fail closed");
+            let message = format!("{error:#}").to_ascii_lowercase();
+            assert!(
+                message.contains("mac")
+                    && (message.contains("unsupported")
+                        || message.contains("at least one valid mac")
+                        || message.contains("requires a value")),
+                "unexpected -m error: {message}"
+            );
+        }
     }
 }

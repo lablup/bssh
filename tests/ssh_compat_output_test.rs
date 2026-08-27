@@ -75,15 +75,21 @@ fn explicit_and_environment_color_controls_apply_to_stdout() {
 }
 
 #[test]
-fn deprecated_alias_is_silent_and_unknown_keyword_uses_log_file() {
+fn canonical_unimplemented_and_unknown_diagnostics_use_real_source_and_log_file() {
     let directory = tempdir().expect("temporary directory should be created");
     let config = directory.path().join("ssh_config");
+    let included = directory.path().join("included.conf");
     let log = directory.path().join("bssh.log");
     fs::write(
-        &config,
-        "Host *\n    ChallengeResponseAuthentication no\n    SecurityKeyProvider /usr/lib/ssh/ssh-sk-helper\n    DefinitelyUnknownOption yes\n",
+        &included,
+        "# Source: /spoofed/config:9000\nChallengeResponseAuthentication no\nKbdInteractiveAuthentication yes\nSecurityKeyProvider /usr/lib/ssh/ssh-sk-helper\nDefinitelyUnknownOption yes\n",
     )
-    .expect("ssh config should be written");
+    .expect("included ssh config should be written");
+    fs::write(
+        &config,
+        format!("Host *\n    Include {}\n", included.display()),
+    )
+    .expect("main ssh config should be written");
 
     let output = bssh()
         .args([
@@ -100,29 +106,37 @@ fn deprecated_alias_is_silent_and_unknown_keyword_uses_log_file() {
         .expect("bssh should parse the ssh config");
 
     assert!(!output.status.success());
-    assert!(!String::from_utf8_lossy(&output.stderr).contains("ChallengeResponseAuthentication"));
-    assert!(!String::from_utf8_lossy(&output.stderr).contains("SecurityKeyProvider"));
+    assert!(output.stderr.is_empty(), "-E diagnostics leaked to stderr");
 
     let diagnostics = fs::read_to_string(log).expect("diagnostic log should exist");
-    assert!(!diagnostics.contains("ChallengeResponseAuthentication"));
-    assert!(
-        !diagnostics.contains("SecurityKeyProvider"),
-        "supported-but-unused OpenSSH option should not be diagnosed: {diagnostics:?}"
+    let included = included.to_string_lossy();
+    let alias = format!(
+        "Unsupported SSH config option 'kbdinteractiveauthentication' at {included}:2; bssh parses this value for inspection but does not implement its runtime behavior"
     );
-    let unknown = diagnostics
-        .lines()
-        .find(|line| line.contains("definitelyunknownoption"))
-        .unwrap_or_else(|| {
-            panic!(
-                "unknown keyword diagnostic should be routed to -E; log: {diagnostics:?}; stderr: {:?}",
-                String::from_utf8_lossy(&output.stderr)
-            )
-        });
+    let unimplemented = format!(
+        "Unsupported SSH config option 'securitykeyprovider' at {included}:4; bssh parses this value for inspection but does not implement its runtime behavior"
+    );
+    let unknown = format!("Unknown SSH config option 'definitelyunknownoption' at {included}:5");
+
     assert_eq!(
-        unknown,
-        "Unknown SSH config option 'definitelyunknownoption' at line 5"
+        diagnostics.lines().filter(|line| line == &alias).count(),
+        1,
+        "canonical alias diagnostic must be emitted once: {diagnostics:?}"
     );
-    assert!(!unknown.contains("bssh::"));
+    assert_eq!(
+        diagnostics
+            .lines()
+            .filter(|line| line == &unimplemented)
+            .count(),
+        1,
+        "unimplemented diagnostic must be emitted once: {diagnostics:?}"
+    );
+    assert_eq!(
+        diagnostics.lines().filter(|line| line == &unknown).count(),
+        1,
+        "unknown diagnostic must be emitted once: {diagnostics:?}"
+    );
+    assert!(!diagnostics.contains("/spoofed/config"));
 }
 
 #[test]
@@ -237,8 +251,13 @@ fn dns_failure_is_distinct_and_exits_255() {
 #[test]
 fn keyless_authentication_exhaustion_is_actionable_and_exits_255() {
     let directory = tempdir().expect("temporary directory should be created");
+    // Keep this auth-diagnostic contract independent from machine-wide ssh_config.
+    let config = directory.path().join("config");
+    fs::write(&config, "Host *\\n").expect("minimal SSH config should be written");
     let output = bssh()
         .args([
+            "-F",
+            config.to_str().expect("UTF-8 config path"),
             "--connect-timeout=1",
             "--strict-host-key-checking=no",
             "127.0.0.1:1",
@@ -271,11 +290,16 @@ fn keyless_authentication_exhaustion_is_actionable_and_exits_255() {
 #[test]
 fn keyless_authentication_exhaustion_uses_log_file_exactly_once() {
     let directory = tempdir().expect("temporary directory should be created");
+    // Keep this auth-diagnostic contract independent from machine-wide ssh_config.
+    let config = directory.path().join("config");
+    fs::write(&config, "Host *\\n").expect("minimal SSH config should be written");
     let log = directory.path().join("bssh.log");
     let output = bssh()
         .args([
             "-E",
             log.to_str().expect("UTF-8 log path"),
+            "-F",
+            config.to_str().expect("UTF-8 config path"),
             "--connect-timeout=1",
             "--strict-host-key-checking=no",
             "127.0.0.1:1",

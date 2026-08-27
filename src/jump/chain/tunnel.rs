@@ -163,6 +163,7 @@ pub(super) async fn connect_through_tunnel(
     );
 
     let handler = ClientHandler::new(jump_host.host.clone(), socket_addr, check_method);
+    let fatal_transport = handler.fatal_transport_state();
 
     // Connect through the stream
     let handle = tokio::time::timeout(
@@ -198,6 +199,12 @@ pub(super) async fn connect_through_tunnel(
         &host_desc,
     )
     .await
+    .or_else(|error| {
+        fatal_transport
+            .take_error()
+            .map(anyhow::Error::new)
+            .map_or(Err(error), Err)
+    })
     .with_context(|| {
         format!(
             "Failed to authenticate to {} as user '{}'",
@@ -207,8 +214,12 @@ pub(super) async fn connect_through_tunnel(
     })?;
 
     // Create our Client wrapper
-    let client =
-        Client::from_handle_and_address(Arc::new(handle), jump_host.effective_user(), socket_addr);
+    let client = Client::from_handle_and_address_with_state(
+        Arc::new(handle),
+        jump_host.effective_user(),
+        socket_addr,
+        fatal_transport,
+    );
 
     Ok(client)
 }
@@ -285,6 +296,7 @@ pub(super) async fn connect_to_destination(
     })?;
 
     let handler = ClientHandler::new(destination_host.to_string(), socket_addr, check_method);
+    let fatal_transport = handler.fatal_transport_state();
 
     // Connect through the stream
     let handle = tokio::time::timeout(
@@ -309,6 +321,12 @@ pub(super) async fn connect_to_destination(
     let dest_desc = format!("destination '{}:{}'", destination_host, destination_port);
     authenticate_connection(&mut handle, destination_user, dest_auth_method, &dest_desc)
         .await
+        .or_else(|error| {
+            fatal_transport
+                .take_error()
+                .map(anyhow::Error::new)
+                .map_or(Err(error), Err)
+        })
         .with_context(|| {
             format!(
                 "Failed to authenticate to {} as user '{}'",
@@ -317,10 +335,11 @@ pub(super) async fn connect_to_destination(
         })?;
 
     // Create our Client wrapper
-    let client = Client::from_handle_and_address(
+    let client = Client::from_handle_and_address_with_state(
         Arc::new(handle),
         destination_user.to_string(),
         socket_addr,
+        fatal_transport,
     );
 
     Ok(client)

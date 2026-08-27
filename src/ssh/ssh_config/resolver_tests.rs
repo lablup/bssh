@@ -128,7 +128,7 @@ Host example.com
     }
 
     #[test]
-    fn test_ca_signature_algorithms_override() {
+    fn test_ca_signature_algorithms_keeps_first_obtained_list() {
         let content = r#"
 Host *
     CASignatureAlgorithms ssh-rsa,ssh-dss
@@ -139,14 +139,14 @@ Host example.com
         let hosts = parse(content).unwrap();
         let config = find_host_config(&hosts, "example.com");
 
-        // Should override (not append) - only the latter values
+        // Replacement list keeps the first matching block value
         assert_eq!(config.ca_signature_algorithms.len(), 2);
-        assert_eq!(config.ca_signature_algorithms[0], "ssh-ed25519");
-        assert_eq!(config.ca_signature_algorithms[1], "rsa-sha2-512");
+        assert_eq!(config.ca_signature_algorithms[0], "ssh-rsa");
+        assert_eq!(config.ca_signature_algorithms[1], "ssh-dss");
     }
 
     #[test]
-    fn test_hostbased_accepted_algorithms_override() {
+    fn test_hostbased_accepted_algorithms_keeps_first_obtained_list() {
         let content = r#"
 Host *
     HostbasedAcceptedAlgorithms ssh-rsa,ssh-dss
@@ -157,17 +157,14 @@ Host example.com
         let hosts = parse(content).unwrap();
         let config = find_host_config(&hosts, "example.com");
 
-        // Should override (not append)
+        // Replacement list keeps the first matching block value
         assert_eq!(config.hostbased_accepted_algorithms.len(), 2);
-        assert_eq!(config.hostbased_accepted_algorithms[0], "ssh-ed25519");
-        assert_eq!(
-            config.hostbased_accepted_algorithms[1],
-            "ecdsa-sha2-nistp256"
-        );
+        assert_eq!(config.hostbased_accepted_algorithms[0], "ssh-rsa");
+        assert_eq!(config.hostbased_accepted_algorithms[1], "ssh-dss");
     }
 
     #[test]
-    fn test_gateway_ports_override() {
+    fn test_gateway_ports_keeps_first_obtained_value() {
         let content = r#"
 Host *
     GatewayPorts no
@@ -178,12 +175,12 @@ Host example.com
         let hosts = parse(content).unwrap();
         let config = find_host_config(&hosts, "example.com");
 
-        // Should override to "yes"
-        assert_eq!(config.gateway_ports, Some("yes".to_string()));
+        // The first matching block wins
+        assert_eq!(config.gateway_ports, Some("no".to_string()));
     }
 
     #[test]
-    fn test_exit_on_forward_failure_override() {
+    fn test_exit_on_forward_failure_keeps_first_obtained_value() {
         let content = r#"
 Host *
     ExitOnForwardFailure no
@@ -194,12 +191,12 @@ Host example.com
         let hosts = parse(content).unwrap();
         let config = find_host_config(&hosts, "example.com");
 
-        // Should override to true
-        assert_eq!(config.exit_on_forward_failure, Some(true));
+        // The first matching block wins
+        assert_eq!(config.exit_on_forward_failure, Some(false));
     }
 
     #[test]
-    fn test_hostbased_authentication_override() {
+    fn test_hostbased_authentication_keeps_first_obtained_value() {
         let content = r#"
 Host *
     HostbasedAuthentication no
@@ -210,13 +207,13 @@ Host example.com
         let hosts = parse(content).unwrap();
         let config = find_host_config(&hosts, "example.com");
 
-        // Should override to true
-        assert_eq!(config.hostbased_authentication, Some(true));
+        // The first matching block wins
+        assert_eq!(config.hostbased_authentication, Some(false));
     }
 
     #[test]
     fn test_multiple_host_blocks_with_priority() {
-        // SSH config: later matches override earlier matches for scalar values
+        // SSH config: the first matching value wins; additive lists accumulate
         // Lists accumulate across all matches
         let content = r#"
 Host example.com
@@ -234,9 +231,9 @@ Host *
         let hosts = parse(content).unwrap();
         let config = find_host_config(&hosts, "example.com");
 
-        // GatewayPorts: Later matches override (*.com overrides example.com)
-        // So the final value should be "no" from *.com
-        assert_eq!(config.gateway_ports, Some("no".to_string()));
+        // GatewayPorts: the first matching example.com block wins
+        // So the final value is "yes" from example.com
+        assert_eq!(config.gateway_ports, Some("yes".to_string()));
 
         // ExitOnForwardFailure: Only set in * block, so it's yes
         assert_eq!(config.exit_on_forward_failure, Some(true));
@@ -389,7 +386,7 @@ Host example.com
         let hosts = parse(content).unwrap();
         let config = find_host_config(&hosts, "example.com");
 
-        // Should override to true (yes)
+        // The first matching block wins (yes)
         assert_eq!(config.use_keychain, Some(true));
     }
 
