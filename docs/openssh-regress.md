@@ -30,7 +30,9 @@ An upstream `SKIPPED:` result is reported as `skip` and excluded from the eligib
 
 The score is `pass / (pass + fail)`. CI compares both the pass count and the environment-valid result count with platform-specific floors in `baseline.json`, uploads the generated JSON table even on failure, and fails when either count drops below its floor. Durations are milliseconds, and `first_failure_line` is the first diagnostic line selected from the captured combined harness output; per-test logs are streamed under `target/openssh-regress/logs/` and capped at 16 MiB each.
 
-Before #277 adds `-E`, the honest pass floor is zero. A nonzero eligible-result floor still rejects a collapsed all-environmental run; #277 raises the pass floor after the suite becomes runnable. Focused `--test` runs report verdicts without enforcing full-suite floors.
+At PR head `13c35ce`, after #277 made the suite runnable, Linux measured 25 pass, 42 fail, five environmental, and six upstream skips for 67 eligible results. macOS measured 26 pass, 39 fail, seven environmental, and six upstream skips for 65 eligible results. Both platforms keep a conservative 23-pass floor, preserving the epic's measured pass floor while leaving observed slack.
+
+The eligible floors are 67 on Linux and 65 on macOS. This recalibrates the denominator from the 78 runnable manifest rows: six upstream skips are now reached and excluded, followed by the existing platform environmental allowances of five on Linux and seven on macOS (`78 - 6 - 5 = 67`; `78 - 6 - 7 = 65`). A nonzero eligible-result floor still rejects a collapsed all-environmental run. Focused `--test` runs report verdicts without enforcing full-suite floors.
 
 ## Candidate inventory
 

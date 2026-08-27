@@ -155,6 +155,11 @@ impl NodeOutputWriter {
 
 #[cfg(test)]
 mod tests {
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    use tempfile::tempdir;
+
     use super::*;
 
     #[test]
@@ -192,5 +197,49 @@ mod tests {
         let lines = ["line1", "line2"];
         let _ = synchronized_print_lines(lines.iter().copied());
         let _ = synchronized_eprint_lines(lines.iter().copied());
+    }
+
+    #[test]
+    fn remote_stderr_helper() {
+        if std::env::var_os("BSSH_LOG_FILE_TEST_HELPER").is_none() {
+            return;
+        }
+
+        let log = PathBuf::from(
+            std::env::var_os("BSSH_LOG_FILE_TEST_PATH").expect("helper log path should be set"),
+        );
+        crate::utils::diagnostics::set_log_file(&log).expect("helper should open diagnostic log");
+        crate::diagnosticln!("bssh-owned diagnostic");
+        NodeOutputWriter::new_with_no_prefix("example", true)
+            .write_stderr_lines("remote command stderr")
+            .expect("helper should write remote stderr");
+    }
+
+    #[test]
+    fn remote_command_stderr_stays_on_fd_2() {
+        let directory = tempdir().expect("failed to create temporary directory");
+        let log = directory.path().join("bssh.log");
+        let output = Command::new(std::env::current_exe().expect("test executable should exist"))
+            .args([
+                "--exact",
+                "executor::output_sync::tests::remote_stderr_helper",
+                "--nocapture",
+            ])
+            .env("BSSH_LOG_FILE_TEST_HELPER", "1")
+            .env("BSSH_LOG_FILE_TEST_PATH", &log)
+            .output()
+            .expect("failed to run remote stderr helper");
+
+        assert!(output.status.success(), "remote stderr helper should pass");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("remote command stderr"),
+            "stderr was: {stderr}"
+        );
+        assert!(!stderr.contains("bssh-owned diagnostic"));
+
+        let contents = std::fs::read_to_string(&log).expect("failed to read diagnostic log");
+        assert!(contents.contains("bssh-owned diagnostic"));
+        assert!(!contents.contains("remote command stderr"));
     }
 }
