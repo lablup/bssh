@@ -19,6 +19,7 @@ use owo_colors::OwoColorize;
 use std::sync::Arc;
 
 use crate::commands::error_format::format_connection_error;
+use crate::diagnosticln as eprintln;
 use crate::pty::PtyManager;
 
 use super::super::interactive_signal::{

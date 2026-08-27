@@ -25,6 +25,8 @@ use tokio::sync::Mutex;
 use tokio::sync::mpsc;
 use tokio::time::Duration;
 
+use crate::diagnosticln as eprintln;
+
 use super::super::interactive_signal::is_interrupted;
 use super::types::{InteractiveCommand, NodeSession, SSH_OUTPUT_POLL_INTERVAL_MS};
 

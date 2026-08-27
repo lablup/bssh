@@ -14,7 +14,7 @@
 
 //! Cache statistics and management functionality
 
-use bssh::ssh::GLOBAL_CACHE;
+use bssh::{diagnosticln as eprintln, ssh::GLOBAL_CACHE};
 use owo_colors::OwoColorize;
 
 /// Handle cache statistics command

@@ -16,6 +16,7 @@ use anyhow::Result;
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::diagnosticln as eprintln;
 use crate::executor::{ExitCodeStrategy, OutputMode, ParallelExecutor, RankDetector};
 use crate::forwarding::ForwardingType;
 use crate::node::Node;

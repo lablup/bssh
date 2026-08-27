@@ -160,6 +160,13 @@ pub struct Cli {
     pub output_dir: Option<PathBuf>,
 
     #[arg(
+        short = 'E',
+        value_name = "log_file",
+        help = "Append bssh diagnostics and debug logs to the specified file (SSH-compatible)"
+    )]
+    pub log_file: Option<PathBuf>,
+
+    #[arg(
         short = 'v',
         long,
         action = clap::ArgAction::Count,

@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::process::ExitCode;
+
 use anyhow::Result;
 use bssh::cli::{
     Cli, Commands, PdshCli, has_pdsh_compat_flag, is_pdsh_compat_mode, remove_pdsh_compat_flag,
@@ -38,7 +40,17 @@ use app::{
 /// 2. pdsh compatibility mode (via symlink, env var, or --pdsh-compat flag)
 /// 3. SSH compatibility mode (single host)
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() -> ExitCode {
+    match run().await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            bssh::diagnosticln!("Error: {error:?}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+async fn run() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
 
     // Check for pdsh compatibility mode
@@ -82,7 +94,7 @@ fn map_hard_failure(command: &Option<Commands>, error: anyhow::Error) -> anyhow:
     if matches!(command, Some(Commands::Ping)) {
         // Match the format anyhow's `Termination` impl uses, since this path
         // replaces it.
-        eprintln!("Error: {error:?}");
+        bssh::diagnosticln!("Error: {error:?}");
         std::process::exit(PING_SSH_LEVEL_FAILURE);
     }
 
@@ -113,15 +125,15 @@ async fn run_pdsh_mode(args: &[String]) -> Result<()> {
 
     // Check if we have hosts
     if cli.hosts.is_none() {
-        eprintln!("Error: No hosts specified. Use -w to specify target hosts.");
-        eprintln!("Usage: pdsh -w hosts command");
+        bssh::diagnosticln!("Error: No hosts specified. Use -w to specify target hosts.");
+        bssh::diagnosticln!("Usage: pdsh -w hosts command");
         std::process::exit(1);
     }
 
     // Check if we have a command (unless in query mode)
     if cli.command_args.is_empty() {
-        eprintln!("Error: No command specified.");
-        eprintln!("Usage: pdsh -w hosts command");
+        bssh::diagnosticln!("Error: No command specified.");
+        bssh::diagnosticln!("Usage: pdsh -w hosts command");
         std::process::exit(1);
     }
 
@@ -224,8 +236,8 @@ async fn handle_pdsh_query_mode(pdsh_cli: &PdshCli) -> Result<()> {
             }
         }
     } else {
-        eprintln!("Error: No hosts specified for query mode.");
-        eprintln!("Usage: pdsh -w hosts -q");
+        bssh::diagnosticln!("Error: No hosts specified for query mode.");
+        bssh::diagnosticln!("Usage: pdsh -w hosts -q");
         std::process::exit(1);
     }
 
@@ -242,6 +254,10 @@ async fn run_bssh_mode(args: &[String]) -> Result<()> {
     }
 
     let mut cli = Cli::parse();
+
+    if let Some(path) = &cli.log_file {
+        bssh::utils::diagnostics::set_log_file(path)?;
+    }
 
     // Handle SSH query option (-Q)
     if let Some(ref query) = cli.query {

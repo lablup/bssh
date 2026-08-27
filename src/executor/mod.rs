@@ -29,6 +29,7 @@ pub mod rank_detector;
 pub use connection_manager::download_dir_from_node;
 pub use exit_strategy::ExitCodeStrategy;
 pub use output_mode::{OutputMode, is_tty, should_use_colors};
+pub use output_sync::NodeOutputWriter;
 pub use parallel::ParallelExecutor;
 pub use rank_detector::RankDetector;
 pub use result_types::{DownloadResult, ExecutionResult, UploadResult};

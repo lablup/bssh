@@ -37,6 +37,8 @@ use anyhow::Result;
 use secrecy::{ExposeSecret, SecretString};
 use std::fmt;
 
+use crate::diagnosticln as eprintln;
+
 /// A secure wrapper for SSH authentication passwords.
 ///
 /// Automatically clears its contents from memory when dropped. Designed to be

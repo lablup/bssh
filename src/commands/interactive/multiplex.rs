@@ -22,6 +22,8 @@ use rustyline::config::Configurer;
 use rustyline::error::ReadlineError;
 use tokio::time::Duration;
 
+use crate::diagnosticln as eprintln;
+
 use super::super::interactive_signal::is_interrupted;
 use super::types::{
     InteractiveCommand, NODES_TO_SHOW_IN_COMPACT, NodeSession, SSH_OUTPUT_POLL_INTERVAL_MS,

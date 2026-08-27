@@ -13,6 +13,7 @@
 // limitations under the License.
 
 pub mod buffer_pool;
+pub mod diagnostics;
 pub mod fs;
 pub mod logging;
 pub mod output;

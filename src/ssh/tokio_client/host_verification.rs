@@ -36,6 +36,8 @@
 //! host list, so a line like `@revoked node1 ssh-ed25519 <key>` never matches
 //! `node1` and is otherwise invisible to [`lookup_known_host`].
 
+use crate::diagnosticln as eprintln;
+
 use russh::keys::{Algorithm, HashAlg, PublicKey};
 #[cfg(test)]
 use std::sync::Mutex as StdMutex;

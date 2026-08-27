@@ -20,6 +20,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::signal;
 use tracing::{debug, info};
 
+use crate::diagnosticln as eprintln;
+
 /// Global flag for interrupt signal
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 

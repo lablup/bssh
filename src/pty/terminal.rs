@@ -26,6 +26,8 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode},
 };
 
+use crate::diagnosticln as eprintln;
+
 use super::terminal_protocol::{ProtocolState, capture_protocol_state, write_terminal_cleanup};
 use super::terminal_screen::ScreenModeTracker;
 

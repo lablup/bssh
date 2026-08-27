@@ -137,6 +137,9 @@ pub fn looks_like_host_specification(s: &str) -> bool {
 pub async fn initialize_app(cli: &mut Cli, args: &[String]) -> Result<AppContext> {
     // Initialize logging
     init_logging(cli.verbose);
+    if let Some(path) = &cli.log_file {
+        tracing::debug!(path = %path.display(), "Appending bssh diagnostics to log file");
+    }
 
     // Early Backend.AI environment detection
     // Auto-set cluster if Backend.AI environment is detected and no explicit cluster/hosts specified

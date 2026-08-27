@@ -14,6 +14,7 @@
 
 use crate::ui::tui::log_buffer::LogBuffer;
 use crate::ui::tui::log_layer::TuiLogLayer;
+use crate::utils::diagnostics::{self, DiagnosticMakeWriter};
 use std::io::IsTerminal;
 use std::sync::{Arc, Mutex, OnceLock};
 use tracing_subscriber::{EnvFilter, prelude::*};
@@ -67,7 +68,14 @@ pub fn init_logging(verbosity: u8) -> Arc<Mutex<LogBuffer>> {
 
     let filter = create_env_filter(verbosity);
 
-    if is_tui_likely() {
+    if diagnostics::has_log_file() {
+        tracing_subscriber::fmt()
+            .with_env_filter(filter)
+            .with_target(true)
+            .with_ansi(false)
+            .with_writer(DiagnosticMakeWriter)
+            .init();
+    } else if is_tui_likely() {
         // TUI mode: use TuiLogLayer to capture logs in buffer
         let tui_layer = TuiLogLayer::new(Arc::clone(&log_buffer));
 
