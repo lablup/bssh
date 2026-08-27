@@ -424,15 +424,15 @@ Host example.com
     #[test]
     fn test_determine_effective_jump_hosts_wildcard_pattern() {
         let ssh_config_content = r#"
-Host *.internal
-    ProxyJump gateway.company.com
-
 Host db.internal
     ProxyJump db-gateway.company.com
+
+Host *.internal
+    ProxyJump gateway.company.com
 "#;
         let ssh_config = SshConfig::parse(ssh_config_content).unwrap();
 
-        // Should match the most specific pattern
+        // OpenSSH uses the first value obtained, so put the exact host first.
         let result = determine_effective_jump_hosts(None, &ssh_config, "db.internal");
         assert_eq!(result, Some("db-gateway.company.com".to_string()));
 
