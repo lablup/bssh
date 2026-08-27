@@ -831,6 +831,134 @@ pub(super) fn verify_known_hosts_file(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum KnownHostsFilesLookup {
+    Match,
+    Conflict { path: String, line: usize },
+    Unknown,
+}
+
+fn lookup_known_host_files(
+    hostname: &str,
+    port: u16,
+    server_public_key: &PublicKey,
+    known_hosts_paths: &[String],
+) -> Result<KnownHostsFilesLookup, super::Error> {
+    for path in known_hosts_paths {
+        probe_known_hosts_path(path)?;
+        check_marker_lines(hostname, port, server_public_key, path)?;
+    }
+
+    let mut conflict = None;
+    for path in known_hosts_paths {
+        match lookup_known_host(hostname, port, server_public_key, path) {
+            Ok(KnownHostLookup::Match) => return Ok(KnownHostsFilesLookup::Match),
+            Ok(KnownHostLookup::Conflict { line }) => {
+                conflict.get_or_insert_with(|| KnownHostsFilesLookup::Conflict {
+                    path: path.clone(),
+                    line,
+                });
+            }
+            Ok(KnownHostLookup::Unknown) => {}
+            Err(error) => {
+                return Err(map_known_hosts_error(
+                    hostname,
+                    port,
+                    server_public_key,
+                    path,
+                    error,
+                ));
+            }
+        }
+    }
+
+    Ok(conflict.unwrap_or(KnownHostsFilesLookup::Unknown))
+}
+
+/// Verify a server key against every configured user/global known-hosts file.
+pub(super) fn verify_known_hosts_files(
+    hostname: &str,
+    port: u16,
+    server_public_key: &PublicKey,
+    known_hosts_paths: &[String],
+) -> Result<bool, super::Error> {
+    let hostname = hostname.to_ascii_lowercase();
+    let hostname = hostname.as_str();
+    ensure_recordable_hostname(hostname)?;
+
+    match lookup_known_host_files(hostname, port, server_public_key, known_hosts_paths)? {
+        KnownHostsFilesLookup::Match => Ok(true),
+        KnownHostsFilesLookup::Unknown => Ok(false),
+        KnownHostsFilesLookup::Conflict { path, line } => Err(map_known_hosts_error(
+            hostname,
+            port,
+            server_public_key,
+            &path,
+            russh::keys::Error::KeyChanged { line },
+        )),
+    }
+}
+
+/// Apply accept-new semantics across every configured read store and record a
+/// genuinely unknown key only into the explicitly selected user write store.
+pub(super) async fn verify_accept_new_files(
+    hostname: &str,
+    port: u16,
+    server_public_key: &PublicKey,
+    known_hosts_paths: &[String],
+    write_path: Option<&str>,
+) -> Result<bool, super::Error> {
+    let hostname = hostname.to_ascii_lowercase();
+    let hostname = hostname.as_str();
+    ensure_recordable_hostname(hostname)?;
+    let trust_scope = (!known_hosts_paths.is_empty()).then(|| known_hosts_paths.join("\0"));
+
+    match lookup_known_host_files(hostname, port, server_public_key, known_hosts_paths)? {
+        KnownHostsFilesLookup::Match => {
+            verify_process_pin(hostname, port, trust_scope.as_deref(), server_public_key).await?;
+            return Ok(true);
+        }
+        KnownHostsFilesLookup::Conflict { path, line } => {
+            return Err(map_known_hosts_error(
+                hostname,
+                port,
+                server_public_key,
+                &path,
+                russh::keys::Error::KeyChanged { line },
+            ));
+        }
+        KnownHostsFilesLookup::Unknown => {}
+    }
+
+    let _guard = KNOWN_HOSTS_LOCK.lock().await;
+    let _file_lock = match write_path {
+        Some(path) => Some(acquire_known_hosts_file_lock(path)?),
+        None => None,
+    };
+
+    match lookup_known_host_files(hostname, port, server_public_key, known_hosts_paths)? {
+        KnownHostsFilesLookup::Match => {
+            verify_process_pin(hostname, port, trust_scope.as_deref(), server_public_key).await?;
+            Ok(true)
+        }
+        KnownHostsFilesLookup::Conflict { path, line } => Err(map_known_hosts_error(
+            hostname,
+            port,
+            server_public_key,
+            &path,
+            russh::keys::Error::KeyChanged { line },
+        )),
+        KnownHostsFilesLookup::Unknown => {
+            verify_process_pin(hostname, port, trust_scope.as_deref(), server_public_key).await?;
+            if let Some(path) = write_path {
+                record_host_key(hostname, port, server_public_key, path);
+            }
+            remember_process_pin(hostname, port, trust_scope.as_deref(), server_public_key).await;
+            Ok(true)
+        }
+    }
+}
+
 /// Convert a known_hosts check failure into the crate error type.
 ///
 /// A [`russh::keys::Error::KeyChanged`] becomes the dedicated
@@ -2245,7 +2373,12 @@ mod tests {
 
         for check in [
             ServerCheckMethod::KnownHostsFile(path_str.clone()),
-            ServerCheckMethod::AcceptNewKnownHostsFile(path_str),
+            ServerCheckMethod::KnownHostsFiles(vec![path_str.clone()]),
+            ServerCheckMethod::AcceptNewKnownHostsFile(path_str.clone()),
+            ServerCheckMethod::AcceptNewKnownHostsFiles {
+                files: vec![path_str.clone()],
+                write_path: Some(path_str),
+            },
             ServerCheckMethod::AcceptNewInMemory,
             ServerCheckMethod::PublicKey(
                 subject.public_key().to_openssh().unwrap()[..]
@@ -2297,5 +2430,150 @@ mod tests {
                 .is_empty(),
             "the client config must not advertise certificate host key algorithms"
         );
+    }
+
+    #[tokio::test]
+    async fn test_known_hosts_files_distinguishes_matching_and_empty_user_store() {
+        let (_matching_dir, _matching_path, matching) = temp_known_hosts();
+        let (_empty_dir, _empty_path, empty) = temp_known_hosts();
+        let expected = generate_key();
+        record_host_key("explicit.example.com", 22, expected.public_key(), &matching);
+
+        let mut matching_handler = ClientHandler::new(
+            "explicit.example.com".into(),
+            "127.0.0.1:22".parse().unwrap(),
+            ServerCheckMethod::KnownHostsFiles(vec![matching]),
+        );
+        assert!(matches!(
+            matching_handler
+                .check_server_key(&host_key(expected.public_key()))
+                .await,
+            Ok(true)
+        ));
+
+        let mut empty_handler = ClientHandler::new(
+            "explicit.example.com".into(),
+            "127.0.0.1:22".parse().unwrap(),
+            ServerCheckMethod::KnownHostsFiles(vec![empty]),
+        );
+        assert!(matches!(
+            empty_handler
+                .check_server_key(&host_key(expected.public_key()))
+                .await,
+            Ok(false)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_known_hosts_files_accepts_match_after_earlier_conflict() {
+        let (_first_dir, _first_path, first) = temp_known_hosts();
+        let (_second_dir, _second_path, second) = temp_known_hosts();
+        let expected = generate_key();
+        let conflicting = generate_key();
+        record_host_key("multi.example.com", 22, conflicting.public_key(), &first);
+        record_host_key("multi.example.com", 22, expected.public_key(), &second);
+
+        let mut handler = ClientHandler::new(
+            "multi.example.com".into(),
+            "127.0.0.1:22".parse().unwrap(),
+            ServerCheckMethod::KnownHostsFiles(vec![first, second]),
+        );
+        assert!(matches!(
+            handler
+                .check_server_key(&host_key(expected.public_key()))
+                .await,
+            Ok(true)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_known_hosts_files_with_no_stores_fails_closed_as_unknown() {
+        let key = generate_key();
+        let mut handler = handler_for(ServerCheckMethod::KnownHostsFiles(Vec::new()));
+        assert!(matches!(
+            handler.check_server_key(&host_key(key.public_key())).await,
+            Ok(false)
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_accept_new_files_records_only_explicit_user_write_path() {
+        let (_user_dir, user_path, user) = temp_known_hosts();
+        let (_global_dir, global_path, global) = temp_known_hosts();
+        let (_second_user_dir, second_user_path, second_user) = temp_known_hosts();
+        let key = generate_key();
+        let mut handler = handler_for(ServerCheckMethod::AcceptNewKnownHostsFiles {
+            files: vec![user.clone(), second_user, global],
+            write_path: Some(user),
+        });
+
+        assert!(matches!(
+            handler.check_server_key(&host_key(key.public_key())).await,
+            Ok(true)
+        ));
+        assert_eq!(entry_lines(&user_path).len(), 1);
+        assert!(
+            !second_user_path.exists(),
+            "only the first user store may receive a learned key"
+        );
+        assert!(!global_path.exists(), "global store must remain read-only");
+    }
+
+    #[tokio::test]
+    async fn test_accept_new_files_uses_global_match_without_writing_user_file() {
+        let (_user_dir, user_path, user) = temp_known_hosts();
+        let (_global_dir, _global_path, global) = temp_known_hosts();
+        let key = generate_key();
+        record_host_key("global-match.example.com", 22, key.public_key(), &global);
+        let mut handler = ClientHandler::new(
+            "global-match.example.com".into(),
+            "127.0.0.1:22".parse().unwrap(),
+            ServerCheckMethod::AcceptNewKnownHostsFiles {
+                files: vec![user.clone(), global],
+                write_path: Some(user),
+            },
+        );
+
+        assert!(matches!(
+            handler.check_server_key(&host_key(key.public_key())).await,
+            Ok(true)
+        ));
+        assert!(
+            !user_path.exists(),
+            "a later matching read store must prevent first-use recording"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_accept_new_files_without_write_path_keeps_process_pin() {
+        let original = generate_key();
+        let changed = generate_key();
+        let method = ServerCheckMethod::AcceptNewKnownHostsFiles {
+            files: Vec::new(),
+            write_path: None,
+        };
+        let mut first = ClientHandler::new(
+            "memory-only-multifile.example.com".into(),
+            "127.0.0.1:22".parse().unwrap(),
+            method.clone(),
+        );
+        assert!(matches!(
+            first
+                .check_server_key(&host_key(original.public_key()))
+                .await,
+            Ok(true)
+        ));
+
+        let mut second = ClientHandler::new(
+            "memory-only-multifile.example.com".into(),
+            "127.0.0.1:22".parse().unwrap(),
+            method,
+        );
+        assert!(matches!(
+            second
+                .check_server_key(&host_key(changed.public_key()))
+                .await,
+            Err(Error::HostKeyChanged { .. })
+        ));
     }
 }

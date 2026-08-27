@@ -45,8 +45,13 @@ pub struct SshHostConfig {
     /// client implementation as bssh doesn't currently support proxy connections.
     pub proxy_use_fdpass: Option<bool>,
     pub strict_host_key_checking: Option<String>,
-    pub user_known_hosts_file: Option<PathBuf>,
-    pub global_known_hosts_file: Option<PathBuf>,
+    /// Raw `UserKnownHostsFile` values in OpenSSH lookup order.
+    ///
+    /// Expansion is intentionally deferred until connection time because the
+    /// supported `%h`, `%p`, and `%r` tokens depend on the concrete target.
+    pub user_known_hosts_file: Option<Vec<String>>,
+    /// Raw `GlobalKnownHostsFile` values in OpenSSH lookup order.
+    pub global_known_hosts_file: Option<Vec<String>>,
     pub forward_agent: Option<bool>,
     pub forward_x11: Option<bool>,
     pub server_alive_interval: Option<u32>,

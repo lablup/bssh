@@ -39,9 +39,12 @@ pub(super) async fn connect_direct(
         .await
         .with_context(|| format!("Rate limited for host {host}"))?;
 
-    let check_method = strict_mode.map_or_else(
-        || crate::ssh::known_hosts::get_check_method(StrictHostKeyChecking::AcceptNew),
-        crate::ssh::known_hosts::get_check_method,
+    let check_method = crate::ssh::known_hosts::get_check_method_for_target(
+        strict_mode.unwrap_or(StrictHostKeyChecking::AcceptNew),
+        ssh_connection_config,
+        host,
+        port,
+        username,
     );
 
     let client = tokio::time::timeout(

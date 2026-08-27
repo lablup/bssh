@@ -167,7 +167,13 @@ async fn execute_command_with_forwarding(params: ExecuteCommandParams<'_>) -> Re
     // connection path (#239). The previous hand-rolled match sent accept-new
     // through strict default-known_hosts checking, which rejected unknown
     // hosts instead of recording them.
-    let server_check = crate::ssh::known_hosts::get_check_method(params.strict_mode);
+    let server_check = crate::ssh::known_hosts::get_check_method_for_target(
+        params.strict_mode,
+        &ssh_connection_config,
+        &node.host,
+        node.port,
+        &node.username,
+    );
 
     // Create SSH client. Going through `connect_with_ssh_config` rather than
     // `connect` gives this path the resolved keepalive, compression, and
