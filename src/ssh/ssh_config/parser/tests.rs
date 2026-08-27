@@ -138,6 +138,22 @@ Host example.com
 }
 
 #[test]
+fn equals_in_url_value_is_preserved_by_config_line_parser() {
+    let line = r#"KnownHostsCommand curl -s "https://api.example.com/keys?host=%H&format=ssh""#;
+    let (keyword, args) = parse_config_line(line, 1, 4096).unwrap();
+
+    assert_eq!(keyword, "knownhostscommand");
+    assert_eq!(
+        args,
+        vec![
+            "curl",
+            "-s",
+            r#""https://api.example.com/keys?host=%H&format=ssh""#
+        ]
+    );
+}
+
+#[test]
 fn test_parse_mixed_syntax() {
     // Test mixing both syntaxes in same config
     let content = r#"

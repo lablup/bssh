@@ -248,22 +248,28 @@ Host test3
 }
 
 #[test]
-fn test_known_hosts_command_with_complex_url() {
-    let config = r#"
+fn test_known_hosts_command_complex_url_is_rejected() {
+    let rejected_config = r#"
 Host test1
     KnownHostsCommand curl -s "https://api.example.com/keys?host=%H&format=ssh"
+"#;
+    let error = SshConfig::parse(rejected_config).expect_err("curl URL must fail validation");
+    assert!(
+        format!("{error:#}").contains("KnownHostsCommand contains dangerous character '&'"),
+        "unexpected validation error: {error:#}"
+    );
 
+    let allowed_config = r#"
 Host test2
     KnownHostsCommand /opt/scripts/fetch-key.py --host=%h --port=%p
 "#;
-
-    let config_parsed = SshConfig::parse(config).unwrap();
+    let config_parsed = SshConfig::parse(allowed_config).unwrap();
     let hosts = config_parsed.hosts;
-    assert_eq!(hosts.len(), 2);
-
-    // Note: curl commands should fail validation due to dangerous chars
-    // but let's check parsing first
-    // Actually, the test3 in test_parse_known_hosts_command shows curl fails
+    assert_eq!(hosts.len(), 1);
+    assert_eq!(
+        hosts[0].known_hosts_command,
+        Some("/opt/scripts/fetch-key.py --host=%h --port=%p".to_string())
+    );
 }
 
 #[test]
