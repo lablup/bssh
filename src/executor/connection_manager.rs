@@ -415,15 +415,15 @@ Host internal.example.com
     #[test]
     fn test_resolve_effective_jump_hosts_wildcard() {
         let ssh_config_content = r#"
-Host *.internal.example.com
-    ProxyJump gateway.example.com
-
 Host db.internal.example.com
     ProxyJump db-gateway.example.com
+
+Host *.internal.example.com
+    ProxyJump gateway.example.com
 "#;
         let ssh_config = SshConfig::parse(ssh_config_content).unwrap();
 
-        // Should match db.internal.example.com specifically
+        // OpenSSH uses the first value obtained, so put the exact host first.
         let result =
             resolve_effective_jump_hosts(None, Some(&ssh_config), "db.internal.example.com");
         assert_eq!(result, Some("db-gateway.example.com".to_string()));
@@ -452,15 +452,15 @@ Host *.internal.example.com
     #[test]
     fn test_resolve_effective_jump_hosts_none_value() {
         let ssh_config_content = r#"
-Host *.example.com
-    ProxyJump gateway.example.com
-
 Host direct.example.com
     ProxyJump none
+
+Host *.example.com
+    ProxyJump gateway.example.com
 "#;
         let ssh_config = SshConfig::parse(ssh_config_content).unwrap();
 
-        // direct.example.com should have ProxyJump explicitly set to "none"
+        // The explicit disable must be obtained before the wildcard fallback.
         // Note: The actual handling of "none" as special value would be
         // done by the connection layer, but the config should return it
         let result = resolve_effective_jump_hosts(None, Some(&ssh_config), "direct.example.com");
