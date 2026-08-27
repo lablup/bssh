@@ -26,10 +26,12 @@ mod environment;
 mod forwarding;
 mod proxy;
 mod security;
+mod support;
 mod ui;
 
 use crate::ssh::ssh_config::types::SshHostConfig;
 use anyhow::Result;
+use std::{collections::HashSet, path::Path};
 
 /// Parse a configuration option for a host
 ///
@@ -37,10 +39,47 @@ use anyhow::Result;
 /// category-specific parser based on the keyword.
 pub fn parse_option(
     host: &mut SshHostConfig,
-    keyword: &str,
+    accepted_keyword: &str,
     args: &[String],
+    source_path: Option<&Path>,
     line_number: usize,
+    reported_diagnostics: &mut HashSet<String>,
 ) -> Result<()> {
+    let Some(spec) = support::keyword_spec(accepted_keyword) else {
+        if reported_diagnostics.insert(format!("unknown:{accepted_keyword}")) {
+            let location = source_path.map_or_else(
+                || format!("line {line_number}"),
+                |path| format!("{}:{line_number}", path.display()),
+            );
+            crate::diagnosticln!("Unknown SSH config option '{accepted_keyword}' at {location}");
+        }
+        return Ok(());
+    };
+    let keyword = spec.canonical;
+
+    let tracking_issue = match spec.support {
+        support::KeywordSupport::Runtime(_) => None,
+        support::KeywordSupport::Delegated(issue) => Some(issue),
+        support::KeywordSupport::Unimplemented => Some(0),
+    };
+    if let Some(issue) =
+        tracking_issue.filter(|_| reported_diagnostics.insert(format!("unsupported:{keyword}")))
+    {
+        let location = source_path.map_or_else(
+            || format!("line {line_number}"),
+            |path| format!("{}:{line_number}", path.display()),
+        );
+        if issue == 0 {
+            crate::diagnosticln!(
+                "Unsupported SSH config option '{keyword}' at {location}; bssh parses this value for inspection but does not implement its runtime behavior"
+            );
+        } else {
+            crate::diagnosticln!(
+                "SSH config option '{keyword}' at {location} is not implemented yet; tracked in #{issue}"
+            );
+        }
+    }
+
     match keyword {
         // Basic options
         "hostname" | "user" | "port" => basic::parse_basic_option(host, keyword, args, line_number),
@@ -154,10 +193,6 @@ pub fn parse_option(
         | "useroaming"
         | "usersh"
         | "useprivilegedport" => Ok(()),
-
-        _ => {
-            crate::diagnosticln!("Unknown SSH config option '{keyword}' at line {line_number}");
-            Ok(())
-        }
+        _ => unreachable!("accepted keyword is missing a parser: {keyword}"),
     }
 }

@@ -85,19 +85,19 @@ pub(super) fn find_host_config_with_user(
     merged_config
 }
 
-/// Merge two host configurations (second takes precedence)
+/// Merge a matching block using OpenSSH's first-obtained-value rule.
 pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfig) {
-    // For most options, overlay takes precedence if set
-    if !overlay.host_patterns.is_empty() {
+    // Blocks are visited in source order, so scalar values only fill empty slots.
+    if base.host_patterns.is_empty() && !overlay.host_patterns.is_empty() {
         base.host_patterns = overlay.host_patterns.clone();
     }
-    if overlay.hostname.is_some() {
+    if base.hostname.is_none() && overlay.hostname.is_some() {
         base.hostname = overlay.hostname.clone();
     }
-    if overlay.user.is_some() {
+    if base.user.is_none() && overlay.user.is_some() {
         base.user = overlay.user.clone();
     }
-    if overlay.port.is_some() {
+    if base.port.is_none() && overlay.port.is_some() {
         base.port = overlay.port;
     }
     if !overlay.identity_files.is_empty() {
@@ -109,84 +109,91 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
     // ProxyJump compete for the same slot, so either one suppresses all later
     // occurrences of both directives.
     if base.proxy_jump.is_none() && base.proxy_command.is_none() {
-        if overlay.proxy_jump.is_some() {
+        if base.proxy_jump.is_none() && overlay.proxy_jump.is_some() {
             base.proxy_jump = overlay.proxy_jump.clone();
-        } else if overlay.proxy_command.is_some() {
+        } else if base.proxy_command.is_none() && overlay.proxy_command.is_some() {
             base.proxy_command = overlay.proxy_command.clone();
         }
     }
     if base.proxy_use_fdpass.is_none() && overlay.proxy_use_fdpass.is_some() {
         base.proxy_use_fdpass = overlay.proxy_use_fdpass;
     }
-    if overlay.strict_host_key_checking.is_some() {
+    if base.strict_host_key_checking.is_none() && overlay.strict_host_key_checking.is_some() {
         base.strict_host_key_checking = overlay.strict_host_key_checking.clone();
     }
-    if overlay.user_known_hosts_file.is_some() {
+    if base.user_known_hosts_file.is_none() && overlay.user_known_hosts_file.is_some() {
         base.user_known_hosts_file = overlay.user_known_hosts_file.clone();
     }
-    if overlay.global_known_hosts_file.is_some() {
+    if base.global_known_hosts_file.is_none() && overlay.global_known_hosts_file.is_some() {
         base.global_known_hosts_file = overlay.global_known_hosts_file.clone();
     }
-    if overlay.forward_agent.is_some() {
+    if base.forward_agent.is_none() && overlay.forward_agent.is_some() {
         base.forward_agent = overlay.forward_agent;
     }
-    if overlay.forward_x11.is_some() {
+    if base.forward_x11.is_none() && overlay.forward_x11.is_some() {
         base.forward_x11 = overlay.forward_x11;
     }
-    if overlay.server_alive_interval.is_some() {
+    if base.server_alive_interval.is_none() && overlay.server_alive_interval.is_some() {
         base.server_alive_interval = overlay.server_alive_interval;
     }
-    if overlay.server_alive_count_max.is_some() {
+    if base.server_alive_count_max.is_none() && overlay.server_alive_count_max.is_some() {
         base.server_alive_count_max = overlay.server_alive_count_max;
     }
-    if overlay.connect_timeout.is_some() {
+    if base.connect_timeout.is_none() && overlay.connect_timeout.is_some() {
         base.connect_timeout = overlay.connect_timeout;
     }
-    if overlay.connection_attempts.is_some() {
+    if base.connection_attempts.is_none() && overlay.connection_attempts.is_some() {
         base.connection_attempts = overlay.connection_attempts;
     }
-    if overlay.batch_mode.is_some() {
+    if base.batch_mode.is_none() && overlay.batch_mode.is_some() {
         base.batch_mode = overlay.batch_mode;
     }
-    if overlay.compression.is_some() {
+    if base.compression.is_none() && overlay.compression.is_some() {
         base.compression = overlay.compression;
     }
-    if overlay.tcp_keep_alive.is_some() {
+    if base.tcp_keep_alive.is_none() && overlay.tcp_keep_alive.is_some() {
         base.tcp_keep_alive = overlay.tcp_keep_alive;
     }
-    if !overlay.preferred_authentications.is_empty() {
+    if base.preferred_authentications.is_empty() && !overlay.preferred_authentications.is_empty() {
         base.preferred_authentications = overlay.preferred_authentications.clone();
     }
-    if overlay.pubkey_authentication.is_some() {
+    if base.pubkey_authentication.is_none() && overlay.pubkey_authentication.is_some() {
         base.pubkey_authentication = overlay.pubkey_authentication;
     }
-    if overlay.password_authentication.is_some() {
+    if base.password_authentication.is_none() && overlay.password_authentication.is_some() {
         base.password_authentication = overlay.password_authentication;
     }
-    if overlay.keyboard_interactive_authentication.is_some() {
+    if base.keyboard_interactive_authentication.is_none()
+        && overlay.keyboard_interactive_authentication.is_some()
+    {
         base.keyboard_interactive_authentication = overlay.keyboard_interactive_authentication;
     }
-    if overlay.gssapi_authentication.is_some() {
+    if base.gssapi_authentication.is_none() && overlay.gssapi_authentication.is_some() {
         base.gssapi_authentication = overlay.gssapi_authentication;
     }
-    if !overlay.host_key_algorithms.is_empty() {
+    if base.host_key_algorithms.is_empty() && !overlay.host_key_algorithms.is_empty() {
         base.host_key_algorithms = overlay.host_key_algorithms.clone();
+        base.resolved_host_key_algorithms = overlay.resolved_host_key_algorithms.clone();
     }
-    if !overlay.kex_algorithms.is_empty() {
+    if base.kex_algorithms.is_empty() && !overlay.kex_algorithms.is_empty() {
         base.kex_algorithms = overlay.kex_algorithms.clone();
+        base.resolved_kex_algorithms = overlay.resolved_kex_algorithms.clone();
     }
-    if !overlay.ciphers.is_empty() {
+    if base.ciphers.is_empty() && !overlay.ciphers.is_empty() {
         base.ciphers = overlay.ciphers.clone();
+        base.resolved_ciphers = overlay.resolved_ciphers.clone();
     }
-    if !overlay.macs.is_empty() {
+    if base.macs.is_empty() && !overlay.macs.is_empty() {
         base.macs = overlay.macs.clone();
+        base.resolved_macs = overlay.resolved_macs.clone();
     }
     if !overlay.send_env.is_empty() {
         base.send_env.extend(overlay.send_env.iter().cloned());
     }
-    if !overlay.set_env.is_empty() {
+    for (name, value) in &overlay.set_env {
         base.set_env
-            .extend(overlay.set_env.iter().map(|(k, v)| (k.clone(), v.clone())));
+            .entry(name.clone())
+            .or_insert_with(|| value.clone());
     }
     if !overlay.local_forward.is_empty() {
         base.local_forward
@@ -200,37 +207,37 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
         base.dynamic_forward
             .extend(overlay.dynamic_forward.iter().cloned());
     }
-    if overlay.request_tty.is_some() {
+    if base.request_tty.is_none() && overlay.request_tty.is_some() {
         base.request_tty = overlay.request_tty.clone();
     }
-    if overlay.escape_char.is_some() {
+    if base.escape_char.is_none() && overlay.escape_char.is_some() {
         base.escape_char = overlay.escape_char.clone();
     }
-    if overlay.log_level.is_some() {
+    if base.log_level.is_none() && overlay.log_level.is_some() {
         base.log_level = overlay.log_level.clone();
     }
-    if overlay.syslog_facility.is_some() {
+    if base.syslog_facility.is_none() && overlay.syslog_facility.is_some() {
         base.syslog_facility = overlay.syslog_facility.clone();
     }
-    if !overlay.protocol.is_empty() {
+    if base.protocol.is_empty() && !overlay.protocol.is_empty() {
         base.protocol = overlay.protocol.clone();
     }
-    if overlay.address_family.is_some() {
+    if base.address_family.is_none() && overlay.address_family.is_some() {
         base.address_family = overlay.address_family.clone();
     }
-    if overlay.bind_address.is_some() {
+    if base.bind_address.is_none() && overlay.bind_address.is_some() {
         base.bind_address = overlay.bind_address.clone();
     }
-    if overlay.clear_all_forwardings.is_some() {
+    if base.clear_all_forwardings.is_none() && overlay.clear_all_forwardings.is_some() {
         base.clear_all_forwardings = overlay.clear_all_forwardings;
     }
-    if overlay.control_master.is_some() {
+    if base.control_master.is_none() && overlay.control_master.is_some() {
         base.control_master = overlay.control_master.clone();
     }
-    if overlay.control_path.is_some() {
+    if base.control_path.is_none() && overlay.control_path.is_some() {
         base.control_path = overlay.control_path.clone();
     }
-    if overlay.control_persist.is_some() {
+    if base.control_persist.is_none() && overlay.control_persist.is_some() {
         base.control_persist = overlay.control_persist.clone();
     }
     // Certificate authentication and advanced port forwarding options
@@ -252,13 +259,13 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
             }
         }
     }
-    if !overlay.ca_signature_algorithms.is_empty() {
+    if base.ca_signature_algorithms.is_empty() && !overlay.ca_signature_algorithms.is_empty() {
         base.ca_signature_algorithms = overlay.ca_signature_algorithms.clone();
     }
-    if overlay.gateway_ports.is_some() {
+    if base.gateway_ports.is_none() && overlay.gateway_ports.is_some() {
         base.gateway_ports = overlay.gateway_ports.clone();
     }
-    if overlay.exit_on_forward_failure.is_some() {
+    if base.exit_on_forward_failure.is_none() && overlay.exit_on_forward_failure.is_some() {
         base.exit_on_forward_failure = overlay.exit_on_forward_failure;
     }
     if !overlay.permit_remote_open.is_empty() {
@@ -279,104 +286,111 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
             }
         }
     }
-    if overlay.hostbased_authentication.is_some() {
+    if base.hostbased_authentication.is_none() && overlay.hostbased_authentication.is_some() {
         base.hostbased_authentication = overlay.hostbased_authentication;
     }
-    if !overlay.hostbased_accepted_algorithms.is_empty() {
+    if base.hostbased_accepted_algorithms.is_empty()
+        && !overlay.hostbased_accepted_algorithms.is_empty()
+    {
         base.hostbased_accepted_algorithms = overlay.hostbased_accepted_algorithms.clone();
     }
     // Command execution and automation options
-    if overlay.permit_local_command.is_some() {
+    if base.permit_local_command.is_none() && overlay.permit_local_command.is_some() {
         base.permit_local_command = overlay.permit_local_command;
     }
-    if overlay.local_command.is_some() {
+    if base.local_command.is_none() && overlay.local_command.is_some() {
         base.local_command = overlay.local_command.clone();
     }
-    if overlay.remote_command.is_some() {
+    if base.remote_command.is_none() && overlay.remote_command.is_some() {
         base.remote_command = overlay.remote_command.clone();
     }
-    if overlay.known_hosts_command.is_some() {
+    if base.known_hosts_command.is_none() && overlay.known_hosts_command.is_some() {
         base.known_hosts_command = overlay.known_hosts_command.clone();
     }
-    if overlay.fork_after_authentication.is_some() {
+    if base.fork_after_authentication.is_none() && overlay.fork_after_authentication.is_some() {
         base.fork_after_authentication = overlay.fork_after_authentication;
     }
-    if overlay.session_type.is_some() {
+    if base.session_type.is_none() && overlay.session_type.is_some() {
         base.session_type = overlay.session_type.clone();
     }
-    if overlay.stdin_null.is_some() {
+    if base.stdin_null.is_none() && overlay.stdin_null.is_some() {
         base.stdin_null = overlay.stdin_null;
     }
     // Host key verification, authentication, and network options
     // Host key verification & security
-    if overlay.no_host_authentication_for_localhost.is_some() {
+    if base.no_host_authentication_for_localhost.is_none()
+        && overlay.no_host_authentication_for_localhost.is_some()
+    {
         base.no_host_authentication_for_localhost = overlay.no_host_authentication_for_localhost;
     }
-    if overlay.hash_known_hosts.is_some() {
+    if base.hash_known_hosts.is_none() && overlay.hash_known_hosts.is_some() {
         base.hash_known_hosts = overlay.hash_known_hosts;
     }
-    if overlay.check_host_ip.is_some() {
+    if base.check_host_ip.is_none() && overlay.check_host_ip.is_some() {
         base.check_host_ip = overlay.check_host_ip;
     }
-    if overlay.visual_host_key.is_some() {
+    if base.visual_host_key.is_none() && overlay.visual_host_key.is_some() {
         base.visual_host_key = overlay.visual_host_key;
     }
-    if overlay.host_key_alias.is_some() {
+    if base.host_key_alias.is_none() && overlay.host_key_alias.is_some() {
         base.host_key_alias = overlay.host_key_alias.clone();
     }
-    if overlay.verify_host_key_dns.is_some() {
+    if base.verify_host_key_dns.is_none() && overlay.verify_host_key_dns.is_some() {
         base.verify_host_key_dns = overlay.verify_host_key_dns.clone();
     }
-    if overlay.update_host_keys.is_some() {
+    if base.update_host_keys.is_none() && overlay.update_host_keys.is_some() {
         base.update_host_keys = overlay.update_host_keys.clone();
     }
     // Authentication
-    if overlay.number_of_password_prompts.is_some() {
+    if base.number_of_password_prompts.is_none() && overlay.number_of_password_prompts.is_some() {
         base.number_of_password_prompts = overlay.number_of_password_prompts;
     }
-    if overlay.enable_ssh_keysign.is_some() {
+    if base.enable_ssh_keysign.is_none() && overlay.enable_ssh_keysign.is_some() {
         base.enable_ssh_keysign = overlay.enable_ssh_keysign;
     }
     // Network & connection
-    if overlay.bind_interface.is_some() {
+    if base.bind_interface.is_none() && overlay.bind_interface.is_some() {
         base.bind_interface = overlay.bind_interface.clone();
     }
-    if overlay.ipqos.is_some() {
+    if base.ipqos.is_none() && overlay.ipqos.is_some() {
         base.ipqos = overlay.ipqos.clone();
     }
-    if overlay.rekey_limit.is_some() {
+    if base.rekey_limit.is_none() && overlay.rekey_limit.is_some() {
         base.rekey_limit = overlay.rekey_limit.clone();
     }
     // X11 forwarding
-    if overlay.forward_x11_timeout.is_some() {
+    if base.forward_x11_timeout.is_none() && overlay.forward_x11_timeout.is_some() {
         base.forward_x11_timeout = overlay.forward_x11_timeout.clone();
     }
-    if overlay.forward_x11_trusted.is_some() {
+    if base.forward_x11_trusted.is_none() && overlay.forward_x11_trusted.is_some() {
         base.forward_x11_trusted = overlay.forward_x11_trusted;
     }
     // Authentication and security management options
     // Authentication & agent management
-    if overlay.identities_only.is_some() {
+    if base.identities_only.is_none() && overlay.identities_only.is_some() {
         base.identities_only = overlay.identities_only;
     }
-    if overlay.add_keys_to_agent.is_some() {
+    if base.add_keys_to_agent.is_none() && overlay.add_keys_to_agent.is_some() {
         base.add_keys_to_agent = overlay.add_keys_to_agent.clone();
     }
-    if overlay.identity_agent.is_some() {
+    if base.identity_agent.is_none() && overlay.identity_agent.is_some() {
         base.identity_agent = overlay.identity_agent.clone();
     }
     #[cfg(target_os = "macos")]
-    if overlay.use_keychain.is_some() {
+    if base.use_keychain.is_none() && overlay.use_keychain.is_some() {
         base.use_keychain = overlay.use_keychain;
     }
     // Security & algorithm management
-    if !overlay.pubkey_accepted_algorithms.is_empty() {
+    if base.pubkey_accepted_algorithms.is_empty() && !overlay.pubkey_accepted_algorithms.is_empty()
+    {
         base.pubkey_accepted_algorithms = overlay.pubkey_accepted_algorithms.clone();
+        base.resolved_pubkey_accepted_algorithms =
+            overlay.resolved_pubkey_accepted_algorithms.clone();
     }
-    if overlay.required_rsa_size.is_some() {
+    if base.required_rsa_size.is_none() && overlay.required_rsa_size.is_some() {
         base.required_rsa_size = overlay.required_rsa_size;
     }
-    if overlay.fingerprint_hash.is_some() {
+    if base.fingerprint_hash.is_none() && overlay.fingerprint_hash.is_some() {
         base.fingerprint_hash = overlay.fingerprint_hash.clone();
     }
 }

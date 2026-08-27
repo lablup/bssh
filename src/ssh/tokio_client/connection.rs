@@ -17,9 +17,10 @@
 //! This module handles the low-level SSH connection establishment,
 //! including address resolution, connection attempts, and initial handshake.
 
-use russh::client::{Config, Handle, Handler};
+use russh::client::{Config, DisconnectReason, Handle, Handler};
+use std::borrow::Cow;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::{fmt::Debug, io};
 
@@ -96,6 +97,14 @@ pub struct SshConnectionConfig {
     /// ("Address Family Preference") for the scope of that constraint.
     pub address_family: AddressFamily,
 
+    /// Number of complete connection rounds. Each round resolves DNS again,
+    /// filters the result by `AddressFamily`, and tries every candidate.
+    pub connection_attempts: usize,
+
+    /// Whether kernel TCP keepalive is enabled on a connected direct socket.
+    /// This is independent from SSH protocol keepalives.
+    pub tcp_keep_alive: bool,
+
     /// Raw `UserKnownHostsFile` values selected for this host.
     ///
     /// They stay unexpanded until the connection target supplies `%h`, `%p`,
@@ -109,6 +118,12 @@ pub struct SshConnectionConfig {
     pub host_key_alias: Option<String>,
     /// Effective proxy selection for this target.
     pub proxy_mode: Option<ProxyMode>,
+    pub cipher_preferences: Option<Vec<russh::cipher::Name>>,
+    pub mac_preferences: Option<Vec<russh::mac::Name>>,
+    pub kex_preferences: Option<Vec<russh::kex::Name>>,
+    pub host_key_preferences: Option<Vec<ssh_key::Algorithm>>,
+    /// Public-key signature policy for the authentication follow-up.
+    pub pubkey_accepted_algorithms: Option<Vec<String>>,
 }
 
 impl Default for SshConnectionConfig {
@@ -118,10 +133,17 @@ impl Default for SshConnectionConfig {
             keepalive_max: DEFAULT_KEEPALIVE_MAX,
             compression: false,
             address_family: AddressFamily::Any,
+            connection_attempts: 1,
+            tcp_keep_alive: true,
             user_known_hosts_files: None,
             global_known_hosts_files: None,
             host_key_alias: None,
             proxy_mode: None,
+            cipher_preferences: None,
+            mac_preferences: None,
+            kex_preferences: None,
+            host_key_preferences: None,
+            pubkey_accepted_algorithms: None,
         }
     }
 }
@@ -270,6 +292,14 @@ impl SshConnectionConfigResolver {
             .ssh_config
             .as_ref()
             .map(|config| config.find_host_config(hostname));
+        let connection_attempts = host_config
+            .as_ref()
+            .and_then(|config| config.connection_attempts)
+            .unwrap_or(1) as usize;
+        let tcp_keep_alive = host_config
+            .as_ref()
+            .and_then(|config| config.tcp_keep_alive)
+            .unwrap_or(true);
         let user_known_hosts_files = host_config
             .as_ref()
             .and_then(|config| config.user_known_hosts_file.clone());
@@ -282,7 +312,22 @@ impl SshConnectionConfigResolver {
                 .and_then(|config| config.host_key_alias.clone())
         });
         let proxy_mode = self.resolve_proxy_mode(hostname, host_key_alias.clone());
+        let cipher_preferences = host_config
+            .as_ref()
+            .and_then(|config| config.resolved_ciphers.clone());
+        let mac_preferences = host_config
+            .as_ref()
+            .and_then(|config| config.resolved_macs.clone());
+        let kex_preferences = host_config
+            .as_ref()
+            .and_then(|config| config.resolved_kex_algorithms.clone());
+        let host_key_preferences = host_config
+            .as_ref()
+            .and_then(|config| config.resolved_host_key_algorithms.clone());
 
+        let pubkey_accepted_algorithms = host_config
+            .as_ref()
+            .and_then(|config| config.resolved_pubkey_accepted_algorithms.clone());
         SshConnectionConfig::new()
             .with_keepalive_interval(if keepalive_interval == 0 {
                 None
@@ -292,9 +337,18 @@ impl SshConnectionConfigResolver {
             .with_keepalive_max(keepalive_max)
             .with_compression(compression)
             .with_address_family(address_family)
+            .with_connection_attempts(connection_attempts)
+            .with_tcp_keep_alive(tcp_keep_alive)
             .with_known_hosts_files(user_known_hosts_files, global_known_hosts_files)
             .with_host_key_alias(host_key_alias)
             .with_proxy_mode(proxy_mode)
+            .with_algorithm_preferences(
+                cipher_preferences,
+                mac_preferences,
+                kex_preferences,
+                host_key_preferences,
+            )
+            .with_pubkey_accepted_algorithms(pubkey_accepted_algorithms)
     }
 
     fn resolve_proxy_mode(
@@ -333,6 +387,13 @@ fn proxy_jump_mode(jump: &str) -> ProxyMode {
     } else {
         ProxyMode::Jump(jump.to_string())
     }
+}
+
+fn is_retryable_proxy_carrier_error(error: &super::Error) -> bool {
+    matches!(
+        error,
+        super::Error::ProxyCommandSpawn { .. } | super::Error::ProxyCommandFailed { .. }
+    )
 }
 
 /// Compression preference advertised when ssh_config resolves `Compression
@@ -412,9 +473,45 @@ impl SshConnectionConfig {
         self
     }
 
+    /// Set the number of DNS-resolution and TCP connection rounds.
+    #[must_use]
+    pub fn with_connection_attempts(mut self, attempts: usize) -> Self {
+        self.connection_attempts = attempts.max(1);
+        self
+    }
+
+    /// Enable or disable kernel TCP keepalive independently of SSH keepalives.
+    #[must_use]
+    pub fn with_tcp_keep_alive(mut self, enabled: bool) -> Self {
+        self.tcp_keep_alive = enabled;
+        self
+    }
+
     #[must_use]
     pub fn with_proxy_mode(mut self, proxy_mode: Option<ProxyMode>) -> Self {
         self.proxy_mode = proxy_mode;
+        self
+    }
+
+    #[must_use]
+    pub fn with_algorithm_preferences(
+        mut self,
+        ciphers: Option<Vec<russh::cipher::Name>>,
+        macs: Option<Vec<russh::mac::Name>>,
+        kex: Option<Vec<russh::kex::Name>>,
+        host_keys: Option<Vec<ssh_key::Algorithm>>,
+    ) -> Self {
+        self.cipher_preferences = ciphers;
+        self.mac_preferences = macs;
+        self.kex_preferences = kex;
+        self.host_key_preferences = host_keys;
+        self
+    }
+
+    /// Expose the resolved user-authentication signature policy.
+    #[must_use]
+    pub fn with_pubkey_accepted_algorithms(mut self, algorithms: Option<Vec<String>>) -> Self {
+        self.pubkey_accepted_algorithms = algorithms;
         self
     }
 
@@ -440,6 +537,29 @@ impl SshConnectionConfig {
             compression: std::borrow::Cow::Borrowed(compression_order),
             ..russh::Preferred::DEFAULT
         };
+        let preferred = russh::Preferred {
+            cipher: self
+                .cipher_preferences
+                .clone()
+                .map(Cow::Owned)
+                .unwrap_or(preferred.cipher),
+            mac: self
+                .mac_preferences
+                .clone()
+                .map(Cow::Owned)
+                .unwrap_or(preferred.mac),
+            kex: self
+                .kex_preferences
+                .clone()
+                .map(Cow::Owned)
+                .unwrap_or(preferred.kex),
+            key: self
+                .host_key_preferences
+                .clone()
+                .map(Cow::Owned)
+                .unwrap_or(preferred.key),
+            ..preferred
+        };
 
         Config {
             keepalive_interval: self.keepalive_interval.map(Duration::from_secs),
@@ -450,14 +570,19 @@ impl SshConnectionConfig {
         }
     }
 
-    /// Derive a TCP-level keepalive configuration from this SSH keepalive
-    /// configuration. Returns `None` if SSH keepalive is disabled.
+    /// Derive the kernel TCP keepalive configuration. Returns `None` only when
+    /// ssh_config explicitly disables `TCPKeepAlive`.
     ///
     /// TCP keepalive is a belt-and-suspenders mechanism: it lets the kernel
     /// detect a broken TCP path even when no application data is flowing and
     /// even if SSH-level keepalive replies are dropped by a middlebox.
     pub fn to_tcp_keepalive(&self) -> Option<socket2::TcpKeepalive> {
-        let interval = self.keepalive_interval.filter(|seconds| *seconds > 0)?;
+        if !self.tcp_keep_alive {
+            return None;
+        }
+        let interval = self
+            .keepalive_interval
+            .unwrap_or(DEFAULT_KEEPALIVE_INTERVAL);
         // Start probing after `interval` seconds of idleness, probe every
         // half-interval, up to keepalive_max retries.
         let probe_interval = (interval / 2).max(1);
@@ -477,6 +602,28 @@ impl SshConnectionConfig {
         Some(ka)
     }
 }
+
+pub(super) fn configure_tcp_keepalive(
+    stream: &tokio::net::TcpStream,
+    address: SocketAddr,
+    keepalive: &socket2::TcpKeepalive,
+) -> Result<(), super::Error> {
+    let sock_ref = socket2::SockRef::from(stream);
+    sock_ref
+        .set_tcp_keepalive(keepalive)
+        .map_err(|source| super::Error::TcpKeepAlive { address, source })?;
+    if !sock_ref
+        .keepalive()
+        .map_err(|source| super::Error::TcpKeepAlive { address, source })?
+    {
+        return Err(super::Error::TcpKeepAlive {
+            address,
+            source: io::Error::other("kernel reported TCP keepalive disabled after set"),
+        });
+    }
+    Ok(())
+}
+
 use super::ToSocketAddrsWithHostname;
 
 /// A ssh connection to a remote server.
@@ -515,6 +662,51 @@ pub struct Client {
     #[allow(private_interfaces)]
     pub session: Arc<Handle<ClientHandler>>,
     proxy_process: Option<Arc<ProxyCommandProcess>>,
+    fatal_transport: FatalTransportState,
+}
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct FatalTransportState(Arc<Mutex<Option<super::TransportIntegrityCause>>>);
+
+impl FatalTransportState {
+    fn record(&self, error: &super::Error) {
+        let cause = match error {
+            super::Error::SshError(russh::Error::PacketAuth) => {
+                super::TransportIntegrityCause::PacketAuthentication
+            }
+            super::Error::SshError(russh::Error::DecryptionError) => {
+                super::TransportIntegrityCause::Decryption
+            }
+            super::Error::SshError(russh::Error::PacketSize(size)) => {
+                super::TransportIntegrityCause::PacketSize(*size)
+            }
+            // russh emits IndexOutOfBounds only when encrypted packet padding
+            // exceeds the authenticated plaintext length.
+            super::Error::SshError(russh::Error::IndexOutOfBounds) => {
+                super::TransportIntegrityCause::InvalidPadding
+            }
+            _ => return,
+        };
+        let mut fatal = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        fatal.get_or_insert(cause);
+    }
+
+    pub(crate) fn take_error(&self) -> Option<super::Error> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .map(|cause| super::Error::TransportIntegrity { cause })
+    }
+}
+
+struct DirectCarrierOptions<'a> {
+    tcp_keepalive: Option<&'a socket2::TcpKeepalive>,
+    address_family: AddressFamily,
+    connection_attempts: usize,
 }
 
 impl Client {
@@ -582,20 +774,39 @@ impl Client {
         server_check: ServerCheckMethod,
         ssh_config: &SshConnectionConfig,
     ) -> Result<Self, super::Error> {
-        let config = ssh_config.to_russh_config();
         if let Some(ProxyMode::Command(proxy)) = ssh_config.proxy_mode.as_ref() {
             let (host, port) = addr.host_port().map_err(super::Error::AddressInvalid)?;
-            return Self::connect_with_proxy_command(
-                &host,
-                port,
-                username,
-                auth,
-                server_check,
-                config,
-                proxy,
-            )
-            .await;
+            let attempts = ssh_config.connection_attempts.max(1);
+            for round in 0..attempts {
+                let result = Self::connect_with_proxy_command(
+                    &host,
+                    port,
+                    username,
+                    auth.clone(),
+                    server_check.clone(),
+                    ssh_config.to_russh_config(),
+                    proxy,
+                )
+                .await;
+                match result {
+                    Ok(client) => return Ok(client),
+                    Err(error)
+                        if is_retryable_proxy_carrier_error(&error) && round + 1 < attempts =>
+                    {
+                        tracing::debug!(
+                            "ProxyCommand carrier round {} of {} failed for '{}'; retrying in 1 second",
+                            round + 1,
+                            attempts,
+                            host
+                        );
+                        tokio::time::sleep(Duration::from_secs(1)).await;
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            unreachable!("the final ProxyCommand attempt always returns")
         }
+        let config = ssh_config.to_russh_config();
         let tcp_keepalive = ssh_config.to_tcp_keepalive();
         Self::connect_with_config_inner(
             addr,
@@ -603,8 +814,11 @@ impl Client {
             auth,
             server_check,
             config,
-            tcp_keepalive.as_ref(),
-            ssh_config.address_family,
+            DirectCarrierOptions {
+                tcp_keepalive: tcp_keepalive.as_ref(),
+                address_family: ssh_config.address_family,
+                connection_attempts: ssh_config.connection_attempts,
+            },
         )
         .await
     }
@@ -633,11 +847,12 @@ impl Client {
             std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
             verification_port,
         );
-        let handler = ClientHandler {
-            hostname: verification_host.to_string(),
-            host: verification_address,
+        let handler = ClientHandler::new(
+            verification_host.to_string(),
+            verification_address,
             server_check,
-        };
+        );
+        let fatal_transport = handler.fatal_transport_state();
         let mut handle =
             match russh::client::connect_stream(Arc::new(config), proxy_session.stream, handler)
                 .await
@@ -662,7 +877,10 @@ impl Client {
             };
 
         let username = username.to_string();
-        super::authentication::authenticate(&mut handle, &username, auth).await?;
+        if let Err(error) = super::authentication::authenticate(&mut handle, &username, auth).await
+        {
+            return Err(fatal_transport.take_error().unwrap_or(error));
+        }
         let connection_handle = Arc::new(handle);
         Ok(Self {
             connection_handle: Arc::clone(&connection_handle),
@@ -670,6 +888,7 @@ impl Client {
             address,
             session: connection_handle,
             proxy_process: Some(process),
+            fatal_transport,
         })
     }
 
@@ -691,8 +910,11 @@ impl Client {
             auth,
             server_check,
             config,
-            None,
-            AddressFamily::Any,
+            DirectCarrierOptions {
+                tcp_keepalive: None,
+                address_family: AddressFamily::Any,
+                connection_attempts: 1,
+            },
         )
         .await
     }
@@ -712,94 +934,121 @@ impl Client {
         auth: AuthMethod,
         server_check: ServerCheckMethod,
         config: Config,
-        tcp_keepalive: Option<&socket2::TcpKeepalive>,
-        address_family: AddressFamily,
+        carrier: DirectCarrierOptions<'_>,
     ) -> Result<Self, super::Error> {
-        let config = Arc::new(config);
-
-        // Connection code inspired from std::net::TcpStream::connect and std::net::each_addr
+        // A retry round covers only carrier creation: one DNS resolution and
+        // TCP connection attempts for all returned addresses. Once a TCP
+        // stream exists, socket configuration, SSH KEX/host verification, and
+        // authentication fail immediately and are never retried.
+        let DirectCarrierOptions {
+            tcp_keepalive,
+            address_family,
+            connection_attempts,
+        } = carrier;
+        let connection_attempts = connection_attempts.max(1);
         let target_host = addr.hostname();
         let (_, target_port) = addr.host_port().map_err(super::Error::AddressInvalid)?;
-        let resolved = addr
-            .to_socket_addrs()
-            .map_err(|source| super::Error::DnsResolution {
+        let mut carrier_res: Result<(SocketAddr, tokio::net::TcpStream), super::Error> =
+            Err(super::Error::DnsResolution {
                 host: target_host.clone(),
-                source,
-            })?;
-        let resolved_count = resolved.len();
-        let socket_addrs = address_family.filter(resolved);
+                source: io::Error::new(io::ErrorKind::NotFound, "Name or service not known"),
+            });
 
-        if address_family.is_forced() {
-            tracing::debug!(
-                "Address family {} forced for '{}': {} of {} resolved address(es) usable",
-                address_family,
-                addr.hostname(),
-                socket_addrs.len(),
-                resolved_count
-            );
-            if socket_addrs.is_empty() {
-                return Err(super::Error::NoAddressForFamily {
-                    host: addr.hostname(),
-                    family: address_family,
+        'rounds: for round in 0..connection_attempts {
+            match addr.to_socket_addrs() {
+                Ok(resolved) => {
+                    let resolved_count = resolved.len();
+                    let socket_addrs = address_family.filter(resolved);
+
+                    if address_family.is_forced() {
+                        tracing::debug!(
+                            "Address family {} forced for '{}': {} of {} resolved address(es) usable",
+                            address_family,
+                            addr.hostname(),
+                            socket_addrs.len(),
+                            resolved_count
+                        );
+                    }
+
+                    if socket_addrs.is_empty() {
+                        carrier_res = if address_family.is_forced() {
+                            Err(super::Error::NoAddressForFamily {
+                                host: target_host.clone(),
+                                family: address_family,
+                            })
+                        } else {
+                            Err(super::Error::DnsResolution {
+                                host: target_host.clone(),
+                                source: io::Error::new(
+                                    io::ErrorKind::NotFound,
+                                    "Name or service not known",
+                                ),
+                            })
+                        };
+                    } else {
+                        for socket_addr in socket_addrs {
+                            match tokio::net::TcpStream::connect(socket_addr).await {
+                                Ok(stream) => {
+                                    carrier_res = Ok((socket_addr, stream));
+                                    break 'rounds;
+                                }
+                                Err(error) => {
+                                    carrier_res = Err(super::Error::TcpConnect {
+                                        host: target_host.clone(),
+                                        port: target_port,
+                                        source: error,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                Err(error) => {
+                    carrier_res = Err(super::Error::DnsResolution {
+                        host: target_host.clone(),
+                        source: error,
+                    });
+                }
+            }
+
+            if round + 1 < connection_attempts {
+                tracing::debug!(
+                    "Connection round {} of {} failed for '{}'; retrying in 1 second",
+                    round + 1,
+                    connection_attempts,
+                    target_host
+                );
+                tokio::time::sleep(Duration::from_secs(1)).await;
+            }
+        }
+
+        let (address, stream) = match carrier_res {
+            Ok(carrier) => carrier,
+            Err(source) if connection_attempts > 1 => {
+                return Err(super::Error::ConnectionAttemptsExhausted {
+                    attempts: connection_attempts,
+                    source: Box::new(source),
                 });
             }
+            Err(source) => return Err(source),
+        };
+        if let Some(ka) = tcp_keepalive {
+            configure_tcp_keepalive(&stream, address, ka)?;
         }
 
-        let mut connect_res: Result<
-            (SocketAddr, russh::client::Handle<ClientHandler>),
-            super::Error,
-        > = Err(super::Error::DnsResolution {
-            host: target_host.clone(),
-            source: io::Error::new(io::ErrorKind::NotFound, "Name or service not known"),
-        });
-        for socket_addr in socket_addrs {
-            let handler = ClientHandler {
-                hostname: addr.hostname(),
-                host: socket_addr,
-                server_check: server_check.clone(),
-            };
-
-            let stream = match tokio::net::TcpStream::connect(socket_addr).await {
-                Ok(s) => s,
-                Err(e) => {
-                    connect_res = Err(super::Error::TcpConnect {
-                        host: target_host.clone(),
-                        port: target_port,
-                        source: e,
-                    });
-                    continue;
-                }
-            };
-
-            if let Some(ka) = tcp_keepalive {
-                let sock_ref = socket2::SockRef::from(&stream);
-                if let Err(e) = sock_ref.set_tcp_keepalive(ka) {
-                    tracing::debug!(
-                        "Failed to set TCP keepalive on socket to {}: {}",
-                        socket_addr,
-                        e
-                    );
-                }
-            }
-
-            match russh::client::connect_stream(config.clone(), stream, handler).await {
-                Ok(h) => {
-                    connect_res = Ok((socket_addr, h));
-                    break;
-                }
-                Err(e) => {
-                    connect_res = Err(super::Error::during_protocol_negotiation(
-                        target_host.clone(),
-                        target_port,
-                        e,
-                    ));
-                }
-            }
-        }
-        let (address, mut handle) = connect_res?;
+        let handler = ClientHandler::new(target_host.clone(), address, server_check);
+        let fatal_transport = handler.fatal_transport_state();
+        let mut handle = russh::client::connect_stream(Arc::new(config), stream, handler)
+            .await
+            .map_err(|error| {
+                super::Error::during_protocol_negotiation(target_host, target_port, error)
+            })?;
         let username = username.to_string();
 
-        super::authentication::authenticate(&mut handle, &username, auth).await?;
+        if let Err(error) = super::authentication::authenticate(&mut handle, &username, auth).await
+        {
+            return Err(fatal_transport.take_error().unwrap_or(error));
+        }
 
         let connection_handle = Arc::new(handle);
         Ok(Self {
@@ -808,7 +1057,12 @@ impl Client {
             address,
             session: connection_handle,
             proxy_process: None,
+            fatal_transport,
         })
+    }
+
+    pub(super) fn session_error_or(&self, fallback: super::Error) -> super::Error {
+        self.fatal_transport.take_error().unwrap_or(fallback)
     }
 
     /// Create a Client from an existing russh handle and address.
@@ -820,12 +1074,27 @@ impl Client {
         username: String,
         address: SocketAddr,
     ) -> Self {
+        Self::from_handle_and_address_with_state(
+            handle,
+            username,
+            address,
+            FatalTransportState::default(),
+        )
+    }
+
+    pub(crate) fn from_handle_and_address_with_state(
+        handle: Arc<Handle<ClientHandler>>,
+        username: String,
+        address: SocketAddr,
+        fatal_transport: FatalTransportState,
+    ) -> Self {
         Self {
             connection_handle: handle.clone(),
             username,
             address,
             session: handle,
             proxy_process: None,
+            fatal_transport,
         }
     }
 
@@ -921,6 +1190,7 @@ pub struct ClientHandler {
     hostname: String,
     host: SocketAddr,
     server_check: ServerCheckMethod,
+    fatal_transport: FatalTransportState,
 }
 
 impl ClientHandler {
@@ -930,12 +1200,30 @@ impl ClientHandler {
             hostname,
             host,
             server_check,
+            fatal_transport: FatalTransportState::default(),
         }
+    }
+
+    pub(crate) fn fatal_transport_state(&self) -> FatalTransportState {
+        self.fatal_transport.clone()
     }
 }
 
 impl Handler for ClientHandler {
     type Error = super::Error;
+
+    async fn disconnected(
+        &mut self,
+        reason: DisconnectReason<Self::Error>,
+    ) -> Result<(), Self::Error> {
+        match reason {
+            DisconnectReason::ReceivedDisconnect(_) => Ok(()),
+            DisconnectReason::Error(error) => {
+                self.fatal_transport.record(&error);
+                Err(error)
+            }
+        }
+    }
 
     async fn check_server_key(
         &mut self,
@@ -1063,5 +1351,101 @@ impl Handler for ClientHandler {
             }
             ServerCheckMethod::HostKeyAlias { .. } => unreachable!("aliases are unwrapped above"),
         }
+    }
+}
+
+#[cfg(test)]
+mod fatal_transport_tests {
+    use super::*;
+    use crate::ssh::tokio_client::{Error, TransportIntegrityCause};
+
+    #[test]
+    fn first_typed_integrity_cause_is_preserved_and_consumed_once() {
+        let state = FatalTransportState::default();
+        state.record(&Error::SshError(russh::Error::PacketAuth));
+        state.record(&Error::SshError(russh::Error::DecryptionError));
+
+        let error = state
+            .take_error()
+            .expect("typed packet cause must be recorded");
+        assert!(matches!(
+            error,
+            Error::TransportIntegrity {
+                cause: TransportIntegrityCause::PacketAuthentication
+            }
+        ));
+        assert_eq!(
+            error.to_string(),
+            "Corrupted MAC: message authentication code incorrect"
+        );
+        assert!(
+            state.take_error().is_none(),
+            "a fatal cause must not leak into a later failure"
+        );
+    }
+
+    #[test]
+    fn ordinary_auth_and_channel_failures_are_not_mislabeled_as_integrity_errors() {
+        let state = FatalTransportState::default();
+        state.record(&Error::KeyAuthFailed);
+        state.record(&Error::SshError(russh::Error::SendError));
+
+        assert!(state.take_error().is_none());
+    }
+
+    #[test]
+    fn packet_size_and_invalid_padding_remain_distinct_typed_causes() {
+        for (source, expected) in [
+            (
+                russh::Error::PacketSize(262_145),
+                TransportIntegrityCause::PacketSize(262_145),
+            ),
+            (
+                russh::Error::IndexOutOfBounds,
+                TransportIntegrityCause::InvalidPadding,
+            ),
+        ] {
+            let state = FatalTransportState::default();
+            state.record(&Error::SshError(source));
+            assert!(matches!(
+                state.take_error(),
+                Some(Error::TransportIntegrity { cause }) if cause == expected
+            ));
+        }
+    }
+
+    #[test]
+    fn handler_state_is_shared_with_clones_but_fresh_for_each_connection() {
+        let address = "127.0.0.1:22".parse().unwrap();
+        let first = ClientHandler::new(
+            "first.example".to_string(),
+            address,
+            ServerCheckMethod::NoCheck,
+        );
+        let first_clone = first.clone();
+        let second = ClientHandler::new(
+            "second.example".to_string(),
+            address,
+            ServerCheckMethod::NoCheck,
+        );
+
+        first
+            .fatal_transport_state()
+            .record(&Error::SshError(russh::Error::PacketAuth));
+
+        assert!(matches!(
+            first_clone.fatal_transport_state().take_error(),
+            Some(Error::TransportIntegrity {
+                cause: TransportIntegrityCause::PacketAuthentication
+            })
+        ));
+        assert!(
+            second.fatal_transport_state().take_error().is_none(),
+            "a reconnect must not inherit a previous connection's fatal cause"
+        );
+        assert!(
+            first.fatal_transport_state().take_error().is_none(),
+            "a consumed cause must not be reused by another operation"
+        );
     }
 }

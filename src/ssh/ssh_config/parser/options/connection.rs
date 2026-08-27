@@ -75,6 +75,9 @@ pub(super) fn parse_connection_option(
                     args[0], line_number
                 )
             })?;
+            if attempts == 0 {
+                anyhow::bail!("ConnectionAttempts must be at least 1 at line {line_number}");
+            }
             host.connection_attempts = Some(attempts);
         }
         "batchmode" => {

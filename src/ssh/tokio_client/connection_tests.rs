@@ -26,7 +26,9 @@ use std::time::Duration;
 
 use super::address_family::AddressFamily;
 use super::authentication::{AuthMethod, ServerCheckMethod};
-use super::connection::{Client, SshConnectionConfig, SshConnectionConfigResolver};
+use super::connection::{
+    Client, SshConnectionConfig, SshConnectionConfigResolver, configure_tcp_keepalive,
+};
 use super::proxy_command::{ProxyCommandConfig, ProxyMode};
 use crate::ssh::SshConfig;
 
@@ -491,4 +493,184 @@ async fn test_unforced_family_does_not_produce_the_family_error() {
         !matches!(err, super::Error::NoAddressForFamily { .. }),
         "the unconstrained path must never report a family mismatch, got: {err:?}"
     );
+}
+
+#[derive(Clone)]
+struct CountingAddress {
+    calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    result: Option<std::net::SocketAddr>,
+}
+
+impl super::ToSocketAddrsWithHostname for CountingAddress {
+    fn to_socket_addrs(&self) -> std::io::Result<Vec<std::net::SocketAddr>> {
+        self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.result.map(|address| vec![address]).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, "synthetic DNS failure")
+        })
+    }
+
+    fn hostname(&self) -> String {
+        "retry.example".to_string()
+    }
+
+    fn host_port(&self) -> std::io::Result<(String, u16)> {
+        Ok((
+            self.hostname(),
+            self.result.map_or(22, |address| address.port()),
+        ))
+    }
+}
+
+#[tokio::test]
+async fn connection_attempts_reresolves_dns_for_each_carrier_round() {
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let address = CountingAddress {
+        calls: std::sync::Arc::clone(&calls),
+        result: None,
+    };
+    let config = SshConnectionConfig::new()
+        .with_connection_attempts(2)
+        .with_tcp_keep_alive(false);
+
+    let error = Client::connect_with_ssh_config(
+        address,
+        "user",
+        AuthMethod::with_password("unused"),
+        ServerCheckMethod::NoCheck,
+        &config,
+    )
+    .await
+    .expect_err("both synthetic DNS rounds must fail");
+
+    match error {
+        super::Error::ConnectionAttemptsExhausted { attempts, source } => {
+            assert_eq!(attempts, 2);
+            assert!(matches!(*source, super::Error::DnsResolution { .. }));
+        }
+        other => panic!("unexpected retry error: {other:?}"),
+    }
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn connection_attempts_preserves_the_last_typed_tcp_failure() {
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let address = CountingAddress {
+        calls: std::sync::Arc::clone(&calls),
+        result: Some("127.0.0.1:0".parse().unwrap()),
+    };
+    let config = SshConnectionConfig::new()
+        .with_connection_attempts(2)
+        .with_tcp_keep_alive(false);
+
+    let error = Client::connect_with_ssh_config(
+        address,
+        "user",
+        AuthMethod::with_password("unused"),
+        ServerCheckMethod::NoCheck,
+        &config,
+    )
+    .await
+    .expect_err("both synthetic TCP rounds must fail");
+
+    match error {
+        super::Error::ConnectionAttemptsExhausted { attempts, source } => {
+            assert_eq!(attempts, 2);
+            assert!(matches!(*source, super::Error::TcpConnect { port: 0, .. }));
+        }
+        other => panic!("unexpected retry error: {other:?}"),
+    }
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+}
+
+#[tokio::test]
+async fn connection_attempts_never_retries_ssh_handshake_failure() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let socket_addr = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        drop(stream);
+    });
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let address = CountingAddress {
+        calls: std::sync::Arc::clone(&calls),
+        result: Some(socket_addr),
+    };
+    let config = SshConnectionConfig::new()
+        .with_connection_attempts(3)
+        .with_tcp_keep_alive(false);
+
+    let error = Client::connect_with_ssh_config(
+        address,
+        "user",
+        AuthMethod::with_password("unused"),
+        ServerCheckMethod::NoCheck,
+        &config,
+    )
+    .await
+    .expect_err("a non-SSH carrier must fail during handshake");
+    server.await.unwrap();
+
+    assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(
+        matches!(error, super::Error::ProtocolNegotiation { .. }),
+        "post-TCP handshake failure must preserve its typed stage: {error:?}"
+    );
+}
+
+#[tokio::test]
+async fn tcp_keep_alive_sets_and_verifies_the_os_socket_option() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let socket_addr = listener.local_addr().unwrap();
+    let connecting = tokio::spawn(tokio::net::TcpStream::connect(socket_addr));
+    let (_server, _) = listener.accept().await.unwrap();
+    let client = connecting.await.unwrap().unwrap();
+    let config = SshConnectionConfig::new()
+        .with_keepalive_interval(None)
+        .with_tcp_keep_alive(true);
+    let keepalive = config
+        .to_tcp_keepalive()
+        .expect("TCPKeepAlive yes must be independent of SSH keepalives");
+
+    configure_tcp_keepalive(&client, socket_addr, &keepalive).unwrap();
+    assert!(socket2::SockRef::from(&client).keepalive().unwrap());
+    assert!(
+        SshConnectionConfig::new()
+            .with_tcp_keep_alive(false)
+            .to_tcp_keepalive()
+            .is_none()
+    );
+}
+
+#[test]
+fn configured_algorithms_reach_the_russh_transport_preferences() {
+    let ssh_config = SshConfig::parse(
+        "Host target\n    Ciphers aes128-ctr\n    MACs hmac-sha2-256\n    KexAlgorithms curve25519-sha256\n    HostKeyAlgorithms ssh-ed25519\n    PubkeyAcceptedAlgorithms rsa-sha2-*\n",
+    )
+    .unwrap();
+    let connection_config = SshConnectionConfigResolver::new()
+        .with_ssh_config(Some(ssh_config))
+        .resolve_for_host("target");
+    let config = connection_config.to_russh_config();
+
+    assert_eq!(config.preferred.cipher[0].as_ref(), "aes128-ctr");
+    assert_eq!(config.preferred.mac[0].as_ref(), "hmac-sha2-256");
+    assert_eq!(config.preferred.kex[0].as_ref(), "curve25519-sha256");
+    assert_eq!(config.preferred.key[0].as_ref(), "ssh-ed25519");
+    assert_eq!(
+        connection_config.pubkey_accepted_algorithms.unwrap(),
+        [
+            "rsa-sha2-512-cert-v01@openssh.com",
+            "rsa-sha2-512",
+            "rsa-sha2-256-cert-v01@openssh.com",
+            "rsa-sha2-256"
+        ]
+    );
+}
+
+#[test]
+fn connection_attempts_rejects_zero() {
+    let error = SshConfig::parse("Host target\n    ConnectionAttempts 0\n").unwrap_err();
+    assert!(format!("{error:#}").contains("at least 1"));
 }

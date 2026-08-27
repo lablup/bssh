@@ -17,10 +17,12 @@
 //! This module contains the main parsing logic for SSH configurations,
 //! including the 2-pass parsing strategy for Include and Match directives.
 
-use crate::ssh::ssh_config::include::{combine_included_files, resolve_includes};
+use crate::ssh::ssh_config::include::{IncludedFile, resolve_includes};
 use crate::ssh::ssh_config::match_directive::{MatchBlock, MatchCondition};
+use crate::ssh::ssh_config::resolver::merge_host_config;
 use crate::ssh::ssh_config::types::{ConfigBlock, SshHostConfig};
 use anyhow::{Context, Result};
+use std::collections::HashSet;
 use std::path::Path;
 
 use super::options;
@@ -38,16 +40,82 @@ pub async fn parse_from_file(path: &Path, content: &str) -> Result<Vec<SshHostCo
     let included_files = resolve_includes(path, content)
         .await
         .with_context(|| format!("Failed to resolve includes for {}", path.display()))?;
-
-    // Combine all included files into a single configuration
-    let combined_content = combine_included_files(&included_files);
-
-    // Pass 2: Parse the combined configuration
-    parse_without_includes(&combined_content)
+    parse_included_files(&included_files)
 }
 
 /// Parse SSH configuration content without Include resolution
 pub(super) fn parse_without_includes(content: &str) -> Result<Vec<SshHostConfig>> {
+    parse_lines(
+        content
+            .lines()
+            .enumerate()
+            .map(|(index, line)| (None, index + 1, line)),
+    )
+}
+
+/// Parse raw `-o Key=Value` arguments into a leading `Host *` overlay.
+///
+/// Keeping the overlay as a structured block lets the ordinary resolver apply
+/// OpenSSH's first-obtained rule: CLI options are visited before file blocks,
+/// while repeated `-o` scalars retain the first CLI value.
+pub(crate) fn parse_cli_options(options: &[String]) -> Result<Option<SshHostConfig>> {
+    const MAX_LINE_LENGTH: usize = 8192;
+    const MAX_VALUE_LENGTH: usize = 4096;
+
+    if options.is_empty() {
+        return Ok(None);
+    }
+
+    let mut overlay = SshHostConfig {
+        host_patterns: vec!["*".to_string()],
+        block_type: Some(ConfigBlock::Host(vec!["*".to_string()])),
+        ..Default::default()
+    };
+    let mut reported_diagnostics = HashSet::new();
+
+    for (index, option) in options.iter().enumerate() {
+        let option_number = index + 1;
+        if option.contains(['\r', '\n']) {
+            anyhow::bail!("-o option #{option_number} must be a single configuration line");
+        }
+        if option.len() > MAX_LINE_LENGTH {
+            anyhow::bail!("-o option #{option_number} exceeds {MAX_LINE_LENGTH} bytes");
+        }
+
+        let (keyword, args) = parse_config_line(option, option_number, MAX_VALUE_LENGTH)
+            .with_context(|| format!("Invalid -o option #{option_number}"))?;
+        if keyword.is_empty() {
+            anyhow::bail!("-o option #{option_number} has no keyword");
+        }
+        parse_option_first(
+            &mut overlay,
+            &keyword,
+            &args,
+            None,
+            option_number,
+            &mut reported_diagnostics,
+        )
+        .with_context(|| format!("Invalid -o option #{option_number} ({keyword})"))?;
+    }
+
+    Ok(Some(overlay))
+}
+
+fn parse_included_files(files: &[IncludedFile]) -> Result<Vec<SshHostConfig>> {
+    parse_lines(files.iter().flat_map(|file| {
+        file.content.lines().enumerate().map(move |(index, line)| {
+            (
+                Some(file.path.as_path()),
+                file.source_line_start + index,
+                line,
+            )
+        })
+    }))
+}
+
+fn parse_lines<'a>(
+    lines: impl IntoIterator<Item = (Option<&'a Path>, usize, &'a str)>,
+) -> Result<Vec<SshHostConfig>> {
     // Security: Set reasonable limits to prevent DoS attacks
     const MAX_LINE_LENGTH: usize = 8192; // 8KB per line should be more than enough
     const MAX_VALUE_LENGTH: usize = 4096; // 4KB for individual values
@@ -55,17 +123,10 @@ pub(super) fn parse_without_includes(content: &str) -> Result<Vec<SshHostConfig>
     let mut configs = Vec::new();
     let mut current_config: Option<SshHostConfig> = None;
     let mut current_match: Option<MatchBlock> = None;
-    let mut line_number = 0;
     let mut in_match_block = false;
+    let mut reported_diagnostics = HashSet::new();
 
-    for line in content.lines() {
-        line_number += 1;
-
-        // Skip source file comments added by include resolution
-        if line.starts_with("# Source:") {
-            continue;
-        }
-
+    for (source_path, line_number, line) in lines {
         // Security: Check line length to prevent DoS
         if line.len() > MAX_LINE_LENGTH {
             anyhow::bail!("Line {line_number} exceeds maximum length of {MAX_LINE_LENGTH} bytes");
@@ -165,20 +226,45 @@ pub(super) fn parse_without_includes(content: &str) -> Result<Vec<SshHostConfig>
         // Apply option to current config block
         if in_match_block {
             if let Some(ref mut match_block) = current_match {
-                options::parse_option(&mut match_block.config, &keyword, &args, line_number)
-                    .with_context(|| format!("Error at line {line_number}: {line}"))?;
+                parse_option_first(
+                    &mut match_block.config,
+                    &keyword,
+                    &args,
+                    source_path,
+                    line_number,
+                    &mut reported_diagnostics,
+                )
+                .with_context(|| format!("Error at line {line_number}: {line}"))?;
             }
         } else if let Some(ref mut config) = current_config {
-            options::parse_option(config, &keyword, &args, line_number)
-                .with_context(|| format!("Error at line {line_number}: {line}"))?;
+            parse_option_first(
+                config,
+                &keyword,
+                &args,
+                source_path,
+                line_number,
+                &mut reported_diagnostics,
+            )
+            .with_context(|| format!("Error at line {line_number}: {line}"))?;
         } else {
-            // Global option outside any block
-            // In OpenSSH, these set defaults but we're ignoring them for now
-            tracing::debug!(
-                "Ignoring global option '{}' at line {}",
-                keyword,
-                line_number
-            );
+            // OpenSSH treats options before the first Host/Match directive as
+            // global defaults. Model that region as the first `Host *` block
+            // so the resolver's first-obtained merge semantics apply without
+            // losing the original directive order.
+            let config = current_config.get_or_insert_with(|| SshHostConfig {
+                host_patterns: vec!["*".to_string()],
+                block_type: Some(ConfigBlock::Host(vec!["*".to_string()])),
+                ..Default::default()
+            });
+            parse_option_first(
+                config,
+                &keyword,
+                &args,
+                source_path,
+                line_number,
+                &mut reported_diagnostics,
+            )
+            .with_context(|| format!("Error at line {line_number}: {line}"))?;
         }
     }
 
@@ -191,6 +277,31 @@ pub(super) fn parse_without_includes(content: &str) -> Result<Vec<SshHostConfig>
     }
 
     Ok(configs)
+}
+
+/// Parse one directive independently, then merge it into its surrounding
+/// Host/Match block. This preserves OpenSSH's first-obtained rule even for
+/// repeated directives separated by Include file boundaries, while additive
+/// options continue to accumulate through the shared resolver merge logic.
+fn parse_option_first(
+    target: &mut SshHostConfig,
+    keyword: &str,
+    args: &[String],
+    source_path: Option<&Path>,
+    line_number: usize,
+    reported_diagnostics: &mut HashSet<String>,
+) -> Result<()> {
+    let mut parsed = SshHostConfig::default();
+    options::parse_option(
+        &mut parsed,
+        keyword,
+        args,
+        source_path,
+        line_number,
+        reported_diagnostics,
+    )?;
+    merge_host_config(target, &parsed);
+    Ok(())
 }
 
 /// Parse a Host directive line

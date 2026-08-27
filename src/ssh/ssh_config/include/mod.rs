@@ -148,12 +148,12 @@ impl IncludeContext {
 #[derive(Debug, Clone)]
 pub struct IncludedFile {
     /// Path to the file
+    #[cfg_attr(not(test), allow(dead_code))]
     pub path: PathBuf,
     /// File content
     pub content: String,
-    /// Line offset in the combined configuration
-    #[allow(dead_code)]
-    pub line_offset: usize,
+    /// One-based line number of the first content line in the source file.
+    pub source_line_start: usize,
 }
 
 /// Resolve Include directives and collect all configuration files
@@ -188,6 +188,7 @@ async fn process_file_with_includes(
 ) -> Result<Vec<IncludedFile>> {
     let mut result = Vec::new();
     let mut current_content = String::new();
+    let mut current_source_line = 1;
 
     for (line_number, line) in content.lines().enumerate() {
         let line_number = line_number + 1; // 1-indexed for error messages
@@ -197,17 +198,14 @@ async fn process_file_with_includes(
         if let Some(patterns) = parse_include_line(trimmed) {
             // Save current accumulated content as an IncludedFile (if not empty)
             if !current_content.is_empty() {
-                let line_offset: usize = result
-                    .iter()
-                    .map(|f: &IncludedFile| f.content.lines().count())
-                    .sum();
                 result.push(IncludedFile {
                     path: file_path.to_path_buf(),
                     content: current_content.clone(),
-                    line_offset,
+                    source_line_start: current_source_line,
                 });
                 current_content.clear();
             }
+            current_source_line = line_number + 1;
 
             // Process each Include pattern
             for pattern in patterns {
@@ -264,14 +262,10 @@ async fn process_file_with_includes(
 
     // Add any remaining content as the final IncludedFile
     if !current_content.is_empty() {
-        let line_offset: usize = result
-            .iter()
-            .map(|f: &IncludedFile| f.content.lines().count())
-            .sum();
         result.push(IncludedFile {
             path: file_path.to_path_buf(),
             content: current_content,
-            line_offset,
+            source_line_start: current_source_line,
         });
     }
 
@@ -280,7 +274,7 @@ async fn process_file_with_includes(
         result.push(IncludedFile {
             path: file_path.to_path_buf(),
             content: content.to_string(),
-            line_offset: 0,
+            source_line_start: 1,
         });
     }
 
@@ -288,6 +282,7 @@ async fn process_file_with_includes(
 }
 
 /// Combine multiple included files into a single configuration string
+#[cfg(test)]
 pub fn combine_included_files(files: &[IncludedFile]) -> String {
     let mut combined = String::new();
 

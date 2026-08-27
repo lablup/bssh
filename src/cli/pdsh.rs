@@ -316,6 +316,8 @@ impl PdshCli {
             require_all_success: false,
             check_all_nodes: false,
             ssh_options: Vec::new(),
+            cipher: None,
+            macs: None,
             ssh_config: None,
             quiet: false,
             force_tty: false,

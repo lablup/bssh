@@ -95,6 +95,9 @@ pub(super) fn parse_security_option(
                             || c == '_'
                             || c == '@'
                             || c == '+'
+                            || c == '^'
+                            || c == '*'
+                            || c == '?'
                     }) {
                         anyhow::bail!(
                             "HostKeyAlgorithms at line {line_number} contains invalid characters in algorithm name '{trimmed}'. \
@@ -124,6 +127,9 @@ pub(super) fn parse_security_option(
                 );
             }
 
+            let resolved = crate::ssh::tokio_client::algorithms::resolve_host_keys(&algorithms)
+                .map_err(anyhow::Error::msg)?;
+            host.resolved_host_key_algorithms = Some(resolved);
             host.host_key_algorithms = algorithms;
         }
         "kexalgorithms" => {
@@ -168,6 +174,9 @@ pub(super) fn parse_security_option(
                             || c == '_'
                             || c == '@'
                             || c == '+'
+                            || c == '^'
+                            || c == '*'
+                            || c == '?'
                     }) {
                         anyhow::bail!(
                             "KexAlgorithms at line {line_number} contains invalid characters in algorithm name '{trimmed}'. \
@@ -197,6 +206,9 @@ pub(super) fn parse_security_option(
                 );
             }
 
+            let resolved = crate::ssh::tokio_client::algorithms::resolve_kex(&algorithms)
+                .map_err(anyhow::Error::msg)?;
+            host.resolved_kex_algorithms = Some(resolved);
             host.kex_algorithms = algorithms;
         }
         "ciphers" => {
@@ -241,6 +253,9 @@ pub(super) fn parse_security_option(
                             || c == '_'
                             || c == '@'
                             || c == '+'
+                            || c == '^'
+                            || c == '*'
+                            || c == '?'
                     }) {
                         anyhow::bail!(
                             "Ciphers at line {line_number} contains invalid characters in cipher name '{trimmed}'. \
@@ -270,6 +285,9 @@ pub(super) fn parse_security_option(
                 );
             }
 
+            let resolved = crate::ssh::tokio_client::algorithms::resolve_ciphers(&ciphers)
+                .map_err(anyhow::Error::msg)?;
+            host.resolved_ciphers = Some(resolved);
             host.ciphers = ciphers;
         }
         "macs" => {
@@ -314,6 +332,9 @@ pub(super) fn parse_security_option(
                             || c == '_'
                             || c == '@'
                             || c == '+'
+                            || c == '^'
+                            || c == '*'
+                            || c == '?'
                     }) {
                         anyhow::bail!(
                             "MACs at line {line_number} contains invalid characters in MAC name '{trimmed}'. \
@@ -341,6 +362,9 @@ pub(super) fn parse_security_option(
                 anyhow::bail!("MACs at line {line_number} must contain at least one valid MAC");
             }
 
+            let resolved = crate::ssh::tokio_client::algorithms::resolve_macs(&macs)
+                .map_err(anyhow::Error::msg)?;
+            host.resolved_macs = Some(resolved);
             host.macs = macs;
         }
         "casignaturealgorithms" => {

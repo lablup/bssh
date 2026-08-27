@@ -239,8 +239,9 @@ Host example.com
 }
 
 #[test]
-fn test_parse_global_options_ignored() {
-    // Global options should be ignored for now
+fn test_parse_global_options_become_first_host_star_block() {
+    // Options before the first Host directive are the first values obtained
+    // for every destination, just like an explicit leading `Host *` block.
     let content = r#"
 User globaluser
 Port 22
@@ -252,11 +253,14 @@ Host *.example.org
     Port 2222
 "#;
     let hosts = parse(content).unwrap();
-    assert_eq!(hosts.len(), 2);
-    assert_eq!(hosts[0].user, Some("hostuser".to_string()));
-    assert_eq!(hosts[0].port, None); // Global port not inherited
-    assert_eq!(hosts[1].port, Some(2222));
-    assert_eq!(hosts[1].user, None); // Global user not inherited
+    assert_eq!(hosts.len(), 3);
+    assert_eq!(hosts[0].host_patterns, vec!["*"]);
+    assert_eq!(hosts[0].user, Some("globaluser".to_string()));
+    assert_eq!(hosts[0].port, Some(22));
+    assert_eq!(hosts[1].host_patterns, vec!["example.com"]);
+    assert_eq!(hosts[1].user, Some("hostuser".to_string()));
+    assert_eq!(hosts[2].host_patterns, vec!["*.example.org"]);
+    assert_eq!(hosts[2].port, Some(2222));
 }
 
 #[test]
@@ -1569,7 +1573,14 @@ fn test_parse_pubkey_accepted_algorithms_memory_exhaustion() {
     // Test that excessive algorithms are truncated
     let mut algorithms = Vec::new();
     for i in 0..100 {
-        algorithms.push(format!("algo-{i}"));
+        algorithms.push(
+            if i % 2 == 0 {
+                "ssh-ed25519"
+            } else {
+                "rsa-sha2-256"
+            }
+            .to_string(),
+        );
     }
     let content = format!(
         "Host example.com\n    PubkeyAcceptedAlgorithms {}\n",
@@ -1579,6 +1590,13 @@ fn test_parse_pubkey_accepted_algorithms_memory_exhaustion() {
     assert_eq!(hosts.len(), 1);
     // Should be truncated to MAX_ALGORITHMS (50)
     assert_eq!(hosts[0].pubkey_accepted_algorithms.len(), 50);
+    assert_eq!(
+        hosts[0]
+            .resolved_pubkey_accepted_algorithms
+            .as_ref()
+            .unwrap(),
+        &["ssh-ed25519", "rsa-sha2-256"]
+    );
 }
 
 #[test]
@@ -1834,4 +1852,109 @@ Host proxy.example.com
     let hosts = parse(content).unwrap();
     assert_eq!(hosts.len(), 1);
     assert_eq!(hosts[0].proxy_use_fdpass, None);
+}
+
+#[tokio::test]
+async fn test_includes_preserve_global_and_host_first_obtained_context() {
+    use std::fs;
+    use tempfile::TempDir;
+
+    let temp_dir = TempDir::new().unwrap();
+    let nested = temp_dir.path().join("nested.conf");
+    fs::write(&nested, "Port 2200\nSetEnv ORDER=nested NESTED=yes\n").unwrap();
+
+    let global = temp_dir.path().join("global.conf");
+    fs::write(
+        &global,
+        format!(
+            "User include-first\nSetEnv ORDER=global GLOBAL=yes\nInclude {}\nPort 2300\nSetEnv ORDER=global-late\n",
+            nested.display()
+        ),
+    )
+    .unwrap();
+
+    let host = temp_dir.path().join("host.conf");
+    fs::write(
+        &host,
+        "HostName included.example.com\nSetEnv HOST_CONTEXT=yes\n",
+    )
+    .unwrap();
+
+    let main = temp_dir.path().join("config");
+    fs::write(
+        &main,
+        format!(
+            "Include {}\nUser main-late\nSetEnv ORDER=main-late\n\nHost foo\n    HostKeyAlias caller-context\n    Include {}\n    HostName main-late.example.com\n",
+            global.display(),
+            host.display()
+        ),
+    )
+    .unwrap();
+
+    let config = crate::ssh::ssh_config::SshConfig::load_from_file(&main)
+        .await
+        .unwrap();
+    assert_eq!(
+        config.hosts.len(),
+        2,
+        "Include must not create block boundaries"
+    );
+
+    let global_block = &config.hosts[0];
+    assert_eq!(global_block.host_patterns, ["*"]);
+    assert_eq!(global_block.user.as_deref(), Some("include-first"));
+    assert_eq!(global_block.port, Some(2200));
+    assert_eq!(
+        global_block.set_env.get("ORDER").map(String::as_str),
+        Some("global")
+    );
+    assert_eq!(
+        global_block.set_env.get("NESTED").map(String::as_str),
+        Some("yes")
+    );
+
+    let host_block = &config.hosts[1];
+    assert_eq!(host_block.host_patterns, ["foo"]);
+    assert_eq!(host_block.host_key_alias.as_deref(), Some("caller-context"));
+    assert_eq!(host_block.hostname.as_deref(), Some("included.example.com"));
+    assert_eq!(
+        host_block.set_env.get("HOST_CONTEXT").map(String::as_str),
+        Some("yes")
+    );
+
+    let effective = config.find_host_config("foo");
+    assert_eq!(effective.user.as_deref(), Some("include-first"));
+    assert_eq!(effective.port, Some(2200));
+    assert_eq!(effective.hostname.as_deref(), Some("included.example.com"));
+    assert_eq!(
+        effective.set_env.get("ORDER").map(String::as_str),
+        Some("global")
+    );
+}
+
+#[tokio::test]
+async fn include_errors_use_structured_source_lines_not_source_comments() {
+    use std::fs;
+    use tempfile::TempDir;
+
+    let temp_dir = TempDir::new().unwrap();
+    let included = temp_dir.path().join("included.conf");
+    fs::write(
+        &included,
+        "# Source: /spoofed/config:9000\n# ordinary comment\nHost target\nConnectionAttempts 0\n",
+    )
+    .unwrap();
+    let main = temp_dir.path().join("config");
+    fs::write(&main, format!("Include {}\n", included.display())).unwrap();
+
+    let error = crate::ssh::ssh_config::SshConfig::load_from_file(&main)
+        .await
+        .unwrap_err();
+    let chain = format!("{error:#}");
+
+    assert!(chain.contains("line 4"), "unexpected error chain: {chain}");
+    assert!(
+        !chain.contains("9000"),
+        "a user-authored Source comment must not influence provenance: {chain}"
+    );
 }

@@ -186,7 +186,7 @@ pub async fn initialize_app(cli: &mut Cli, args: &[String]) -> Result<AppContext
     let config = Config::load_with_priority(&cli.config).await?;
 
     // Load SSH configuration with caching for improved performance
-    let ssh_config = if let Some(ref ssh_config_path) = cli.ssh_config {
+    let mut ssh_config = if let Some(ref ssh_config_path) = cli.ssh_config {
         SshConfig::load_from_file_cached(ssh_config_path)
             .await
             .with_context(|| format!("Failed to load SSH config from {ssh_config_path:?}"))?
@@ -196,6 +196,10 @@ pub async fn initialize_app(cli: &mut Cli, args: &[String]) -> Result<AppContext
             SshConfig::new()
         })
     };
+    let ssh_config_overrides = cli.ssh_config_overrides();
+    ssh_config
+        .apply_cli_options(&ssh_config_overrides)
+        .context("Failed to apply command-line SSH options")?;
 
     // Determine nodes to execute on
     let (nodes, actual_cluster_name) =

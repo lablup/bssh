@@ -102,6 +102,18 @@ impl SshConfig {
         Ok(Self { hosts })
     }
 
+    /// Prepend command-line `-o` options as a structured `Host *` block.
+    ///
+    /// The resolver visits this block before configuration-file blocks, so
+    /// accepted command-line options have CLI precedence without bypassing
+    /// the parser's validation or first-obtained merge rules.
+    pub fn apply_cli_options(&mut self, options: &[String]) -> Result<()> {
+        if let Some(overlay) = parser::parse_cli_options(options)? {
+            self.hosts.insert(0, overlay);
+        }
+        Ok(())
+    }
+
     /// Parse SSH configuration from a file with Include support
     pub async fn parse_from_file_with_content(path: &Path, content: &str) -> Result<Self> {
         let hosts = parser::parse_from_file(path, content).await?;
@@ -334,7 +346,7 @@ Host db*.example.com
     }
 
     #[test]
-    fn test_find_host_config() {
+    fn test_find_host_config_uses_source_order_first_obtained_values() {
         let config_content = r#"
 Host *.example.com
     User defaultuser
@@ -350,19 +362,67 @@ Host web1.example.com
 
         let config = SshConfig::parse(config_content).unwrap();
 
-        // Test that most specific match wins
+        // Every matching block is visited in source order. The broad first
+        // block obtains both scalar slots before later, narrower blocks.
         let host_config = config.find_host_config("web1.example.com");
-        assert_eq!(host_config.user, Some("webuser".to_string())); // From web*.example.com
-        assert_eq!(host_config.port, Some(9090)); // From web1.example.com (most specific)
+        assert_eq!(host_config.user, Some("defaultuser".to_string()));
+        assert_eq!(host_config.port, Some(22));
 
-        // Test that patterns are applied in order
+        // A second web host gets the same first-obtained scalar defaults.
         let host_config = config.find_host_config("web2.example.com");
-        assert_eq!(host_config.user, Some("webuser".to_string())); // From web*.example.com
-        assert_eq!(host_config.port, Some(8080)); // From web*.example.com
+        assert_eq!(host_config.user, Some("defaultuser".to_string()));
+        assert_eq!(host_config.port, Some(22));
 
         let host_config = config.find_host_config("db1.example.com");
         assert_eq!(host_config.user, Some("defaultuser".to_string())); // From *.example.com
         assert_eq!(host_config.port, Some(22)); // From *.example.com
+    }
+
+    #[test]
+    fn cli_option_overlay_precedes_files_and_repeated_scalars_keep_first_value() {
+        let mut config = SshConfig::parse(
+            "Host *\n    User file-user\n    Port 22\n    ConnectionAttempts 1\n    TCPKeepAlive yes\n",
+        )
+        .unwrap();
+        config
+            .apply_cli_options(&[
+                "User=cli-first".to_string(),
+                "User=cli-later".to_string(),
+                "Port=2200".to_string(),
+                "ConnectionAttempts=3".to_string(),
+                "TCPKeepAlive=no".to_string(),
+                "Ciphers=aes128-ctr".to_string(),
+                "PubkeyAcceptedAlgorithms=rsa-sha2-*".to_string(),
+            ])
+            .unwrap();
+
+        let effective = config.find_host_config("target");
+        assert_eq!(effective.user.as_deref(), Some("cli-first"));
+        assert_eq!(effective.port, Some(2200));
+        assert_eq!(effective.connection_attempts, Some(3));
+        assert_eq!(effective.tcp_keep_alive, Some(false));
+        assert_eq!(
+            effective.resolved_ciphers.unwrap()[0].as_ref(),
+            "aes128-ctr"
+        );
+        assert_eq!(
+            effective.resolved_pubkey_accepted_algorithms.unwrap(),
+            [
+                "rsa-sha2-512-cert-v01@openssh.com",
+                "rsa-sha2-512",
+                "rsa-sha2-256-cert-v01@openssh.com",
+                "rsa-sha2-256"
+            ]
+        );
+    }
+
+    #[test]
+    fn cli_option_overlay_rejects_multiline_injection() {
+        let mut config = SshConfig::new();
+        let error = config
+            .apply_cli_options(&["User=alice\nProxyCommand=evil".to_string()])
+            .unwrap_err();
+        assert!(error.to_string().contains("single configuration line"));
     }
 
     #[test]
@@ -461,16 +521,15 @@ Host web1.example.com
         // Test merging for web1.example.com (should get configs from all three blocks)
         let host_config = config.find_host_config("web1.example.com");
 
-        // Should have certificate files from both *.example.com and web*.example.com (appended)
+        // CertificateFile is explicitly additive in ssh_config(5).
         assert_eq!(host_config.certificate_files.len(), 2);
 
-        // CASignatureAlgorithms should be from web1.example.com (most specific)
-        assert_eq!(host_config.ca_signature_algorithms.len(), 2);
-        assert_eq!(host_config.ca_signature_algorithms[0], "rsa-sha2-512");
-        assert_eq!(host_config.ca_signature_algorithms[1], "rsa-sha2-256");
+        // Replacement lists and scalars use their first obtained value.
+        assert_eq!(host_config.ca_signature_algorithms.len(), 1);
+        assert_eq!(host_config.ca_signature_algorithms[0], "ssh-ed25519");
 
-        // GatewayPorts should be from web*.example.com
-        assert_eq!(host_config.gateway_ports, Some("yes".to_string()));
+        // GatewayPorts was already obtained from the broad first block.
+        assert_eq!(host_config.gateway_ports, Some("no".to_string()));
 
         // ExitOnForwardFailure should be from web1.example.com
         assert_eq!(host_config.exit_on_forward_failure, Some(true));
@@ -648,8 +707,8 @@ Host web1.example.com
             Some("shared.example.com".to_string())
         );
 
-        // NumberOfPasswordPrompts should be from web1.example.com (most specific)
-        assert_eq!(host_config.number_of_password_prompts, Some(1));
+        // NumberOfPasswordPrompts keeps the first value obtained from Host *.
+        assert_eq!(host_config.number_of_password_prompts, Some(3));
 
         // EnableSSHKeysign should be from *.example.com
         assert_eq!(host_config.enable_ssh_keysign, Some(true));
@@ -666,8 +725,8 @@ Host web1.example.com
         // ForwardX11Timeout should be from *.example.com
         assert_eq!(host_config.forward_x11_timeout, Some("30m".to_string()));
 
-        // ForwardX11Trusted should be from web1.example.com (most specific)
-        assert_eq!(host_config.forward_x11_trusted, Some(true));
+        // ForwardX11Trusted keeps the first value obtained from Host *.
+        assert_eq!(host_config.forward_x11_trusted, Some(false));
     }
 
     #[test]

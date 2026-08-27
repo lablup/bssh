@@ -52,7 +52,7 @@ pub(super) fn parse_environment_option(
                 if let Some(eq_pos) = pair.find('=') {
                     let name = pair[..eq_pos].to_string();
                     let value = pair[eq_pos + 1..].to_string();
-                    host.set_env.insert(name, value);
+                    host.set_env.entry(name).or_insert(value);
                 } else {
                     anyhow::bail!(
                         "Invalid SetEnv format '{pair}' at line {line_number} (expected name=value)"

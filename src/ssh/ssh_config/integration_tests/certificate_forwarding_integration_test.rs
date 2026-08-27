@@ -325,7 +325,7 @@ Host web1.prod.example.com
         // Should combine all layers:
         // - Default cert from deep.conf
         // - CA algorithms from middle.conf
-        // - Hostbased auth overridden to yes in middle.conf
+        // - Hostbased auth first obtained as no in deep.conf
         // - Gateway ports from middle.conf
         // - Exit on forward failure from Match block
         // - Permit remote open from Match block
@@ -337,7 +337,7 @@ Host web1.prod.example.com
                 .contains("default-cert.pub")
         );
         assert_eq!(resolved.ca_signature_algorithms.len(), 2);
-        assert_eq!(resolved.hostbased_authentication, Some(true)); // Overridden
+        assert_eq!(resolved.hostbased_authentication, Some(false));
         assert_eq!(resolved.gateway_ports, Some("clientspecified".to_string()));
         assert_eq!(resolved.exit_on_forward_failure, Some(true));
         assert_eq!(resolved.permit_remote_open.len(), 2);
@@ -395,8 +395,8 @@ Host web.secure.prod.example.com
         assert_eq!(resolved.ca_signature_algorithms.len(), 3);
         assert_eq!(resolved.ca_signature_algorithms[0], "ssh-ed25519");
 
-        // HostbasedAuthentication: yes from *.prod.example.com
-        assert_eq!(resolved.hostbased_authentication, Some(true));
+        // HostbasedAuthentication: first obtained as no from Host *
+        assert_eq!(resolved.hostbased_authentication, Some(false));
 
         // HostbasedAcceptedAlgorithms: from *.prod.example.com
         assert_eq!(resolved.hostbased_accepted_algorithms.len(), 2);
@@ -404,8 +404,8 @@ Host web.secure.prod.example.com
         // GatewayPorts: from Match block
         assert_eq!(resolved.gateway_ports, Some("clientspecified".to_string()));
 
-        // ExitOnForwardFailure: yes from Match block (overrides global no)
-        assert_eq!(resolved.exit_on_forward_failure, Some(true));
+        // ExitOnForwardFailure: first obtained as no from Host *
+        assert_eq!(resolved.exit_on_forward_failure, Some(false));
 
         // PermitRemoteOpen: from Match (3) + specific Host (1) = 4 total
         assert_eq!(resolved.permit_remote_open.len(), 4);
