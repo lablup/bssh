@@ -156,7 +156,13 @@ pub(super) async fn connect_through_tunnel(
     })?;
 
     // SECURITY: Always verify host keys for jump hosts to prevent MITM attacks
-    let check_method = crate::ssh::known_hosts::get_check_method(strict_mode);
+    let check_method = crate::ssh::known_hosts::get_check_method_for_target(
+        strict_mode,
+        ssh_connection_config,
+        &jump_host.host,
+        jump_host.effective_port(),
+        &jump_host.effective_user(),
+    );
 
     let handler = ClientHandler::new(jump_host.host.clone(), socket_addr, check_method);
 
@@ -262,7 +268,13 @@ pub(super) async fn connect_to_destination(
 
     // Create SSH client over the tunnel stream with keepalive settings
     let config = Arc::new(ssh_connection_config.to_russh_config());
-    let check_method = crate::ssh::known_hosts::get_check_method(strict_mode);
+    let check_method = crate::ssh::known_hosts::get_check_method_for_target(
+        strict_mode,
+        ssh_connection_config,
+        destination_host,
+        destination_port,
+        destination_user,
+    );
 
     // As in `connect_through_tunnel`, this address only supplies host key
     // verification context and display text for a connection that rides an

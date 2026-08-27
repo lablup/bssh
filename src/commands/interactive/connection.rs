@@ -25,7 +25,7 @@ use zeroize::Zeroizing;
 use crate::jump::{JumpHostChain, parse_jump_hosts};
 use crate::node::Node;
 use crate::ssh::{
-    known_hosts::get_check_method,
+    known_hosts::get_check_method_for_target,
     tokio_client::{AuthMethod, Client, Error as SshError, ServerCheckMethod, SshConnectionConfig},
 };
 
@@ -213,7 +213,13 @@ impl InteractiveCommand {
         let auth_method = self.determine_auth_method(&node).await?;
 
         // Set up host key checking using the configured strict mode
-        let check_method = get_check_method(self.strict_mode);
+        let check_method = get_check_method_for_target(
+            self.strict_mode,
+            &self.ssh_connection_config,
+            &node.host,
+            node.port,
+            &node.username,
+        );
 
         // Connect with timeout
         let addr = (node.host.as_str(), node.port);
@@ -360,7 +366,13 @@ impl InteractiveCommand {
         let auth_method = self.determine_auth_method(&node).await?;
 
         // Set up host key checking using the configured strict mode
-        let check_method = get_check_method(self.strict_mode);
+        let check_method = get_check_method_for_target(
+            self.strict_mode,
+            &self.ssh_connection_config,
+            &node.host,
+            node.port,
+            &node.username,
+        );
 
         // Connect with timeout
         let addr = (node.host.as_str(), node.port);

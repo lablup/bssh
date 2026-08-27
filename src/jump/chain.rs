@@ -420,7 +420,13 @@ impl JumpHostChain {
             &self.auth_mutex,
         )
         .await?;
-        let check_method = crate::ssh::known_hosts::get_check_method(strict_mode);
+        let check_method = crate::ssh::known_hosts::get_check_method_for_target(
+            strict_mode,
+            &ssh_connection_config,
+            &jump_host.host,
+            jump_host.effective_port(),
+            &effective_user,
+        );
 
         let client = tokio::time::timeout(
             self.connect_timeout,

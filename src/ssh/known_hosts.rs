@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::tokio_client::ServerCheckMethod;
+use super::tokio_client::{ServerCheckMethod, SshConnectionConfig};
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -80,6 +80,149 @@ pub fn get_check_method(strict_mode: StrictHostKeyChecking) -> ServerCheckMethod
             }
         },
     }
+}
+
+/// Select host-key verification from the effective ssh_config for a target.
+///
+/// OpenSSH accepts multiple user and global files. bssh preserves their
+/// declared order, reads user files before global files, and records a new
+/// key only into the first usable user file. The default file is used only
+/// when neither directive was configured.
+pub fn get_check_method_for_target(
+    strict_mode: StrictHostKeyChecking,
+    connection_config: &SshConnectionConfig,
+    hostname: &str,
+    port: u16,
+    remote_username: &str,
+) -> ServerCheckMethod {
+    if matches!(strict_mode, StrictHostKeyChecking::No) {
+        return ServerCheckMethod::NoCheck;
+    }
+
+    let user_configured = connection_config.user_known_hosts_files.is_some();
+    let global_configured = connection_config.global_known_hosts_files.is_some();
+    if !user_configured && !global_configured {
+        return get_check_method(strict_mode);
+    }
+
+    let user_files = expand_known_hosts_files(
+        connection_config.user_known_hosts_files.as_deref(),
+        hostname,
+        port,
+        remote_username,
+    );
+    let global_files = expand_known_hosts_files(
+        connection_config.global_known_hosts_files.as_deref(),
+        hostname,
+        port,
+        remote_username,
+    );
+    let write_path = user_files.first().cloned();
+    let files = user_files.into_iter().chain(global_files).collect();
+
+    match strict_mode {
+        StrictHostKeyChecking::Yes => ServerCheckMethod::KnownHostsFiles(files),
+        StrictHostKeyChecking::AcceptNew => {
+            ServerCheckMethod::AcceptNewKnownHostsFiles { files, write_path }
+        }
+        StrictHostKeyChecking::No => ServerCheckMethod::NoCheck,
+    }
+}
+
+fn expand_known_hosts_files(
+    templates: Option<&[String]>,
+    hostname: &str,
+    port: u16,
+    remote_username: &str,
+) -> Vec<String> {
+    templates
+        .into_iter()
+        .flatten()
+        .filter_map(|template| expand_known_hosts_path(template, hostname, port, remote_username))
+        .collect()
+}
+
+fn expand_known_hosts_path(
+    template: &str,
+    hostname: &str,
+    port: u16,
+    remote_username: &str,
+) -> Option<String> {
+    if template.eq_ignore_ascii_case("none") || template == "/dev/null" {
+        return None;
+    }
+
+    let home = dirs::home_dir().map(|path| path.to_string_lossy().into_owned());
+    let local_username = std::env::var("USER")
+        .or_else(|_| std::env::var("USERNAME"))
+        .or_else(|_| std::env::var("LOGNAME"))
+        .unwrap_or_else(|_| whoami::username().unwrap_or_else(|_| "user".to_string()));
+    let port = port.to_string();
+    let mut expanded = String::with_capacity(template.len());
+    let mut chars = template.chars();
+
+    while let Some(ch) = chars.next() {
+        if ch != '%' {
+            expanded.push(ch);
+            continue;
+        }
+        let Some(token) = chars.next() else {
+            tracing::warn!("Ignoring known_hosts path with a trailing '%' token: {template}");
+            return None;
+        };
+        match token {
+            '%' => expanded.push('%'),
+            'd' => {
+                let Some(home) = home.as_deref() else {
+                    tracing::warn!(
+                        "Ignoring known_hosts path requiring %d because no home directory is available: {template}"
+                    );
+                    return None;
+                };
+                expanded.push_str(home);
+            }
+            'h' => expanded.push_str(hostname),
+            'p' => expanded.push_str(&port),
+            'r' => expanded.push_str(remote_username),
+            'u' => expanded.push_str(&local_username),
+            other => {
+                tracing::warn!(
+                    "Ignoring known_hosts path with unsupported %{other} token: {template}"
+                );
+                return None;
+            }
+        }
+    }
+
+    if expanded == "~" {
+        let Some(home) = home else {
+            tracing::warn!(
+                "Ignoring known_hosts path requiring tilde expansion because no home directory is available: {template}"
+            );
+            return None;
+        };
+        return Some(home);
+    }
+    if let Some(suffix) = expanded.strip_prefix("~/") {
+        let Some(home) = home else {
+            tracing::warn!(
+                "Ignoring known_hosts path requiring tilde expansion because no home directory is available: {template}"
+            );
+            return None;
+        };
+        return Some(
+            PathBuf::from(home)
+                .join(suffix)
+                .to_string_lossy()
+                .into_owned(),
+        );
+    }
+
+    if expanded.eq_ignore_ascii_case("none") || expanded == "/dev/null" {
+        return None;
+    }
+
+    Some(expanded)
 }
 
 /// Mode for host key checking
@@ -207,5 +350,109 @@ mod tests {
             ServerCheckMethod::DefaultKnownHostsFile => {}
             other => panic!("strict mode must keep verification enabled, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn configured_known_hosts_files_preserve_order_and_expand_tokens() {
+        let config = SshConnectionConfig::new().with_known_hosts_files(
+            Some(vec![
+                "/tmp/user-first".to_string(),
+                "none".to_string(),
+                "/dev/null".to_string(),
+                "/tmp/%h-%p-%r-%u".to_string(),
+            ]),
+            Some(vec!["/tmp/global".to_string()]),
+        );
+        let local_username = std::env::var("USER")
+            .or_else(|_| std::env::var("USERNAME"))
+            .or_else(|_| std::env::var("LOGNAME"))
+            .unwrap_or_else(|_| whoami::username().unwrap_or_else(|_| "user".to_string()));
+
+        let method = get_check_method_for_target(
+            StrictHostKeyChecking::Yes,
+            &config,
+            "node.example.com",
+            2222,
+            "remote",
+        );
+        assert_eq!(
+            method,
+            ServerCheckMethod::KnownHostsFiles(vec![
+                "/tmp/user-first".to_string(),
+                format!("/tmp/node.example.com-2222-remote-{local_username}"),
+                "/tmp/global".to_string(),
+            ])
+        );
+    }
+
+    #[test]
+    fn accept_new_records_only_to_first_expanded_user_file() {
+        let config = SshConnectionConfig::new().with_known_hosts_files(
+            Some(vec!["/tmp/%h-first".to_string(), "/tmp/second".to_string()]),
+            Some(vec!["/tmp/global".to_string()]),
+        );
+
+        let method = get_check_method_for_target(
+            StrictHostKeyChecking::AcceptNew,
+            &config,
+            "node",
+            22,
+            "remote",
+        );
+        assert_eq!(
+            method,
+            ServerCheckMethod::AcceptNewKnownHostsFiles {
+                files: vec![
+                    "/tmp/node-first".to_string(),
+                    "/tmp/second".to_string(),
+                    "/tmp/global".to_string(),
+                ],
+                write_path: Some("/tmp/node-first".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn configured_empty_stores_do_not_fall_back_to_default() {
+        let config = SshConnectionConfig::new().with_known_hosts_files(
+            Some(vec!["none".to_string(), "/dev/null".to_string()]),
+            None,
+        );
+
+        let method =
+            get_check_method_for_target(StrictHostKeyChecking::Yes, &config, "node", 22, "remote");
+        assert_eq!(method, ServerCheckMethod::KnownHostsFiles(Vec::new()));
+    }
+
+    #[test]
+    fn resolver_preserves_multiple_known_hosts_paths_and_empty_sentinels() {
+        let ssh_config = crate::ssh::SshConfig::parse(
+            "Host target\n  UserKnownHostsFile ~/.ssh/one /dev/null none\n  GlobalKnownHostsFile %d/global %h-%p-%r-%u\n",
+        )
+        .unwrap();
+        let host = crate::ssh::tokio_client::SshConnectionConfigResolver::new()
+            .with_ssh_config(Some(ssh_config))
+            .resolve_for_host("target");
+        assert_eq!(
+            host.user_known_hosts_files,
+            Some(vec!["~/.ssh/one".into(), "/dev/null".into(), "none".into()])
+        );
+        assert_eq!(
+            host.global_known_hosts_files,
+            Some(vec!["%d/global".into(), "%h-%p-%r-%u".into()])
+        );
+    }
+
+    #[test]
+    fn expands_home_directory_tokens_and_tilde() {
+        let home = dirs::home_dir().expect("test environment must have a home directory");
+        assert_eq!(
+            expand_known_hosts_path("%d/.ssh/custom", "node", 22, "remote"),
+            Some(home.join(".ssh/custom").to_string_lossy().into_owned())
+        );
+        assert_eq!(
+            expand_known_hosts_path("~/.ssh/other", "node", 22, "remote"),
+            Some(home.join(".ssh/other").to_string_lossy().into_owned())
+        );
     }
 }

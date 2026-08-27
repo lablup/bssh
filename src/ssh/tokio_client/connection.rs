@@ -92,6 +92,15 @@ pub struct SshConnectionConfig {
     /// applied in [`Client::connect_with_ssh_config`]; see `ARCHITECTURE.md`
     /// ("Address Family Preference") for the scope of that constraint.
     pub address_family: AddressFamily,
+
+    /// Raw `UserKnownHostsFile` values selected for this host.
+    ///
+    /// They stay unexpanded until the connection target supplies `%h`, `%p`,
+    /// and `%r` values to host-key verification.
+    pub user_known_hosts_files: Option<Vec<String>>,
+
+    /// Raw `GlobalKnownHostsFile` values selected for this host.
+    pub global_known_hosts_files: Option<Vec<String>>,
 }
 
 impl Default for SshConnectionConfig {
@@ -101,6 +110,8 @@ impl Default for SshConnectionConfig {
             keepalive_max: DEFAULT_KEEPALIVE_MAX,
             compression: false,
             address_family: AddressFamily::Any,
+            user_known_hosts_files: None,
+            global_known_hosts_files: None,
         }
     }
 }
@@ -216,6 +227,17 @@ impl SshConnectionConfigResolver {
             AddressFamily::resolve(false, false, config_address_family.as_deref())
         });
 
+        let host_config = self
+            .ssh_config
+            .as_ref()
+            .map(|config| config.find_host_config(hostname));
+        let user_known_hosts_files = host_config
+            .as_ref()
+            .and_then(|config| config.user_known_hosts_file.clone());
+        let global_known_hosts_files = host_config
+            .as_ref()
+            .and_then(|config| config.global_known_hosts_file.clone());
+
         SshConnectionConfig::new()
             .with_keepalive_interval(if keepalive_interval == 0 {
                 None
@@ -225,6 +247,7 @@ impl SshConnectionConfigResolver {
             .with_keepalive_max(keepalive_max)
             .with_compression(compression)
             .with_address_family(address_family)
+            .with_known_hosts_files(user_known_hosts_files, global_known_hosts_files)
     }
 }
 
@@ -252,6 +275,18 @@ impl SshConnectionConfig {
     /// Create a new configuration with default values.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Attach the raw known-hosts path lists selected from ssh_config.
+    #[must_use]
+    pub fn with_known_hosts_files(
+        mut self,
+        user_files: Option<Vec<String>>,
+        global_files: Option<Vec<String>>,
+    ) -> Self {
+        self.user_known_hosts_files = user_files;
+        self.global_known_hosts_files = global_files;
+        self
     }
 
     /// Set the keepalive interval in seconds.
@@ -756,6 +791,14 @@ impl Handler for ClientHandler {
                     known_hosts_path,
                 )
             }
+            ServerCheckMethod::KnownHostsFiles(known_hosts_paths) => {
+                super::host_verification::verify_known_hosts_files(
+                    &self.hostname,
+                    self.host.port(),
+                    server_public_key,
+                    known_hosts_paths,
+                )
+            }
             ServerCheckMethod::DefaultKnownHostsFile => {
                 // Resolve the default path here rather than letting russh
                 // resolve it internally, so the check and the changed-key
@@ -784,6 +827,16 @@ impl Handler for ClientHandler {
                     self.host.port(),
                     server_public_key,
                     known_hosts_path,
+                )
+                .await
+            }
+            ServerCheckMethod::AcceptNewKnownHostsFiles { files, write_path } => {
+                super::host_verification::verify_accept_new_files(
+                    &self.hostname,
+                    self.host.port(),
+                    server_public_key,
+                    files,
+                    write_path.as_deref(),
                 )
                 .await
             }

@@ -18,7 +18,6 @@
 //! verification, known hosts files, and cryptographic algorithms.
 
 use crate::ssh::ssh_config::parser::helpers::parse_yes_no;
-use crate::ssh::ssh_config::security::secure_validate_path;
 use crate::ssh::ssh_config::types::SshHostConfig;
 use anyhow::{Context, Result};
 
@@ -46,21 +45,13 @@ pub(super) fn parse_security_option(
             if args.is_empty() {
                 anyhow::bail!("UserKnownHostsFile requires a value at line {line_number}");
             }
-            let path =
-                secure_validate_path(&args[0], "known_hosts", line_number).with_context(|| {
-                    format!("Invalid UserKnownHostsFile path at line {line_number}")
-                })?;
-            host.user_known_hosts_file = Some(path);
+            host.user_known_hosts_file = Some(args.to_vec());
         }
         "globalknownhostsfile" => {
             if args.is_empty() {
                 anyhow::bail!("GlobalKnownHostsFile requires a value at line {line_number}");
             }
-            let path =
-                secure_validate_path(&args[0], "known_hosts", line_number).with_context(|| {
-                    format!("Invalid GlobalKnownHostsFile path at line {line_number}")
-                })?;
-            host.global_known_hosts_file = Some(path);
+            host.global_known_hosts_file = Some(args.to_vec());
         }
         "hostkeyalgorithms" => {
             if args.is_empty() {

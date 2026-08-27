@@ -196,6 +196,14 @@ pub enum ServerCheckMethod {
     DefaultKnownHostsFile,
     /// Use a specific known_hosts file path
     KnownHostsFile(String),
+    /// Verify against several known_hosts files in declared lookup order.
+    KnownHostsFiles(Vec<String>),
+    /// Trust On First Use across several read stores, recording only to the
+    /// first explicitly configured user store when one exists.
+    AcceptNewKnownHostsFiles {
+        files: Vec<String>,
+        write_path: Option<String>,
+    },
     /// Trust On First Use against a specific known_hosts file path:
     /// matching keys are accepted, unknown hosts are recorded and accepted,
     /// changed keys are rejected (OpenSSH `StrictHostKeyChecking=accept-new`)

@@ -295,6 +295,15 @@ pub enum ServerCheckMethod {
     /// and changed keys are rejected.
     AcceptNewKnownHostsFile(String),
 
+    /// Verify against several known_hosts files in declared lookup order.
+    KnownHostsFiles(Vec<String>),
+
+    /// Trust On First Use across several read stores, recording only to the
+    /// explicitly selected user store when one exists.
+    AcceptNewKnownHostsFiles {
+        files: Vec<String>,
+        write_path: Option<String>,
+    },
     /// Trust On First Use for the lifetime of this process only.
     AcceptNewInMemory,
 }
@@ -351,6 +360,13 @@ impl From<crate::ssh::tokio_client::ServerCheckMethod> for ServerCheckMethod {
             crate::ssh::tokio_client::ServerCheckMethod::KnownHostsFile(path) => {
                 Self::KnownHostsFile(path)
             }
+            crate::ssh::tokio_client::ServerCheckMethod::KnownHostsFiles(paths) => {
+                Self::KnownHostsFiles(paths)
+            }
+            crate::ssh::tokio_client::ServerCheckMethod::AcceptNewKnownHostsFiles {
+                files,
+                write_path,
+            } => Self::AcceptNewKnownHostsFiles { files, write_path },
             crate::ssh::tokio_client::ServerCheckMethod::AcceptNewKnownHostsFile(path) => {
                 Self::AcceptNewKnownHostsFile(path)
             }
@@ -370,6 +386,10 @@ impl From<ServerCheckMethod> for crate::ssh::tokio_client::ServerCheckMethod {
             ServerCheckMethod::DefaultKnownHostsFile => Self::DefaultKnownHostsFile,
             ServerCheckMethod::KnownHostsFile(path) => Self::KnownHostsFile(path),
             ServerCheckMethod::AcceptNewKnownHostsFile(path) => Self::AcceptNewKnownHostsFile(path),
+            ServerCheckMethod::KnownHostsFiles(paths) => Self::KnownHostsFiles(paths),
+            ServerCheckMethod::AcceptNewKnownHostsFiles { files, write_path } => {
+                Self::AcceptNewKnownHostsFiles { files, write_path }
+            }
             ServerCheckMethod::AcceptNewInMemory => Self::AcceptNewInMemory,
         }
     }
@@ -452,5 +472,24 @@ mod tests {
         let in_memory: ServerCheckMethod =
             crate::ssh::tokio_client::ServerCheckMethod::AcceptNewInMemory.into();
         assert_eq!(in_memory, ServerCheckMethod::AcceptNewInMemory);
+    }
+
+    #[test]
+    fn test_multi_file_server_check_methods_round_trip() {
+        for shared in [
+            ServerCheckMethod::KnownHostsFiles(vec!["user".into(), "global".into()]),
+            ServerCheckMethod::AcceptNewKnownHostsFiles {
+                files: vec!["user".into(), "global".into()],
+                write_path: Some("user".into()),
+            },
+            ServerCheckMethod::AcceptNewKnownHostsFiles {
+                files: vec!["global".into()],
+                write_path: None,
+            },
+        ] {
+            let client: crate::ssh::tokio_client::ServerCheckMethod = shared.clone().into();
+            let round_trip: ServerCheckMethod = client.into();
+            assert_eq!(round_trip, shared);
+        }
     }
 }

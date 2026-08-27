@@ -150,7 +150,6 @@ impl SshClient {
         let start_time = std::time::Instant::now();
 
         let addr = (self.host.as_str(), self.port);
-        let check_method = crate::ssh::known_hosts::get_check_method(strict_mode);
 
         let connect_timeout =
             Duration::from_secs(connect_timeout_seconds.unwrap_or(SSH_CONNECT_TIMEOUT_SECS));
@@ -163,6 +162,13 @@ impl SshClient {
                 &default_conn_cfg
             }
         };
+        let check_method = crate::ssh::known_hosts::get_check_method_for_target(
+            strict_mode,
+            conn_cfg,
+            &self.host,
+            self.port,
+            &self.username,
+        );
 
         let result = match tokio::time::timeout(
             connect_timeout,
