@@ -15,7 +15,7 @@
 use super::types::{JumpConnection, JumpInfo};
 use crate::jump::rate_limiter::ConnectionRateLimiter;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
-use crate::ssh::tokio_client::{AuthMethod, Client, SshConnectionConfig};
+use crate::ssh::tokio_client::{AuthMethod, Client, Error as SshError, SshConnectionConfig};
 use anyhow::{Context, Result};
 use tracing::{debug, info};
 
@@ -58,13 +58,11 @@ pub(super) async fn connect_direct(
         ),
     )
     .await
-    .with_context(|| {
-        format!(
-            "Connection timeout: Failed to connect to {}:{} after {}s",
-            host,
-            port,
-            connect_timeout.as_secs()
-        )
+    .map_err(|_| SshError::ConnectionTimeout {
+        host: host.to_string(),
+        port,
+        seconds: connect_timeout.as_secs(),
+        stage: "direct connection setup or authentication",
     })?
     .with_context(|| format!("Failed to establish direct connection to {host}:{port}"))?;
 

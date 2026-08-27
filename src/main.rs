@@ -75,7 +75,7 @@ async fn dispatch_and_exit(cli: &Cli, ctx: &AppContext) -> Result<()> {
     match dispatch_command(cli, ctx).await {
         Ok(0) => Ok(()),
         Ok(exit_code) => std::process::exit(exit_code),
-        Err(e) => Err(map_hard_failure(&cli.command, e)),
+        Err(e) => Err(map_hard_failure(&cli.command, cli.is_ssh_mode(), e)),
     }
 }
 
@@ -88,14 +88,31 @@ async fn dispatch_and_exit(cli: &Cli, ctx: &AppContext) -> Result<()> {
 /// and it keeps the pre-connection case distinct from the exit code 1 that means
 /// "some hosts answered and some did not".
 ///
-/// Every other subcommand keeps the default behavior, where returning `Err` from
-/// `main` prints the error chain and exits 1.
-fn map_hard_failure(command: &Option<Commands>, error: anyhow::Error) -> anyhow::Error {
+/// Typed SSH client failures use OpenSSH's exit status 255. Local validation,
+/// configuration, and other subcommand failures retain the generic exit status 1.
+fn is_ssh_client_failure(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<bssh::ssh::tokio_client::Error>()
+            .is_some_and(bssh::ssh::tokio_client::Error::is_ssh_client_failure)
+    })
+}
+
+fn map_hard_failure(
+    command: &Option<Commands>,
+    ssh_mode: bool,
+    error: anyhow::Error,
+) -> anyhow::Error {
     if matches!(command, Some(Commands::Ping)) {
         // Match the format anyhow's `Termination` impl uses, since this path
         // replaces it.
         bssh::diagnosticln!("Error: {error:?}");
         std::process::exit(PING_SSH_LEVEL_FAILURE);
+    }
+
+    if ssh_mode && is_ssh_client_failure(&error) {
+        bssh::diagnosticln!("{error:#}");
+        std::process::exit(255);
     }
 
     error
@@ -298,7 +315,7 @@ async fn run_bssh_mode(args: &[String]) -> Result<()> {
     let init_result = initialize_app(&mut cli, args).await;
     let ctx = match init_result {
         Ok(ctx) => ctx,
-        Err(e) => return Err(map_hard_failure(&cli.command, e)),
+        Err(e) => return Err(map_hard_failure(&cli.command, cli.is_ssh_mode(), e)),
     };
 
     // Dispatch to the appropriate command handler

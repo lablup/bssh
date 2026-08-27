@@ -66,13 +66,20 @@ impl InteractiveCommand {
         // Use connect_with_ssh_config to properly apply keepalive settings
         let result = timeout(
             connect_timeout,
-            Client::connect_with_ssh_config(addr, username, auth_method, check_method.clone(), ssh_config),
+            Client::connect_with_ssh_config(
+                addr,
+                username,
+                auth_method,
+                check_method.clone(),
+                ssh_config,
+            ),
         )
         .await
-        .with_context(|| {
-            format!(
-                "Connection timeout: Failed to connect to {host}:{port} after {SSH_CONNECT_TIMEOUT_SECS} seconds"
-            )
+        .map_err(|_| SshError::ConnectionTimeout {
+            host: host.to_string(),
+            port,
+            seconds: SSH_CONNECT_TIMEOUT_SECS,
+            stage: "connection setup or authentication",
         })?;
 
         // Check if authentication failed and password fallback is allowed
@@ -101,13 +108,20 @@ impl InteractiveCommand {
                 // Use connect_with_ssh_config for password retry as well
                 timeout(
                     connect_timeout,
-                    Client::connect_with_ssh_config(addr, username, password_auth, check_method, ssh_config),
+                    Client::connect_with_ssh_config(
+                        addr,
+                        username,
+                        password_auth,
+                        check_method,
+                        ssh_config,
+                    ),
                 )
                 .await
-                .with_context(|| {
-                    format!(
-                        "Connection timeout: Failed to connect to {host}:{port} after {SSH_CONNECT_TIMEOUT_SECS} seconds"
-                    )
+                .map_err(|_| SshError::ConnectionTimeout {
+                    host: host.to_string(),
+                    port,
+                    seconds: SSH_CONNECT_TIMEOUT_SECS,
+                    stage: "password authentication retry",
                 })?
                 .with_context(|| format!("SSH connection failed to {host}:{port}"))
             }
@@ -293,11 +307,11 @@ impl InteractiveCommand {
                     ),
                 )
                 .await
-                .with_context(|| {
-                    format!(
-                        "Connection timeout: Failed to connect to {}:{} via jump hosts after {} seconds",
-                        node.host, node.port, adjusted_timeout.as_secs()
-                    )
+                .map_err(|_| SshError::ConnectionTimeout {
+                    host: node.host.clone(),
+                    port: node.port,
+                    seconds: adjusted_timeout.as_secs(),
+                    stage: "jump-host connection setup or authentication",
                 })?
                 .with_context(|| {
                     format!(
@@ -446,11 +460,11 @@ impl InteractiveCommand {
                     ),
                 )
                 .await
-                .with_context(|| {
-                    format!(
-                        "Connection timeout: Failed to connect to {}:{} via jump hosts after {} seconds",
-                        node.host, node.port, adjusted_timeout.as_secs()
-                    )
+                .map_err(|_| SshError::ConnectionTimeout {
+                    host: node.host.clone(),
+                    port: node.port,
+                    seconds: adjusted_timeout.as_secs(),
+                    stage: "jump-host connection setup or authentication",
                 })?
                 .with_context(|| {
                     format!(

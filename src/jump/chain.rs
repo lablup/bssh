@@ -26,7 +26,9 @@ use super::parser::{JumpHost, get_max_jump_hosts};
 use super::rate_limiter::ConnectionRateLimiter;
 use crate::security::Password;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
-use crate::ssh::tokio_client::{AuthMethod, SshConnectionConfig, SshConnectionConfigResolver};
+use crate::ssh::tokio_client::{
+    AuthMethod, Error as SshError, SshConnectionConfig, SshConnectionConfigResolver,
+};
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::sync::Arc;
@@ -439,13 +441,11 @@ impl JumpHostChain {
             ),
         )
         .await
-        .with_context(|| {
-            format!(
-                "Connection timeout: Failed to connect to jump host {}:{} after {}s",
-                jump_host.host,
-                jump_host.effective_port(),
-                self.connect_timeout.as_secs()
-            )
+        .map_err(|_| SshError::ConnectionTimeout {
+            host: jump_host.host.clone(),
+            port: jump_host.effective_port(),
+            seconds: self.connect_timeout.as_secs(),
+            stage: "first jump-host connection setup or authentication",
         })?
         .with_context(|| {
             format!(

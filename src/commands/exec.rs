@@ -16,13 +16,15 @@ use anyhow::Result;
 use std::path::Path;
 use std::sync::Arc;
 
-use crate::executor::{ExitCodeStrategy, OutputMode, ParallelExecutor, RankDetector};
+use crate::executor::{
+    ExecutionResult, ExitCodeStrategy, OutputMode, ParallelExecutor, RankDetector,
+};
 use crate::forwarding::ForwardingType;
 use crate::node::Node;
 use crate::security::{Password, SudoPassword};
 use crate::ssh::SshConfig;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
-use crate::ssh::tokio_client::SshConnectionConfigResolver;
+use crate::ssh::tokio_client::{Error as SshError, SshConnectionConfigResolver};
 use crate::ui::OutputFormatter;
 use crate::utils::output::save_outputs_to_files;
 
@@ -57,6 +59,36 @@ pub struct ExecuteCommandParams<'a> {
     pub ssh_config: Option<&'a SshConfig>,
     /// Per-host SSH connection configuration resolver.
     pub ssh_connection_config_resolver: SshConnectionConfigResolver,
+}
+
+const SSH_CLIENT_FAILURE_EXIT_CODE: i32 = 255;
+
+pub(crate) fn is_ssh_client_failure(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<SshError>()
+            .is_some_and(SshError::is_ssh_client_failure)
+    })
+}
+
+fn calculate_execution_exit_code(
+    results: &[ExecutionResult],
+    main_idx: Option<usize>,
+    strategy: ExitCodeStrategy,
+    ssh_single_destination: bool,
+) -> i32 {
+    if ssh_single_destination {
+        return results
+            .first()
+            .map(|result| match &result.result {
+                Ok(_) => result.get_exit_code(),
+                Err(error) if is_ssh_client_failure(error) => SSH_CLIENT_FAILURE_EXIT_CODE,
+                Err(_) => result.get_exit_code(),
+            })
+            .unwrap_or(SSH_CLIENT_FAILURE_EXIT_CODE);
+    }
+
+    strategy.calculate(results, main_idx)
 }
 
 pub async fn execute_command(params: ExecuteCommandParams<'_>) -> Result<()> {
@@ -332,8 +364,15 @@ async fn execute_command_without_forwarding(params: ExecuteCommandParams<'_>) ->
     // Identify main rank
     let main_idx = RankDetector::identify_main_rank(&nodes_for_rank_detection);
 
-    // Calculate exit code using the strategy
-    let exit_code = strategy.calculate(&results, main_idx);
+    // OpenSSH reserves 255 for client-side failures. Apply that contract only
+    // to the byte-transparent, single-destination SSH mode; multi-host bssh
+    // aggregation keeps its existing ExitCodeStrategy behavior.
+    let exit_code = calculate_execution_exit_code(
+        &results,
+        main_idx,
+        strategy,
+        params.byte_transparent && nodes_for_rank_detection.len() == 1,
+    );
 
     // Exit with the calculated exit code
     if exit_code != 0 {
@@ -341,4 +380,90 @@ async fn execute_command_without_forwarding(params: ExecuteCommandParams<'_>) ->
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ssh::client::CommandResult;
+    use anyhow::anyhow;
+
+    fn result(result: Result<CommandResult>) -> ExecutionResult {
+        ExecutionResult {
+            node: Node::new("host".to_string(), 22, "user".to_string()),
+            result,
+            is_main_rank: true,
+        }
+    }
+
+    fn remote_status(status: u32) -> ExecutionResult {
+        result(Ok(CommandResult {
+            host: "host".to_string(),
+            output: Vec::new(),
+            stderr: Vec::new(),
+            exit_status: status,
+        }))
+    }
+
+    #[test]
+    fn ssh_single_destination_client_failure_exits_255() {
+        let results = [result(Err(anyhow::Error::new(SshError::TcpConnect {
+            host: "host".to_string(),
+            port: 22,
+            source: std::io::Error::from_raw_os_error(libc::ECONNREFUSED),
+        })))];
+
+        assert_eq!(
+            calculate_execution_exit_code(&results, Some(0), ExitCodeStrategy::MainRank, true,),
+            255
+        );
+
+        let timeout = [result(Err(anyhow::Error::new(
+            SshError::ConnectionTimeout {
+                host: "host".to_string(),
+                port: 22,
+                seconds: 1,
+                stage: "connection setup or authentication",
+            },
+        )))];
+        assert_eq!(
+            calculate_execution_exit_code(&timeout, Some(0), ExitCodeStrategy::MainRank, true,),
+            255
+        );
+    }
+
+    #[test]
+    fn ssh_single_destination_preserves_remote_status() {
+        for status in [0, 42, 255] {
+            assert_eq!(
+                calculate_execution_exit_code(
+                    &[remote_status(status)],
+                    Some(0),
+                    ExitCodeStrategy::MainRank,
+                    true,
+                ),
+                status as i32
+            );
+        }
+    }
+
+    #[test]
+    fn ssh_single_destination_local_error_keeps_generic_status() {
+        let results = [result(Err(anyhow!("local validation failed")))];
+
+        assert_eq!(
+            calculate_execution_exit_code(&results, Some(0), ExitCodeStrategy::MainRank, true,),
+            1
+        );
+    }
+
+    #[test]
+    fn multi_host_connection_error_keeps_existing_aggregation_status() {
+        let results = [result(Err(anyhow!("connection refused")))];
+
+        assert_eq!(
+            calculate_execution_exit_code(&results, Some(0), ExitCodeStrategy::MainRank, false,),
+            1
+        );
+    }
 }
