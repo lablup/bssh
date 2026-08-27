@@ -306,6 +306,12 @@ pub enum ServerCheckMethod {
     },
     /// Trust On First Use for the lifetime of this process only.
     AcceptNewInMemory,
+    /// Use `alias` as the unbracketed known-hosts identity for the wrapped
+    /// verification method.
+    HostKeyAlias {
+        alias: String,
+        method: Box<ServerCheckMethod>,
+    },
 }
 
 impl ServerCheckMethod {
@@ -373,6 +379,12 @@ impl From<crate::ssh::tokio_client::ServerCheckMethod> for ServerCheckMethod {
             crate::ssh::tokio_client::ServerCheckMethod::AcceptNewInMemory => {
                 Self::AcceptNewInMemory
             }
+            crate::ssh::tokio_client::ServerCheckMethod::HostKeyAlias { alias, method } => {
+                Self::HostKeyAlias {
+                    alias,
+                    method: Box::new((*method).into()),
+                }
+            }
         }
     }
 }
@@ -391,6 +403,10 @@ impl From<ServerCheckMethod> for crate::ssh::tokio_client::ServerCheckMethod {
                 Self::AcceptNewKnownHostsFiles { files, write_path }
             }
             ServerCheckMethod::AcceptNewInMemory => Self::AcceptNewInMemory,
+            ServerCheckMethod::HostKeyAlias { alias, method } => Self::HostKeyAlias {
+                alias,
+                method: Box::new((*method).into()),
+            },
         }
     }
 }
@@ -491,5 +507,16 @@ mod tests {
             let round_trip: ServerCheckMethod = client.into();
             assert_eq!(round_trip, shared);
         }
+    }
+
+    #[test]
+    fn test_host_key_alias_server_check_method_round_trip() {
+        let shared = ServerCheckMethod::HostKeyAlias {
+            alias: "trust.example.com".into(),
+            method: Box::new(ServerCheckMethod::KnownHostsFiles(vec!["user".into()])),
+        };
+        let client: crate::ssh::tokio_client::ServerCheckMethod = shared.clone().into();
+        let round_trip: ServerCheckMethod = client.into();
+        assert_eq!(round_trip, shared);
     }
 }

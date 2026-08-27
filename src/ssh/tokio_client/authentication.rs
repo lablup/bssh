@@ -215,6 +215,13 @@ pub enum ServerCheckMethod {
     /// becoming unconditional `NoCheck`: the first key seen for a host:port is
     /// accepted, and a different key later in the same run is rejected.
     AcceptNewInMemory,
+    /// Use `alias` as the known-hosts identity for the wrapped verification
+    /// method. The alias has logical port 22 so it remains unbracketed even
+    /// when the network connection uses a non-default port.
+    HostKeyAlias {
+        alias: String,
+        method: Box<ServerCheckMethod>,
+    },
 }
 
 impl ServerCheckMethod {

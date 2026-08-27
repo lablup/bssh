@@ -61,6 +61,7 @@ fn build_ssh_connection_config_resolver(
         .with_yaml_keepalive_interval(ctx.config.get_server_alive_interval(cluster_name))
         .with_yaml_keepalive_max(ctx.config.get_server_alive_count_max(cluster_name))
         .with_cli_address_family(AddressFamily::from_flags(cli.ipv4, cli.ipv6))
+        .with_cli_host_key_alias(cli.get_ssh_option("HostKeyAlias"))
 }
 
 /// Decide whether `-S` (sudo-password) is meaningful for the given dispatch path.
