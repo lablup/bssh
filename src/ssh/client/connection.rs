@@ -195,10 +195,13 @@ impl SshClient {
                     None => Err(anyhow::Error::new(e)),
                 }
             }
-            Err(_) => Err(anyhow::anyhow!(
-                "Connection timeout after {} seconds. \
-                     Please check if the host is reachable and SSH service is running.",
-                connect_timeout.as_secs()
+            Err(_) => Err(anyhow::Error::new(
+                crate::ssh::tokio_client::Error::ConnectionTimeout {
+                    host: self.host.clone(),
+                    port: self.port,
+                    seconds: connect_timeout.as_secs(),
+                    stage: "connection setup or authentication",
+                },
             )),
         };
 
@@ -535,7 +538,7 @@ mod tests {
 
         let rendered = format!("{err:#}");
         assert_eq!(
-            rendered, "The private key was rejected by the server: Key authentication failed",
+            rendered, "The private key was rejected by the server: Permission denied (publickey).",
             "expected friendly message first, then the cause"
         );
         // The underlying cause must appear after the friendly message, not
@@ -555,7 +558,7 @@ mod tests {
         // Variants whose own `Display` already says everything get no extra
         // context layer, so the same wording is not printed twice. Before this
         // fix, `PasswordWrong` rendered as
-        // "Password authentication failed.: Password authentication failed".
+        // "Permission denied (password).: Permission denied (password).".
         for e in [
             crate::ssh::tokio_client::Error::PasswordWrong,
             crate::ssh::tokio_client::Error::AgentAuthenticationFailed,

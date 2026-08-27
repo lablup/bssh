@@ -183,7 +183,10 @@ impl Client {
     ) -> Result<Vec<SocketAddr>, super::Error> {
         let resolved = target
             .to_socket_addrs()
-            .map_err(super::Error::AddressInvalid)?;
+            .map_err(|source| super::Error::DnsResolution {
+                host: target.hostname(),
+                source,
+            })?;
         let targets = address_family.filter(resolved);
 
         if address_family.is_forced() && targets.is_empty() {
@@ -224,7 +227,7 @@ impl Client {
         self.connection_handle
             .channel_open_session()
             .await
-            .map_err(super::Error::SshError)
+            .map_err(|source| super::Error::ChannelOpen { source })
     }
 
     /// Open a TCP/IP forwarding channel.
@@ -281,7 +284,7 @@ impl Client {
                 .await
             {
                 Ok(channel) => return Ok(channel),
-                Err(err) => connect_err = super::Error::SshError(err),
+                Err(source) => connect_err = super::Error::ChannelOpen { source },
             }
         }
 
@@ -327,8 +330,18 @@ impl Client {
         let sanitized_command = crate::utils::sanitize_command(command)
             .map_err(|e| super::Error::CommandValidationFailed(e.to_string()))?;
 
-        let mut channel = self.connection_handle.channel_open_session().await?;
-        channel.exec(true, sanitized_command.as_str()).await?;
+        let mut channel = self
+            .connection_handle
+            .channel_open_session()
+            .await
+            .map_err(|source| super::Error::ChannelOpen { source })?;
+        channel
+            .exec(true, sanitized_command.as_str())
+            .await
+            .map_err(|source| super::Error::CommandExecution {
+                action: "exec request",
+                source,
+            })?;
 
         let mut result: Option<u32> = None;
         let mut output_receiver_open = true;
@@ -410,7 +423,11 @@ impl Client {
 
         // Request a PTY for sudo to properly interact with
         // Sudo requires a PTY to prompt for password
-        let mut channel = self.connection_handle.channel_open_session().await?;
+        let mut channel = self
+            .connection_handle
+            .channel_open_session()
+            .await
+            .map_err(|source| super::Error::ChannelOpen { source })?;
 
         // Request PTY with reasonable defaults for sudo
         channel
@@ -423,9 +440,19 @@ impl Client {
                 0,       // pixel height
                 &[],     // terminal modes (empty for defaults)
             )
-            .await?;
+            .await
+            .map_err(|source| super::Error::CommandExecution {
+                action: "PTY request",
+                source,
+            })?;
 
-        channel.exec(true, sanitized_command.as_str()).await?;
+        channel
+            .exec(true, sanitized_command.as_str())
+            .await
+            .map_err(|source| super::Error::CommandExecution {
+                action: "exec request",
+                source,
+            })?;
 
         let mut result: Option<u32> = None;
         let mut password_send_count: u32 = 0;
@@ -473,7 +500,10 @@ impl Client {
                         let password_data = sudo_password.with_newline();
                         if let Err(e) = channel.data(&password_data[..]).await {
                             tracing::error!("Failed to send sudo password: {}", e);
-                            return Err(super::Error::SshError(e));
+                            return Err(super::Error::CommandExecution {
+                                action: "sudo password write",
+                                source: e,
+                            });
                         }
                         // Clear accumulated output after sending password to detect next prompt
                         accumulated_output.clear();
@@ -539,7 +569,10 @@ impl Client {
                         let password_data = sudo_password.with_newline();
                         if let Err(e) = channel.data(&password_data[..]).await {
                             tracing::error!("Failed to send sudo password: {}", e);
-                            return Err(super::Error::SshError(e));
+                            return Err(super::Error::CommandExecution {
+                                action: "sudo password write",
+                                source: e,
+                            });
                         }
                         accumulated_output.clear();
                     }
@@ -652,7 +685,11 @@ impl Client {
     ) -> Result<Channel<Msg>, super::Error> {
         // Open a session channel - PTY and shell will be requested by the caller
         // (e.g., PtySession::initialize() with proper terminal modes)
-        let channel = self.connection_handle.channel_open_session().await?;
+        let channel = self
+            .connection_handle
+            .channel_open_session()
+            .await
+            .map_err(|source| super::Error::ChannelOpen { source })?;
         Ok(channel)
     }
 
@@ -669,7 +706,10 @@ impl Client {
         channel
             .window_change(width, height, 0, 0)
             .await
-            .map_err(super::Error::SshError)
+            .map_err(|source| super::Error::CommandExecution {
+                action: "window-change request",
+                source,
+            })
     }
 }
 

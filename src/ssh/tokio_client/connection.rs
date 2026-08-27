@@ -653,7 +653,11 @@ impl Client {
                             stderr: failure.stderr,
                         });
                     }
-                    return Err(error);
+                    return Err(super::Error::during_protocol_negotiation(
+                        host.to_string(),
+                        port,
+                        error,
+                    ));
                 }
             };
 
@@ -714,9 +718,14 @@ impl Client {
         let config = Arc::new(config);
 
         // Connection code inspired from std::net::TcpStream::connect and std::net::each_addr
+        let target_host = addr.hostname();
+        let (_, target_port) = addr.host_port().map_err(super::Error::AddressInvalid)?;
         let resolved = addr
             .to_socket_addrs()
-            .map_err(super::Error::AddressInvalid)?;
+            .map_err(|source| super::Error::DnsResolution {
+                host: target_host.clone(),
+                source,
+            })?;
         let resolved_count = resolved.len();
         let socket_addrs = address_family.filter(resolved);
 
@@ -739,10 +748,10 @@ impl Client {
         let mut connect_res: Result<
             (SocketAddr, russh::client::Handle<ClientHandler>),
             super::Error,
-        > = Err(super::Error::AddressInvalid(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "could not resolve to any addresses",
-        )));
+        > = Err(super::Error::DnsResolution {
+            host: target_host.clone(),
+            source: io::Error::new(io::ErrorKind::NotFound, "Name or service not known"),
+        });
         for socket_addr in socket_addrs {
             let handler = ClientHandler {
                 hostname: addr.hostname(),
@@ -753,7 +762,11 @@ impl Client {
             let stream = match tokio::net::TcpStream::connect(socket_addr).await {
                 Ok(s) => s,
                 Err(e) => {
-                    connect_res = Err(super::Error::IoError(e));
+                    connect_res = Err(super::Error::TcpConnect {
+                        host: target_host.clone(),
+                        port: target_port,
+                        source: e,
+                    });
                     continue;
                 }
             };
@@ -774,7 +787,13 @@ impl Client {
                     connect_res = Ok((socket_addr, h));
                     break;
                 }
-                Err(e) => connect_res = Err(e),
+                Err(e) => {
+                    connect_res = Err(super::Error::during_protocol_negotiation(
+                        target_host.clone(),
+                        target_port,
+                        e,
+                    ));
+                }
             }
         }
         let (address, mut handle) = connect_res?;

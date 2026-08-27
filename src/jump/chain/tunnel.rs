@@ -18,7 +18,7 @@ use crate::jump::rate_limiter::ConnectionRateLimiter;
 use crate::security::Password;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
 use crate::ssh::tokio_client::{
-    AddressFamily, AuthMethod, Client, ClientHandler, SshConnectionConfig,
+    AddressFamily, AuthMethod, Client, ClientHandler, Error as SshError, SshConnectionConfig,
 };
 use anyhow::{Context, Result};
 use std::net::{SocketAddr, ToSocketAddrs};
@@ -104,13 +104,11 @@ pub(super) async fn connect_through_tunnel(
         ),
     )
     .await
-    .with_context(|| {
-        format!(
-            "Timeout opening tunnel to jump host {}:{} after {}s",
-            jump_host.host,
-            jump_host.effective_port(),
-            connect_timeout.as_secs()
-        )
+    .map_err(|_| SshError::ConnectionTimeout {
+        host: jump_host.host.clone(),
+        port: jump_host.effective_port(),
+        seconds: connect_timeout.as_secs(),
+        stage: "jump-host channel open",
     })?
     .with_context(|| {
         format!(
@@ -172,13 +170,11 @@ pub(super) async fn connect_through_tunnel(
         russh::client::connect_stream(config, stream, handler),
     )
     .await
-    .with_context(|| {
-        format!(
-            "Timeout establishing SSH over tunnel to {}:{} after {}s",
-            jump_host.host,
-            jump_host.effective_port(),
-            connect_timeout.as_secs()
-        )
+    .map_err(|_| SshError::ConnectionTimeout {
+        host: jump_host.host.clone(),
+        port: jump_host.effective_port(),
+        seconds: connect_timeout.as_secs(),
+        stage: "jump-host protocol negotiation",
     })?
     .with_context(|| {
         format!(
@@ -251,11 +247,11 @@ pub(super) async fn connect_to_destination(
         ),
     )
     .await
-    .with_context(|| {
-        format!(
-            "Timeout opening tunnel to destination {}:{} after {}s",
-            destination_host, destination_port, connect_timeout.as_secs()
-        )
+    .map_err(|_| SshError::ConnectionTimeout {
+        host: destination_host.to_string(),
+        port: destination_port,
+        seconds: connect_timeout.as_secs(),
+        stage: "destination channel open",
     })?
     .with_context(|| {
         format!(
@@ -296,11 +292,11 @@ pub(super) async fn connect_to_destination(
         russh::client::connect_stream(config, stream, handler),
     )
     .await
-    .with_context(|| {
-        format!(
-            "Timeout establishing SSH to destination {}:{} after {}s",
-            destination_host, destination_port, connect_timeout.as_secs()
-        )
+    .map_err(|_| SshError::ConnectionTimeout {
+        host: destination_host.to_string(),
+        port: destination_port,
+        seconds: connect_timeout.as_secs(),
+        stage: "destination protocol negotiation",
     })?
     .with_context(|| {
         format!(

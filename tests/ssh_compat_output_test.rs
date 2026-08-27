@@ -114,3 +114,123 @@ fn deprecated_alias_is_silent_and_unknown_keyword_uses_log_file() {
     );
     assert!(!unknown.contains("bssh::"));
 }
+
+#[test]
+fn connection_refused_is_actionable_and_exits_255() {
+    let output = bssh()
+        .args([
+            "--connect-timeout=1",
+            "--strict-host-key-checking=no",
+            "127.0.0.1:1",
+            "true",
+        ])
+        .output()
+        .expect("bssh should report a refused connection");
+
+    assert_eq!(output.status.code(), Some(255));
+    assert!(output.stdout.is_empty());
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("ssh: connect to host 127.0.0.1 port 1:"),
+        "missing OpenSSH-compatible connection context: {stderr:?}"
+    );
+    assert!(
+        stderr.to_ascii_lowercase().contains("refused"),
+        "missing OS refusal cause: {stderr:?}"
+    );
+    assert!(
+        !stderr.lines().any(|line| line.trim() == "I/O error"),
+        "bare I/O error leaked: {stderr:?}"
+    );
+}
+
+#[test]
+fn connection_error_uses_log_file_exactly_once() {
+    let directory = tempdir().expect("temporary directory should be created");
+    let log = directory.path().join("bssh.log");
+    let output = bssh()
+        .args([
+            "-E",
+            log.to_str().expect("UTF-8 log path"),
+            "--connect-timeout=1",
+            "--strict-host-key-checking=no",
+            "127.0.0.1:1",
+            "true",
+        ])
+        .output()
+        .expect("bssh should report a refused connection to the log file");
+
+    assert_eq!(output.status.code(), Some(255));
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+
+    let diagnostics = fs::read_to_string(log).expect("diagnostic log should exist");
+    let matching_lines = diagnostics
+        .lines()
+        .filter(|line| line.contains("ssh: connect to host 127.0.0.1 port 1:"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        matching_lines.len(),
+        1,
+        "diagnostic must be emitted once: {diagnostics:?}"
+    );
+    assert!(matching_lines[0].to_ascii_lowercase().contains("refused"));
+    assert!(matching_lines[0].contains("os error"));
+    assert!(!matching_lines[0].contains(" ERROR "));
+}
+
+#[test]
+fn dns_failure_is_distinct_and_exits_255() {
+    let output = bssh()
+        .args([
+            "--connect-timeout=2",
+            "--strict-host-key-checking=no",
+            "does-not-exist.invalid",
+            "true",
+        ])
+        .output()
+        .expect("bssh should report a DNS failure");
+
+    assert_eq!(output.status.code(), Some(255));
+    assert!(output.stdout.is_empty());
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("ssh: Could not resolve hostname does-not-exist.invalid:"),
+        "missing DNS layer context: {stderr:?}"
+    );
+    assert!(!stderr.to_ascii_lowercase().contains("connect to host"));
+    assert!(!stderr.lines().any(|line| line.trim() == "I/O error"));
+}
+
+#[test]
+fn cli_usage_error_keeps_clap_exit_status() {
+    let output = bssh()
+        .arg("--definitely-invalid-option")
+        .output()
+        .expect("bssh should report an invalid CLI option");
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("unexpected argument"));
+}
+
+#[test]
+fn local_config_error_keeps_generic_exit_status() {
+    let directory = tempdir().expect("temporary directory should be created");
+    let config = directory.path().join("missing_config");
+    let output = bssh()
+        .args([
+            "-F",
+            config.to_str().expect("UTF-8 config path"),
+            "127.0.0.1",
+            "true",
+        ])
+        .output()
+        .expect("bssh should report a missing local config file");
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Failed to load SSH config"));
+}

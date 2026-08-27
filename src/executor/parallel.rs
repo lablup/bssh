@@ -1222,6 +1222,7 @@ impl ParallelExecutor {
         use tokio::sync::mpsc;
 
         let semaphore = Arc::new(Semaphore::new(self.max_parallel));
+        let raw_stream = output_mode.is_raw_stream();
         let mut manager = MultiNodeStreamManager::new();
         let mut handles = Vec::new();
 
@@ -1311,7 +1312,15 @@ impl ParallelExecutor {
                             (node_clone, Ok(exit_status))
                         }
                         Err(e) => {
-                            tracing::error!("Sudo command failed for {}: {}", node_clone.host, e);
+                            if raw_stream {
+                                crate::diagnosticln!("{e:#}");
+                            } else {
+                                tracing::error!(
+                                    "Sudo command failed for {}: {}",
+                                    node_clone.host,
+                                    e
+                                );
+                            }
                             (node_clone, Err(e))
                         }
                     }
@@ -1329,7 +1338,11 @@ impl ParallelExecutor {
                             (node_clone, Ok(exit_status))
                         }
                         Err(e) => {
-                            tracing::error!("Command failed for {}: {}", node_clone.host, e);
+                            if raw_stream {
+                                crate::diagnosticln!("{e:#}");
+                            } else {
+                                tracing::error!("Command failed for {}: {}", node_clone.host, e);
+                            }
                             (node_clone, Err(e))
                         }
                     }
@@ -1346,7 +1359,6 @@ impl ParallelExecutor {
 
         // Execute based on mode and ensure cleanup
         let no_prefix = output_mode.is_no_prefix();
-        let raw_stream = output_mode.is_raw_stream();
 
         if output_mode.is_tui() {
             // TUI mode: interactive terminal UI
@@ -1378,7 +1390,7 @@ impl ParallelExecutor {
         use tokio::signal;
 
         let mut pending_handles = handles;
-        let mut results = Vec::new();
+        let mut task_results: Vec<(Node, Result<u32>)> = Vec::new();
         let mut first_ctrl_c = false;
         let mut ctrl_c_time: Option<std::time::Instant> = None;
 
@@ -1491,10 +1503,12 @@ impl ParallelExecutor {
             while i < pending_handles.len() {
                 if pending_handles[i].is_finished() {
                     let handle = pending_handles.remove(i);
-                    // Check if task panicked
-                    if let Err(e) = &handle.await {
-                        tracing::error!("Task panicked: {}", e);
-                        // Continue processing other nodes
+                    // Preserve each typed task result until final stream collection.
+                    // Reconstructing it from ExecutionStatus would collapse a
+                    // connection failure into a synthetic remote exit status 1.
+                    match handle.await {
+                        Ok(result) => task_results.push(result),
+                        Err(e) => tracing::error!("Task panicked: {}", e),
                     }
                 } else {
                     i += 1;
@@ -1538,9 +1552,24 @@ impl ParallelExecutor {
                 result?;
             }
         }
-        // Collect final results from all streams
+        // Collect final results from all streams. Prefer the task result so
+        // typed connection/authentication errors survive into exit-code mapping.
+        let mut results = Vec::with_capacity(manager.streams().len());
         for stream in manager.streams() {
-            let result = completed_stream_result(stream);
+            let result = if let Some(index) = task_results
+                .iter()
+                .position(|(node, _)| node == &stream.node)
+            {
+                let (_, task_result) = task_results.swap_remove(index);
+                task_result.map(|exit_status| crate::ssh::client::CommandResult {
+                    host: stream.node.host.clone(),
+                    output: Vec::new(),
+                    stderr: Vec::new(),
+                    exit_status,
+                })
+            } else {
+                completed_stream_result(stream)
+            };
 
             results.push(ExecutionResult {
                 node: stream.node.clone(),

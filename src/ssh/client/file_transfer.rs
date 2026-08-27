@@ -693,8 +693,13 @@ impl SshClient {
                 let detailed = format_ssh_error(&context, &e);
                 Err(anyhow::Error::new(e).context(detailed))
             }
-            Err(_) => Err(anyhow::anyhow!(
-                "Connection timeout after {timeout_secs} seconds. Host may be unreachable or SSH service not running."
+            Err(_) => Err(anyhow::Error::new(
+                crate::ssh::tokio_client::Error::ConnectionTimeout {
+                    host: self.host.clone(),
+                    port: self.port,
+                    seconds: timeout_secs,
+                    stage: "connection setup or authentication",
+                },
             )),
         }
     }
@@ -821,7 +826,7 @@ mod tests {
             "expected friendly message first, got: {rendered}"
         );
         assert!(
-            rendered[detailed.len()..].contains("Password authentication failed"),
+            rendered[detailed.len()..].contains("Permission denied (password)."),
             "expected the cause to appear after the friendly message, got: {rendered}"
         );
     }
