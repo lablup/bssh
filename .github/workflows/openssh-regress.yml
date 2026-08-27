@@ -1,0 +1,79 @@
+name: OpenSSH compatibility
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/openssh-regress.yml'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'Makefile'
+      - 'crates/**'
+      - 'src/**'
+      - 'tests/openssh-regress/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - '.github/workflows/openssh-regress.yml'
+      - 'Cargo.lock'
+      - 'Cargo.toml'
+      - 'Makefile'
+      - 'crates/**'
+      - 'src/**'
+      - 'tests/openssh-regress/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  regress:
+    name: OpenSSH regress (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install --yes build-essential autoconf automake libssl-dev zlib1g-dev
+
+      - name: Install macOS build dependencies
+        if: runner.os == 'macOS'
+        run: |
+          brew install autoconf automake openssl@3
+          openssl_prefix="$(brew --prefix openssl@3)"
+          echo "CPPFLAGS=-I${openssl_prefix}/include" >> "$GITHUB_ENV"
+          echo "LDFLAGS=-L${openssl_prefix}/lib" >> "$GITHUB_ENV"
+          echo "PKG_CONFIG_PATH=${openssl_prefix}/lib/pkgconfig" >> "$GITHUB_ENV"
+
+      - name: Cache Cargo files
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-openssh-regress-${{ hashFiles('**/Cargo.lock', 'tests/openssh-regress/openssh-version') }}
+          restore-keys: |
+            ${{ runner.os }}-openssh-regress-
+
+      - name: Validate harness
+        run: make openssh-regress-selftest
+
+      - name: Run compatibility suite
+        run: make openssh-regress
+
+      - name: Upload result table and logs
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: openssh-regress-${{ runner.os }}
+          path: |
+            target/openssh-regress/results.json
+            target/openssh-regress/logs/
+          if-no-files-found: warn

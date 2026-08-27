@@ -1,0 +1,12 @@
+{
+  "minimum_eligible": {
+    "linux": 73,
+    "macos": 71
+  },
+  "minimum_pass": {
+    "linux": 0,
+    "macos": 0
+  },
+  "openssh_tag": "V_10_3_P1",
+  "schema_version": 1
+}

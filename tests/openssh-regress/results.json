@@ -1,0 +1,764 @@
+{
+  "generated_at": "2026-08-26T00:00:00+00:00",
+  "note": "Initial unmodified bssh measurement recorded by epic #275; durations and environmental reference diagnostics were not retained. The historical pubkey-priority row is preserved even though the exact V_10_3_P1 tree does not contain that script; see docs/openssh-regress.md.",
+  "openssh_tag": "V_10_3_P1",
+  "platform": "macos",
+  "results": [
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "addrmatch",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "agent",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "agent-getpeereid",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "agent-ptrace",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": "not retained in the historical measurement",
+      "test": "agent-restrict",
+      "verdict": "environmental"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "agent-subprocess",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "agent-timeout",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "banner",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "broken-pipe",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "brokenkeys",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "cert-file",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "cfginclude",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "cfgmatch",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "cfgparse",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": "not retained in the historical measurement",
+      "test": "channel-timeout",
+      "verdict": "environmental"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "connect",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "connect-bigconf",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "connect-uri",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": "not retained in the historical measurement",
+      "test": "connection-timeout",
+      "verdict": "environmental"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "dhgex",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "dynamic-forward",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "envpass",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "exit-status",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "exit-status-signal",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": "not retained in the historical measurement",
+      "test": "forward-control",
+      "verdict": "environmental"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": "not retained in the historical measurement",
+      "test": "forwarding",
+      "verdict": "environmental"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "host-expand",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "hostbased",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "hostkey-agent",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "hostkey-rotate",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "integrity",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "kbdint",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "kextype",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "key-options",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "keygen-change",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "keygen-comment",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "keygen-convert",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "keygen-knownhosts",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "keygen-moduli",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "keygen-sshfp",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "keyscan",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "keytype",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "knownhosts",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "knownhosts-command",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "limit-keytype",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "localcommand",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "login-timeout",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": "not retained in the historical measurement",
+      "test": "multiplex",
+      "verdict": "environmental"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "multipubkey",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "password",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "percent",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "portnum",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "proto-mismatch",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "proto-version",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "proxy-connect",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "proxyjump",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": "not retained in the historical measurement",
+      "test": "pubkey-priority",
+      "verdict": "environmental"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "rekey",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "scp",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "scp-uri",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": "not retained in the historical measurement",
+      "test": "scp3",
+      "verdict": "environmental"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "servcfginclude",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "sftp",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "sftp-badcmds",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "sftp-batch",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "sftp-cmds",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "sftp-glob",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "sftp-perm",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "sftp-resume",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "sftp-uri",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "ssh-tty",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "sshcfgparse",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "sshfp-connect",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "sshsig",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "stderr-after-eof",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "stderr-data",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "transfer",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "try-ciphers",
+      "verdict": "fail"
+    },
+    {
+      "duration_ms": null,
+      "first_failure_line": "error: unexpected argument '-E' found",
+      "reference_first_failure_line": null,
+      "test": "yes-head",
+      "verdict": "fail"
+    }
+  ],
+  "schema_version": 1,
+  "score": {
+    "eligible": 71,
+    "passed": 0,
+    "verdicts": {
+      "environmental": 8,
+      "fail": 71,
+      "pass": 0,
+      "skip": 0
+    }
+  },
+  "selection": {
+    "excluded": [
+      {
+        "disposition": "exclude",
+        "reason": "sshd-side configuration test; outside the client candidate set.",
+        "test": "allow-deny-users"
+      },
+      {
+        "disposition": "exclude",
+        "reason": "sshd-side authentication test; outside the client candidate set.",
+        "test": "authinfo"
+      },
+      {
+        "disposition": "exclude",
+        "reason": "sshd-side Match configuration test; outside the client candidate set.",
+        "test": "cfgmatchlisten"
+      },
+      {
+        "disposition": "exclude",
+        "reason": "Non-conformance benchmark; not part of the upstream default t-exec list.",
+        "test": "cipher-speed"
+      },
+      {
+        "disposition": "exclude",
+        "reason": "Permanent exclusion: Twisted Conch interoperability is outside the compatibility target.",
+        "test": "conch-ciphers"
+      },
+      {
+        "disposition": "exclude",
+        "reason": "Permanent exclusion: Dropbear interoperability is outside the compatibility target.",
+        "test": "dropbear-ciphers"
+      },
+      {
+        "disposition": "exclude",
+        "reason": "Permanent exclusion: Dropbear interoperability is outside the compatibility target.",
+        "test": "dropbear-kex"
+      },
+      {
+        "disposition": "exclude",
+        "reason": "Permanent exclusion: Dropbear interoperability is outside the compatibility target.",
+        "test": "dropbear-server"
+      },
+      {
+        "disposition": "exclude",
+        "reason": "sshd-side ForceCommand test; outside the client candidate set.",
+        "test": "forcecommand"
+      },
+      {
+        "disposition": "exclude",
+        "reason": "sshd-side AuthorizedKeysCommand test; outside the client candidate set.",
+        "test": "keys-command"
+      },
+      {
+        "disposition": "exclude",
+        "reason": "sshd-side subsystem matching test; outside the client candidate set.",
+        "test": "match-subsystem"
+      },
+      {
+        "disposition": "exclude",
+        "reason": "sshd-side penalty configuration test; outside the client candidate set.",
+        "test": "penalty-expire"
+      },
+      {
+        "disposition": "exclude",
+        "reason": "sshd-side penalty configuration test; outside the client candidate set.",
+        "test": "penalty"
+      },
+      {
+        "disposition": "exclude",
+        "reason": "sshd-side AuthorizedPrincipalsCommand test; outside the client candidate set.",
+        "test": "principals-command"
+      },
+      {
+        "disposition": "exclude",
+        "reason": "Permanent exclusion: PuTTY interoperability is outside the compatibility target.",
+        "test": "putty-ciphers"
+      },
+      {
+        "disposition": "exclude",
+        "reason": "Permanent exclusion: PuTTY interoperability is outside the compatibility target.",
+        "test": "putty-kex"
+      },
+      {
+        "disposition": "exclude",
+        "reason": "Permanent exclusion: PuTTY interoperability is outside the compatibility target.",
+        "test": "putty-transfer"
+      },
+      {
+        "disposition": "exclude",
+        "reason": "sshd-side re-exec test; outside the client candidate set.",
+        "test": "reexec"
+      },
+      {
+        "disposition": "exclude",
+        "reason": "Upstream helper script; it is not a standalone regression test.",
+        "test": "scp-ssh-wrapper"
+      },
+      {
+        "disposition": "exclude",
+        "reason": "sshd ChrootDirectory and in-process SFTP behavior is server-side.",
+        "test": "sftp-chroot"
+      },
+      {
+        "disposition": "exclude",
+        "reason": "Permanent exclusion: ssh.com interoperability is outside the compatibility target.",
+        "test": "ssh-com-client"
+      },
+      {
+        "disposition": "exclude",
+        "reason": "Permanent exclusion: ssh.com interoperability is outside the compatibility target.",
+        "test": "ssh-com-keygen"
+      },
+      {
+        "disposition": "exclude",
+        "reason": "Permanent exclusion: ssh.com interoperability is outside the compatibility target.",
+        "test": "ssh-com-sftp"
+      },
+      {
+        "disposition": "exclude",
+        "reason": "Permanent exclusion: ssh.com interoperability is outside the compatibility target.",
+        "test": "ssh-com"
+      },
+      {
+        "disposition": "exclude",
+        "reason": "Upstream conversion helper; it is not a standalone regression test.",
+        "test": "ssh2putty"
+      },
+      {
+        "disposition": "exclude",
+        "reason": "Upstream test driver; it is not a standalone regression test.",
+        "test": "test-exec"
+      },
+      {
+        "disposition": "exclude",
+        "reason": "Upstream unit-test helper; it is not a client regression test.",
+        "test": "valgrind-unit"
+      }
+    ],
+    "permanent_skips": [
+      {
+        "disposition": "skip",
+        "reason": "Permanent candidate skip: PKCS#11 and FIDO/security-key middleware are outside the compatibility target.",
+        "test": "agent-pkcs11-cert"
+      },
+      {
+        "disposition": "skip",
+        "reason": "Permanent candidate skip: PKCS#11 and FIDO/security-key middleware are outside the compatibility target.",
+        "test": "agent-pkcs11-restrict"
+      },
+      {
+        "disposition": "skip",
+        "reason": "Permanent candidate skip: PKCS#11 and FIDO/security-key middleware are outside the compatibility target.",
+        "test": "agent-pkcs11"
+      },
+      {
+        "disposition": "skip",
+        "reason": "Permanent candidate skip: certificate authority key signing is outside the compatibility target.",
+        "test": "cert-hostkey"
+      },
+      {
+        "disposition": "skip",
+        "reason": "Permanent candidate skip: certificate authority key signing is outside the compatibility target.",
+        "test": "cert-userkey"
+      },
+      {
+        "disposition": "skip",
+        "reason": "Permanent candidate skip: sshd-side configuration tests are outside the client compatibility target.",
+        "test": "connect-privsep"
+      },
+      {
+        "disposition": "skip",
+        "reason": "Permanent candidate skip: GSSAPI authentication is outside the compatibility target.",
+        "test": "gss-auth"
+      },
+      {
+        "disposition": "skip",
+        "reason": "Permanent candidate skip: KRL generation is outside the compatibility target.",
+        "test": "krl"
+      },
+      {
+        "disposition": "skip",
+        "reason": "Permanent candidate skip: sshd process reconfiguration is server-side lifecycle behavior.",
+        "test": "reconfigure"
+      },
+      {
+        "disposition": "skip",
+        "reason": "Permanent candidate skip: PKCS#11 and FIDO/security-key middleware are outside the compatibility target.",
+        "test": "ssh-pkcs11"
+      }
+    ],
+    "runnable": 79
+  }
+}
