@@ -18,6 +18,14 @@ pub enum Error {
     KeyInvalid(russh::keys::Error),
     #[error("Permission denied (password).")]
     PasswordWrong,
+    #[error(
+        "Permission denied ({methods}).\nbssh: SSH agent: {agent_status}\nbssh: Default SSH keys: not found or not authorized\nbssh: Password authentication: {password_status}\nbssh: use -i/--identity, --password, or ssh-add to configure an authentication method"
+    )]
+    AuthenticationExhausted {
+        methods: &'static str,
+        agent_status: String,
+        password_status: &'static str,
+    },
     #[error("Invalid address was provided: {0}")]
     AddressInvalid(io::Error),
     #[error("ssh: Could not resolve hostname {host}: {source}")]
@@ -156,6 +164,7 @@ impl Error {
                 | Self::KeyAuthFailed
                 | Self::KeyInvalid(_)
                 | Self::PasswordWrong
+                | Self::AuthenticationExhausted { .. }
                 | Self::AddressInvalid(_)
                 | Self::DnsResolution { .. }
                 | Self::TcpConnect { .. }
@@ -274,6 +283,22 @@ mod tests {
                 .to_string()
                 .starts_with("Permission denied (publickey).")
         );
+    }
+
+    #[test]
+    fn authentication_exhaustion_lists_attempted_methods_and_remediation() {
+        let error = Error::AuthenticationExhausted {
+            methods: "publickey",
+            agent_status: "not available".to_string(),
+            password_status: "not available in non-interactive mode",
+        };
+
+        let rendered = error.to_string();
+        assert!(rendered.starts_with("Permission denied (publickey).\n"));
+        assert!(rendered.contains("bssh: SSH agent: not available"));
+        assert!(rendered.contains("bssh: Default SSH keys: not found or not authorized"));
+        assert!(rendered.contains("bssh: Password authentication: not available"));
+        assert!(error.is_ssh_client_failure());
     }
 
     #[test]

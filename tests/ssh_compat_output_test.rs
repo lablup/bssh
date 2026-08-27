@@ -15,6 +15,16 @@ fn bssh() -> Command {
     Command::new(env!("CARGO_BIN_EXE_bssh"))
 }
 
+fn pre_auth_test_key(directory: &std::path::Path) -> std::path::PathBuf {
+    let key = directory.join("test-key");
+    fs::write(
+        &key,
+        "test key material; connection fails before key parsing",
+    )
+    .expect("test key should be written");
+    key
+}
+
 fn contains_ansi(bytes: &[u8]) -> bool {
     bytes.contains(&0x1b)
 }
@@ -117,8 +127,12 @@ fn deprecated_alias_is_silent_and_unknown_keyword_uses_log_file() {
 
 #[test]
 fn connection_refused_is_actionable_and_exits_255() {
+    let directory = tempdir().expect("temporary directory should be created");
+    let key = pre_auth_test_key(directory.path());
     let output = bssh()
         .args([
+            "-i",
+            key.to_str().expect("UTF-8 key path"),
             "--connect-timeout=1",
             "--strict-host-key-checking=no",
             "127.0.0.1:1",
@@ -127,10 +141,13 @@ fn connection_refused_is_actionable_and_exits_255() {
         .output()
         .expect("bssh should report a refused connection");
 
-    assert_eq!(output.status.code(), Some(255));
-    assert!(output.stdout.is_empty());
-
     let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(255),
+        "unexpected SSH failure status; stderr: {stderr:?}"
+    );
+    assert!(output.stdout.is_empty());
     assert!(
         stderr.contains("ssh: connect to host 127.0.0.1 port 1:"),
         "missing OpenSSH-compatible connection context: {stderr:?}"
@@ -149,10 +166,13 @@ fn connection_refused_is_actionable_and_exits_255() {
 fn connection_error_uses_log_file_exactly_once() {
     let directory = tempdir().expect("temporary directory should be created");
     let log = directory.path().join("bssh.log");
+    let key = pre_auth_test_key(directory.path());
     let output = bssh()
         .args([
             "-E",
             log.to_str().expect("UTF-8 log path"),
+            "-i",
+            key.to_str().expect("UTF-8 key path"),
             "--connect-timeout=1",
             "--strict-host-key-checking=no",
             "127.0.0.1:1",
@@ -161,11 +181,14 @@ fn connection_error_uses_log_file_exactly_once() {
         .output()
         .expect("bssh should report a refused connection to the log file");
 
-    assert_eq!(output.status.code(), Some(255));
+    let diagnostics = fs::read_to_string(log).expect("diagnostic log should exist");
+    assert_eq!(
+        output.status.code(),
+        Some(255),
+        "unexpected SSH failure status; log: {diagnostics:?}"
+    );
     assert!(output.stdout.is_empty());
     assert!(output.stderr.is_empty());
-
-    let diagnostics = fs::read_to_string(log).expect("diagnostic log should exist");
     let matching_lines = diagnostics
         .lines()
         .filter(|line| line.contains("ssh: connect to host 127.0.0.1 port 1:"))
@@ -182,8 +205,12 @@ fn connection_error_uses_log_file_exactly_once() {
 
 #[test]
 fn dns_failure_is_distinct_and_exits_255() {
+    let directory = tempdir().expect("temporary directory should be created");
+    let key = pre_auth_test_key(directory.path());
     let output = bssh()
         .args([
+            "-i",
+            key.to_str().expect("UTF-8 key path"),
             "--connect-timeout=2",
             "--strict-host-key-checking=no",
             "does-not-exist.invalid",
@@ -192,16 +219,90 @@ fn dns_failure_is_distinct_and_exits_255() {
         .output()
         .expect("bssh should report a DNS failure");
 
-    assert_eq!(output.status.code(), Some(255));
-    assert!(output.stdout.is_empty());
-
     let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(255),
+        "unexpected SSH failure status; stderr: {stderr:?}"
+    );
+    assert!(output.stdout.is_empty());
     assert!(
         stderr.contains("ssh: Could not resolve hostname does-not-exist.invalid:"),
         "missing DNS layer context: {stderr:?}"
     );
     assert!(!stderr.to_ascii_lowercase().contains("connect to host"));
     assert!(!stderr.lines().any(|line| line.trim() == "I/O error"));
+}
+
+#[test]
+fn keyless_authentication_exhaustion_is_actionable_and_exits_255() {
+    let directory = tempdir().expect("temporary directory should be created");
+    let output = bssh()
+        .args([
+            "--connect-timeout=1",
+            "--strict-host-key-checking=no",
+            "127.0.0.1:1",
+            "true",
+        ])
+        .env("HOME", directory.path())
+        .env_remove("SSH_AUTH_SOCK")
+        .output()
+        .expect("bssh should report authentication exhaustion");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(255),
+        "unexpected authentication status; stderr: {stderr:?}"
+    );
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        stderr.matches("Permission denied (publickey).").count(),
+        1,
+        "authentication diagnostic must be emitted once: {stderr:?}"
+    );
+    assert!(stderr.starts_with("Permission denied (publickey).\n"));
+    assert!(stderr.contains("bssh: SSH agent: not available"));
+    assert!(stderr.contains("bssh: Default SSH keys: not found or not authorized"));
+    assert!(stderr.contains("bssh: Password authentication: not available"));
+    assert!(!stderr.contains(" WARN "));
+}
+
+#[test]
+fn keyless_authentication_exhaustion_uses_log_file_exactly_once() {
+    let directory = tempdir().expect("temporary directory should be created");
+    let log = directory.path().join("bssh.log");
+    let output = bssh()
+        .args([
+            "-E",
+            log.to_str().expect("UTF-8 log path"),
+            "--connect-timeout=1",
+            "--strict-host-key-checking=no",
+            "127.0.0.1:1",
+            "true",
+        ])
+        .env("HOME", directory.path())
+        .env_remove("SSH_AUTH_SOCK")
+        .output()
+        .expect("bssh should route authentication exhaustion to the log");
+
+    let diagnostics = fs::read_to_string(log).expect("diagnostic log should exist");
+    assert_eq!(
+        output.status.code(),
+        Some(255),
+        "unexpected authentication status; log: {diagnostics:?}"
+    );
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+    assert_eq!(
+        diagnostics
+            .matches("Permission denied (publickey).")
+            .count(),
+        1,
+        "authentication diagnostic must be logged once: {diagnostics:?}"
+    );
+    assert!(diagnostics.starts_with("Permission denied (publickey).\n"));
+    assert!(!diagnostics.contains(" WARN "));
 }
 
 #[test]

@@ -274,6 +274,26 @@ impl AuthContext {
         result
     }
 
+    fn authentication_exhausted_error(&self, password_status: &'static str) -> anyhow::Error {
+        let agent_status = if cfg!(target_os = "windows") {
+            "not supported on Windows".to_string()
+        } else {
+            match std::env::var_os("SSH_AUTH_SOCK") {
+                Some(socket) if std::path::Path::new(&socket).exists() => {
+                    "available but no usable identities were found".to_string()
+                }
+                Some(_) => "configured socket path does not exist".to_string(),
+                None => "not available (SSH_AUTH_SOCK is not set)".to_string(),
+            }
+        };
+
+        anyhow::Error::new(crate::ssh::tokio_client::Error::AuthenticationExhausted {
+            methods: "publickey",
+            agent_status,
+            password_status,
+        })
+    }
+
     async fn determine_method_internal(&self) -> Result<AuthMethod> {
         // Priority 1: Password authentication (explicit request)
         if self.use_password {
@@ -340,51 +360,12 @@ impl AuthContext {
                         self.password_auth().await
                     } else {
                         // User declined password fallback
-                        anyhow::bail!(
-                            "SSH authentication failed: All key-based methods failed.\n\
-                             \n\
-                             Tried:\n\
-                             - SSH agent: {}\n\
-                             - Default SSH keys: Not found or not authorized\n\
-                             \n\
-                             User declined password authentication fallback.\n\
-                             \n\
-                             Solutions:\n\
-                             - Use --password flag to explicitly enable password authentication\n\
-                             - Start SSH agent and add keys with 'ssh-add'\n\
-                             - Specify a key file with -i/--identity\n\
-                             - Ensure ~/.ssh/id_ed25519 or ~/.ssh/id_rsa exists and is authorized",
-                            if cfg!(target_os = "windows") {
-                                "Not supported on Windows"
-                            } else if std::env::var_os("SSH_AUTH_SOCK").is_some() {
-                                "Available but no identities authorized"
-                            } else {
-                                "Not available (SSH_AUTH_SOCK not set)"
-                            }
-                        )
+                        Err(self.authentication_exhausted_error("declined by user"))
                     }
                 } else {
                     // Non-interactive environment - cannot prompt for password
-                    anyhow::bail!(
-                        "SSH authentication failed: No authentication method available.\n\
-                         \n\
-                         Tried:\n\
-                         - SSH agent: {}\n\
-                         - Default SSH keys: Not found or not authorized\n\
-                         \n\
-                         Solutions:\n\
-                         - Use --password for password authentication\n\
-                         - Start SSH agent and add keys with 'ssh-add'\n\
-                         - Specify a key file with -i/--identity\n\
-                         - Ensure ~/.ssh/id_ed25519 or ~/.ssh/id_rsa exists and is authorized",
-                        if cfg!(target_os = "windows") {
-                            "Not supported on Windows"
-                        } else if std::env::var_os("SSH_AUTH_SOCK").is_some() {
-                            "Available but no identities authorized"
-                        } else {
-                            "Not available (SSH_AUTH_SOCK not set)"
-                        }
-                    )
+                    Err(self
+                        .authentication_exhausted_error("not available in non-interactive mode"))
                 }
             }
         }
@@ -515,12 +496,12 @@ impl AuthContext {
                         Ok(None)
                     }
                 } else {
-                    tracing::warn!("SSH_AUTH_SOCK points to non-existent socket");
+                    tracing::debug!("SSH_AUTH_SOCK points to non-existent socket");
                     Ok(None)
                 }
             }
             None => {
-                tracing::warn!(
+                tracing::debug!(
                     "SSH agent requested but SSH_AUTH_SOCK environment variable not set"
                 );
                 Ok(None)
