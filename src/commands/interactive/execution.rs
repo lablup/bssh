@@ -14,8 +14,8 @@
 
 //! Main execution logic for interactive sessions
 
+use crate::ui::Colorize;
 use anyhow::Result;
-use owo_colors::OwoColorize;
 use std::sync::Arc;
 
 use crate::commands::error_format::format_connection_error;
@@ -65,7 +65,7 @@ impl InteractiveCommand {
                 Err(e) => {
                     eprintln!(
                         "✗ Failed to connect to {}: {}",
-                        node.to_string().red(),
+                        node.to_string().red_stderr(),
                         format_connection_error(&e)
                     );
                 }
@@ -138,7 +138,7 @@ impl InteractiveCommand {
                 Err(e) => {
                     eprintln!(
                         "✗ Failed to connect to {}: {}",
-                        node.to_string().red(),
+                        node.to_string().red_stderr(),
                         format_connection_error(&e)
                     );
                 }

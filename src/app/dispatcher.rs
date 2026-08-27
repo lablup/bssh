@@ -643,6 +643,7 @@ async fn handle_exec_command(
             output_dir: cli.output_dir.as_deref(),
             stream: cli.stream,
             no_prefix: cli.no_prefix,
+            byte_transparent: cli.is_ssh_mode(),
             timeout,
             connect_timeout: Some(cli.connect_timeout),
             jump_hosts: jump_hosts.as_deref(),

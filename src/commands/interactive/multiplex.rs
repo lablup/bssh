@@ -14,9 +14,9 @@
 
 //! Multi-node multiplexed interactive session handling
 
+use crate::ui::Colorize;
 use anyhow::Result;
 use chrono;
-use owo_colors::OwoColorize;
 use rustyline::DefaultEditor;
 use rustyline::config::Configurer;
 use rustyline::error::ReadlineError;
@@ -213,7 +213,7 @@ impl InteractiveCommand {
                             if let Err(e) = session.send_command(&command_to_execute).await {
                                 eprintln!(
                                     "Failed to send command to {}: {}",
-                                    session.node.to_string().red(),
+                                    session.node.to_string().red_stderr(),
                                     e
                                 );
                                 session.is_connected = false;

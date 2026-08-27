@@ -14,6 +14,7 @@
 
 use crate::ui::tui::log_buffer::LogBuffer;
 use crate::ui::tui::log_layer::TuiLogLayer;
+use crate::ui::{OutputStream, colors_enabled};
 use crate::utils::diagnostics::{self, DiagnosticMakeWriter};
 use std::io::IsTerminal;
 use std::sync::{Arc, Mutex, OnceLock};
@@ -88,6 +89,7 @@ pub fn init_logging(verbosity: u8) -> Arc<Mutex<LogBuffer>> {
         tracing_subscriber::fmt()
             .with_env_filter(filter)
             .with_target(true)
+            .with_ansi(colors_enabled(OutputStream::Stderr))
             .init();
     }
 
@@ -103,6 +105,7 @@ pub fn init_logging_console_only(verbosity: u8) {
     tracing_subscriber::fmt()
         .with_env_filter(filter)
         .with_target(true)
+        .with_ansi(colors_enabled(OutputStream::Stderr))
         .init();
 }
 

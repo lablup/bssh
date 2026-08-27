@@ -1310,13 +1310,14 @@ impl ParallelExecutor {
 
         // Execute based on mode and ensure cleanup
         let no_prefix = output_mode.is_no_prefix();
+        let raw_stream = output_mode.is_raw_stream();
 
         if output_mode.is_tui() {
             // TUI mode: interactive terminal UI
             self.handle_tui_mode(&mut manager, handles, command).await
         } else if output_mode.is_stream() {
             // Stream mode: output in real-time with optional [node] prefixes
-            self.handle_stream_mode(&mut manager, handles, no_prefix)
+            self.handle_stream_mode(&mut manager, handles, no_prefix, raw_stream)
                 .await
         } else if let Some(output_dir) = output_mode.output_dir() {
             // File mode: save to per-node files
@@ -1334,6 +1335,7 @@ impl ParallelExecutor {
         manager: &mut super::stream_manager::MultiNodeStreamManager,
         handles: Vec<tokio::task::JoinHandle<(Node, Result<u32>)>>,
         no_prefix: bool,
+        raw_stream: bool,
     ) -> Result<Vec<ExecutionResult>> {
         use super::output_sync::NodeOutputWriter;
         use std::time::Duration;
@@ -1422,19 +1424,27 @@ impl ParallelExecutor {
                 let stderr = stream.take_stderr();
 
                 if !stdout.is_empty() {
-                    // Use lossy conversion to handle non-UTF8 data gracefully
-                    let text = String::from_utf8_lossy(&stdout);
                     let writer = NodeOutputWriter::new_with_no_prefix(&stream.node.host, no_prefix);
-                    if let Err(e) = writer.write_stdout_lines(&text) {
+                    let result = if raw_stream {
+                        writer.write_stdout_bytes(&stdout)
+                    } else {
+                        let text = String::from_utf8_lossy(&stdout);
+                        writer.write_stdout_lines(&text)
+                    };
+                    if let Err(e) = result {
                         tracing::error!("Failed to write stdout for {}: {}", stream.node.host, e);
                     }
                 }
 
                 if !stderr.is_empty() {
-                    // Use lossy conversion to handle non-UTF8 data gracefully
-                    let text = String::from_utf8_lossy(&stderr);
                     let writer = NodeOutputWriter::new_with_no_prefix(&stream.node.host, no_prefix);
-                    if let Err(e) = writer.write_stderr_lines(&text) {
+                    let result = if raw_stream {
+                        writer.write_stderr_bytes(&stderr)
+                    } else {
+                        let text = String::from_utf8_lossy(&stderr);
+                        writer.write_stderr_lines(&text)
+                    };
+                    if let Err(e) = result {
                         tracing::error!("Failed to write stderr for {}: {}", stream.node.host, e);
                     }
                 }
@@ -1469,6 +1479,29 @@ impl ParallelExecutor {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
 
+        // Drain chunks that arrived with the final channel-close notification.
+        manager.poll_all();
+        for stream in manager.streams_mut() {
+            let stdout = stream.take_stdout();
+            let stderr = stream.take_stderr();
+            let writer = NodeOutputWriter::new_with_no_prefix(&stream.node.host, no_prefix);
+            if !stdout.is_empty() {
+                let result = if raw_stream {
+                    writer.write_stdout_bytes(&stdout)
+                } else {
+                    writer.write_stdout_lines(&String::from_utf8_lossy(&stdout))
+                };
+                result?;
+            }
+            if !stderr.is_empty() {
+                let result = if raw_stream {
+                    writer.write_stderr_bytes(&stderr)
+                } else {
+                    writer.write_stderr_lines(&String::from_utf8_lossy(&stderr))
+                };
+                result?;
+            }
+        }
         // Collect final results from all streams
         for stream in manager.streams() {
             use crate::ssh::client::CommandResult;

@@ -141,6 +141,30 @@ impl NodeOutputWriter {
         Ok(())
     }
 
+    /// Write a stdout chunk without decoding, prefixing, or adding a newline.
+    pub fn write_stdout_bytes(&self, bytes: &[u8]) -> io::Result<()> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        let mut stdout = STDOUT_MUTEX
+            .lock()
+            .map_err(|_| io::Error::other("stdout lock is poisoned"))?;
+        stdout.write_all(bytes)?;
+        stdout.flush()
+    }
+
+    /// Write a stderr chunk without decoding, prefixing, or adding a newline.
+    pub fn write_stderr_bytes(&self, bytes: &[u8]) -> io::Result<()> {
+        if bytes.is_empty() {
+            return Ok(());
+        }
+        let mut stderr = STDERR_MUTEX
+            .lock()
+            .map_err(|_| io::Error::other("stderr lock is poisoned"))?;
+        stderr.write_all(bytes)?;
+        stderr.flush()
+    }
+
     /// Write a single stdout line with optional node prefix
     pub fn write_stdout(&self, line: &str) -> io::Result<()> {
         synchronized_println(&self.format_line(line))
@@ -241,5 +265,70 @@ mod tests {
         let contents = std::fs::read_to_string(&log).expect("failed to read diagnostic log");
         assert!(contents.contains("bssh-owned diagnostic"));
         assert!(!contents.contains("remote command stderr"));
+    }
+    #[test]
+    fn raw_output_helper() {
+        if std::env::var_os("BSSH_RAW_OUTPUT_TEST_HELPER").is_none() {
+            return;
+        }
+
+        let writer = NodeOutputWriter::new_with_no_prefix("example", true);
+        writer
+            .write_stdout_bytes(b"stdout\0\xff-no-newline")
+            .expect("helper should write raw stdout");
+        writer
+            .write_stderr_bytes(b"stderr\0\xfe-no-newline")
+            .expect("helper should write raw stderr");
+    }
+
+    #[test]
+    fn raw_output_preserves_bytes_and_streams() {
+        let output = Command::new(std::env::current_exe().expect("test executable should exist"))
+            .args([
+                "--exact",
+                "executor::output_sync::tests::raw_output_helper",
+                "--nocapture",
+            ])
+            .env("BSSH_RAW_OUTPUT_TEST_HELPER", "1")
+            .output()
+            .expect("failed to run raw output helper");
+
+        assert!(output.status.success(), "raw output helper should pass");
+        let expected_stdout = b"stdout\0\xff-no-newline";
+        let expected_stderr = b"stderr\0\xfe-no-newline";
+        let stdout_start = output
+            .stdout
+            .windows(expected_stdout.len())
+            .position(|window| window == expected_stdout)
+            .expect("exact raw stdout payload should be present");
+        let stderr_start = output
+            .stderr
+            .windows(expected_stderr.len())
+            .position(|window| window == expected_stderr)
+            .expect("exact raw stderr payload should be present");
+        assert_eq!(
+            &output.stdout[stdout_start..stdout_start + expected_stdout.len()],
+            expected_stdout
+        );
+        assert_eq!(
+            &output.stderr[stderr_start..stderr_start + expected_stderr.len()],
+            expected_stderr
+        );
+        assert_eq!(
+            output
+                .stdout
+                .windows(expected_stdout.len())
+                .filter(|window| *window == expected_stdout)
+                .count(),
+            1
+        );
+        assert_eq!(
+            output
+                .stderr
+                .windows(expected_stderr.len())
+                .filter(|window| *window == expected_stderr)
+                .count(),
+            1
+        );
     }
 }

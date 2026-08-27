@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::ui::ColorMode;
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
@@ -19,7 +20,7 @@ use std::path::PathBuf;
 #[derive(Parser, Debug)]
 #[command(
     name = "bssh",
-    version,
+    disable_version_flag = true,
     before_help = "\n\nBroadcast SSH - Parallel command execution across cluster nodes",
     about = "Broadcast SSH - SSH-compatible parallel command execution tool",
     long_about = "bssh is a high-performance SSH client with parallel execution capabilities.\nIt can be used as a drop-in replacement for SSH (single host) or as a powerful cluster management tool (multiple hosts).\n\nThe tool provides secure file transfer using SFTP and supports SSH keys, SSH agent, and password authentication.\nIt automatically detects Backend.AI multi-node session environments.\n\nOutput Modes:\n- TUI Mode (default): Interactive terminal UI with real-time monitoring (auto-enabled in terminals)\n- Stream Mode (--stream): Real-time output with [node] prefixes\n- File Mode (--output-dir): Save per-node output to timestamped files\n- Normal Mode: Traditional output after all nodes complete\n\nSSH Configuration Support:\n- Reads standard SSH config files (defaulting to ~/.ssh/config)\n- Supports Host patterns, HostName, User, Port, IdentityFile, StrictHostKeyChecking\n- ProxyJump, and many other SSH configuration directives\n- CLI arguments override SSH config values following SSH precedence rules",
@@ -145,6 +146,17 @@ pub struct Cli {
         help = "Stream output in real-time with [node] prefixes\nEach line of output is prefixed with the node hostname and displayed as it arrives.\nUseful for monitoring long-running commands across multiple nodes.\nAutomatically disabled when output is piped or in CI environments."
     )]
     pub stream: bool,
+
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = ColorMode::Auto,
+        help = "Control ANSI styling: auto, always, or never"
+    )]
+    pub color: ColorMode,
+
+    #[arg(short = 'V', long = "version", help = "Print version to stderr")]
+    pub version: bool,
 
     #[arg(
         short = 'N',

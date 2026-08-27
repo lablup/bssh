@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use owo_colors::OwoColorize;
+use crate::ui::Colorize;
 
 use crate::config::{Config, NodeConfig};
 
