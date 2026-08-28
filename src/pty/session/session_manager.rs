@@ -178,11 +178,12 @@ impl PtySession {
             anyhow::bail!("PTY session is not in active state");
         }
 
-        // Pipes already deliver bytes without terminal line discipline. A local
-        // TTY enters raw mode so control and binary bytes reach the SSH stream.
+        // Match OpenSSH client_loop semantics: only a session with a remote PTY
+        // changes the local terminal to raw mode. No-PTY shells retain the OS
+        // line discipline and forward the bytes that stdin delivers unchanged.
         let mut terminal_guard = if io::stdin().is_terminal() && io::stdout().is_terminal() {
             if self.config.disable_pty {
-                TerminalStateGuard::new_raw_mode_without_protocol()?
+                TerminalStateGuard::new_without_raw_mode()?
             } else {
                 TerminalStateGuard::new()?
             }
@@ -193,7 +194,7 @@ impl PtySession {
         self.terminal_guard = Some(terminal_guard);
 
         // Enable mouse support if requested
-        if self.config.enable_mouse {
+        if self.config.enable_mouse && !self.config.disable_pty {
             TerminalOps::enable_mouse()?;
         }
 
@@ -254,11 +255,12 @@ impl PtySession {
             .clone();
         let cancel_for_input = self.cancel_rx.clone();
 
-        // Spawn input reader in blocking thread pool to avoid blocking async runtime
-        // NOTE: TerminalStateGuard has already called enable_raw_mode() at this point,
-        // so stdin.read() will return raw bytes without line buffering
+        // Spawn input reader in the blocking thread pool. Local escape handling
+        // is an SSH PTY feature; a no-PTY shell forwards stdin without consuming
+        // sequences such as "~.".
+        let escape_enabled = !self.config.disable_pty;
         let input_task = tokio::task::spawn_blocking(move || {
-            raw_input_task::run(input_tx, cancel_for_input, pending_input);
+            raw_input_task::run(input_tx, cancel_for_input, pending_input, escape_enabled);
         });
 
         // We'll integrate channel reading into the main loop since russh Channel doesn't clone
@@ -466,7 +468,7 @@ impl PtySession {
         .await;
 
         // Disable mouse support if we enabled it
-        if self.config.enable_mouse {
+        if self.config.enable_mouse && !self.config.disable_pty {
             let _ = TerminalOps::disable_mouse();
         }
 

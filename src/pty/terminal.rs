@@ -145,14 +145,6 @@ impl TerminalStateGuard {
         })
     }
 
-    /// Enter raw mode without terminal protocol queries or control-sequence
-    /// setup. Used by no-PTY SSH streams that must not alter remote bytes.
-    pub fn new_raw_mode_without_protocol() -> Result<Self> {
-        let guard = Self::new_without_raw_mode()?;
-        guard.enter_raw_mode()?;
-        Ok(guard)
-    }
-
     /// Create a terminal state guard without entering raw mode
     pub fn new_without_raw_mode() -> Result<Self> {
         let owner = TerminalOwner::acquire()?;

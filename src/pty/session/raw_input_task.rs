@@ -27,12 +27,14 @@ pub(crate) fn run(
     input_tx: mpsc::Sender<PtyMessage>,
     cancel_rx: watch::Receiver<bool>,
     pending_input: Vec<u8>,
+    escape_enabled: bool,
 ) {
     let mut reader = RawInputReader::new();
     let mut buffer = [0_u8; 1024];
-    let mut escape_detector = LocalEscapeDetector::new();
+    let mut escape_detector = escape_enabled.then(LocalEscapeDetector::new);
 
-    if !pending_input.is_empty() && !forward_input(&input_tx, &mut escape_detector, &pending_input)
+    if !pending_input.is_empty()
+        && !forward_input(&input_tx, escape_detector.as_mut(), &pending_input)
     {
         return;
     }
@@ -49,7 +51,7 @@ pub(crate) fn run(
                     break;
                 }
                 Ok(read) => {
-                    if !forward_input(&input_tx, &mut escape_detector, &buffer[..read]) {
+                    if !forward_input(&input_tx, escape_detector.as_mut(), &buffer[..read]) {
                         break;
                     }
                 }
@@ -69,10 +71,10 @@ pub(crate) fn run(
 
 fn forward_input(
     input_tx: &mpsc::Sender<PtyMessage>,
-    detector: &mut LocalEscapeDetector,
+    detector: Option<&mut LocalEscapeDetector>,
     bytes: &[u8],
 ) -> bool {
-    if let Some(action) = detector.process(bytes) {
+    if let Some(action) = detector.and_then(|detector| detector.process(bytes)) {
         match action {
             LocalAction::Disconnect => {
                 tracing::debug!("Disconnect escape sequence detected");
@@ -99,10 +101,21 @@ mod tests {
         let mut detector = LocalEscapeDetector::new();
         let bytes = [0x00, 0x01, 0x03, 0x04, 0x1b, 0x7f, 0x80, 0xff];
 
-        assert!(forward_input(&tx, &mut detector, &bytes));
+        assert!(forward_input(&tx, Some(&mut detector), &bytes));
         let PtyMessage::LocalInput(forwarded) = rx.try_recv().unwrap() else {
             panic!("raw input must produce a LocalInput message");
         };
         assert_eq!(forwarded.as_slice(), bytes);
+    }
+
+    #[test]
+    fn no_pty_forwarding_preserves_ssh_escape_sequence() {
+        let (tx, mut rx) = mpsc::channel(1);
+
+        assert!(forward_input(&tx, None, b"~."));
+        let PtyMessage::LocalInput(forwarded) = rx.try_recv().unwrap() else {
+            panic!("no-PTY input must produce a LocalInput message");
+        };
+        assert_eq!(forwarded.as_slice(), b"~.");
     }
 }
