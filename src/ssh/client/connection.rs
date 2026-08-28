@@ -106,6 +106,7 @@ impl SshClient {
         use_password: bool,
         #[cfg(target_os = "macos")] use_keychain: bool,
         pre_collected_password: Option<Arc<Password>>,
+        ssh_connection_config: Option<&SshConnectionConfig>,
     ) -> Result<AuthMethod> {
         // Use centralized authentication logic from auth module
         let mut auth_ctx =
@@ -125,6 +126,11 @@ impl SshClient {
             .with_agent(use_agent)
             .with_password(use_password)
             .with_pre_collected_password(pre_collected_password);
+        auth_ctx = auth_ctx.with_policy(
+            ssh_connection_config
+                .map(|config| config.auth_policy.clone())
+                .unwrap_or_default(),
+        );
 
         #[cfg(target_os = "macos")]
         {
@@ -358,13 +364,22 @@ mod tests {
     use serial_test::serial;
     use tempfile::TempDir;
 
+    fn write_test_key(path: &Path) {
+        use russh::keys::ssh_key::{Algorithm, LineEnding, PrivateKey};
+
+        let key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
+        std::fs::write(path, key.to_openssh(LineEnding::LF).unwrap().as_bytes()).unwrap();
+    }
+
     #[tokio::test]
     async fn test_determine_auth_method_with_key() {
         let temp_dir = TempDir::new().unwrap();
         let key_path = temp_dir.path().join("test_key");
-        std::fs::write(&key_path, "fake key content").unwrap();
+        write_test_key(&key_path);
 
         let client = SshClient::new("test.com".to_string(), 22, "user".to_string());
+        let mut config = SshConnectionConfig::default();
+        config.auth_policy.identities_only = true;
         let auth = client
             .determine_auth_method(
                 Some(&key_path),
@@ -373,16 +388,17 @@ mod tests {
                 #[cfg(target_os = "macos")]
                 false,
                 None,
+                Some(&config),
             )
             .await
             .unwrap();
 
         match auth {
-            AuthMethod::PrivateKeyFile { key_file_path, .. } => {
+            AuthMethod::PrivateKeyFileWithPolicy { key_file_path, .. } => {
                 // Path should be canonicalized now
                 assert!(key_file_path.is_absolute());
             }
-            _ => panic!("Expected PrivateKeyFile auth method"),
+            _ => panic!("Expected policy-aware private-key auth method"),
         }
     }
 
@@ -403,9 +419,7 @@ mod tests {
         // Create a fake SSH key for fallback (since our fake agent has no identities)
         let ssh_dir = temp_dir.path().join(".ssh");
         std::fs::create_dir_all(&ssh_dir).unwrap();
-        let key_content =
-            "-----BEGIN PRIVATE KEY-----\nfake key content\n-----END PRIVATE KEY-----";
-        std::fs::write(ssh_dir.join("id_rsa"), key_content).unwrap();
+        write_test_key(&ssh_dir.join("id_ed25519"));
 
         // Guards restore prior values on drop.
         let _sock = EnvGuard::set("SSH_AUTH_SOCK", socket_path.to_str().unwrap());
@@ -420,21 +434,23 @@ mod tests {
                 #[cfg(target_os = "macos")]
                 false,
                 None,
+                None,
             )
             .await
             .unwrap();
 
-        // With the agent identity check, if the agent has no identities (our fake socket),
-        // it will fall back to key file authentication. Accept either outcome.
-        match auth {
-            AuthMethod::Agent => {
-                // Real SSH agent with identities was found
-            }
-            AuthMethod::PrivateKeyFile { .. } => {
-                // Fallback to key file (expected with fake socket)
-            }
-            _ => panic!("Expected Agent or PrivateKeyFile auth method"),
-        }
+        let AuthMethod::Methods(methods) = auth else {
+            panic!("expected ordered agent and default-key methods");
+        };
+        assert!(matches!(
+            methods.first(),
+            Some(AuthMethod::AgentWithPolicy { .. })
+        ));
+        assert!(matches!(
+            methods.get(1),
+            Some(AuthMethod::PrivateKeyFileWithPolicy { key_file_path, .. })
+                if key_file_path.ends_with("id_ed25519")
+        ));
     }
 
     #[cfg(target_os = "linux")]
@@ -454,9 +470,7 @@ mod tests {
         // Create a fake SSH key for fallback (since our fake agent has no identities)
         let ssh_dir = temp_dir.path().join(".ssh");
         std::fs::create_dir_all(&ssh_dir).unwrap();
-        let key_content =
-            "-----BEGIN PRIVATE KEY-----\nfake key content\n-----END PRIVATE KEY-----";
-        std::fs::write(ssh_dir.join("id_rsa"), key_content).unwrap();
+        write_test_key(&ssh_dir.join("id_ed25519"));
 
         // Guards restore prior values on drop.
         let _sock = EnvGuard::set("SSH_AUTH_SOCK", socket_path.to_str().unwrap());
@@ -464,21 +478,22 @@ mod tests {
 
         let client = SshClient::new("test.com".to_string(), 22, "user".to_string());
         let auth = client
-            .determine_auth_method(None, true, false, None)
+            .determine_auth_method(None, true, false, None, None)
             .await
             .unwrap();
 
-        // With the agent identity check, if the agent has no identities (our fake socket),
-        // it will fall back to key file authentication. Accept either outcome.
-        match auth {
-            AuthMethod::Agent => {
-                // Real SSH agent with identities was found
-            }
-            AuthMethod::PrivateKeyFile { .. } => {
-                // Fallback to key file (expected with fake socket)
-            }
-            _ => panic!("Expected Agent or PrivateKeyFile auth method"),
-        }
+        let AuthMethod::Methods(methods) = auth else {
+            panic!("expected ordered agent and default-key methods");
+        };
+        assert!(matches!(
+            methods.first(),
+            Some(AuthMethod::AgentWithPolicy { .. })
+        ));
+        assert!(matches!(
+            methods.get(1),
+            Some(AuthMethod::PrivateKeyFileWithPolicy { key_file_path, .. })
+                if key_file_path.ends_with("id_ed25519")
+        ));
     }
 
     #[test]
@@ -497,8 +512,8 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let ssh_dir = temp_dir.path().join(".ssh");
         std::fs::create_dir_all(&ssh_dir).unwrap();
-        let default_key = ssh_dir.join("id_rsa");
-        std::fs::write(&default_key, "fake key").unwrap();
+        let default_key = ssh_dir.join("id_ed25519");
+        write_test_key(&default_key);
 
         // Guards restore prior values on drop.
         let _home = EnvGuard::set("HOME", temp_dir.path().to_str().unwrap());
@@ -513,16 +528,17 @@ mod tests {
                 #[cfg(target_os = "macos")]
                 false,
                 None,
+                None,
             )
             .await
             .unwrap();
 
         match auth {
-            AuthMethod::PrivateKeyFile { key_file_path, .. } => {
+            AuthMethod::PrivateKeyFileWithPolicy { key_file_path, .. } => {
                 // Path should be canonicalized now
                 assert!(key_file_path.is_absolute());
             }
-            _ => panic!("Expected PrivateKeyFile auth method"),
+            _ => panic!("Expected policy-aware private-key auth method"),
         }
     }
 

@@ -20,6 +20,7 @@
 use russh::client::{Config, DisconnectReason, Handle, Handler};
 use std::borrow::Cow;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -28,6 +29,7 @@ use std::time::Duration;
 use std::{fmt::Debug, io};
 
 use super::address_family::AddressFamily;
+use super::auth_policy::SshAuthenticationPolicy;
 use super::authentication::{AuthMethod, ServerCheckMethod};
 use super::proxy_command::{
     ProxyCommandConfig, ProxyCommandProcess, ProxyMode, spawn_proxy_command,
@@ -139,6 +141,8 @@ pub struct SshConnectionConfig {
     pub order_host_key_algorithms: bool,
     /// Public-key signature policy for the authentication follow-up.
     pub pubkey_accepted_algorithms: Option<Vec<String>>,
+    // Authentication method, identity, certificate, and prompt policy for this host.
+    pub auth_policy: SshAuthenticationPolicy,
 }
 
 impl Default for SshConnectionConfig {
@@ -165,6 +169,7 @@ impl Default for SshConnectionConfig {
             host_key_preferences: None,
             order_host_key_algorithms: true,
             pubkey_accepted_algorithms: None,
+            auth_policy: SshAuthenticationPolicy::default(),
         }
     }
 }
@@ -188,6 +193,7 @@ pub struct SshConnectionConfigResolver {
     cli_host_key_alias: Option<String>,
     cli_proxy_jump: Option<String>,
     yaml_proxy_jump: Option<String>,
+    cli_identity_files: Vec<PathBuf>,
 }
 
 impl SshConnectionConfigResolver {
@@ -205,6 +211,12 @@ impl SshConnectionConfigResolver {
     #[must_use]
     pub fn with_ssh_config(mut self, ssh_config: Option<SshConfig>) -> Self {
         self.ssh_config = ssh_config;
+        self
+    }
+
+    #[must_use]
+    pub fn with_cli_identity_files(mut self, identity_files: Vec<PathBuf>) -> Self {
+        self.cli_identity_files = identity_files;
         self
     }
 
@@ -373,6 +385,45 @@ impl SshConnectionConfigResolver {
         let pubkey_accepted_algorithms = host_config
             .as_ref()
             .and_then(|config| config.resolved_pubkey_accepted_algorithms.clone());
+        let mut auth_policy = host_config
+            .as_ref()
+            .map(|config| {
+                let preferred_authentications = if config.preferred_authentications.is_empty() {
+                    SshAuthenticationPolicy::default().preferred_authentications
+                } else {
+                    config.preferred_authentications.clone()
+                };
+                let identity_file_none = config
+                    .identity_files
+                    .iter()
+                    .any(|path| path.to_string_lossy().eq_ignore_ascii_case("none"));
+                let identity_files = config
+                    .identity_files
+                    .iter()
+                    .filter(|path| !path.to_string_lossy().eq_ignore_ascii_case("none"))
+                    .cloned()
+                    .collect();
+                SshAuthenticationPolicy {
+                    cli_identity_files: Vec::new(),
+                    identity_files,
+                    identity_file_none,
+                    certificate_files: config.certificate_files.clone(),
+                    identities_only: config.identities_only.unwrap_or(false),
+                    preferred_authentications,
+                    pubkey_authentication: config.pubkey_authentication.unwrap_or(true),
+                    password_authentication: config.password_authentication.unwrap_or(true),
+                    number_of_password_prompts: config.number_of_password_prompts.unwrap_or(3),
+                    batch_mode: config.batch_mode.unwrap_or(false),
+                    pubkey_accepted_algorithms: config
+                        .resolved_pubkey_accepted_algorithms
+                        .clone()
+                        .or_else(|| SshAuthenticationPolicy::default().pubkey_accepted_algorithms),
+                }
+            })
+            .unwrap_or_default();
+        auth_policy
+            .cli_identity_files
+            .clone_from(&self.cli_identity_files);
         SshConnectionConfig::new()
             .with_keepalive_interval(if keepalive_interval == 0 {
                 None
@@ -402,6 +453,7 @@ impl SshConnectionConfigResolver {
             )
             .with_known_host_algorithm_ordering(order_host_key_algorithms)
             .with_pubkey_accepted_algorithms(pubkey_accepted_algorithms)
+            .with_auth_policy(auth_policy)
     }
 
     fn resolve_proxy_mode(
@@ -588,6 +640,13 @@ impl SshConnectionConfig {
     #[must_use]
     pub fn with_pubkey_accepted_algorithms(mut self, algorithms: Option<Vec<String>>) -> Self {
         self.pubkey_accepted_algorithms = algorithms;
+        self
+    }
+
+    /// Attach the resolved authentication policy for this concrete host.
+    #[must_use]
+    pub fn with_auth_policy(mut self, policy: SshAuthenticationPolicy) -> Self {
+        self.auth_policy = policy;
         self
     }
 

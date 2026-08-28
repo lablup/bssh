@@ -18,54 +18,6 @@ use crate::ssh::tokio_client::{AuthMethod, ClientHandler};
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::sync::Arc;
-use tokio::sync::Mutex;
-use tracing::{debug, warn};
-use zeroize::Zeroizing;
-
-/// Timeout for SSH agent operations (5 seconds)
-/// This prevents indefinite hangs if the agent is unresponsive (e.g., waiting for hardware token)
-#[cfg(not(target_os = "windows"))]
-const AGENT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-
-/// Check if the SSH agent has any loaded identities.
-///
-/// This function queries the SSH agent to determine if it has any keys loaded.
-/// Returns `true` if the agent has at least one identity, `false` otherwise.
-/// If communication with the agent fails or times out, returns `false` to allow
-/// fallback to key files.
-///
-/// Note: Includes a 5-second timeout to prevent hanging if the agent is unresponsive.
-#[cfg(not(target_os = "windows"))]
-async fn agent_has_identities() -> bool {
-    use russh::keys::agent::client::AgentClient;
-    use tokio::time::timeout;
-
-    let result = timeout(AGENT_TIMEOUT, async {
-        let mut agent = AgentClient::connect_env().await?;
-        agent.request_identities().await
-    })
-    .await;
-
-    match result {
-        Ok(Ok(identities)) => {
-            let has_keys = !identities.is_empty();
-            if has_keys {
-                debug!("SSH agent has {} loaded identities", identities.len());
-            } else {
-                debug!("SSH agent is running but has no loaded identities");
-            }
-            has_keys
-        }
-        Ok(Err(e)) => {
-            warn!("Failed to communicate with SSH agent: {e}");
-            false
-        }
-        Err(_) => {
-            warn!("SSH agent operation timed out after {:?}", AGENT_TIMEOUT);
-            false
-        }
-    }
-}
 
 /// Determine authentication method for a jump host
 ///
@@ -86,171 +38,31 @@ pub(super) async fn determine_auth_method(
     use_agent: bool,
     use_password: bool,
     pre_collected_password: Option<Arc<Password>>,
-    auth_mutex: &Mutex<()>,
+    ssh_connection_config: &crate::ssh::tokio_client::SshConnectionConfig,
 ) -> Result<AuthMethod> {
-    // Priority 1: Use jump host's own ssh_key if provided
     let effective_key_path = if let Some(ref jump_key) = jump_host.ssh_key {
         use crate::config::{expand_env_vars, expand_tilde};
         let expanded_path = expand_env_vars(jump_key);
         let path = Path::new(&expanded_path);
-        let expanded_tilde = if expanded_path.starts_with('~') {
+        Some(if expanded_path.starts_with('~') {
             expand_tilde(path)
         } else {
             path.to_path_buf()
-        };
-        Some(expanded_tilde)
+        })
     } else {
-        // Priority 2: Fall back to cluster/defaults key_path
-        key_path.map(|p| p.to_path_buf())
+        key_path.map(Path::to_path_buf)
     };
 
-    // Cache agent availability check to avoid querying the agent multiple times
-    // (each query involves socket connection and protocol handshake)
-    // IMPORTANT: First verify the socket file exists before attempting connection
-    // to avoid hangs or delays when SSH_AUTH_SOCK points to a non-existent path
-    #[cfg(not(target_os = "windows"))]
-    let agent_available = {
-        if let Ok(socket_path) = std::env::var("SSH_AUTH_SOCK") {
-            // Verify the socket actually exists before attempting connection
-            let path = std::path::Path::new(&socket_path);
-            if path.exists() {
-                agent_has_identities().await
-            } else {
-                debug!(
-                    "SSH_AUTH_SOCK points to non-existent socket: {}, falling back to key files",
-                    socket_path
-                );
-                false
-            }
-        } else {
-            false
-        }
-    };
-    #[cfg(target_os = "windows")]
-    let agent_available = false;
-
-    if use_password {
-        // Issue #200: consume the dispatcher's single up-front password instead
-        // of prompting per-call. Per-call prompts here race across parallel
-        // jump-host auth tasks (even with auth_mutex, they serialize into N
-        // sequential prompts for N nodes) and contradict the entire point of
-        // `--password`. The dispatcher MUST have collected this value before
-        // any per-node task was spawned; if it didn't, fail loudly rather than
-        // silently fall back to prompting.
-        let Some(password) = pre_collected_password.as_ref() else {
-            anyhow::bail!(
-                "SSH password authentication was requested for jump host {} but no \
-                 password was collected up-front. This is a programmer error: the \
-                 dispatcher must call `prompt_password()` once before spawning \
-                 per-node connection tasks and thread the resulting `Arc<Password>` \
-                 through to this jump-host authentication context.",
-                jump_host.to_connection_string(),
-            );
-        };
-        // Note: `auth_mutex` is intentionally NOT acquired here — no prompt is
-        // issued, so there is no I/O to serialize. The mutex remains needed
-        // for the key passphrase prompts below.
-        return Ok(AuthMethod::with_password(password.as_str()));
+    let mut context =
+        crate::ssh::AuthContext::new(jump_host.effective_user(), jump_host.host.clone())?
+            .with_agent(use_agent)
+            .with_password(use_password)
+            .with_pre_collected_password(pre_collected_password)
+            .with_policy(ssh_connection_config.auth_policy.clone());
+    if let Some(path) = effective_key_path {
+        context = context.with_key_path(Some(path))?;
     }
-
-    if use_agent && agent_available {
-        #[cfg(not(target_os = "windows"))]
-        {
-            return Ok(AuthMethod::Agent);
-        }
-        // If agent is running but has no identities, fall through to try key files
-    }
-
-    if let Some(key_path) = effective_key_path.as_deref() {
-        // SECURITY: Use Zeroizing to ensure key contents are cleared from memory
-        let key_contents = Zeroizing::new(
-            std::fs::read_to_string(key_path)
-                .with_context(|| format!("Failed to read SSH key file: {key_path:?}"))?,
-        );
-
-        let passphrase = if key_contents.contains("ENCRYPTED")
-            || key_contents.contains("Proc-Type: 4,ENCRYPTED")
-        {
-            // SECURITY: Acquire mutex to serialize passphrase prompts
-            let _guard = auth_mutex.lock().await;
-
-            let prompt = format!(
-                "Enter passphrase for key {key_path:?} (jump host {}): ",
-                jump_host.to_connection_string()
-            );
-
-            let pass = Zeroizing::new(
-                rpassword::prompt_password(prompt).with_context(|| "Failed to read passphrase")?,
-            );
-            Some(pass)
-        } else {
-            None
-        };
-
-        return Ok(AuthMethod::with_key_file(
-            key_path,
-            passphrase.as_ref().map(|p| p.as_str()),
-        ));
-    }
-
-    // Fallback to SSH agent if available and has identities (use cached check)
-    #[cfg(not(target_os = "windows"))]
-    if agent_available {
-        return Ok(AuthMethod::Agent);
-    }
-    // If agent is running but has no identities, fall through to try default key files
-
-    // Try default key files
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let home_path = Path::new(&home).join(".ssh");
-    let default_keys = [
-        home_path.join("id_ed25519"),
-        home_path.join("id_rsa"),
-        home_path.join("id_ecdsa"),
-        home_path.join("id_dsa"),
-    ];
-
-    for default_key in &default_keys {
-        if default_key.exists() {
-            // SECURITY: Use Zeroizing to ensure key contents are cleared from memory
-            let key_contents = Zeroizing::new(
-                std::fs::read_to_string(default_key)
-                    .with_context(|| format!("Failed to read SSH key file: {default_key:?}"))?,
-            );
-
-            let passphrase = if key_contents.contains("ENCRYPTED")
-                || key_contents.contains("Proc-Type: 4,ENCRYPTED")
-            {
-                // SECURITY: Acquire mutex to serialize passphrase prompts
-                let _guard = auth_mutex.lock().await;
-
-                let prompt = format!(
-                    "Enter passphrase for key {default_key:?} (jump host {}): ",
-                    jump_host.to_connection_string()
-                );
-
-                let pass = Zeroizing::new(
-                    rpassword::prompt_password(prompt)
-                        .with_context(|| "Failed to read passphrase")?,
-                );
-                Some(pass)
-            } else {
-                None
-            };
-
-            return Ok(AuthMethod::with_key_file(
-                default_key,
-                passphrase.as_ref().map(|p| p.as_str()),
-            ));
-        }
-    }
-
-    anyhow::bail!(
-        "No authentication method available for jump host '{}' (user: {}). \
-         Please specify -i <key_file> or ensure SSH agent is running with loaded keys.",
-        jump_host.to_connection_string(),
-        jump_host.effective_user()
-    )
+    context.determine_method().await
 }
 
 /// Authenticate to a jump host or destination
@@ -266,205 +78,20 @@ pub(super) async fn authenticate_connection(
     auth_method: AuthMethod,
     host_description: &str,
 ) -> Result<()> {
-    use crate::ssh::tokio_client::AuthMethod;
-
-    debug!(
-        "Authenticating to {} as user '{}' using {:?}",
-        host_description,
-        username,
-        match &auth_method {
-            AuthMethod::Password(_) => "password".to_string(),
-            AuthMethod::PrivateKey { .. } => "private key".to_string(),
-            AuthMethod::PrivateKeyFile { key_file_path, .. } =>
-                format!("key file {:?}", key_file_path),
-            #[cfg(not(target_os = "windows"))]
-            AuthMethod::Agent => "SSH agent".to_string(),
-            #[allow(unreachable_patterns)]
-            _ => "unknown".to_string(),
-        }
-    );
-
-    match auth_method {
-        AuthMethod::Password(password) => {
-            let auth_result = handle
-                .authenticate_password(username, &**password)
-                .await
-                .map_err(|e| {
-                    anyhow::anyhow!(
-                        "Password authentication failed for {} (user: {}): {}",
-                        host_description,
-                        username,
-                        e
-                    )
-                })?;
-
-            if !auth_result.success() {
-                anyhow::bail!(
-                    "Password authentication rejected by {} for user '{}'. \
-                     Please check the password is correct.",
-                    host_description,
-                    username
-                );
-            }
-        }
-
-        AuthMethod::PrivateKey { key_data, key_pass } => {
-            let private_key =
-                russh::keys::decode_secret_key(&key_data, key_pass.as_ref().map(|p| &***p))
-                    .map_err(|e| {
-                        anyhow::anyhow!(
-                            "Failed to decode private key for {}: {}",
-                            host_description,
-                            e
-                        )
-                    })?;
-
-            let auth_result = handle
-                .authenticate_publickey(
-                    username,
-                    russh::keys::PrivateKeyWithHashAlg::new(
-                        std::sync::Arc::new(private_key),
-                        handle.best_supported_rsa_hash().await?.flatten(),
-                    ),
-                )
-                .await
-                .map_err(|e| {
-                    anyhow::anyhow!(
-                        "Private key authentication failed for {} (user: {}): {}",
-                        host_description,
-                        username,
-                        e
-                    )
-                })?;
-
-            if !auth_result.success() {
-                anyhow::bail!(
-                    "Private key authentication rejected by {} for user '{}'. \
-                     The key may not be authorized on this host.",
-                    host_description,
-                    username
-                );
-            }
-        }
-
-        AuthMethod::PrivateKeyFile {
-            key_file_path,
-            key_pass,
-        } => {
-            let private_key =
-                russh::keys::load_secret_key(&key_file_path, key_pass.as_ref().map(|p| &***p))
-                    .map_err(|e| {
-                        anyhow::anyhow!(
-                            "Failed to load private key {:?} for {}: {}",
-                            key_file_path,
-                            host_description,
-                            e
-                        )
-                    })?;
-
-            let auth_result = handle
-                .authenticate_publickey(
-                    username,
-                    russh::keys::PrivateKeyWithHashAlg::new(
-                        std::sync::Arc::new(private_key),
-                        handle.best_supported_rsa_hash().await?.flatten(),
-                    ),
-                )
-                .await
-                .map_err(|e| {
-                    anyhow::anyhow!(
-                        "Private key file authentication failed for {} (user: {}, key: {:?}): {}",
-                        host_description,
-                        username,
-                        key_file_path,
-                        e
-                    )
-                })?;
-
-            if !auth_result.success() {
-                anyhow::bail!(
-                    "Private key file authentication rejected by {} for user '{}' (key: {:?}). \
-                     The key may not be authorized on this host.",
-                    host_description,
-                    username,
-                    key_file_path
-                );
-            }
-        }
-
-        #[cfg(not(target_os = "windows"))]
-        AuthMethod::Agent => {
-            let mut agent = russh::keys::agent::client::AgentClient::connect_env()
-                .await
-                .map_err(|e| {
-                    anyhow::anyhow!(
-                        "Failed to connect to SSH agent for {}: {}. \
-                         Check that SSH_AUTH_SOCK is set and the agent is running.",
-                        host_description,
-                        e
-                    )
-                })?;
-
-            let identities = agent.request_identities().await.map_err(|e| {
-                anyhow::anyhow!(
-                    "Failed to get identities from SSH agent for {}: {}",
-                    host_description,
-                    e
-                )
-            })?;
-
-            if identities.is_empty() {
-                anyhow::bail!(
-                    "SSH agent has no loaded keys for {} authentication. \
-                     Please add keys using 'ssh-add' or specify -i <key_file>.",
-                    host_description
-                );
-            }
-
-            let mut auth_success = false;
-            let identity_count = identities.len();
-            for identity in identities {
-                let result = handle
-                    .authenticate_publickey_with(
-                        username,
-                        identity.public_key().into_owned(),
-                        handle.best_supported_rsa_hash().await?.flatten(),
-                        &mut agent,
-                    )
-                    .await;
-
-                if let Ok(auth_result) = result
-                    && auth_result.success()
-                {
-                    auth_success = true;
-                    break;
-                }
-            }
-
-            if !auth_success {
-                anyhow::bail!(
-                    "SSH agent authentication rejected by {} for user '{}'. \
-                     Tried {} key(s) from agent. None were authorized on this host.",
-                    host_description,
-                    username,
-                    identity_count
-                );
-            }
-        }
-
-        _ => {
-            anyhow::bail!("Unsupported authentication method for {}", host_description);
-        }
-    }
-
-    Ok(())
+    crate::ssh::tokio_client::authentication::authenticate(
+        handle,
+        &username.to_string(),
+        auth_method,
+    )
+    .await
+    .with_context(|| format!("Authentication failed for {host_description} (user: {username})"))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::test_helpers::EnvGuard;
-    use std::env;
+    use russh::keys::ssh_key::LineEnding;
     use tempfile::TempDir;
 
     /// Helper to create a test JumpHost
@@ -479,57 +106,19 @@ mod tests {
     /// Helper to create a valid unencrypted test SSH key
     fn create_test_ssh_key(dir: &TempDir, name: &str) -> std::path::PathBuf {
         let key_path = dir.path().join(name);
-        // This is a valid OpenSSH private key format (test-only, not a real key)
-        let key_content = r#"-----BEGIN OPENSSH PRIVATE KEY-----
-b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
-QyNTUxOQAAACBUZXN0IGtleSBmb3IgdW5pdCB0ZXN0cyAtIG5vdCByZWFsAAAAWBAAAABU
-ZXN0IGtleSBmb3IgdW5pdCB0ZXN0cyAtIG5vdCByZWFsVGVzdCBrZXkgZm9yIHVuaXQgdG
-VzdHMgLSBub3QgcmVhbAAAAAtzczNoLWVkMjU1MTkAAAAgVGVzdCBrZXkgZm9yIHVuaXQg
-dGVzdHMgLSBub3QgcmVhbAECAwQ=
------END OPENSSH PRIVATE KEY-----"#;
-        std::fs::write(&key_path, key_content).expect("Failed to write test key");
+        let key = russh::keys::PrivateKey::random(
+            &mut rand::rng(),
+            russh::keys::ssh_key::Algorithm::Ed25519,
+        )
+        .expect("generate test key");
+        std::fs::write(
+            &key_path,
+            key.to_openssh(LineEnding::LF)
+                .expect("encode test key")
+                .as_bytes(),
+        )
+        .expect("write test key");
         key_path
-    }
-
-    /// Test: AGENT_TIMEOUT constant is properly defined
-    #[test]
-    #[cfg(not(target_os = "windows"))]
-    fn test_agent_timeout_constant() {
-        assert_eq!(AGENT_TIMEOUT, std::time::Duration::from_secs(5));
-    }
-
-    /// Test: When SSH_AUTH_SOCK is not set, agent_available should be false
-    #[tokio::test]
-    #[serial_test::serial]
-    async fn test_agent_available_false_when_no_socket() {
-        let _sock = EnvGuard::remove("SSH_AUTH_SOCK");
-
-        // Verify SSH_AUTH_SOCK is not set
-        assert!(env::var("SSH_AUTH_SOCK").is_err());
-
-        // The agent_available logic in determine_auth_method checks this
-        let agent_available = env::var("SSH_AUTH_SOCK").is_ok();
-
-        assert!(
-            !agent_available,
-            "agent_available should be false when SSH_AUTH_SOCK is not set"
-        );
-    }
-
-    /// Test: When SSH_AUTH_SOCK points to invalid path, agent_has_identities returns false
-    #[tokio::test]
-    #[cfg(not(target_os = "windows"))]
-    #[serial_test::serial]
-    async fn test_agent_has_identities_invalid_socket() {
-        // Set to a non-existent path; guard restores prior value on drop.
-        let _sock = EnvGuard::set("SSH_AUTH_SOCK", "/tmp/nonexistent_ssh_agent_socket_12345");
-
-        // agent_has_identities should return false (connection will fail)
-        let result = agent_has_identities().await;
-        assert!(
-            !result,
-            "agent_has_identities should return false for invalid socket"
-        );
     }
 
     /// Test: determine_auth_method falls back to key file when agent is unavailable
@@ -542,7 +131,6 @@ dGVzdHMgLSBub3QgcmVhbAECAwQ=
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
         let key_path = create_test_ssh_key(&temp_dir, "id_test");
         let jump_host = create_test_jump_host();
-        let auth_mutex = Mutex::new(());
 
         // With use_agent=true but no agent available, should fall back to key file
         let result = determine_auth_method(
@@ -551,76 +139,25 @@ dGVzdHMgLSBub3QgcmVhbAECAwQ=
             true,  // use_agent
             false, // use_password
             None,  // pre_collected_password
-            &auth_mutex,
+            &crate::ssh::tokio_client::SshConnectionConfig::default(),
         )
         .await;
 
         assert!(result.is_ok(), "Should succeed with key file fallback");
         let auth_method = result.unwrap();
 
-        // Should be PrivateKeyFile, not Agent
         match auth_method {
-            AuthMethod::PrivateKeyFile { .. } => {
-                // Expected - fell back to key file
+            AuthMethod::Methods(methods) => {
+                assert!(matches!(
+                    methods.first(),
+                    Some(AuthMethod::PrivateKeyFileWithPolicy { .. })
+                ));
+                assert!(matches!(
+                    methods.get(1),
+                    Some(AuthMethod::AgentWithPolicy { .. })
+                ));
             }
-            AuthMethod::Agent => {
-                panic!("Should not use Agent when SSH_AUTH_SOCK is not set");
-            }
-            other => {
-                panic!("Unexpected auth method: {:?}", other);
-            }
-        }
-    }
-
-    /// Test: determine_auth_method returns Agent when use_agent=true and agent is available
-    /// Note: This test only verifies the logic path, actual agent availability depends on environment
-    #[tokio::test]
-    #[cfg(not(target_os = "windows"))]
-    async fn test_determine_auth_method_prefers_agent_when_available() {
-        // This test checks that when agent is available, it's preferred over key files
-        // We can only test this if an actual SSH agent is running with keys
-
-        // Check if SSH agent is available with keys
-        if env::var("SSH_AUTH_SOCK").is_err() {
-            // Skip test if no agent socket
-            return;
-        }
-
-        let has_identities = agent_has_identities().await;
-        if !has_identities {
-            // Skip test if agent has no identities
-            return;
-        }
-
-        let temp_dir = TempDir::new().expect("Failed to create temp dir");
-        let key_path = create_test_ssh_key(&temp_dir, "id_test");
-        let jump_host = create_test_jump_host();
-        let auth_mutex = Mutex::new(());
-
-        let result = determine_auth_method(
-            &jump_host,
-            Some(key_path.as_path()),
-            true,  // use_agent
-            false, // use_password
-            None,  // pre_collected_password
-            &auth_mutex,
-        )
-        .await;
-
-        assert!(result.is_ok());
-        let auth_method = result.unwrap();
-
-        // Should prefer Agent over key file when agent has keys
-        match auth_method {
-            AuthMethod::Agent => {
-                // Expected - agent is available and has keys
-            }
-            AuthMethod::PrivateKeyFile { .. } => {
-                // Also acceptable if agent check happened but returned false
-            }
-            other => {
-                panic!("Unexpected auth method: {:?}", other);
-            }
+            other => panic!("Expected ordered key and agent plan, got {other:?}"),
         }
     }
 
@@ -636,21 +173,12 @@ dGVzdHMgLSBub3QgcmVhbAECAwQ=
         let ssh_dir = temp_home.path().join(".ssh");
         std::fs::create_dir_all(&ssh_dir).expect("Failed to create .ssh dir");
 
-        // Create a test key at the default location
-        let key_content = r#"-----BEGIN OPENSSH PRIVATE KEY-----
-b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
-QyNTUxOQAAACBUZXN0IGtleSBmb3IgdW5pdCB0ZXN0cyAtIG5vdCByZWFsAAAAWBAAAABU
-ZXN0IGtleSBmb3IgdW5pdCB0ZXN0cyAtIG5vdCByZWFsVGVzdCBrZXkgZm9yIHVuaXQgdG
-VzdHMgLSBub3QgcmVhbAAAAAtzczNoLWVkMjU1MTkAAAAgVGVzdCBrZXkgZm9yIHVuaXQg
-dGVzdHMgLSBub3QgcmVhbAECAwQ=
------END OPENSSH PRIVATE KEY-----"#;
-        std::fs::write(ssh_dir.join("id_ed25519"), key_content).expect("Failed to write key");
+        create_test_ssh_key(&temp_home, ".ssh/id_ed25519");
 
         // Set HOME; guard restores on drop.
         let _home = EnvGuard::set("HOME", temp_home.path());
 
         let jump_host = create_test_jump_host();
-        let auth_mutex = Mutex::new(());
 
         // No key_path provided, should try default keys
         let result = determine_auth_method(
@@ -659,7 +187,7 @@ dGVzdHMgLSBub3QgcmVhbAECAwQ=
             false, // use_agent
             false, // use_password
             None,  // pre_collected_password
-            &auth_mutex,
+            &crate::ssh::tokio_client::SshConnectionConfig::default(),
         )
         .await;
 
@@ -670,7 +198,7 @@ dGVzdHMgLSBub3QgcmVhbAECAwQ=
         let auth_method = result.unwrap();
 
         match auth_method {
-            AuthMethod::PrivateKeyFile { key_file_path, .. } => {
+            AuthMethod::PrivateKeyFileWithPolicy { key_file_path, .. } => {
                 let path_str = key_file_path.to_string_lossy();
                 assert!(
                     path_str.ends_with("id_ed25519") || path_str.contains("id_ed25519"),
@@ -688,13 +216,9 @@ dGVzdHMgLSBub3QgcmVhbAECAwQ=
     #[tokio::test]
     #[serial_test::serial]
     async fn test_determine_auth_method_fails_when_no_method_available() {
-        // Set SSH_AUTH_SOCK to an invalid path to ensure agent is "unavailable";
-        // using remove_var alone isn't reliable in parallel test execution.
-        // Guards restore prior values on drop.
-        let _sock = EnvGuard::set(
-            "SSH_AUTH_SOCK",
-            "/nonexistent/path/to/agent/socket/test_12345",
-        );
+        // This serial test removes SSH_AUTH_SOCK so the lazy planner has no
+        // ambient agent candidate. The guard restores the original value.
+        let _sock = EnvGuard::remove("SSH_AUTH_SOCK");
 
         // Create a temporary HOME directory without any SSH keys
         let temp_home = TempDir::new().expect("Failed to create temp home");
@@ -705,7 +229,6 @@ dGVzdHMgLSBub3QgcmVhbAECAwQ=
         let _home = EnvGuard::set("HOME", temp_home.path());
 
         let jump_host = create_test_jump_host();
-        let auth_mutex = Mutex::new(());
 
         // No working agent, no key_path, no default keys - should fail
         let result = determine_auth_method(
@@ -714,76 +237,12 @@ dGVzdHMgLSBub3QgcmVhbAECAwQ=
             false, // use_agent=false means don't try agent first
             false, // use_password
             None,  // pre_collected_password
-            &auth_mutex,
+            &crate::ssh::tokio_client::SshConnectionConfig::default(),
         )
         .await;
 
-        // Now check the result
-        // Note: Due to race conditions with parallel tests and environment variables,
-        // the function may find keys from the real HOME directory before the env var
-        // change takes effect. We accept the following outcomes:
-        // 1. Error - expected when no auth method is available
-        // 2. Agent - if agent check succeeded before env var change
-        // 3. PrivateKeyFile - if HOME wasn't properly isolated
-        match result {
-            Err(e) => {
-                let error_msg = e.to_string();
-                assert!(
-                    error_msg.contains("No authentication method available"),
-                    "Error should mention no auth method available: {error_msg}"
-                );
-            }
-            Ok(AuthMethod::Agent) | Ok(AuthMethod::PrivateKeyFile { .. }) => {
-                // This can happen if agent check or key lookup succeeded before
-                // env var change took effect due to caching or race conditions.
-                // Accept this as valid in test environment.
-            }
-            Ok(other) => {
-                panic!(
-                    "Expected error, Agent, or PrivateKeyFile auth method, got {:?}",
-                    other
-                );
-            }
-        }
-    }
-
-    /// Test: Agent identity caching - verify agent is only queried once
-    /// This is a design verification test documenting expected behavior
-    #[test]
-    fn test_agent_caching_design() {
-        // The determine_auth_method function caches agent_available at the start
-        // and reuses it for:
-        // 1. Line 112: if use_agent && agent_available
-        // 2. Line 154: if agent_available (fallback)
-        //
-        // This ensures the agent is queried only once per determine_auth_method call,
-        // avoiding redundant socket connections and protocol handshakes.
-
-        // This test documents the expected behavior - actual caching is verified
-        // by code review and the fact that agent_has_identities() is called once
-        // at the start of determine_auth_method() and stored in agent_available.
-    }
-
-    /// Test: Timeout is properly applied to agent operations
-    #[test]
-    #[cfg(not(target_os = "windows"))]
-    fn test_timeout_design() {
-        // The agent_has_identities() function wraps agent operations in
-        // tokio::time::timeout(AGENT_TIMEOUT, ...) to ensure:
-        // 1. Connection to agent doesn't hang indefinitely
-        // 2. Identity request doesn't hang indefinitely
-        // 3. If timeout occurs, function returns false (graceful fallback)
-        //
-        // AGENT_TIMEOUT is set to 5 seconds, which is reasonable for:
-        // - Normal agent responses (typically < 100ms)
-        // - Hardware token prompts (user has time to respond)
-        // - Dead/unresponsive agents (won't block forever)
-
-        assert_eq!(
-            AGENT_TIMEOUT,
-            std::time::Duration::from_secs(5),
-            "Timeout should be 5 seconds"
-        );
+        let error = result.expect_err("isolated HOME and invalid agent must have no method");
+        assert!(error.to_string().contains("Permission denied"));
     }
 
     /// Test: Jump host's own ssh_key takes priority over cluster key_path
@@ -810,8 +269,6 @@ dGVzdHMgLSBub3QgcmVhbAECAwQ=
             Some(jump_key_str.clone()),
         );
 
-        let auth_mutex = Mutex::new(());
-
         // Call determine_auth_method with both jump host key and cluster key
         let result = determine_auth_method(
             &jump_host,
@@ -819,7 +276,7 @@ dGVzdHMgLSBub3QgcmVhbAECAwQ=
             false,                            // use_agent
             false,                            // use_password
             None,                             // pre_collected_password
-            &auth_mutex,
+            &crate::ssh::tokio_client::SshConnectionConfig::default(),
         )
         .await;
 
@@ -828,7 +285,7 @@ dGVzdHMgLSBub3QgcmVhbAECAwQ=
 
         // Verify it used the jump host's key, not the cluster key
         match auth_method {
-            AuthMethod::PrivateKeyFile { key_file_path, .. } => {
+            AuthMethod::PrivateKeyFileWithPolicy { key_file_path, .. } => {
                 let path_str = key_file_path.to_string_lossy();
                 assert!(
                     path_str.contains("jump_host_key"),
@@ -862,15 +319,13 @@ dGVzdHMgLSBub3QgcmVhbAECAwQ=
             Some(22),
         );
 
-        let auth_mutex = Mutex::new(());
-
         let result = determine_auth_method(
             &jump_host,
             Some(cluster_key_path.as_path()),
             false,
             false,
             None, // pre_collected_password
-            &auth_mutex,
+            &crate::ssh::tokio_client::SshConnectionConfig::default(),
         )
         .await;
 
@@ -879,7 +334,7 @@ dGVzdHMgLSBub3QgcmVhbAECAwQ=
 
         // Verify it used the cluster key
         match auth_method {
-            AuthMethod::PrivateKeyFile { key_file_path, .. } => {
+            AuthMethod::PrivateKeyFileWithPolicy { key_file_path, .. } => {
                 let path_str = key_file_path.to_string_lossy();
                 assert!(
                     path_str.contains("cluster_key"),

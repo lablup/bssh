@@ -33,7 +33,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
 use tracing::{debug, info, warn};
 
 /// Manages SSH jump host chains for establishing connections
@@ -66,9 +66,6 @@ pub struct JumpHostChain {
     max_idle_time: Duration,
     /// Maximum connection age before forced renewal (default: 30 minutes)
     max_connection_age: Duration,
-    /// Mutex to serialize authentication prompts
-    /// SECURITY: Prevents credential prompt race conditions with multiple jump hosts
-    auth_mutex: Arc<Mutex<()>>,
     /// SSH connection configuration (keepalive settings)
     ssh_connection_config: SshConnectionConfig,
     /// Per-host SSH connection configuration resolver.
@@ -76,8 +73,7 @@ pub struct JumpHostChain {
     /// Pre-collected SSH password (from the dispatcher's single up-front prompt).
     /// When `use_password` is set on a per-call basis, this is consumed by every
     /// jump-host auth step instead of prompting per-call, which would otherwise
-    /// race N parallel auth tasks (serialized by `auth_mutex`) into N separate
-    /// prompts. See issue #200.
+    /// race N parallel auth tasks into N separate prompts. See issue #200.
     ssh_password: Option<Arc<Password>>,
 }
 
@@ -113,7 +109,6 @@ impl JumpHostChain {
             rate_limiter: ConnectionRateLimiter::new(),
             max_idle_time: Duration::from_secs(300), // 5 minutes
             max_connection_age: Duration::from_secs(1800), // 30 minutes
-            auth_mutex: Arc::new(Mutex::new(())),
             ssh_connection_config: SshConnectionConfig::default(),
             ssh_connection_config_resolver: None,
             ssh_password: None,
@@ -321,7 +316,6 @@ impl JumpHostChain {
                 dest_strict_mode.unwrap_or(StrictHostKeyChecking::AcceptNew),
                 self.connect_timeout,
                 &self.rate_limiter,
-                &self.auth_mutex,
                 &ssh_connection_config,
             )
             .await
@@ -419,7 +413,7 @@ impl JumpHostChain {
             use_agent,
             use_password,
             self.ssh_password.clone(),
-            &self.auth_mutex,
+            &ssh_connection_config,
         )
         .await?;
         let check_method = crate::ssh::known_hosts::get_check_method_for_target(

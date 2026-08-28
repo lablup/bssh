@@ -31,7 +31,7 @@ use bssh::{
     security::{Password, get_password, get_sudo_password},
     ssh::{
         CliTtyMode, SessionPolicy, SessionRequest,
-        tokio_client::{AddressFamily, SshConnectionConfigResolver},
+        tokio_client::{AddressFamily, ProxyMode, SshConnectionConfigResolver},
     },
 };
 use std::io::IsTerminal;
@@ -60,6 +60,7 @@ fn build_ssh_connection_config_resolver(
 ) -> SshConnectionConfigResolver {
     SshConnectionConfigResolver::new()
         .with_ssh_config(Some(ctx.ssh_config.clone()))
+        .with_cli_identity_files(cli.identity.clone())
         .with_cli_keepalive_interval(cli.server_alive_interval)
         .with_cli_keepalive_max(cli.server_alive_count_max)
         .with_yaml_keepalive_interval(ctx.config.get_server_alive_interval(cluster_name))
@@ -102,6 +103,45 @@ fn ssh_password_is_applicable(command: &Option<Commands>) -> bool {
         command,
         Some(Commands::List) | Some(Commands::CacheStats { .. })
     )
+}
+
+fn all_targets_use_batch_mode(resolver: &SshConnectionConfigResolver, hosts: &[&str]) -> bool {
+    !hosts.is_empty()
+        && hosts
+            .iter()
+            .all(|host| resolver.resolve_for_host(host).auth_policy.batch_mode)
+}
+
+fn effective_authentication_targets(
+    resolver: &SshConnectionConfigResolver,
+    destinations: &[String],
+) -> Result<Vec<String>> {
+    let mut targets = destinations.to_vec();
+    for destination in destinations {
+        let Some(ProxyMode::Jump(jump_spec)) = resolver.resolve_for_host(destination).proxy_mode
+        else {
+            // ProxyCommand is an external carrier, not an SSH authentication
+            // hop owned by bssh, and Direct adds no target.
+            continue;
+        };
+        targets.extend(
+            bssh::jump::parse_jump_hosts(&jump_spec)?
+                .into_iter()
+                .map(|jump_host| jump_host.host),
+        );
+    }
+    Ok(targets)
+}
+
+fn collect_ssh_password_with<F>(collect: bool, prompt: F) -> Result<Option<Arc<Password>>>
+where
+    F: FnOnce() -> Result<Password>,
+{
+    if collect {
+        prompt().map(|password| Some(Arc::new(password)))
+    } else {
+        Ok(None)
+    }
 }
 
 /// Human-readable name of the currently-dispatched subcommand for diagnostics.
@@ -158,32 +198,43 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<i32> {
         );
     }
 
-    // Hoist `--password` collection: prompt ONCE here, before any per-node
-    // SSH connection task is spawned and before the indicatif progress UI is
-    // rendered. Previously this prompt was issued inside each parallel auth
-    // task (see `ssh/auth.rs::password_auth()`), which interleaved with the
-    // progress bar and could fan out N concurrent stdin reads. Collecting
-    // here mirrors what `-S` (`SudoPassword`) does and is the entire point
-    // of issue #200.
-    //
-    // The returned value is wrapped in `Arc<Password>` so cloning across
-    // per-node tasks does not duplicate the underlying secret; on drop, the
-    // memory is zeroized by `secrecy::SecretString`.
-    let ssh_password: Option<Arc<Password>> =
-        if cli.password && ssh_password_is_applicable(&cli.command) {
-            Some(Arc::new(get_password(true).map_err(|e| {
-                anyhow::anyhow!("Failed to collect SSH password: {e}")
-            })?))
-        } else {
-            None
-        };
-
-    // Calculate hostname for SSH config integration
+    // Calculate hostname for SSH config integration before deciding whether an
+    // up-front password prompt is permitted by every actual target policy.
     let hostname_for_ssh_config = if cli.is_ssh_mode() {
         cli.parse_destination().map(|(_, host, _)| host)
     } else {
         None
     };
+    let password_policy_resolver = build_ssh_connection_config_resolver(
+        cli,
+        ctx,
+        ctx.cluster_name.as_deref().or(cli.cluster.as_deref()),
+    );
+    let mut password_destinations = ctx
+        .nodes
+        .iter()
+        .map(|node| node.config_host().to_string())
+        .collect::<Vec<_>>();
+    if password_destinations.is_empty()
+        && let Some(host) = hostname_for_ssh_config.as_ref()
+    {
+        password_destinations.push(host.clone());
+    }
+    let collect_password = if cli.password && ssh_password_is_applicable(&cli.command) {
+        let password_targets =
+            effective_authentication_targets(&password_policy_resolver, &password_destinations)?;
+        let password_target_refs = password_targets
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>();
+        !all_targets_use_batch_mode(&password_policy_resolver, &password_target_refs)
+    } else {
+        false
+    };
+    let ssh_password = collect_ssh_password_with(collect_password, || {
+        get_password(true)
+            .map_err(|error| anyhow::anyhow!("Failed to collect SSH password: {error}"))
+    })?;
 
     match &cli.command {
         Some(Commands::List) => {
@@ -812,5 +863,71 @@ mod tests {
             clear: false,
             maintain: false,
         })));
+    }
+
+    #[test]
+    fn batch_mode_target_set_controls_password_collection_exactly_once() {
+        let all_batch =
+            bssh::ssh::SshConfig::parse("Host one two jump\n    BatchMode yes\n").unwrap();
+        let resolver = SshConnectionConfigResolver::new().with_ssh_config(Some(all_batch));
+        assert!(all_targets_use_batch_mode(
+            &resolver,
+            &["one", "two", "jump"]
+        ));
+        let calls = std::cell::Cell::new(0);
+        let password = collect_ssh_password_with(false, || {
+            calls.set(calls.get() + 1);
+            Password::new("secret".to_string())
+        })
+        .unwrap();
+        assert!(password.is_none());
+        assert_eq!(calls.get(), 0);
+
+        let mixed = bssh::ssh::SshConfig::parse(
+            "Host batch\n    BatchMode yes\nHost interactive\n    BatchMode no\n",
+        )
+        .unwrap();
+        let resolver = SshConnectionConfigResolver::new().with_ssh_config(Some(mixed));
+        assert!(!all_targets_use_batch_mode(
+            &resolver,
+            &["batch", "interactive"]
+        ));
+        let password = collect_ssh_password_with(true, || {
+            calls.set(calls.get() + 1);
+            Password::new("secret".to_string())
+        })
+        .unwrap();
+        assert!(password.is_some());
+        assert_eq!(calls.get(), 1);
+    }
+
+    #[test]
+    fn effective_proxy_jump_hops_participate_in_batch_mode_prompt_policy() {
+        let mixed = bssh::ssh::SshConfig::parse(
+            "Host target\n    BatchMode yes\n    ProxyJump jump\nHost jump\n    BatchMode no\n",
+        )
+        .unwrap();
+        let resolver = SshConnectionConfigResolver::new().with_ssh_config(Some(mixed));
+        let targets = effective_authentication_targets(&resolver, &["target".into()]).unwrap();
+        assert_eq!(targets, ["target", "jump"]);
+        let refs = targets.iter().map(String::as_str).collect::<Vec<_>>();
+        assert!(!all_targets_use_batch_mode(&resolver, &refs));
+
+        let all_batch = bssh::ssh::SshConfig::parse(
+            "Host target\n    BatchMode yes\n    ProxyJump jump\nHost jump\n    BatchMode yes\n",
+        )
+        .unwrap();
+        let resolver = SshConnectionConfigResolver::new().with_ssh_config(Some(all_batch));
+        let targets = effective_authentication_targets(&resolver, &["target".into()]).unwrap();
+        let refs = targets.iter().map(String::as_str).collect::<Vec<_>>();
+        assert!(all_targets_use_batch_mode(&resolver, &refs));
+
+        let proxy_command = bssh::ssh::SshConfig::parse(
+            "Host target\n    BatchMode yes\n    ProxyCommand ssh jump nc %h %p\nHost jump\n    BatchMode no\n",
+        )
+        .unwrap();
+        let resolver = SshConnectionConfigResolver::new().with_ssh_config(Some(proxy_command));
+        let targets = effective_authentication_targets(&resolver, &["target".into()]).unwrap();
+        assert_eq!(targets, ["target"]);
     }
 }

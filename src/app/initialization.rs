@@ -301,22 +301,14 @@ pub fn determine_strict_host_key_checking(
 pub fn determine_ssh_key_path(
     cli: &Cli,
     config: &Config,
-    ssh_config: &SshConfig,
-    hostname: Option<&str>,
+    _ssh_config: &SshConfig,
+    _hostname: Option<&str>,
     cluster_name: Option<&str>,
 ) -> Option<PathBuf> {
-    // CLI identity file takes highest precedence
-    if let Some(identity) = &cli.identity {
+    // CLI identity files take highest precedence. The remaining CLI keys and
+    // all ssh_config IdentityFile entries stay in the ordered runtime policy.
+    if let Some(identity) = cli.identity.first() {
         return Some(identity.clone());
-    }
-
-    // SSH config identity files (for specific hostname if available)
-    if let Some(host) = hostname {
-        let identity_files = ssh_config.get_identity_files(host);
-        if !identity_files.is_empty() {
-            // Return the first identity file from SSH config
-            return Some(identity_files[0].clone());
-        }
     }
 
     // Cluster configuration SSH key

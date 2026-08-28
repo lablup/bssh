@@ -81,7 +81,6 @@ pub(super) async fn connect_through_tunnel(
     strict_mode: StrictHostKeyChecking,
     connect_timeout: std::time::Duration,
     rate_limiter: &ConnectionRateLimiter,
-    auth_mutex: &tokio::sync::Mutex<()>,
     ssh_connection_config: &SshConnectionConfig,
 ) -> Result<Client> {
     debug!(
@@ -131,7 +130,7 @@ pub(super) async fn connect_through_tunnel(
         use_agent,
         use_password,
         pre_collected_password,
-        auth_mutex,
+        ssh_connection_config,
     )
     .await?;
 

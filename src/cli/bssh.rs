@@ -81,9 +81,10 @@ pub struct Cli {
     #[arg(
         short = 'i',
         long,
-        help = "SSH private key file path (prompts for passphrase if encrypted)\nAutomatically detects encrypted keys and prompts for passphrase\nFalls back to default keys (~/.ssh/id_ed25519, ~/.ssh/id_rsa, etc.) if not specified"
+        action = clap::ArgAction::Append,
+        help = "SSH private key file path (repeatable; prompts for passphrase if encrypted)\nAutomatically detects encrypted keys and prompts for passphrase\nFalls back to default keys (~/.ssh/id_ed25519, ~/.ssh/id_rsa, etc.) if not specified"
     )]
-    pub identity: Option<PathBuf>,
+    pub identity: Vec<PathBuf>,
 
     #[arg(
         short = 'A',
@@ -706,6 +707,17 @@ impl Cli {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn identity_flag_is_repeatable_and_preserves_order() {
+        let cli =
+            Cli::try_parse_from(["bssh", "-i", "first-key", "-i", "second-key", "target"]).unwrap();
+
+        assert_eq!(
+            cli.identity,
+            [PathBuf::from("first-key"), PathBuf::from("second-key")]
+        );
+    }
 
     #[test]
     fn ssh_option_lookup_is_case_insensitive_and_first_value_wins() {

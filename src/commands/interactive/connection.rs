@@ -90,6 +90,8 @@ impl InteractiveCommand {
         let result = match result {
             Err(ref err)
                 if allow_password_fallback
+                    && !ssh_config.auth_policy.batch_mode
+                    && ssh_config.auth_policy.method_enabled("password")
                     && io::stdin().is_terminal()
                     && is_auth_error_for_password_fallback(err) =>
             {
@@ -178,6 +180,7 @@ impl InteractiveCommand {
             .with_password(self.use_password)
             .with_password_fallback(!self.use_password) // Enable fallback only if not using explicit password
             .with_pre_collected_password(self.ssh_password.clone());
+        auth_ctx = auth_ctx.with_policy(self.ssh_connection_config.auth_policy.clone());
 
         // Set macOS Keychain integration if available
         #[cfg(target_os = "macos")]

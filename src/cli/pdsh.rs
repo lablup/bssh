@@ -300,7 +300,7 @@ impl PdshCli {
             filter: None,
             cluster: None,
             config: PathBuf::from("~/.config/bssh/config.yaml"),
-            identity: None,
+            identity: Vec::new(),
             use_agent: false,
             password: false,
             sudo_password: false,

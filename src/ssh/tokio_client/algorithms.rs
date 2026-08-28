@@ -225,8 +225,15 @@ fn public_key_names(algorithms: &[Algorithm]) -> Vec<String> {
         .collect()
 }
 
+pub(crate) fn default_pubkey_algorithms() -> Vec<String> {
+    public_key_names(russh::Preferred::DEFAULT.key.as_ref())
+        .into_iter()
+        .filter(|name| name != "ssh-rsa" && name != "ssh-rsa-cert-v01@openssh.com")
+        .collect()
+}
+
 pub(crate) fn resolve_pubkey_algorithms(values: &[String]) -> Result<Vec<String>, String> {
-    let defaults = public_key_names(russh::Preferred::DEFAULT.key.as_ref());
+    let defaults = default_pubkey_algorithms();
     let supported = public_key_names(&supported_key_algorithms());
     resolve_policy(
         "public key signature algorithm",
@@ -286,6 +293,15 @@ mod tests {
                 "rsa-sha2-256"
             ]
         );
+
+        let defaults = default_pubkey_algorithms();
+        assert!(defaults.contains(&"rsa-sha2-512".to_string()));
+        assert!(defaults.contains(&"rsa-sha2-256".to_string()));
+        assert!(!defaults.contains(&"ssh-rsa".to_string()));
+        assert!(!defaults.contains(&"ssh-rsa-cert-v01@openssh.com".to_string()));
+
+        let sha1_opt_in = resolve_pubkey_algorithms(&[String::from("+ssh-rsa")]).unwrap();
+        assert_eq!(sha1_opt_in.last().map(String::as_str), Some("ssh-rsa"));
     }
 
     #[test]
@@ -334,7 +350,7 @@ mod tests {
 
     #[test]
     fn pubkey_modifiers_use_defaults_as_the_base_and_all_supported_as_candidates() {
-        let defaults = public_key_names(russh::Preferred::DEFAULT.key.as_ref());
+        let defaults = default_pubkey_algorithms();
 
         let appended = resolve_pubkey_algorithms(&[String::from("+ssh-rsa")]).unwrap();
         assert!(!defaults.iter().any(|algorithm| algorithm == "ssh-rsa"));

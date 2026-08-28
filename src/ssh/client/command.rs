@@ -102,6 +102,7 @@ impl SshClient {
                 #[cfg(target_os = "macos")]
                 config.use_keychain,
                 config.ssh_password.clone(),
+                config.ssh_connection_config,
             )
             .await?;
 
@@ -237,6 +238,7 @@ impl SshClient {
                 #[cfg(target_os = "macos")]
                 config.use_keychain,
                 config.ssh_password.clone(),
+                config.ssh_connection_config,
             )
             .await?;
 
@@ -378,6 +380,7 @@ impl SshClient {
                 #[cfg(target_os = "macos")]
                 config.use_keychain,
                 config.ssh_password.clone(),
+                config.ssh_connection_config,
             )
             .await?;
 
