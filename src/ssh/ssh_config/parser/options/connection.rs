@@ -17,6 +17,7 @@
 //! Handles connection-related configuration options including keepalive
 //! settings, timeouts, compression, and network settings.
 
+use crate::ssh::ssh_config::IpQosPolicy;
 use crate::ssh::ssh_config::parser::helpers::parse_yes_no;
 use crate::ssh::ssh_config::types::SshHostConfig;
 use anyhow::{Context, Result};
@@ -165,117 +166,12 @@ pub(super) fn parse_connection_option(
             if args.is_empty() {
                 anyhow::bail!("IPQoS requires a value at line {line_number}");
             }
-            // IPQoS can have one or two values (interactive and bulk)
-            // Valid values are: af11-af43, cs0-cs7, ef, lowdelay, throughput, reliability, or numeric (0-63 for DSCP, 0-255 for ToS)
-            if args.len() > 2 {
-                anyhow::bail!(
-                    "IPQoS at line {} accepts at most 2 values (interactive and bulk), got {}",
-                    line_number,
-                    args.len()
-                );
+            if args.iter().any(|value| value.len() > 20) {
+                anyhow::bail!("IPQoS value at line {line_number} is too long");
             }
-
-            // Validate each QoS value
-            let valid_qos_values = [
-                "af11",
-                "af12",
-                "af13",
-                "af21",
-                "af22",
-                "af23",
-                "af31",
-                "af32",
-                "af33",
-                "af41",
-                "af42",
-                "af43",
-                "cs0",
-                "cs1",
-                "cs2",
-                "cs3",
-                "cs4",
-                "cs5",
-                "cs6",
-                "cs7",
-                "ef",
-                "lowdelay",
-                "throughput",
-                "reliability",
-                "none",
-            ];
-
-            // Additional mappings for common aliases
-            let qos_aliases = [
-                ("expedited", "ef"),
-                ("assured", "af11"),
-                ("besteffort", "cs0"),
-                ("background", "cs1"),
-            ];
-
-            for value in args {
-                // Check if it's a known QoS value or alias
-                let lower_value = value.to_lowercase();
-                let normalized = qos_aliases
-                    .iter()
-                    .find(|(alias, _)| *alias == lower_value.as_str())
-                    .map(|(_, canonical)| *canonical)
-                    .unwrap_or(lower_value.as_str());
-
-                if !valid_qos_values.contains(&normalized) {
-                    // Check if it's a numeric value
-                    match value.parse::<u8>() {
-                        Ok(num) => {
-                            // DSCP values are 0-63 (6 bits)
-                            // ToS values are 0-255 (8 bits) but only certain values are valid
-                            if num > 63 {
-                                // If it's a ToS value (0-255), check if it's a valid one
-                                // Valid ToS values: 0x10 (lowdelay), 0x08 (throughput), 0x04 (reliability)
-                                let valid_tos = [0x00, 0x04, 0x08, 0x10, 0xff];
-                                if !valid_tos.contains(&num) {
-                                    tracing::warn!(
-                                        "IPQoS value '{}' ({:#04x}) at line {} is not a standard DSCP (0-63) or ToS value",
-                                        value,
-                                        num,
-                                        line_number
-                                    );
-                                }
-                            }
-                        }
-                        Err(_) => {
-                            // Check for hex notation (0x prefix)
-                            if value.starts_with("0x") || value.starts_with("0X") {
-                                if let Ok(num) = u8::from_str_radix(&value[2..], 16) {
-                                    if num > 63 && ![0x00, 0x04, 0x08, 0x10, 0xff].contains(&num) {
-                                        tracing::warn!(
-                                            "IPQoS hex value '{}' at line {} is outside standard ranges",
-                                            value,
-                                            line_number
-                                        );
-                                    }
-                                } else {
-                                    anyhow::bail!(
-                                        "IPQoS value '{value}' at line {line_number} is not a valid hexadecimal number"
-                                    );
-                                }
-                            } else {
-                                anyhow::bail!(
-                                    "IPQoS value '{value}' at line {line_number} is not valid. \
-                                     Valid values are: af11-af43, cs0-cs7, ef, lowdelay, throughput, \
-                                     reliability, none, or numeric (0-63 for DSCP, specific ToS values)"
-                                );
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Limit total length to prevent memory exhaustion
-            let combined = args.join(" ");
-            if combined.len() > 100 {
-                anyhow::bail!("IPQoS value at line {line_number} is too long (max 100 characters)");
-            }
-
-            host.ipqos = Some(combined);
+            host.ipqos = Some(IpQosPolicy::parse(args).map_err(|error| {
+                anyhow::anyhow!("Invalid IPQoS value at line {line_number}: {error}")
+            })?);
         }
         "rekeylimit" => {
             if args.is_empty() {

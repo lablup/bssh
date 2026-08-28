@@ -25,6 +25,7 @@ use super::connection::JumpHostConnection;
 use super::parser::{JumpHost, get_max_jump_hosts};
 use super::rate_limiter::ConnectionRateLimiter;
 use crate::security::Password;
+use crate::ssh::SessionPurpose;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
 use crate::ssh::tokio_client::{
     AuthMethod, Error as SshError, SshConnectionConfig, SshConnectionConfigResolver,
@@ -70,6 +71,8 @@ pub struct JumpHostChain {
     ssh_connection_config: SshConnectionConfig,
     /// Per-host SSH connection configuration resolver.
     ssh_connection_config_resolver: Option<SshConnectionConfigResolver>,
+    /// Traffic profile propagated to every direct socket in the chain.
+    session_purpose: SessionPurpose,
     /// Pre-collected SSH password (from the dispatcher's single up-front prompt).
     /// When `use_password` is set on a per-call basis, this is consumed by every
     /// jump-host auth step instead of prompting per-call, which would otherwise
@@ -111,6 +114,7 @@ impl JumpHostChain {
             max_connection_age: Duration::from_secs(1800), // 30 minutes
             ssh_connection_config: SshConnectionConfig::default(),
             ssh_connection_config_resolver: None,
+            session_purpose: SessionPurpose::Bulk,
             ssh_password: None,
         }
     }
@@ -143,11 +147,18 @@ impl JumpHostChain {
         self
     }
 
+    #[must_use]
+    pub fn with_session_purpose(mut self, purpose: SessionPurpose) -> Self {
+        self.session_purpose = purpose;
+        self
+    }
+
     fn connection_config_for_host(&self, host: &str) -> SshConnectionConfig {
         self.ssh_connection_config_resolver
             .as_ref()
             .map(|resolver| resolver.resolve_for_host(host))
             .unwrap_or_else(|| self.ssh_connection_config.clone())
+            .with_session_purpose(self.session_purpose)
     }
 
     /// Create a direct connection chain (no jump hosts)

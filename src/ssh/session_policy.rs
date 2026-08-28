@@ -41,6 +41,14 @@ pub enum CliTtyMode {
     Disable,
 }
 
+/// Traffic profile used by transport options such as `IPQoS`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SessionPurpose {
+    Interactive,
+    #[default]
+    Bulk,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SessionRequest {
     Exec(String),
@@ -74,6 +82,15 @@ struct TokenContext {
 }
 
 impl SessionPolicy {
+    #[must_use]
+    pub fn purpose(&self) -> SessionPurpose {
+        if self.request_pty {
+            SessionPurpose::Interactive
+        } else {
+            SessionPurpose::Bulk
+        }
+    }
+
     pub fn resolve(
         config: &SshHostConfig,
         node: &Node,

@@ -147,6 +147,9 @@ impl SshClient {
                 config.ssh_connection_config,
                 config.ssh_connection_config_resolver,
                 config.ssh_password.clone(),
+                config
+                    .session_policy
+                    .map_or(crate::ssh::SessionPurpose::Bulk, |policy| policy.purpose()),
             )
             .await?;
 
@@ -284,6 +287,9 @@ impl SshClient {
                 config.ssh_connection_config,
                 config.ssh_connection_config_resolver,
                 config.ssh_password.clone(),
+                config
+                    .session_policy
+                    .map_or(crate::ssh::SessionPurpose::Bulk, |policy| policy.purpose()),
             )
             .await?;
 
@@ -427,6 +433,9 @@ impl SshClient {
                 config.ssh_connection_config,
                 config.ssh_connection_config_resolver,
                 config.ssh_password.clone(),
+                config
+                    .session_policy
+                    .map_or(crate::ssh::SessionPurpose::Bulk, |policy| policy.purpose()),
             )
             .await?;
 

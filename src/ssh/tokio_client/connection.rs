@@ -19,7 +19,7 @@
 
 use russh::client::{Config, DisconnectReason, Handle, Handler};
 use std::borrow::Cow;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{
     Arc, Mutex,
@@ -36,7 +36,8 @@ use super::proxy_command::{
 };
 use crate::forwarding::remote::RemoteForwardRegistry;
 use crate::forwarding::{ForwardingDirective, ForwardingPlan, ForwardingRuntime};
-use crate::ssh::SshConfig;
+use crate::ssh::ssh_config::{IpQosPolicy, IpQosValue};
+use crate::ssh::{SessionPurpose, SshConfig};
 
 /// Default keepalive interval in seconds.
 ///
@@ -112,6 +113,18 @@ pub struct SshConnectionConfig {
     /// This is independent from SSH protocol keepalives.
     pub tcp_keep_alive: bool,
 
+    /// Optional local address selected by ssh_config `BindAddress`.
+    pub bind_address: Option<String>,
+
+    /// Optional local interface selected by ssh_config `BindInterface`.
+    pub bind_interface: Option<String>,
+
+    /// Interactive and bulk socket traffic classes selected by `IPQoS`.
+    pub ip_qos: IpQosPolicy,
+
+    /// Which side of the `IPQoS` policy applies to this connection.
+    pub session_purpose: SessionPurpose,
+
     /// Raw `UserKnownHostsFile` values selected for this host.
     ///
     /// They stay unexpanded until the connection target supplies `%h`, `%p`,
@@ -158,6 +171,10 @@ impl Default for SshConnectionConfig {
             address_family: AddressFamily::Any,
             connection_attempts: 1,
             tcp_keep_alive: true,
+            bind_address: None,
+            bind_interface: None,
+            ip_qos: IpQosPolicy::default(),
+            session_purpose: SessionPurpose::Bulk,
             user_known_hosts_files: None,
             global_known_hosts_files: None,
             host_key_alias: None,
@@ -361,6 +378,16 @@ impl SshConnectionConfigResolver {
             .as_ref()
             .and_then(|config| config.tcp_keep_alive)
             .unwrap_or(true);
+        let bind_address = host_config
+            .as_ref()
+            .and_then(|config| config.bind_address.clone());
+        let bind_interface = host_config
+            .as_ref()
+            .and_then(|config| config.bind_interface.clone());
+        let ip_qos = host_config
+            .as_ref()
+            .and_then(|config| config.ipqos)
+            .unwrap_or_default();
         let user_known_hosts_files = host_config
             .as_ref()
             .and_then(|config| config.user_known_hosts_file.clone());
@@ -537,6 +564,8 @@ impl SshConnectionConfigResolver {
             .with_address_family(address_family)
             .with_connection_attempts(connection_attempts)
             .with_tcp_keep_alive(tcp_keep_alive)
+            .with_source_binding(bind_address, bind_interface)
+            .with_ip_qos(ip_qos)
             .with_known_hosts_files(user_known_hosts_files, global_known_hosts_files)
             .with_host_key_alias(host_key_alias)
             .with_known_host_policy(
@@ -712,6 +741,41 @@ impl SshConnectionConfig {
         self
     }
 
+    /// Set the local source address/interface policy for direct TCP carriers.
+    #[must_use]
+    pub fn with_source_binding(
+        mut self,
+        bind_address: Option<String>,
+        bind_interface: Option<String>,
+    ) -> Self {
+        self.bind_address = bind_address;
+        self.bind_interface = bind_interface;
+        self
+    }
+
+    /// Set the interactive/bulk traffic-class policy.
+    #[must_use]
+    pub fn with_ip_qos(mut self, ip_qos: IpQosPolicy) -> Self {
+        self.ip_qos = ip_qos;
+        self
+    }
+
+    /// Select which side of the traffic-class policy applies to this session.
+    #[must_use]
+    pub fn with_session_purpose(mut self, purpose: SessionPurpose) -> Self {
+        self.session_purpose = purpose;
+        self
+    }
+
+    /// Select the traffic class that applies to this connection's session.
+    #[must_use]
+    pub fn selected_ip_qos(&self) -> IpQosValue {
+        match self.session_purpose {
+            SessionPurpose::Interactive => self.ip_qos.interactive,
+            SessionPurpose::Bulk => self.ip_qos.bulk,
+        }
+    }
+
     #[must_use]
     pub fn with_proxy_mode(mut self, proxy_mode: Option<ProxyMode>) -> Self {
         self.proxy_mode = proxy_mode;
@@ -875,6 +939,294 @@ pub(super) fn configure_tcp_keepalive(
     Ok(())
 }
 
+fn socket_family(address: SocketAddr) -> &'static str {
+    if address.is_ipv4() { "IPv4" } else { "IPv6" }
+}
+
+pub(super) fn resolve_bind_address(
+    bind_address: &str,
+    destination: SocketAddr,
+) -> Result<SocketAddr, super::Error> {
+    let family = socket_family(destination);
+    let resolved =
+        std::net::ToSocketAddrs::to_socket_addrs(&(bind_address, 0)).map_err(|source| {
+            super::Error::BindAddressResolution {
+                bind_address: bind_address.to_string(),
+                family,
+                source,
+            }
+        })?;
+    resolved
+        .into_iter()
+        .find(|source| source.is_ipv4() == destination.is_ipv4())
+        .ok_or_else(|| super::Error::BindAddressFamily {
+            bind_address: bind_address.to_string(),
+            family,
+            destination,
+        })
+}
+
+#[cfg(unix)]
+pub(super) fn resolve_interface_address(
+    interface: &str,
+    destination: SocketAddr,
+) -> Result<SocketAddr, super::Error> {
+    struct InterfaceAddresses(*mut libc::ifaddrs);
+    impl Drop for InterfaceAddresses {
+        fn drop(&mut self) {
+            if !self.0.is_null() {
+                // SAFETY: the pointer is initialized only by a successful
+                // getifaddrs call and is freed exactly once by this guard.
+                unsafe { libc::freeifaddrs(self.0) };
+            }
+        }
+    }
+
+    let family = socket_family(destination);
+    let mut raw_addresses = std::ptr::null_mut();
+    // SAFETY: getifaddrs initializes the out pointer on success. The guard
+    // owns the resulting list for the rest of this function.
+    if unsafe { libc::getifaddrs(&mut raw_addresses) } != 0 {
+        return Err(super::Error::BindInterface {
+            interface: interface.to_string(),
+            family,
+            source: io::Error::last_os_error(),
+        });
+    }
+    let addresses = InterfaceAddresses(raw_addresses);
+    let mut fallback = None;
+    let mut current = addresses.0;
+    while !current.is_null() {
+        // SAFETY: current belongs to the live getifaddrs list and remains
+        // valid until the guard is dropped.
+        let entry = unsafe { &*current };
+        current = entry.ifa_next;
+        if entry.ifa_addr.is_null()
+            || entry.ifa_name.is_null()
+            || entry.ifa_flags & libc::IFF_UP as libc::c_uint == 0
+        {
+            continue;
+        }
+        // SAFETY: getifaddrs guarantees a NUL-terminated interface name.
+        if unsafe { std::ffi::CStr::from_ptr(entry.ifa_name) }.to_bytes() != interface.as_bytes() {
+            continue;
+        }
+
+        let address = match (destination, unsafe {
+            (*entry.ifa_addr).sa_family as libc::c_int
+        }) {
+            (SocketAddr::V4(_), libc::AF_INET) => {
+                // SAFETY: sa_family identifies this address as sockaddr_in.
+                let address = unsafe { &*entry.ifa_addr.cast::<libc::sockaddr_in>() };
+                let octets = address.sin_addr.s_addr.to_ne_bytes();
+                SocketAddr::new(IpAddr::V4(std::net::Ipv4Addr::from(octets)), 0)
+            }
+            (SocketAddr::V6(_), libc::AF_INET6) => {
+                // SAFETY: sa_family identifies this address as sockaddr_in6.
+                let address = unsafe { &*entry.ifa_addr.cast::<libc::sockaddr_in6>() };
+                SocketAddr::V6(std::net::SocketAddrV6::new(
+                    std::net::Ipv6Addr::from(address.sin6_addr.s6_addr),
+                    0,
+                    address.sin6_flowinfo,
+                    address.sin6_scope_id,
+                ))
+            }
+            _ => continue,
+        };
+        let local = match address.ip() {
+            IpAddr::V4(address) => address.is_loopback() || address.is_link_local(),
+            IpAddr::V6(address) => address.is_loopback() || address.is_unicast_link_local(),
+        };
+        if local {
+            fallback.get_or_insert(address);
+        } else {
+            return Ok(address);
+        }
+    }
+    fallback.ok_or_else(|| super::Error::BindInterface {
+        interface: interface.to_string(),
+        family,
+        source: io::Error::new(
+            io::ErrorKind::AddrNotAvailable,
+            "interface has no active address for the destination family",
+        ),
+    })
+}
+
+#[cfg(not(unix))]
+pub(super) fn resolve_interface_address(
+    interface: &str,
+    destination: SocketAddr,
+) -> Result<SocketAddr, super::Error> {
+    Err(super::Error::BindInterface {
+        interface: interface.to_string(),
+        family: socket_family(destination),
+        source: io::Error::new(
+            io::ErrorKind::Unsupported,
+            "BindInterface is not supported on this platform",
+        ),
+    })
+}
+
+pub(super) fn apply_ip_qos(
+    socket: &socket2::Socket,
+    destination: SocketAddr,
+    value: IpQosValue,
+) -> Result<(), super::Error> {
+    let IpQosValue::Class(value) = value else {
+        return Ok(());
+    };
+    let result = if destination.is_ipv4() {
+        socket.set_tos_v4(u32::from(value))
+    } else {
+        #[cfg(any(
+            target_os = "android",
+            target_os = "dragonfly",
+            target_os = "freebsd",
+            target_os = "fuchsia",
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "netbsd",
+            target_os = "openbsd",
+            target_os = "illumos",
+        ))]
+        {
+            socket.set_tclass_v6(u32::from(value))
+        }
+        #[cfg(not(any(
+            target_os = "android",
+            target_os = "dragonfly",
+            target_os = "freebsd",
+            target_os = "fuchsia",
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "netbsd",
+            target_os = "openbsd",
+            target_os = "illumos",
+        )))]
+        {
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "IPv6 traffic class is not supported on this platform",
+            ))
+        }
+    };
+    result.map_err(|source| super::Error::IpQos {
+        value,
+        family: socket_family(destination),
+        destination,
+        source,
+    })
+}
+
+fn is_connect_in_progress(error: &io::Error) -> bool {
+    if error.kind() == io::ErrorKind::WouldBlock {
+        return true;
+    }
+    #[cfg(unix)]
+    return matches!(
+        error.raw_os_error(),
+        Some(code) if code == libc::EINPROGRESS || code == libc::EALREADY
+    );
+    #[cfg(windows)]
+    return matches!(
+        error.raw_os_error(),
+        Some(code) if code == 10035 || code == 10036 || code == 10037
+    );
+    #[cfg(not(any(unix, windows)))]
+    false
+}
+
+pub(super) async fn connect_direct_socket(
+    destination: SocketAddr,
+    target_host: &str,
+    target_port: u16,
+    bind_address: Option<&str>,
+    bind_interface: Option<&str>,
+    ip_qos: IpQosValue,
+) -> Result<tokio::net::TcpStream, super::Error> {
+    let domain = if destination.is_ipv4() {
+        socket2::Domain::IPV4
+    } else {
+        socket2::Domain::IPV6
+    };
+    let socket = socket2::Socket::new(domain, socket2::Type::STREAM, Some(socket2::Protocol::TCP))
+        .map_err(|source| super::Error::TcpConnect {
+            host: target_host.to_string(),
+            port: target_port,
+            source,
+        })?;
+    socket
+        .set_nonblocking(true)
+        .map_err(|source| super::Error::TcpConnect {
+            host: target_host.to_string(),
+            port: target_port,
+            source,
+        })?;
+    apply_ip_qos(&socket, destination, ip_qos)?;
+
+    let source_address = if let Some(bind_address) = bind_address {
+        Some(resolve_bind_address(bind_address, destination)?)
+    } else if let Some(bind_interface) = bind_interface {
+        Some(resolve_interface_address(bind_interface, destination)?)
+    } else {
+        None
+    };
+    if let Some(source_address) = source_address {
+        socket
+            .bind(&source_address.into())
+            .map_err(|source| super::Error::SourceBind {
+                source_address,
+                destination,
+                source,
+            })?;
+    }
+
+    let pending = match socket.connect(&destination.into()) {
+        Ok(()) => false,
+        Err(error) if is_connect_in_progress(&error) => true,
+        Err(source) => {
+            return Err(super::Error::TcpConnect {
+                host: target_host.to_string(),
+                port: target_port,
+                source,
+            });
+        }
+    };
+    let stream = tokio::net::TcpStream::from_std(socket.into()).map_err(|source| {
+        super::Error::TcpConnect {
+            host: target_host.to_string(),
+            port: target_port,
+            source,
+        }
+    })?;
+    if pending {
+        stream
+            .writable()
+            .await
+            .map_err(|source| super::Error::TcpConnect {
+                host: target_host.to_string(),
+                port: target_port,
+                source,
+            })?;
+        if let Some(source) = stream
+            .take_error()
+            .map_err(|source| super::Error::TcpConnect {
+                host: target_host.to_string(),
+                port: target_port,
+                source,
+            })?
+        {
+            return Err(super::Error::TcpConnect {
+                host: target_host.to_string(),
+                port: target_port,
+                source,
+            });
+        }
+    }
+    Ok(stream)
+}
+
 use super::ToSocketAddrsWithHostname;
 
 /// A ssh connection to a remote server.
@@ -1033,6 +1385,9 @@ struct DirectCarrierOptions<'a> {
     tcp_keepalive: Option<&'a socket2::TcpKeepalive>,
     address_family: AddressFamily,
     connection_attempts: usize,
+    bind_address: Option<&'a str>,
+    bind_interface: Option<&'a str>,
+    ip_qos: IpQosValue,
 }
 
 impl Client {
@@ -1184,6 +1539,9 @@ impl Client {
                 tcp_keepalive: tcp_keepalive.as_ref(),
                 address_family: ssh_config.address_family,
                 connection_attempts: ssh_config.connection_attempts,
+                bind_address: ssh_config.bind_address.as_deref(),
+                bind_interface: ssh_config.bind_interface.as_deref(),
+                ip_qos: ssh_config.selected_ip_qos(),
             },
         )
         .await?;
@@ -1294,6 +1652,9 @@ impl Client {
                 tcp_keepalive: None,
                 address_family: AddressFamily::Any,
                 connection_attempts: 1,
+                bind_address: None,
+                bind_interface: None,
+                ip_qos: IpQosValue::None,
             },
         )
         .await
@@ -1325,6 +1686,9 @@ impl Client {
             tcp_keepalive,
             address_family,
             connection_attempts,
+            bind_address,
+            bind_interface,
+            ip_qos,
         } = carrier;
         let connection_attempts = connection_attempts.max(1);
         let target_host = addr.hostname();
@@ -1368,17 +1732,22 @@ impl Client {
                         };
                     } else {
                         for socket_addr in socket_addrs {
-                            match tokio::net::TcpStream::connect(socket_addr).await {
+                            match connect_direct_socket(
+                                socket_addr,
+                                &target_host,
+                                target_port,
+                                bind_address,
+                                bind_interface,
+                                ip_qos,
+                            )
+                            .await
+                            {
                                 Ok(stream) => {
                                     carrier_res = Ok((socket_addr, stream));
                                     break 'rounds;
                                 }
                                 Err(error) => {
-                                    carrier_res = Err(super::Error::TcpConnect {
-                                        host: target_host.clone(),
-                                        port: target_port,
-                                        source: error,
-                                    });
+                                    carrier_res = Err(error);
                                 }
                             }
                         }

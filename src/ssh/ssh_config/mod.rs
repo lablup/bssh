@@ -25,6 +25,7 @@ mod env_cache;
 mod include;
 #[cfg(test)]
 mod integration_tests;
+mod ip_qos;
 mod match_directive;
 mod parser;
 mod path;
@@ -38,6 +39,7 @@ mod security_fix_tests;
 mod types;
 
 // Re-export public types
+pub use ip_qos::{IpQosParseError, IpQosPolicy, IpQosValue};
 pub use types::SshHostConfig;
 
 /// SSH configuration parser and resolver
@@ -626,13 +628,25 @@ Host backup-server
         // Verify vpn-server config
         let host1 = &config.hosts[0];
         assert_eq!(host1.bind_interface, Some("tun0".to_string()));
-        assert_eq!(host1.ipqos, Some("lowdelay throughput".to_string()));
+        assert_eq!(
+            host1.ipqos,
+            Some(IpQosPolicy {
+                interactive: IpQosValue::None,
+                bulk: IpQosValue::None,
+            })
+        );
         assert_eq!(host1.rekey_limit, Some("1G 1h".to_string()));
 
         // Verify backup-server config
         let host2 = &config.hosts[1];
         assert_eq!(host2.bind_interface, Some("eth1".to_string()));
-        assert_eq!(host2.ipqos, Some("af21".to_string()));
+        assert_eq!(
+            host2.ipqos,
+            Some(IpQosPolicy {
+                interactive: IpQosValue::Class(0x48),
+                bulk: IpQosValue::Class(0x48),
+            })
+        );
         assert_eq!(host2.rekey_limit, Some("default none".to_string()));
     }
 
@@ -717,7 +731,13 @@ Host web1.example.com
         assert_eq!(host_config.bind_interface, Some("eth0".to_string()));
 
         // IPQoS should be from *.example.com
-        assert_eq!(host_config.ipqos, Some("lowdelay".to_string()));
+        assert_eq!(
+            host_config.ipqos,
+            Some(IpQosPolicy {
+                interactive: IpQosValue::None,
+                bulk: IpQosValue::None,
+            })
+        );
 
         // RekeyLimit should be from web1.example.com (most specific)
         assert_eq!(host_config.rekey_limit, Some("1G 2h".to_string()));
@@ -875,7 +895,10 @@ Host test
         let config = SshConfig::parse(config_content).unwrap();
         assert_eq!(
             config.hosts[0].ipqos,
-            Some("lowdelay throughput".to_string())
+            Some(IpQosPolicy {
+                interactive: IpQosValue::None,
+                bulk: IpQosValue::None,
+            })
         );
 
         // Test RekeyLimit - should reject invalid format

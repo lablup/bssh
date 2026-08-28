@@ -25,7 +25,7 @@ use zeroize::Zeroizing;
 use crate::jump::{JumpHostChain, parse_jump_hosts};
 use crate::node::Node;
 use crate::ssh::{
-    SessionRequest,
+    SessionPurpose, SessionRequest,
     known_hosts::get_check_method_for_target,
     tokio_client::{AuthMethod, Client, Error as SshError, ServerCheckMethod, SshConnectionConfig},
 };
@@ -53,6 +53,9 @@ impl InteractiveCommand {
     ) -> Result<Client> {
         const SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
         let connect_timeout = Duration::from_secs(SSH_CONNECT_TIMEOUT_SECS);
+        let ssh_config = ssh_config
+            .clone()
+            .with_session_purpose(SessionPurpose::Interactive);
 
         // SECURITY: Add a small delay before connection attempts to prevent rapid-fire attempts
         // This helps mitigate brute-force attacks and prevents triggering fail2ban too quickly
@@ -72,7 +75,7 @@ impl InteractiveCommand {
                 username,
                 auth_method,
                 check_method.clone(),
-                ssh_config,
+                &ssh_config,
             ),
         )
         .await
@@ -116,7 +119,7 @@ impl InteractiveCommand {
                         username,
                         password_auth,
                         check_method,
-                        ssh_config,
+                        &ssh_config,
                     ),
                 )
                 .await
@@ -316,6 +319,7 @@ impl InteractiveCommand {
                     .with_connect_timeout(adjusted_timeout)
                     .with_command_timeout(Duration::from_secs(300))
                     .with_ssh_connection_config(self.ssh_connection_config.clone())
+                    .with_session_purpose(SessionPurpose::Interactive)
                     .with_ssh_password(self.ssh_password.clone());
 
                 // Connect through the chain
@@ -476,6 +480,7 @@ impl InteractiveCommand {
                     .with_connect_timeout(adjusted_timeout)
                     .with_command_timeout(Duration::from_secs(300))
                     .with_ssh_connection_config(self.ssh_connection_config.clone())
+                    .with_session_purpose(SessionPurpose::Interactive)
                     .with_ssh_password(self.ssh_password.clone());
 
                 // Connect through the chain

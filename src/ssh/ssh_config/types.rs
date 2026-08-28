@@ -20,6 +20,8 @@ use std::path::PathBuf;
 
 use crate::forwarding::ForwardingDirective;
 
+use super::IpQosPolicy;
+
 /// Configuration block type
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConfigBlock {
@@ -123,7 +125,7 @@ pub struct SshHostConfig {
     pub enable_ssh_keysign: Option<bool>,
     // Network & connection
     pub bind_interface: Option<String>,
-    pub ipqos: Option<String>,
+    pub ipqos: Option<IpQosPolicy>,
     pub rekey_limit: Option<String>,
     // X11 forwarding
     pub forward_x11_timeout: Option<String>,

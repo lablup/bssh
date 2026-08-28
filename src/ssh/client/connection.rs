@@ -15,6 +15,7 @@
 use super::core::SshClient;
 use crate::jump::{JumpHostChain, parse_jump_hosts};
 use crate::security::Password;
+use crate::ssh::SessionPurpose;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
 use crate::ssh::tokio_client::{
     AuthMethod, Client, ProxyMode, SshConnectionConfig, SshConnectionConfigResolver,
@@ -236,6 +237,7 @@ impl SshClient {
         ssh_connection_config: Option<&SshConnectionConfig>,
         ssh_connection_config_resolver: Option<&SshConnectionConfigResolver>,
         pre_collected_password: Option<Arc<Password>>,
+        session_purpose: SessionPurpose,
     ) -> Result<Client> {
         // Create jump host chain with user-specified or default connect timeout
         let connect_timeout =
@@ -250,6 +252,7 @@ impl SshClient {
         if let Some(resolver) = ssh_connection_config_resolver {
             chain = chain.with_ssh_connection_config_resolver(resolver.clone());
         }
+        chain = chain.with_session_purpose(session_purpose);
 
         // Connect through the chain
         let connection = chain
@@ -293,7 +296,13 @@ impl SshClient {
         ssh_connection_config: Option<&SshConnectionConfig>,
         ssh_connection_config_resolver: Option<&SshConnectionConfigResolver>,
         pre_collected_password: Option<Arc<Password>>,
+        session_purpose: SessionPurpose,
     ) -> Result<Client> {
+        let selected_config = ssh_connection_config
+            .cloned()
+            .unwrap_or_default()
+            .with_session_purpose(session_purpose);
+        let ssh_connection_config = Some(&selected_config);
         let jump_hosts_spec =
             match ssh_connection_config.and_then(|config| config.proxy_mode.as_ref()) {
                 Some(ProxyMode::Jump(jump)) => Some(jump.as_str()),
@@ -340,6 +349,7 @@ impl SshClient {
                     ssh_connection_config,
                     ssh_connection_config_resolver,
                     pre_collected_password,
+                    session_purpose,
                 )
                 .await
             }

@@ -798,6 +798,7 @@ impl SshClient {
             Some(ssh_connection_config),
             ssh_connection_config_resolver,
             pre_collected_password,
+            crate::ssh::SessionPurpose::Bulk,
         )
         .await
     }

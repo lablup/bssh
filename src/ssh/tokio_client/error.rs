@@ -75,6 +75,43 @@ pub enum Error {
         #[source]
         source: io::Error,
     },
+    #[error("failed to resolve BindAddress '{bind_address}' for {family}: {source}")]
+    BindAddressResolution {
+        bind_address: String,
+        family: &'static str,
+        #[source]
+        source: io::Error,
+    },
+    #[error("BindAddress '{bind_address}' has no {family} address for destination {destination}")]
+    BindAddressFamily {
+        bind_address: String,
+        family: &'static str,
+        destination: std::net::SocketAddr,
+    },
+    #[error("BindInterface '{interface}' cannot select a {family} source address: {source}")]
+    BindInterface {
+        interface: String,
+        family: &'static str,
+        #[source]
+        source: io::Error,
+    },
+    #[error(
+        "failed to bind source address {source_address} for destination {destination}: {source}"
+    )]
+    SourceBind {
+        source_address: std::net::SocketAddr,
+        destination: std::net::SocketAddr,
+        #[source]
+        source: io::Error,
+    },
+    #[error("failed to apply IPQoS {value:#04x} to {family} destination {destination}: {source}")]
+    IpQos {
+        value: u8,
+        family: &'static str,
+        destination: std::net::SocketAddr,
+        #[source]
+        source: io::Error,
+    },
     #[error("connection failed after {attempts} carrier attempts: {source}")]
     ConnectionAttemptsExhausted {
         attempts: usize,
@@ -242,6 +279,11 @@ impl Error {
                 | Self::AddressInvalid(_)
                 | Self::DnsResolution { .. }
                 | Self::TcpConnect { .. }
+                | Self::BindAddressResolution { .. }
+                | Self::BindAddressFamily { .. }
+                | Self::BindInterface { .. }
+                | Self::SourceBind { .. }
+                | Self::IpQos { .. }
                 | Self::ConnectionAttemptsExhausted { .. }
                 | Self::ConnectionTimeout { .. }
                 | Self::ProtocolNegotiation { .. }
