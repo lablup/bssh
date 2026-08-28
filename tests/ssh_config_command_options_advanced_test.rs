@@ -173,7 +173,7 @@ Host test3
 fn test_command_with_all_tokens() {
     let config = r#"
 Host test
-    LocalCommand echo "Host:%h Hostname:%H Original:%n Port:%p Remote:%r Local:%u Percent:%%"
+    LocalCommand echo "Host:%h Jump:%j Original:%n Port:%p Remote:%r Local:%u Percent:%%"
 "#;
 
     let config_parsed = SshConfig::parse(config).unwrap();
@@ -183,7 +183,7 @@ Host test
     assert_eq!(
         hosts[0].local_command,
         Some(
-            "echo \"Host:%h Hostname:%H Original:%n Port:%p Remote:%r Local:%u Percent:%%\""
+            "echo \"Host:%h Jump:%j Original:%n Port:%p Remote:%r Local:%u Percent:%%\""
                 .to_string()
         )
     );

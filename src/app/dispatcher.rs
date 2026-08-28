@@ -14,7 +14,7 @@
 
 //! Command dispatcher for routing CLI commands to their implementations
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use bssh::{
     cli::{Cli, Commands},
     commands::{
@@ -30,10 +30,11 @@ use bssh::{
     pty::PtyConfig,
     security::{Password, get_password, get_sudo_password},
     ssh::{
-        CliTtyMode,
+        CliTtyMode, SessionPolicy, SessionRequest,
         tokio_client::{AddressFamily, SshConnectionConfigResolver},
     },
 };
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -464,6 +465,7 @@ async fn handle_interactive_command(
         jump_hosts,
         pty_config,
         use_pty,
+        session_policy: None,
         ssh_connection_config,
     };
 
@@ -475,6 +477,34 @@ async fn handle_interactive_command(
     Ok(())
 }
 
+fn cli_tty_mode(cli: &Cli) -> CliTtyMode {
+    if cli.force_tty {
+        CliTtyMode::Force
+    } else if cli.no_tty {
+        CliTtyMode::Disable
+    } else {
+        CliTtyMode::Default
+    }
+}
+
+fn resolve_ssh_mode_interactive_policy(
+    config: &bssh::ssh::ssh_config::SshHostConfig,
+    node: &bssh::node::Node,
+    tty_mode: CliTtyMode,
+    stdin_is_terminal: bool,
+    jump_spec: Option<&str>,
+) -> Result<Option<SessionPolicy>> {
+    let policy = SessionPolicy::resolve_with_jump_spec(
+        config,
+        node,
+        None,
+        tty_mode,
+        stdin_is_terminal,
+        jump_spec,
+    )?;
+    Ok(matches!(policy.request, SessionRequest::Shell).then_some(policy))
+}
+
 /// Handle exec command or SSH mode interactive session
 async fn handle_exec_command(
     cli: &Cli,
@@ -482,19 +512,30 @@ async fn handle_exec_command(
     command: &str,
     ssh_password: Option<Arc<Password>>,
 ) -> Result<()> {
-    // RemoteCommand and non-default SessionType select a non-interactive
-    // channel even when ssh-compatible mode has no CLI command.
-    let has_configured_session = ctx.nodes.first().is_some_and(|node| {
+    // Resolve policy even for a plain ssh-compatible shell. Remote/subsystem/
+    // none requests stay on the command executor; shell requests retain the
+    // existing interactive stdin, PTY resize, and byte-stream implementation.
+    let interactive_policy = if cli.is_ssh_mode() && command.is_empty() {
+        let node = ctx
+            .nodes
+            .first()
+            .context("SSH interactive mode requires a destination node")?;
         let effective = ctx.ssh_config.find_host_config(node.config_host());
-        effective.remote_command.is_some()
-            || matches!(
-                effective.session_type.as_deref(),
-                Some("none" | "subsystem")
-            )
-    });
+        let effective_cluster_name = ctx.cluster_name.as_deref().or(cli.cluster.as_deref());
+        let yaml_jump = ctx.config.get_cluster_jump_host(effective_cluster_name);
+        let jump_spec = cli.jump_hosts.as_deref().or(yaml_jump.as_deref());
+        resolve_ssh_mode_interactive_policy(
+            &effective,
+            node,
+            cli_tty_mode(cli),
+            std::io::stdin().is_terminal(),
+            jump_spec,
+        )?
+    } else {
+        None
+    };
 
-    // In SSH mode without a configured channel request, start an interactive session.
-    if cli.is_ssh_mode() && command.is_empty() && !has_configured_session {
+    if let Some(session_policy) = interactive_policy {
         // SSH mode interactive session (like ssh user@host)
         tracing::info!("Starting SSH interactive session to {}", ctx.nodes[0].host);
 
@@ -508,18 +549,11 @@ async fn handle_exec_command(
         );
 
         let pty_config = PtyConfig {
-            force_pty: cli.force_tty,
-            disable_pty: cli.no_tty,
+            force_pty: session_policy.request_pty,
+            disable_pty: !session_policy.request_pty,
             ..Default::default()
         };
-
-        let use_pty = if cli.force_tty {
-            Some(true)
-        } else if cli.no_tty {
-            Some(false)
-        } else {
-            None
-        };
+        let use_pty = Some(session_policy.request_pty);
 
         #[cfg(target_os = "macos")]
         let use_keychain = determine_use_keychain(&ctx.ssh_config, hostname.as_deref());
@@ -561,20 +595,16 @@ async fn handle_exec_command(
             jump_hosts,
             pty_config,
             use_pty,
+            session_policy: Some(session_policy),
             ssh_connection_config,
         };
 
         let result = interactive_cmd.execute().await?;
 
-        // Ensure terminal is fully restored before printing
-        bssh::pty::terminal::force_terminal_cleanup();
-        let _ = crossterm::cursor::Show;
-        let _ = std::io::Write::flush(&mut std::io::stdout());
-
-        println!("\nSession ended.");
         if cli.verbose > 0 {
-            println!("Duration: {}", format_duration(result.duration));
-            println!("Commands executed: {}", result.commands_executed);
+            eprintln!("Session ended.");
+            eprintln!("Duration: {}", format_duration(result.duration));
+            eprintln!("Commands executed: {}", result.commands_executed);
         }
 
         // Force exit to ensure proper termination
@@ -675,13 +705,7 @@ async fn handle_exec_command(
             batch: cli.batch,
             fail_fast: cli.fail_fast,
             ssh_config: Some(&ctx.ssh_config),
-            tty_mode: if cli.force_tty {
-                CliTtyMode::Force
-            } else if cli.no_tty {
-                CliTtyMode::Disable
-            } else {
-                CliTtyMode::Default
-            },
+            tty_mode: cli_tty_mode(cli),
             ssh_connection_config_resolver,
         };
         execute_command(params).await
@@ -700,6 +724,63 @@ mod tests {
             history_file: PathBuf::from("~/.bssh_history"),
             work_dir: None,
         })
+    }
+
+    #[test]
+    fn plain_ssh_shell_always_consumes_the_resolved_session_policy() {
+        let node = bssh::node::Node::new("127.0.0.1".into(), 2222, "remote".into())
+            .with_original_host("alias".into());
+
+        let plain = resolve_ssh_mode_interactive_policy(
+            &bssh::ssh::ssh_config::SshHostConfig::default(),
+            &node,
+            CliTtyMode::Default,
+            true,
+            None,
+        )
+        .unwrap()
+        .expect("plain ssh must use the interactive policy path");
+        assert_eq!(plain.request, SessionRequest::Shell);
+        assert!(plain.request_pty);
+        assert!(plain.environment.is_empty());
+        assert!(plain.local_command.is_none());
+
+        let mut configured = bssh::ssh::ssh_config::SshHostConfig::default();
+        configured.permit_local_command = Some(true);
+        configured.local_command = Some("true".into());
+        configured.request_tty = Some("force".into());
+        configured.session_type = Some("default".into());
+        configured.set_env.insert("JUMP".into(), "%j".into());
+        let resolved = resolve_ssh_mode_interactive_policy(
+            &configured,
+            &node,
+            CliTtyMode::Default,
+            false,
+            Some("bastion.example"),
+        )
+        .unwrap()
+        .expect("configured default session must retain the interactive path");
+        assert_eq!(resolved.request, SessionRequest::Shell);
+        assert!(resolved.request_pty);
+        assert_eq!(
+            resolved.environment,
+            [(String::from("JUMP"), String::from("bastion.example"))]
+        );
+        assert_eq!(resolved.local_command.as_deref(), Some("true"));
+
+        configured.remote_command = Some("true".into());
+        assert!(
+            resolve_ssh_mode_interactive_policy(
+                &configured,
+                &node,
+                CliTtyMode::Default,
+                true,
+                None,
+            )
+            .unwrap()
+            .is_none(),
+            "non-shell policies must stay on the command executor"
+        );
     }
 
     #[test]

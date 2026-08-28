@@ -168,6 +168,7 @@ fn test_pty_config_clone() {
         term_type: "custom-term".to_string(),
         force_pty: true,
         disable_pty: false,
+        environment: Vec::new(),
         enable_mouse: true,
         timeout: Duration::from_secs(1),
     };

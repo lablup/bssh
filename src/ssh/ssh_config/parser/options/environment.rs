@@ -17,7 +17,8 @@
 //! Handles environment-related configuration options including SendEnv
 //! and SetEnv settings for passing environment variables to remote hosts.
 
-use crate::ssh::session_policy::validate_environment;
+use super::command::validate_default_percent_tokens;
+use crate::ssh::session_policy::{MAX_ENVIRONMENT_VALUE_BYTES, validate_environment};
 use crate::ssh::ssh_config::types::SshHostConfig;
 use anyhow::{Context, Result};
 
@@ -55,6 +56,13 @@ pub(super) fn parse_environment_option(
                     let value = pair[eq_pos + 1..].to_string();
                     validate_environment(&name, &value)
                         .with_context(|| format!("Invalid SetEnv entry at line {line_number}"))?;
+                    validate_default_percent_tokens(
+                        &value,
+                        "SetEnv value",
+                        line_number,
+                        MAX_ENVIRONMENT_VALUE_BYTES,
+                    )?;
+                    validate_dollar_expansions(&value, line_number)?;
                     host.set_env.entry(name).or_insert(value);
                 } else {
                     anyhow::bail!(
@@ -70,4 +78,59 @@ pub(super) fn parse_environment_option(
     }
 
     Ok(())
+}
+
+fn validate_dollar_expansions(value: &str, line_number: usize) -> Result<()> {
+    let mut remaining = value;
+    while let Some(start) = remaining.find("${") {
+        let variable = &remaining[start + 2..];
+        let Some(end) = variable.find('}') else {
+            anyhow::bail!(
+                "SetEnv environment variable expansion is missing closing '}}' at line {line_number}"
+            );
+        };
+        if end == 0 {
+            anyhow::bail!(
+                "SetEnv environment variable expansion has an empty name at line {line_number}"
+            );
+        }
+        remaining = &variable[end + 1..];
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn setenv_accepts_default_tokens_and_dollar_expansion_syntax() {
+        let mut config = SshHostConfig::default();
+        let value = "VALUE=%%:%C:%d:%h:%i:%j:%k:%L:%l:%n:%p:%r:%u:${HOME}";
+        parse_environment_option(&mut config, "setenv", &[value.into()], 7).unwrap();
+        assert_eq!(
+            config.set_env.get("VALUE").map(String::as_str),
+            Some("%%:%C:%d:%h:%i:%j:%k:%L:%l:%n:%p:%r:%u:${HOME}")
+        );
+
+        parse_environment_option(&mut config, "setenv", &["EMPTY=".into()], 8).unwrap();
+        assert_eq!(config.set_env.get("EMPTY").map(String::as_str), Some(""));
+    }
+
+    #[test]
+    fn setenv_rejects_directive_foreign_tokens_and_malformed_dollar_syntax() {
+        for value in [
+            "VALUE=%H",
+            "VALUE=%T",
+            "VALUE=%x",
+            "VALUE=${BROKEN",
+            "VALUE=${}",
+        ] {
+            let mut config = SshHostConfig::default();
+            assert!(
+                parse_environment_option(&mut config, "setenv", &[value.into()], 9).is_err(),
+                "{value} must be rejected"
+            );
+        }
+    }
 }

@@ -88,3 +88,21 @@ fn forward_input(
         input_tx.try_send(PtyMessage::LocalInput(data)).is_ok()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn raw_forwarding_preserves_control_nul_escape_and_binary_bytes() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let mut detector = LocalEscapeDetector::new();
+        let bytes = [0x00, 0x01, 0x03, 0x04, 0x1b, 0x7f, 0x80, 0xff];
+
+        assert!(forward_input(&tx, &mut detector, &bytes));
+        let PtyMessage::LocalInput(forwarded) = rx.try_recv().unwrap() else {
+            panic!("raw input must produce a LocalInput message");
+        };
+        assert_eq!(forwarded.as_slice(), bytes);
+    }
+}

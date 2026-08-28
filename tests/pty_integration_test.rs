@@ -39,6 +39,7 @@ fn create_test_pty_config() -> PtyConfig {
         term_type: "xterm-256color".to_string(),
         force_pty: true,
         disable_pty: false,
+        environment: Vec::new(),
         enable_mouse: false,
         timeout: Duration::from_millis(10),
     }
@@ -78,6 +79,7 @@ fn test_pty_config_cloning() {
         term_type: "custom-term".to_string(),
         force_pty: true,
         disable_pty: false,
+        environment: Vec::new(),
         enable_mouse: true,
         timeout: Duration::from_secs(1),
     };

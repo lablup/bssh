@@ -69,6 +69,7 @@ struct TokenContext {
     local_host: String,
     local_host_short: String,
     local_uid: String,
+    jump_host: String,
     connection_hash: String,
 }
 
@@ -80,16 +81,36 @@ impl SessionPolicy {
         cli_tty: CliTtyMode,
         stdin_is_terminal: bool,
     ) -> Result<Self> {
-        Self::resolve_with_environment(
+        Self::resolve_with_jump_spec(
             config,
             node,
             explicit_command,
             cli_tty,
             stdin_is_terminal,
+            None,
+        )
+    }
+
+    pub fn resolve_with_jump_spec(
+        config: &SshHostConfig,
+        node: &Node,
+        explicit_command: Option<&str>,
+        cli_tty: CliTtyMode,
+        stdin_is_terminal: bool,
+        jump_spec: Option<&str>,
+    ) -> Result<Self> {
+        Self::resolve_with_environment_and_jump_spec(
+            config,
+            node,
+            explicit_command,
+            cli_tty,
+            stdin_is_terminal,
+            jump_spec,
             std::env::vars_os(),
         )
     }
 
+    #[cfg(test)]
     fn resolve_with_environment<I>(
         config: &SshHostConfig,
         node: &Node,
@@ -101,13 +122,49 @@ impl SessionPolicy {
     where
         I: IntoIterator<Item = (OsString, OsString)>,
     {
-        let tokens = TokenContext::for_node(config, node)?;
-        let environment = resolve_environment(config, local_environment, &tokens)?;
+        Self::resolve_with_environment_and_jump_spec(
+            config,
+            node,
+            explicit_command,
+            cli_tty,
+            stdin_is_terminal,
+            None,
+            local_environment,
+        )
+    }
+
+    fn resolve_with_environment_and_jump_spec<I>(
+        config: &SshHostConfig,
+        node: &Node,
+        explicit_command: Option<&str>,
+        cli_tty: CliTtyMode,
+        stdin_is_terminal: bool,
+        jump_spec: Option<&str>,
+        local_environment: I,
+    ) -> Result<Self>
+    where
+        I: IntoIterator<Item = (OsString, OsString)>,
+    {
+        let tokens = TokenContext::for_node(config, node, jump_spec)?;
+        let local_environment = local_environment
+            .into_iter()
+            .filter_map(|(name, value)| Some((name.into_string().ok()?, value.into_string().ok()?)))
+            .collect::<BTreeMap<_, _>>();
+        let environment = resolve_environment(config, &local_environment, &tokens)?;
         let local_command = if config.permit_local_command.unwrap_or(false) {
             config
                 .local_command
                 .as_deref()
-                .map(|command| expand_tokens(command, &tokens, true, MAX_EXPANDED_COMMAND_BYTES))
+                .map(|command| {
+                    expand_tokens(
+                        command,
+                        &tokens,
+                        TokenSet::LocalCommand,
+                        true,
+                        None,
+                        MAX_EXPANDED_COMMAND_BYTES,
+                    )
+                })
                 .transpose()?
                 .map(|command| validate_local_shell_command(&command).map(|()| command))
                 .transpose()?
@@ -118,7 +175,16 @@ impl SessionPolicy {
         let configured_command = config
             .remote_command
             .as_deref()
-            .map(|command| expand_tokens(command, &tokens, true, MAX_EXPANDED_COMMAND_BYTES))
+            .map(|command| {
+                expand_tokens(
+                    command,
+                    &tokens,
+                    TokenSet::Default,
+                    true,
+                    None,
+                    MAX_EXPANDED_COMMAND_BYTES,
+                )
+            })
             .transpose()?
             .map(|command| crate::utils::sanitize_command(&command))
             .transpose()?;
@@ -173,7 +239,7 @@ impl SessionPolicy {
 }
 
 impl TokenContext {
-    fn for_node(config: &SshHostConfig, node: &Node) -> Result<Self> {
+    fn for_node(config: &SshHostConfig, node: &Node, jump_spec: Option<&str>) -> Result<Self> {
         let local_user = whoami::username().unwrap_or_else(|_| "user".to_string());
         let local_home = dirs::home_dir()
             .unwrap_or_default()
@@ -190,11 +256,17 @@ impl TokenContext {
             .host_key_alias
             .clone()
             .unwrap_or_else(|| node.original_host.clone());
+        let jump_host = jump_spec
+            .or(config.proxy_jump.as_deref())
+            .filter(|value| !value.eq_ignore_ascii_case("none"))
+            .unwrap_or("")
+            .to_string();
         let mut digest = Sha1::new();
         digest.update(local_host.as_bytes());
         digest.update(node.host.as_bytes());
         digest.update(node.port.to_string().as_bytes());
         digest.update(node.username.as_bytes());
+        digest.update(jump_host.as_bytes());
         let digest = digest.finalize();
         let mut connection_hash = String::with_capacity(digest.len() * 2);
         for byte in digest {
@@ -212,36 +284,38 @@ impl TokenContext {
             local_host,
             local_host_short,
             local_uid,
+            jump_host,
             connection_hash,
         })
     }
 }
 
-fn resolve_environment<I>(
+fn resolve_environment(
     config: &SshHostConfig,
-    local_environment: I,
+    local_environment: &BTreeMap<String, String>,
     tokens: &TokenContext,
-) -> Result<Vec<(String, String)>>
-where
-    I: IntoIterator<Item = (OsString, OsString)>,
-{
+) -> Result<Vec<(String, String)>> {
     if config.send_env.len() > MAX_ENVIRONMENT_REQUESTS {
         anyhow::bail!("Too many SendEnv patterns (max {MAX_ENVIRONMENT_REQUESTS})");
     }
     let send_env_patterns = resolve_send_env_patterns(&config.send_env)?;
     let mut environment = BTreeMap::new();
     for (name, value) in local_environment {
-        let (Ok(name), Ok(value)) = (name.into_string(), value.into_string()) else {
-            continue;
-        };
-        if send_env_selected(&name, &send_env_patterns) {
-            validate_environment(&name, &value)?;
-            environment.insert(name, value);
+        if send_env_selected(name, &send_env_patterns) {
+            validate_environment(name, value)?;
+            environment.insert(name.clone(), value.clone());
             validate_environment_count(environment.len())?;
         }
     }
     for (name, value) in &config.set_env {
-        let value = expand_tokens(value, tokens, false, MAX_ENVIRONMENT_VALUE_BYTES)?;
+        let value = expand_tokens(
+            value,
+            tokens,
+            TokenSet::Default,
+            false,
+            Some(local_environment),
+            MAX_ENVIRONMENT_VALUE_BYTES,
+        )?;
         validate_environment(name, &value)?;
         environment.insert(name.clone(), value);
         validate_environment_count(environment.len())?;
@@ -302,18 +376,50 @@ pub(crate) fn validate_environment(name: &str, value: &str) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TokenSet {
+    Default,
+    LocalCommand,
+}
+
 fn expand_tokens(
     value: &str,
     tokens: &TokenContext,
+    token_set: TokenSet,
     shell_safe: bool,
+    local_environment: Option<&BTreeMap<String, String>>,
     max_bytes: usize,
 ) -> Result<String> {
     if value.len() > max_bytes {
         anyhow::bail!("SSH value is too long before token expansion (max {max_bytes} bytes)");
     }
     let mut expanded = String::with_capacity(value.len());
-    let mut chars = value.chars();
+    let mut chars = value.chars().peekable();
     while let Some(ch) = chars.next() {
+        if ch == '$' && chars.peek() == Some(&'{') && local_environment.is_some() {
+            chars.next();
+            let mut name = String::new();
+            loop {
+                match chars.next() {
+                    Some('}') => break,
+                    Some(ch) => name.push(ch),
+                    None => {
+                        anyhow::bail!("Environment variable expansion is missing closing '}}'")
+                    }
+                }
+            }
+            if name.is_empty() {
+                anyhow::bail!("Environment variable expansion has an empty name");
+            }
+            let replacement = local_environment
+                .and_then(|environment| environment.get(&name))
+                .with_context(|| format!("Environment variable ${{{name}}} is not set"))?;
+            expanded.push_str(replacement);
+            if expanded.len() > max_bytes {
+                anyhow::bail!("Expanded SSH value is too long (max {max_bytes} bytes)");
+            }
+            continue;
+        }
         if ch != '%' {
             expanded.push(ch);
             continue;
@@ -325,15 +431,16 @@ fn expand_tokens(
             '%' => ("literal percent", "%"),
             'C' => ("connection hash", tokens.connection_hash.as_str()),
             'd' => ("local home", tokens.local_home.as_str()),
-            'h' | 'H' => ("effective host", tokens.effective_host.as_str()),
+            'h' => ("effective host", tokens.effective_host.as_str()),
             'i' => ("local uid", tokens.local_uid.as_str()),
+            'j' => ("proxy jump", tokens.jump_host.as_str()),
             'k' => ("host key alias", tokens.host_key_alias.as_str()),
             'L' => ("short local host", tokens.local_host_short.as_str()),
             'l' => ("local host", tokens.local_host.as_str()),
             'n' => ("original host", tokens.original_host.as_str()),
             'p' => ("port", tokens.port.as_str()),
             'r' => ("remote user", tokens.remote_user.as_str()),
-            'T' => ("tun/tap device", "NONE"),
+            'T' if token_set == TokenSet::LocalCommand => ("tun/tap device", "NONE"),
             'u' => ("local user", tokens.local_user.as_str()),
             _ => anyhow::bail!("Unsupported SSH percent token: %{token}"),
         };

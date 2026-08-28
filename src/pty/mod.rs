@@ -53,8 +53,10 @@ pub struct PtyConfig {
     pub term_type: String,
     /// Whether to force PTY allocation
     pub force_pty: bool,
-    /// Whether to disable PTY allocation
+    /// Whether to disable PTY allocation while retaining the raw SSH stream
     pub disable_pty: bool,
+    /// Policy environment requests sent before PTY and shell requests.
+    pub environment: Vec<(String, String)>,
     /// Enable mouse event support
     pub enable_mouse: bool,
     /// Terminal input/output timeout
@@ -73,6 +75,7 @@ impl Default for PtyConfig {
             term_type: "xterm-256color".to_string(),
             force_pty: false,
             disable_pty: false,
+            environment: Vec::new(),
             enable_mouse: false,
             timeout: Duration::from_millis(DEFAULT_PTY_TIMEOUT_MS),
         }
@@ -158,15 +161,17 @@ impl PtyManager {
 
     /// Run a single PTY session
     pub async fn run_single_session(&mut self, session_id: usize) -> Result<()> {
-        let result = if let Some(session) = self.active_sessions.get_mut(session_id) {
-            session.run().await
-        } else {
-            anyhow::bail!("PTY session {session_id} not found")
-        };
+        let (result, requested_remote_pty) =
+            if let Some(session) = self.active_sessions.get_mut(session_id) {
+                let requested_remote_pty = session.requests_remote_pty();
+                (session.run().await, requested_remote_pty)
+            } else {
+                anyhow::bail!("PTY session {session_id} not found")
+            };
 
-        // Ensure terminal is properly restored after session ends
-        // Use synchronized cleanup from terminal module
-        crate::pty::terminal::force_terminal_cleanup();
+        if requested_remote_pty {
+            crate::pty::terminal::force_terminal_cleanup();
+        }
 
         result
     }

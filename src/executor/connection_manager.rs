@@ -84,12 +84,13 @@ pub(crate) async fn execute_on_node_with_jump_hosts(
         .ssh_config
         .map(|ssh_config| {
             let effective = ssh_config.find_host_config(node.config_host());
-            SessionPolicy::resolve(
+            SessionPolicy::resolve_with_jump_spec(
                 &effective,
                 &node,
                 (!command.is_empty()).then_some(command),
                 config.tty_mode,
                 std::io::stdin().is_terminal(),
+                effective_jump_hosts,
             )
         })
         .transpose()?;

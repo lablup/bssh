@@ -1304,12 +1304,13 @@ impl ParallelExecutor {
                     .as_ref()
                     .map(|ssh_config| {
                         let effective = ssh_config.find_host_config(node_clone.config_host());
-                        SessionPolicy::resolve(
+                        SessionPolicy::resolve_with_jump_spec(
                             &effective,
                             &node_clone,
                             (!command.is_empty()).then_some(command.as_str()),
                             tty_mode,
                             stdin_is_terminal,
+                            jump_hosts.as_deref(),
                         )
                     })
                     .transpose()

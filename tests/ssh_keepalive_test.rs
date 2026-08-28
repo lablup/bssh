@@ -696,6 +696,7 @@ fn test_interactive_mode_ssh_connection_config_default() {
         jump_hosts: None,
         pty_config: PtyConfig::default(),
         use_pty: None,
+        session_policy: None,
         ssh_connection_config: SshConnectionConfig::default(),
     };
 
@@ -744,6 +745,7 @@ fn test_interactive_mode_ssh_connection_config_custom() {
         jump_hosts: None,
         pty_config: PtyConfig::default(),
         use_pty: None,
+        session_policy: None,
         ssh_connection_config: custom_config,
     };
 
@@ -790,6 +792,7 @@ fn test_interactive_mode_ssh_connection_config_disabled_keepalive() {
         jump_hosts: None,
         pty_config: PtyConfig::default(),
         use_pty: None,
+        session_policy: None,
         ssh_connection_config: disabled_config,
     };
 

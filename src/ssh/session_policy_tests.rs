@@ -28,11 +28,14 @@ fn environment_requests_are_sorted_removed_bounded_and_setenv_wins() {
         "TEST_B".into(),
     ];
     config.set_env.insert("TEST_A".into(), "configured".into());
-    config.set_env.insert("ZZZ".into(), "%n:%p".into());
+    config
+        .set_env
+        .insert("ZZZ".into(), "${EXPAND_TEST}:%n:%p".into());
     let local = [
         (OsString::from("TEST_B"), OsString::from("second")),
         (OsString::from("TEST_DROP"), OsString::from("removed")),
         (OsString::from("TEST_A"), OsString::from("local")),
+        (OsString::from("EXPAND_TEST"), OsString::from("expanded")),
     ];
 
     let policy = SessionPolicy::resolve_with_environment(
@@ -49,7 +52,7 @@ fn environment_requests_are_sorted_removed_bounded_and_setenv_wins() {
         [
             ("TEST_A".into(), "configured".into()),
             ("TEST_B".into(), "second".into()),
-            ("ZZZ".into(), "alias:2222".into())
+            ("ZZZ".into(), "expanded:alias:2222".into())
         ]
     );
 
@@ -199,30 +202,129 @@ fn environment_name_value_and_request_count_bounds_are_enforced() {
 }
 
 #[test]
-fn percent_tokens_expand_exactly_and_reject_unsafe_or_oversized_values() {
+fn directive_token_sets_jump_hash_and_setenv_dollar_expansion_are_exact() {
+    let jump_spec = "jump@example.net:2200";
     let mut config = SshHostConfig {
-        remote_command: Some("%C|%d|%h|%H|%i|%k|%L|%l|%n|%p|%r|%T|%u|%%".into()),
+        proxy_jump: Some("ignored-config-jump".into()),
+        remote_command: Some("%C|%d|%h|%i|%j|%k|%L|%l|%n|%p|%r|%u|%%".into()),
         ..Default::default()
     };
-    let policy =
-        SessionPolicy::resolve(&config, &node(), None, CliTtyMode::Default, false).unwrap();
+    let policy = SessionPolicy::resolve_with_jump_spec(
+        &config,
+        &node(),
+        None,
+        CliTtyMode::Default,
+        false,
+        Some(jump_spec),
+    )
+    .unwrap();
     let SessionRequest::Exec(expanded) = policy.request else {
         panic!("RemoteCommand must select an exec request");
     };
-    let fields = expanded.split("|").collect::<Vec<_>>();
-    assert_eq!(fields.len(), 14);
-    assert_eq!(fields[0].len(), 40);
-    assert!(fields[0].chars().all(|ch| ch.is_ascii_hexdigit()));
+    let fields = expanded.split('|').collect::<Vec<_>>();
+    assert_eq!(fields.len(), 13);
     assert_eq!(fields[2], "127.0.0.1");
-    assert_eq!(fields[3], "127.0.0.1");
+    assert_eq!(fields[4], jump_spec);
     assert_eq!(fields[5], "alias");
     assert_eq!(fields[8], "alias");
     assert_eq!(fields[9], "2222");
     assert_eq!(fields[10], "remote");
-    assert_eq!(fields[11], "NONE");
-    assert_eq!(fields[13], "%");
+    assert_eq!(fields[12], "%");
 
-    config.remote_command = Some("echo %h".into());
+    let local_host = whoami::hostname().unwrap_or_else(|_| "localhost".to_string());
+    let mut digest = Sha1::new();
+    digest.update(local_host.as_bytes());
+    digest.update(b"127.0.0.1");
+    digest.update(b"2222");
+    digest.update(b"remote");
+    digest.update(jump_spec.as_bytes());
+    let expected_hash = digest
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    assert_eq!(fields[0], expected_hash);
+
+    for invalid in ["echo %H", "echo %T"] {
+        config.remote_command = Some(invalid.into());
+        assert!(
+            SessionPolicy::resolve(&config, &node(), None, CliTtyMode::Default, false).is_err()
+        );
+    }
+
+    config.remote_command = None;
+    config.permit_local_command = Some(true);
+    config.local_command = Some("echo %C %d %h %i %j %k %L %l %n %p %r %T %u %%".into());
+    let policy = SessionPolicy::resolve_with_jump_spec(
+        &config,
+        &node(),
+        Some("true"),
+        CliTtyMode::Default,
+        false,
+        Some(jump_spec),
+    )
+    .unwrap();
+    let local = policy.local_command.unwrap();
+    assert!(local.contains(jump_spec));
+    assert!(local.contains(" NONE "));
+    assert!(local.ends_with(" %"));
+
+    config.local_command = Some("echo %H".into());
+    assert!(
+        SessionPolicy::resolve(&config, &node(), Some("true"), CliTtyMode::Default, false).is_err()
+    );
+
+    config.local_command = None;
+    config.permit_local_command = None;
+    config
+        .set_env
+        .insert("EXPANDED".into(), "%C|%j|${SOURCE_VALUE}|%%".into());
+    let policy = SessionPolicy::resolve_with_environment_and_jump_spec(
+        &config,
+        &node(),
+        Some("true"),
+        CliTtyMode::Default,
+        false,
+        Some(jump_spec),
+        [(
+            OsString::from("SOURCE_VALUE"),
+            OsString::from("from-environment"),
+        )],
+    )
+    .unwrap();
+    assert_eq!(
+        policy.environment,
+        [(
+            "EXPANDED".into(),
+            format!("{expected_hash}|{jump_spec}|from-environment|%")
+        )]
+    );
+
+    for invalid in ["%H", "%T"] {
+        config
+            .set_env
+            .insert("EXPANDED".into(), invalid.to_string());
+        assert!(
+            SessionPolicy::resolve_with_environment_and_jump_spec(
+                &config,
+                &node(),
+                Some("true"),
+                CliTtyMode::Default,
+                false,
+                Some(jump_spec),
+                [],
+            )
+            .is_err()
+        );
+    }
+}
+
+#[test]
+fn expanded_shell_values_and_command_size_remain_bounded() {
+    let mut config = SshHostConfig {
+        remote_command: Some("echo %h".into()),
+        ..Default::default()
+    };
     let unsafe_node = Node::new("bad;host".into(), 22, "remote".into());
     assert!(
         SessionPolicy::resolve(&config, &unsafe_node, None, CliTtyMode::Default, false)
