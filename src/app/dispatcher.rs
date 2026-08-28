@@ -29,7 +29,10 @@ use bssh::{
     diagnosticln as eprintln,
     pty::PtyConfig,
     security::{Password, get_password, get_sudo_password},
-    ssh::tokio_client::{AddressFamily, SshConnectionConfigResolver},
+    ssh::{
+        CliTtyMode,
+        tokio_client::{AddressFamily, SshConnectionConfigResolver},
+    },
 };
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -479,8 +482,19 @@ async fn handle_exec_command(
     command: &str,
     ssh_password: Option<Arc<Password>>,
 ) -> Result<()> {
-    // In SSH mode without command, start interactive session
-    if cli.is_ssh_mode() && command.is_empty() {
+    // RemoteCommand and non-default SessionType select a non-interactive
+    // channel even when ssh-compatible mode has no CLI command.
+    let has_configured_session = ctx.nodes.first().is_some_and(|node| {
+        let effective = ctx.ssh_config.find_host_config(node.config_host());
+        effective.remote_command.is_some()
+            || matches!(
+                effective.session_type.as_deref(),
+                Some("none" | "subsystem")
+            )
+    });
+
+    // In SSH mode without a configured channel request, start an interactive session.
+    if cli.is_ssh_mode() && command.is_empty() && !has_configured_session {
         // SSH mode interactive session (like ssh user@host)
         tracing::info!("Starting SSH interactive session to {}", ctx.nodes[0].host);
 
@@ -661,6 +675,13 @@ async fn handle_exec_command(
             batch: cli.batch,
             fail_fast: cli.fail_fast,
             ssh_config: Some(&ctx.ssh_config),
+            tty_mode: if cli.force_tty {
+                CliTtyMode::Force
+            } else if cli.no_tty {
+                CliTtyMode::Disable
+            } else {
+                CliTtyMode::Default
+            },
             ssh_connection_config_resolver,
         };
         execute_command(params).await

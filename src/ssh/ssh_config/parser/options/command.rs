@@ -173,14 +173,8 @@ fn validate_remote_command_warnings(command: &str, line_number: usize) {
 /// Validate command strings that support token substitution
 ///
 /// This function validates commands while allowing SSH token substitution patterns.
-/// Supported tokens:
-/// - %h - remote hostname (from config)
-/// - %H - remote hostname (as specified on command line)
-/// - %n - original hostname
-/// - %p - remote port
-/// - %r - remote username
-/// - %u - local username
-/// - %% - literal %
+/// Supports the OpenSSH LocalCommand percent-token set: `%C`, `%d`, `%h`, `%H`,
+/// `%i`, `%k`, `%L`, `%l`, `%n`, `%p`, `%r`, `%T`, `%u`, and `%%`.
 ///
 /// The actual token substitution is performed by the SSH client, not the parser.
 fn validate_command_with_tokens(
@@ -196,10 +190,17 @@ fn validate_command_with_tokens(
     // Security: Check for excessive token usage that could cause DoS
     // Count the number of tokens (excluding %%)
     let token_count = command.matches("%h").count()
+        + command.matches("%C").count()
+        + command.matches("%d").count()
         + command.matches("%H").count()
+        + command.matches("%i").count()
+        + command.matches("%k").count()
+        + command.matches("%L").count()
+        + command.matches("%l").count()
         + command.matches("%n").count()
         + command.matches("%p").count()
         + command.matches("%r").count()
+        + command.matches("%T").count()
         + command.matches("%u").count();
 
     const MAX_TOKENS: usize = 50; // Reasonable limit for token expansion
@@ -229,23 +230,37 @@ fn validate_command_with_tokens(
         if chars[i] == '%' {
             if i + 1 < chars.len() {
                 let next_char = chars[i + 1];
-                match next_char {
-                    'h' | 'H' | 'n' | 'p' | 'r' | 'u' | '%' => {
-                        // Valid token, skip both characters
-                        i += 2;
-                    }
-                    _ => {
-                        anyhow::bail!(
-                            "Invalid token '%{next_char}' in {option_name} at line {line_number}. \
-                             Valid tokens are: %h, %H, %n, %p, %r, %u, %%"
-                        );
-                    }
+                let valid_token = if option_name == "LocalCommand" {
+                    matches!(
+                        next_char,
+                        'C' | 'd'
+                            | 'h'
+                            | 'H'
+                            | 'i'
+                            | 'k'
+                            | 'L'
+                            | 'l'
+                            | 'n'
+                            | 'p'
+                            | 'r'
+                            | 'T'
+                            | 'u'
+                            | '%'
+                    )
+                } else {
+                    matches!(next_char, 'h' | 'H' | 'n' | 'p' | 'r' | 'u' | '%')
+                };
+                if !valid_token {
+                    anyhow::bail!(
+                        "Invalid token '%{next_char}' in {option_name} at line {line_number}"
+                    );
                 }
+                i += 2;
             } else {
                 // % at end of string
                 anyhow::bail!(
                     "Incomplete token '%' at end of {option_name} at line {line_number}. \
-                     Valid tokens are: %h, %H, %n, %p, %r, %u, %%"
+                     Valid tokens are: %C, %d, %h, %H, %i, %k, %L, %l, %n, %p, %r, %T, %u, %%"
                 );
             }
         } else {
@@ -262,11 +277,18 @@ fn validate_command_with_tokens(
 
     // Replace all valid tokens with safe placeholders
     let tokens = [
+        ("%C", "CONNECTIONHASH"),
+        ("%d", "HOME"),
         ("%h", "HOSTNAME"),
         ("%H", "HOSTNAME"),
+        ("%i", "1000"),
+        ("%k", "HOSTKEYALIAS"),
+        ("%L", "LOCALHOSTSHORT"),
+        ("%l", "LOCALHOST"),
         ("%n", "ORIGINAL"),
         ("%p", "22"),
         ("%r", "USER"),
+        ("%T", "NONE"),
         ("%u", "LOCALUSER"),
     ];
 
@@ -309,6 +331,15 @@ mod tests {
                 "/usr/local/bin/fetch-host-key %H",
                 "KnownHostsCommand",
                 1
+            )
+            .is_ok()
+        );
+
+        assert!(
+            validate_command_with_tokens(
+                "echo %C %d %h %H %i %k %L %l %n %p %r %T %u %%",
+                "LocalCommand",
+                1,
             )
             .is_ok()
         );

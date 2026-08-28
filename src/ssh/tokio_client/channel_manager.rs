@@ -421,6 +421,17 @@ impl Client {
         sender: Sender<CommandOutput>,
         sudo_password: &SudoPassword,
     ) -> Result<u32, super::Error> {
+        self.execute_with_sudo_policy(command, sender, sudo_password, None)
+            .await
+    }
+
+    pub(crate) async fn execute_with_sudo_policy(
+        &self,
+        command: &str,
+        sender: Sender<CommandOutput>,
+        sudo_password: &SudoPassword,
+        session_policy: Option<&crate::ssh::SessionPolicy>,
+    ) -> Result<u32, super::Error> {
         // Sanitize command to prevent injection attacks
         let sanitized_command = crate::utils::sanitize_command(command)
             .map_err(|e| super::Error::CommandValidationFailed(e.to_string()))?;
@@ -433,24 +444,32 @@ impl Client {
             .await
             .map_err(|source| self.session_error_or(super::Error::ChannelOpen { source }))?;
 
-        // Request PTY with reasonable defaults for sudo
-        channel
-            .request_pty(
-                true,    // want reply
-                "xterm", // term type
-                80,      // columns
-                24,      // rows
-                0,       // pixel width
-                0,       // pixel height
-                &[],     // terminal modes (empty for defaults)
-            )
-            .await
-            .map_err(|source| {
-                self.session_error_or(super::Error::CommandExecution {
-                    action: "PTY request",
-                    source,
-                })
-            })?;
+        // Preserve the legacy sudo PTY default unless a resolved session policy
+        // carries explicit RequestTTY/CLI precedence.
+        if session_policy.is_none_or(|policy| policy.request_pty) {
+            channel
+                .request_pty(true, "xterm", 80, 24, 0, 0, &[])
+                .await
+                .map_err(|source| {
+                    self.session_error_or(super::Error::CommandExecution {
+                        action: "PTY request",
+                        source,
+                    })
+                })?;
+        }
+        if let Some(policy) = session_policy {
+            for (name, value) in &policy.environment {
+                channel
+                    .set_env(false, name, value)
+                    .await
+                    .map_err(|source| {
+                        self.session_error_or(super::Error::CommandExecution {
+                            action: "environment request",
+                            source,
+                        })
+                    })?;
+            }
+        }
 
         channel
             .exec(true, sanitized_command.as_str())

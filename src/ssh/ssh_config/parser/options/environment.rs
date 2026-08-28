@@ -17,8 +17,9 @@
 //! Handles environment-related configuration options including SendEnv
 //! and SetEnv settings for passing environment variables to remote hosts.
 
+use crate::ssh::session_policy::validate_environment;
 use crate::ssh::ssh_config::types::SshHostConfig;
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 /// Parse environment-related SSH configuration options
 pub(super) fn parse_environment_option(
@@ -52,6 +53,8 @@ pub(super) fn parse_environment_option(
                 if let Some(eq_pos) = pair.find('=') {
                     let name = pair[..eq_pos].to_string();
                     let value = pair[eq_pos + 1..].to_string();
+                    validate_environment(&name, &value)
+                        .with_context(|| format!("Invalid SetEnv entry at line {line_number}"))?;
                     host.set_env.entry(name).or_insert(value);
                 } else {
                     anyhow::bail!(

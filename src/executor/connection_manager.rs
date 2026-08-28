@@ -15,13 +15,14 @@
 //! SSH connection management and node operations.
 
 use anyhow::Result;
+use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::node::Node;
 use crate::security::{Password, SudoPassword};
 use crate::ssh::{
-    SshClient, SshConfig,
+    CliTtyMode, SessionPolicy, SshClient, SshConfig,
     client::{CommandResult, ConnectionConfig},
     known_hosts::StrictHostKeyChecking,
     tokio_client::{SshConnectionConfig, SshConnectionConfigResolver},
@@ -45,6 +46,7 @@ pub(crate) struct ExecutionConfig<'a> {
     /// `Some(_)`; auth.rs consumes it instead of prompting per node.
     pub ssh_password: Option<Arc<Password>>,
     pub ssh_config: Option<&'a SshConfig>,
+    pub tty_mode: CliTtyMode,
     /// SSH connection configuration (keepalive settings).
     /// Threaded through to `Client::connect_with_ssh_config` so user-configured
     /// `server_alive_interval` / `server_alive_count_max` apply to exec mode.
@@ -78,6 +80,20 @@ pub(crate) async fn execute_on_node_with_jump_hosts(
         ssh_config_jump_hosts.as_deref()
     };
 
+    let session_policy = config
+        .ssh_config
+        .map(|ssh_config| {
+            let effective = ssh_config.find_host_config(node.config_host());
+            SessionPolicy::resolve(
+                &effective,
+                &node,
+                (!command.is_empty()).then_some(command),
+                config.tty_mode,
+                std::io::stdin().is_terminal(),
+            )
+        })
+        .transpose()?;
+
     let connection_config = ConnectionConfig {
         key_path,
         strict_mode: Some(config.strict_mode),
@@ -90,6 +106,7 @@ pub(crate) async fn execute_on_node_with_jump_hosts(
         jump_hosts_spec: effective_jump_hosts,
         ssh_connection_config: config.ssh_connection_config,
         ssh_connection_config_resolver: config.ssh_connection_config_resolver,
+        session_policy: session_policy.as_ref(),
         ssh_password: config.ssh_password.clone(),
     };
 

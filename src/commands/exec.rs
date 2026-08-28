@@ -22,9 +22,9 @@ use crate::executor::{
 use crate::forwarding::ForwardingType;
 use crate::node::Node;
 use crate::security::{Password, SudoPassword};
-use crate::ssh::SshConfig;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
 use crate::ssh::tokio_client::{Error as SshError, SshConnectionConfigResolver};
+use crate::ssh::{CliTtyMode, SshConfig};
 use crate::ui::OutputFormatter;
 use crate::utils::output::save_outputs_to_files;
 
@@ -57,6 +57,7 @@ pub struct ExecuteCommandParams<'a> {
     pub batch: bool,
     pub fail_fast: bool,
     pub ssh_config: Option<&'a SshConfig>,
+    pub tty_mode: CliTtyMode,
     /// Per-host SSH connection configuration resolver.
     pub ssh_connection_config_resolver: SshConnectionConfigResolver,
 }
@@ -299,6 +300,7 @@ async fn execute_command_without_forwarding(params: ExecuteCommandParams<'_>) ->
     .with_batch_mode(params.batch)
     .with_fail_fast(params.fail_fast)
     .with_ssh_config(params.ssh_config.cloned())
+    .with_tty_mode(params.tty_mode)
     .with_ssh_connection_config_resolver(params.ssh_connection_config_resolver);
 
     // Set keychain usage if on macOS
