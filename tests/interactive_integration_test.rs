@@ -53,6 +53,7 @@ fn test_interactive_command_builder() {
         strict_mode: StrictHostKeyChecking::AcceptNew,
         pty_config: PtyConfig::default(),
         use_pty: None,
+        session_policy: None,
         jump_hosts: None,
         ssh_connection_config: SshConnectionConfig::default(),
     };
@@ -89,6 +90,7 @@ fn test_history_file_handling() {
         strict_mode: StrictHostKeyChecking::AcceptNew,
         pty_config: PtyConfig::default(),
         use_pty: None,
+        session_policy: None,
         jump_hosts: None,
         ssh_connection_config: SshConnectionConfig::default(),
     };
@@ -188,6 +190,7 @@ async fn test_interactive_with_unreachable_nodes() {
         strict_mode: StrictHostKeyChecking::AcceptNew,
         pty_config: PtyConfig::default(),
         use_pty: None,
+        session_policy: None,
         jump_hosts: None,
         ssh_connection_config: SshConnectionConfig::default(),
     };
@@ -224,6 +227,7 @@ async fn test_interactive_with_no_nodes() {
         strict_mode: StrictHostKeyChecking::AcceptNew,
         pty_config: PtyConfig::default(),
         use_pty: None,
+        session_policy: None,
         jump_hosts: None,
         ssh_connection_config: SshConnectionConfig::default(),
     };
@@ -270,6 +274,7 @@ fn test_mode_configuration() {
         strict_mode: StrictHostKeyChecking::AcceptNew,
         pty_config: PtyConfig::default(),
         use_pty: None,
+        session_policy: None,
         jump_hosts: None,
         ssh_connection_config: SshConnectionConfig::default(),
     };
@@ -297,6 +302,7 @@ fn test_mode_configuration() {
         strict_mode: StrictHostKeyChecking::AcceptNew,
         pty_config: PtyConfig::default(),
         use_pty: None,
+        session_policy: None,
         jump_hosts: None,
         ssh_connection_config: SshConnectionConfig::default(),
     };
@@ -327,6 +333,7 @@ fn test_working_directory_config() {
         strict_mode: StrictHostKeyChecking::AcceptNew,
         pty_config: PtyConfig::default(),
         use_pty: None,
+        session_policy: None,
         jump_hosts: None,
         ssh_connection_config: SshConnectionConfig::default(),
     };
@@ -352,6 +359,7 @@ fn test_working_directory_config() {
         strict_mode: StrictHostKeyChecking::AcceptNew,
         pty_config: PtyConfig::default(),
         use_pty: None,
+        session_policy: None,
         jump_hosts: None,
         ssh_connection_config: SshConnectionConfig::default(),
     };
@@ -389,6 +397,7 @@ fn test_prompt_format() {
             strict_mode: StrictHostKeyChecking::AcceptNew,
             pty_config: PtyConfig::default(),
             use_pty: None,
+            session_policy: None,
             jump_hosts: None,
             ssh_connection_config: SshConnectionConfig::default(),
         };

@@ -14,6 +14,7 @@ pub(super) enum RuntimeConsumer {
     HostVerification,
     Transport,
     Proxy,
+    Session,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,7 +24,9 @@ pub(super) struct KeywordSpec {
 }
 
 use KeywordSupport::{Delegated, Runtime, Unimplemented};
-use RuntimeConsumer::{Authentication, HostVerification, NodeResolution, Proxy, Transport};
+use RuntimeConsumer::{
+    Authentication, HostVerification, NodeResolution, Proxy, Session, Transport,
+};
 
 pub(super) const ACCEPTED_KEYWORDS: &[(&str, &str, KeywordSupport)] = &[
     ("hostname", "hostname", Runtime(NodeResolution)),
@@ -178,23 +181,23 @@ pub(super) const ACCEPTED_KEYWORDS: &[(&str, &str, KeywordSupport)] = &[
     ("controlmaster", "controlmaster", Unimplemented),
     ("controlpath", "controlpath", Unimplemented),
     ("controlpersist", "controlpersist", Unimplemented),
-    ("sendenv", "sendenv", Delegated(297)),
-    ("setenv", "setenv", Delegated(297)),
-    ("requesttty", "requesttty", Delegated(297)),
+    ("sendenv", "sendenv", Runtime(Session)),
+    ("setenv", "setenv", Runtime(Session)),
+    ("requesttty", "requesttty", Runtime(Session)),
     ("escapechar", "escapechar", Unimplemented),
     ("loglevel", "loglevel", Unimplemented),
     ("syslogfacility", "syslogfacility", Unimplemented),
     ("protocol", "protocol", Unimplemented),
-    ("permitlocalcommand", "permitlocalcommand", Delegated(297)),
-    ("localcommand", "localcommand", Delegated(297)),
-    ("remotecommand", "remotecommand", Delegated(297)),
+    ("permitlocalcommand", "permitlocalcommand", Runtime(Session)),
+    ("localcommand", "localcommand", Runtime(Session)),
+    ("remotecommand", "remotecommand", Runtime(Session)),
     ("knownhostscommand", "knownhostscommand", Delegated(299)),
     (
         "forkafterauthentication",
         "forkafterauthentication",
         Unimplemented,
     ),
-    ("sessiontype", "sessiontype", Delegated(297)),
+    ("sessiontype", "sessiontype", Runtime(Session)),
     ("stdinnull", "stdinnull", Unimplemented),
     ("cipher", "cipher", Unimplemented),
     ("fallbacktorsh", "fallbacktorsh", Unimplemented),
@@ -279,6 +282,13 @@ mod tests {
             ("proxyjump", Proxy),
             ("proxycommand", Proxy),
             ("proxyusefdpass", Proxy),
+            ("sendenv", Session),
+            ("setenv", Session),
+            ("requesttty", Session),
+            ("permitlocalcommand", Session),
+            ("localcommand", Session),
+            ("remotecommand", Session),
+            ("sessiontype", Session),
         ];
         let runtime = ACCEPTED_KEYWORDS
             .iter()
@@ -306,13 +316,6 @@ mod tests {
             ("passwordauthentication", 296),
             ("numberofpasswordprompts", 296),
             ("batchmode", 296),
-            ("sendenv", 297),
-            ("setenv", 297),
-            ("localcommand", 297),
-            ("permitlocalcommand", 297),
-            ("requesttty", 297),
-            ("sessiontype", 297),
-            ("remotecommand", 297),
             ("localforward", 298),
             ("remoteforward", 298),
             ("dynamicforward", 298),

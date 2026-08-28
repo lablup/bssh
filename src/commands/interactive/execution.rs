@@ -30,11 +30,11 @@ use super::types::{InteractiveCommand, InteractiveResult};
 impl InteractiveCommand {
     /// Main entry point for interactive session execution
     pub async fn execute(self) -> Result<InteractiveResult> {
-        let use_pty = self.should_use_pty()?;
+        let use_raw_session = self.should_use_raw_session()?;
 
-        // Choose between PTY mode and traditional interactive mode
-        if use_pty {
-            // Use new PTY implementation for true terminal support
+        // SSH-compatible shells always use the raw byte-stream runner. Regular
+        // bssh interactive sessions retain their traditional line UI fallback.
+        if use_raw_session {
             self.execute_with_pty().await
         } else {
             // Use traditional rustyline-based interactive mode (existing implementation)
@@ -43,10 +43,13 @@ impl InteractiveCommand {
     }
 
     /// Execute interactive session with full PTY support
-    pub(super) async fn execute_with_pty(self) -> Result<InteractiveResult> {
+    pub(super) async fn execute_with_pty(mut self) -> Result<InteractiveResult> {
         let start_time = std::time::Instant::now();
+        let ssh_compatible = self.session_policy.is_some();
 
-        println!("Starting interactive session with PTY support...");
+        if !ssh_compatible {
+            println!("Starting interactive SSH byte-stream session...");
+        }
 
         // Determine which nodes to connect to
         let nodes_to_connect = self.select_nodes_to_connect()?;
@@ -58,7 +61,9 @@ impl InteractiveCommand {
         for node in nodes_to_connect {
             match self.connect_to_node_pty(node.clone()).await {
                 Ok(channel) => {
-                    println!("✓ Connected to {} with PTY", node.to_string().green());
+                    if !ssh_compatible {
+                        println!("✓ Connected to {}", node.to_string().green());
+                    }
                     channels.push(channel);
                     connected_nodes.push(node);
                 }
@@ -78,32 +83,36 @@ impl InteractiveCommand {
 
         let nodes_connected = channels.len();
 
-        // Create PTY manager and sessions
+        let mut session_config = self.pty_config.clone();
+        if let Some(policy) = self.session_policy.take() {
+            session_config.environment = policy.environment;
+        }
+
+        // Create raw stream manager and sessions. PtyConfig::disable_pty only
+        // controls remote PTY/resize requests, not byte-transparent I/O.
+        let requested_remote_pty = !session_config.disable_pty;
         let mut pty_manager = PtyManager::new();
 
         if self.single_node && channels.len() == 1 {
             // Single PTY session
             let session_id = pty_manager
-                .create_single_session(
-                    channels.into_iter().next().unwrap(),
-                    self.pty_config.clone(),
-                )
+                .create_single_session(channels.into_iter().next().unwrap(), session_config.clone())
                 .await?;
 
             pty_manager.run_single_session(session_id).await?;
         } else {
             // Multiple PTY sessions with multiplexing
             let session_ids = pty_manager
-                .create_multiplex_sessions(channels, self.pty_config.clone())
+                .create_multiplex_sessions(channels, session_config)
                 .await?;
 
             pty_manager.run_multiplex_sessions(session_ids).await?;
         }
 
-        // Ensure terminal is fully restored after PTY session ends
-        // Use synchronized cleanup to prevent race conditions
-        crate::pty::terminal::force_terminal_cleanup();
-        let _ = std::io::Write::flush(&mut std::io::stdout());
+        if requested_remote_pty {
+            crate::pty::terminal::force_terminal_cleanup();
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+        }
 
         Ok(InteractiveResult {
             duration: start_time.elapsed(),

@@ -41,9 +41,8 @@ pub(super) fn parse_command_option(
                 anyhow::bail!("LocalCommand requires a value at line {line_number}");
             }
             let command = args.join(" ");
-            // Security: Validate the command to prevent injection attacks
-            // LocalCommand supports token substitution: %h, %H, %n, %p, %r, %u
-            // These tokens are safe and will be substituted by the client
+            // LocalCommand accepts the default OpenSSH client token set plus %T.
+            // Expanded values are checked again at the runtime shell boundary.
             validate_command_with_tokens(&command, "LocalCommand", line_number)?;
             host.local_command = Some(command);
         }
@@ -52,6 +51,11 @@ pub(super) fn parse_command_option(
                 anyhow::bail!("RemoteCommand requires a value at line {line_number}");
             }
             let command = args.join(" ");
+            if command.trim().is_empty() {
+                anyhow::bail!("RemoteCommand cannot be empty at line {line_number}");
+            }
+
+            validate_default_percent_tokens(&command, "RemoteCommand", line_number, 16 * 1024)?;
 
             // Security: Warn about potentially dangerous patterns even though it runs remotely
             // This helps prevent lateral movement attacks
@@ -170,114 +174,141 @@ fn validate_remote_command_warnings(command: &str, line_number: usize) {
     }
 }
 
-/// Validate command strings that support token substitution
-///
-/// This function validates commands while allowing SSH token substitution patterns.
-/// Supported tokens:
-/// - %h - remote hostname (from config)
-/// - %H - remote hostname (as specified on command line)
-/// - %n - original hostname
-/// - %p - remote port
-/// - %r - remote username
-/// - %u - local username
-/// - %% - literal %
-///
-/// The actual token substitution is performed by the SSH client, not the parser.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PercentTokenSet {
+    Default,
+    LocalCommand,
+    KnownHostsCommand,
+}
+
+impl PercentTokenSet {
+    fn accepts(self, token: char) -> bool {
+        let default = matches!(
+            token,
+            '%' | 'C' | 'd' | 'h' | 'i' | 'j' | 'k' | 'L' | 'l' | 'n' | 'p' | 'r' | 'u'
+        );
+        default
+            || matches!((self, token), (Self::LocalCommand, 'T'))
+            || matches!(
+                (self, token),
+                (Self::KnownHostsCommand, 'f' | 'H' | 'I' | 'K' | 't')
+            )
+    }
+
+    fn description(self) -> &'static str {
+        match self {
+            Self::Default => "%%, %C, %d, %h, %i, %j, %k, %L, %l, %n, %p, %r, %u",
+            Self::LocalCommand => "%%, %C, %d, %h, %i, %j, %k, %L, %l, %n, %p, %r, %T, %u",
+            Self::KnownHostsCommand => {
+                "%%, %C, %d, %f, %H, %h, %I, %i, %j, %K, %k, %L, %l, %n, %p, %r, %t, %u"
+            }
+        }
+    }
+}
+
+/// Validate the OpenSSH default client percent-token set without applying
+/// local-shell restrictions. RemoteCommand and SetEnv both use this set.
+pub(super) fn validate_default_percent_tokens(
+    value: &str,
+    option_name: &str,
+    line_number: usize,
+    max_bytes: usize,
+) -> Result<()> {
+    validate_percent_tokens(
+        value,
+        option_name,
+        line_number,
+        PercentTokenSet::Default,
+        max_bytes,
+    )
+}
+
+fn validate_percent_tokens(
+    value: &str,
+    option_name: &str,
+    line_number: usize,
+    token_set: PercentTokenSet,
+    max_bytes: usize,
+) -> Result<()> {
+    if value.len() > max_bytes {
+        anyhow::bail!("{option_name} exceeds the {max_bytes}-byte limit at line {line_number}");
+    }
+
+    const MAX_TOKENS: usize = 50;
+    let mut token_count = 0;
+    let mut chars = value.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '%' {
+            continue;
+        }
+        let token = chars.next().ok_or_else(|| {
+            anyhow::anyhow!(
+                "Incomplete token '%' at end of {option_name} at line {line_number}; valid tokens are {}",
+                token_set.description()
+            )
+        })?;
+        if !token_set.accepts(token) {
+            anyhow::bail!(
+                "Invalid token '%{token}' in {option_name} at line {line_number}; valid tokens are {}",
+                token_set.description()
+            );
+        }
+        if token != '%' {
+            token_count += 1;
+            if token_count > MAX_TOKENS {
+                anyhow::bail!(
+                    "Security violation: {option_name} contains excessive token usage ({token_count} tokens) at line {line_number}. Maximum allowed is {MAX_TOKENS} tokens."
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Validate a locally executed command after replacing its accepted tokens
+/// with inert placeholders. Runtime expansion performs a second validation at
+/// the actual local-shell boundary.
 fn validate_command_with_tokens(
     command: &str,
     option_name: &str,
     line_number: usize,
 ) -> Result<()> {
-    // First, check if the command is empty or just whitespace
     if command.trim().is_empty() {
         anyhow::bail!("{option_name} cannot be empty at line {line_number}");
     }
+    let token_set = if option_name == "LocalCommand" {
+        PercentTokenSet::LocalCommand
+    } else {
+        PercentTokenSet::KnownHostsCommand
+    };
+    validate_percent_tokens(command, option_name, line_number, token_set, 16 * 1024)?;
 
-    // Security: Check for excessive token usage that could cause DoS
-    // Count the number of tokens (excluding %%)
-    let token_count = command.matches("%h").count()
-        + command.matches("%H").count()
-        + command.matches("%n").count()
-        + command.matches("%p").count()
-        + command.matches("%r").count()
-        + command.matches("%u").count();
-
-    const MAX_TOKENS: usize = 50; // Reasonable limit for token expansion
-    if token_count > MAX_TOKENS {
-        anyhow::bail!(
-            "Security violation: {option_name} contains excessive token usage ({token_count} tokens) at line {line_number}. \
-             Maximum allowed is {MAX_TOKENS} tokens to prevent resource exhaustion."
-        );
-    }
-
-    // Check command length after potential expansion (worst case)
-    // Assume each token could expand to 255 chars (max hostname/username length)
-    const MAX_EXPANDED_LENGTH: usize = 8192; // 8KB reasonable limit
-    let potential_length = command.len() + (token_count * 255);
-    if potential_length > MAX_EXPANDED_LENGTH {
-        anyhow::bail!(
-            "Security violation: {option_name} could expand to {potential_length} bytes at line {line_number}. \
-             Maximum allowed expanded length is {MAX_EXPANDED_LENGTH} bytes."
-        );
-    }
-
-    // Validate tokens before substitution
-    // We need to check for invalid tokens (% followed by invalid char)
-    let chars: Vec<char> = command.chars().collect();
-    let mut i = 0;
-    while i < chars.len() {
-        if chars[i] == '%' {
-            if i + 1 < chars.len() {
-                let next_char = chars[i + 1];
-                match next_char {
-                    'h' | 'H' | 'n' | 'p' | 'r' | 'u' | '%' => {
-                        // Valid token, skip both characters
-                        i += 2;
-                    }
-                    _ => {
-                        anyhow::bail!(
-                            "Invalid token '%{next_char}' in {option_name} at line {line_number}. \
-                             Valid tokens are: %h, %H, %n, %p, %r, %u, %%"
-                        );
-                    }
-                }
-            } else {
-                // % at end of string
-                anyhow::bail!(
-                    "Incomplete token '%' at end of {option_name} at line {line_number}. \
-                     Valid tokens are: %h, %H, %n, %p, %r, %u, %%"
-                );
-            }
-        } else {
-            i += 1;
-        }
-    }
-
-    // Create a temporary command with tokens replaced for validation
-    // Replace valid tokens with safe placeholder strings
-    let mut sanitized = command.to_string();
-
-    // Replace %% with a temporary marker to avoid issues
-    sanitized = sanitized.replace("%%", "__DOUBLE_PERCENT__");
-
-    // Replace all valid tokens with safe placeholders
+    let mut sanitized = command.replace("%%", "__DOUBLE_PERCENT__");
     let tokens = [
+        ("%C", "CONNECTIONHASH"),
+        ("%d", "HOME"),
+        ("%f", "FINGERPRINT"),
+        ("%H", "KNOWNHOST"),
         ("%h", "HOSTNAME"),
-        ("%H", "HOSTNAME"),
+        ("%I", "REASON"),
+        ("%i", "1000"),
+        ("%j", "JUMPHOST"),
+        ("%K", "HOSTKEY"),
+        ("%k", "HOSTKEYALIAS"),
+        ("%L", "LOCALHOSTSHORT"),
+        ("%l", "LOCALHOST"),
         ("%n", "ORIGINAL"),
         ("%p", "22"),
         ("%r", "USER"),
+        ("%T", "NONE"),
+        ("%t", "HOSTKEYTYPE"),
         ("%u", "LOCALUSER"),
     ];
-
-    for (token, replacement) in tokens.iter() {
+    for (token, replacement) in tokens {
         sanitized = sanitized.replace(token, replacement);
     }
-
-    // Restore the %% marker as a single % for accurate validation
     sanitized = sanitized.replace("__DOUBLE_PERCENT__", "%");
 
-    // Now validate the sanitized command for injection attacks
     validate_executable_string(&sanitized, option_name, line_number).with_context(|| {
         format!("Security validation failed for {option_name} at line {line_number}")
     })
@@ -313,6 +344,15 @@ mod tests {
             .is_ok()
         );
 
+        assert!(
+            validate_command_with_tokens(
+                "echo %C %d %h %i %j %k %L %l %n %p %r %T %u %%",
+                "LocalCommand",
+                1,
+            )
+            .is_ok()
+        );
+
         // Command with escaped percent
         assert!(
             validate_command_with_tokens("echo \"Progress: 50%% complete\"", "LocalCommand", 1)
@@ -322,8 +362,9 @@ mod tests {
 
     #[test]
     fn test_validate_command_with_tokens_invalid() {
-        // Invalid token
+        // Invalid token, and %H is KnownHostsCommand-only.
         assert!(validate_command_with_tokens("echo %x", "LocalCommand", 1).is_err());
+        assert!(validate_command_with_tokens("echo %H", "LocalCommand", 1).is_err());
 
         // Command with dangerous characters (after token substitution)
         assert!(validate_command_with_tokens("echo test; rm -rf /", "LocalCommand", 1).is_err());
@@ -348,13 +389,16 @@ mod tests {
         let ok_tokens = format!("echo {}", "%h ".repeat(20)); // 20 tokens, expands to ~5KB
         assert!(validate_command_with_tokens(&ok_tokens, "LocalCommand", 1).is_ok());
 
-        // Token count OK but would expand to huge size
-        let huge_expansion = format!("{} {}", "%h".repeat(30), "x".repeat(1000));
-        assert!(validate_command_with_tokens(&huge_expansion, "LocalCommand", 1).is_err());
+        // Actual post-expansion bounds are enforced with concrete runtime
+        // values; the parser bounds the raw command without guessing lengths.
+        let under_raw_limit = format!("{} {}", "%h".repeat(30), "x".repeat(1000));
+        assert!(validate_command_with_tokens(&under_raw_limit, "LocalCommand", 1).is_ok());
+        let over_raw_limit = "x".repeat(16 * 1024 + 1);
+        assert!(validate_command_with_tokens(&over_raw_limit, "LocalCommand", 1).is_err());
 
-        // Exactly at token limit (50 tokens) but would exceed size after expansion
+        // Exactly at the token limit remains valid.
         let at_limit = "%p ".repeat(50);
-        assert!(validate_command_with_tokens(&at_limit, "LocalCommand", 1).is_err());
+        assert!(validate_command_with_tokens(&at_limit, "LocalCommand", 1).is_ok());
 
         // Just over token limit (51 tokens)
         let over_limit = "%p ".repeat(51);
@@ -451,6 +495,23 @@ mod tests {
             config.remote_command,
             Some("tmux attach -t dev || tmux new".to_string())
         );
+
+        let default_tokens = "echo %% %C %d %h %i %j %k %L %l %n %p %r %u";
+        assert!(
+            parse_command_option(
+                &mut config,
+                "remotecommand",
+                &[default_tokens.to_string()],
+                1,
+            )
+            .is_ok()
+        );
+        for invalid in ["echo %H", "echo %T"] {
+            assert!(
+                parse_command_option(&mut config, "remotecommand", &[invalid.to_string()], 1,)
+                    .is_err()
+            );
+        }
 
         // Missing value
         assert!(parse_command_option(&mut config, "remotecommand", &[], 1).is_err());

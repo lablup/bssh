@@ -25,6 +25,7 @@ use crate::config::{Config, InteractiveConfig};
 use crate::node::Node;
 use crate::pty::PtyConfig;
 use crate::security::Password;
+use crate::ssh::SessionPolicy;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
 use crate::ssh::tokio_client::{Client, SshConnectionConfig};
 
@@ -66,6 +67,8 @@ pub struct InteractiveCommand {
     // PTY configuration
     pub pty_config: PtyConfig,
     pub use_pty: Option<bool>, // None = auto-detect, Some(true) = force, Some(false) = disable
+    /// Resolved live ssh_config policy for the SSH-compatible interactive path.
+    pub session_policy: Option<SessionPolicy>,
     // SSH connection configuration (keepalive settings)
     pub ssh_connection_config: SshConnectionConfig,
 }

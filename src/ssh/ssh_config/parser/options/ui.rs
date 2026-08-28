@@ -32,7 +32,13 @@ pub(super) fn parse_ui_option(
             if args.is_empty() {
                 anyhow::bail!("RequestTTY requires a value at line {line_number}");
             }
-            host.request_tty = Some(args[0].clone());
+            let value = args[0].to_ascii_lowercase();
+            if !matches!(value.as_str(), "yes" | "force" | "auto" | "no") {
+                anyhow::bail!(
+                    "Invalid RequestTTY value '{value}' at line {line_number} (expected: yes, force, auto, or no)"
+                );
+            }
+            host.request_tty = Some(value);
         }
         "escapechar" => {
             if args.is_empty() {

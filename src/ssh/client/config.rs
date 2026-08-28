@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::security::Password;
+use crate::ssh::SessionPolicy;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
 use crate::ssh::tokio_client::{SshConnectionConfig, SshConnectionConfigResolver};
 use std::path::Path;
@@ -34,6 +35,8 @@ pub struct ConnectionConfig<'a> {
     pub ssh_connection_config: Option<&'a SshConnectionConfig>,
     /// Per-host connection settings resolver used by jump chains.
     pub ssh_connection_config_resolver: Option<&'a SshConnectionConfigResolver>,
+    /// Resolved environment, command, TTY, and channel request policy.
+    pub session_policy: Option<&'a SessionPolicy>,
     /// Pre-collected SSH password shared with every per-node auth task.
     ///
     /// When `use_password` is `true`, this MUST be `Some(_)`; the dispatcher

@@ -54,7 +54,7 @@ Host test3
     LocalCommand /usr/local/bin/script %u@%r:%p
 
 Host test4
-    LocalCommand echo "Hostname: %h, %H, Original: %n, Port: %p, User: %r, Local: %u"
+    LocalCommand echo "Hostname: %h, %j, Original: %n, Port: %p, User: %r, Local: %u"
 
 Host test5
     LocalCommand echo "Literal percent: %% done"
@@ -78,7 +78,7 @@ Host test5
     );
     assert_eq!(
         hosts[3].local_command,
-        Some("echo \"Hostname: %h, %H, Original: %n, Port: %p, User: %r, Local: %u\"".to_string())
+        Some("echo \"Hostname: %h, %j, Original: %n, Port: %p, User: %r, Local: %u\"".to_string())
     );
     assert_eq!(
         hosts[4].local_command,

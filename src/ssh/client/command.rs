@@ -77,6 +77,7 @@ impl SshClient {
             jump_hosts_spec: None,         // No jump hosts
             ssh_connection_config: None,
             ssh_connection_config_resolver: None,
+            session_policy: None,
             ssh_password,
         };
 
@@ -125,11 +126,19 @@ impl SshClient {
             .await?;
 
         tracing::debug!("Connected and authenticated successfully");
+        if let Some(policy) = config.session_policy {
+            policy.run_local_command().await?;
+        }
         tracing::debug!("Executing command: {}", command);
 
         // Execute command with timeout
         let result = self
-            .execute_with_timeout(&client, command, config.timeout_seconds)
+            .execute_with_timeout(
+                &client,
+                command,
+                config.timeout_seconds,
+                config.session_policy,
+            )
             .await?;
 
         tracing::debug!(
@@ -146,18 +155,31 @@ impl SshClient {
         })
     }
 
+    async fn execute_resolved_session(
+        client: &crate::ssh::tokio_client::Client,
+        command: &str,
+        session_policy: Option<&crate::ssh::SessionPolicy>,
+    ) -> Result<crate::ssh::tokio_client::CommandExecutedResult, crate::ssh::tokio_client::Error>
+    {
+        match session_policy {
+            Some(policy) => client.execute_session(policy).await,
+            None => client.execute(command).await,
+        }
+    }
+
     /// Execute a command with the specified timeout
     async fn execute_with_timeout(
         &self,
         client: &crate::ssh::tokio_client::Client,
         command: &str,
         timeout_seconds: Option<u64>,
+        session_policy: Option<&crate::ssh::SessionPolicy>,
     ) -> Result<crate::ssh::tokio_client::CommandExecutedResult> {
         if let Some(timeout_secs) = timeout_seconds {
             if timeout_secs == 0 {
                 // No timeout (unlimited)
                 tracing::debug!("Executing command with no timeout (unlimited)");
-                client.execute(command)
+                Self::execute_resolved_session(client, command, session_policy)
                     .await
                     .with_context(|| format!("Failed to execute command '{}' on {}:{}. The SSH connection was successful but the command could not be executed.", command, self.host, self.port))
             } else {
@@ -166,7 +188,7 @@ impl SshClient {
                 tracing::debug!("Executing command with timeout of {} seconds", timeout_secs);
                 tokio::time::timeout(
                     command_timeout,
-                    client.execute(command)
+                    Self::execute_resolved_session(client, command, session_policy)
                 )
                 .await
                 .with_context(|| format!("Command execution timeout: The command '{}' did not complete within {} seconds on {}:{}", command, timeout_secs, self.host, self.port))?
@@ -178,7 +200,7 @@ impl SshClient {
             tracing::debug!("Executing command with default timeout of 300 seconds");
             tokio::time::timeout(
                 command_timeout,
-                client.execute(command)
+                Self::execute_resolved_session(client, command, session_policy)
             )
             .await
             .with_context(|| format!("Command execution timeout: The command '{}' did not complete within 5 minutes on {}:{}", command, self.host, self.port))?
@@ -239,16 +261,41 @@ impl SshClient {
             .await?;
 
         tracing::debug!("Connected and authenticated successfully");
+        if let Some(policy) = config.session_policy {
+            policy.run_local_command().await?;
+        }
         tracing::debug!("Executing command with streaming: {}", command);
 
         // Execute command with streaming and timeout
         let exit_status = self
-            .execute_streaming_with_timeout(&client, command, config.timeout_seconds, output_sender)
+            .execute_streaming_with_timeout(
+                &client,
+                command,
+                config.timeout_seconds,
+                output_sender,
+                config.session_policy,
+            )
             .await?;
 
         tracing::debug!("Command execution completed with status: {}", exit_status);
 
         Ok(exit_status)
+    }
+
+    async fn execute_resolved_session_streaming(
+        client: &crate::ssh::tokio_client::Client,
+        command: &str,
+        output_sender: Sender<CommandOutput>,
+        session_policy: Option<&crate::ssh::SessionPolicy>,
+    ) -> Result<u32, crate::ssh::tokio_client::Error> {
+        match session_policy {
+            Some(policy) => {
+                client
+                    .execute_session_streaming(policy, output_sender)
+                    .await
+            }
+            None => client.execute_streaming(command, output_sender).await,
+        }
     }
 
     /// Execute a command with streaming output and the specified timeout
@@ -258,12 +305,13 @@ impl SshClient {
         command: &str,
         timeout_seconds: Option<u64>,
         output_sender: Sender<CommandOutput>,
+        session_policy: Option<&crate::ssh::SessionPolicy>,
     ) -> Result<u32> {
         if let Some(timeout_secs) = timeout_seconds {
             if timeout_secs == 0 {
                 // No timeout (unlimited)
                 tracing::debug!("Executing command with streaming, no timeout (unlimited)");
-                client.execute_streaming(command, output_sender)
+                Self::execute_resolved_session_streaming(client, command, output_sender, session_policy)
                     .await
                     .with_context(|| format!("Failed to execute command '{}' on {}:{}. The SSH connection was successful but the command could not be executed.", command, self.host, self.port))
             } else {
@@ -275,7 +323,7 @@ impl SshClient {
                 );
                 tokio::time::timeout(
                     command_timeout,
-                    client.execute_streaming(command, output_sender)
+                    Self::execute_resolved_session_streaming(client, command, output_sender, session_policy)
                 )
                 .await
                 .with_context(|| format!("Command execution timeout: The command '{}' did not complete within {} seconds on {}:{}", command, timeout_secs, self.host, self.port))?
@@ -287,7 +335,7 @@ impl SshClient {
             tracing::debug!("Executing command with streaming, default timeout of 300 seconds");
             tokio::time::timeout(
                 command_timeout,
-                client.execute_streaming(command, output_sender)
+                Self::execute_resolved_session_streaming(client, command, output_sender, session_policy)
             )
             .await
             .with_context(|| format!("Command execution timeout: The command '{}' did not complete within 5 minutes on {}:{}", command, self.host, self.port))?
@@ -354,6 +402,9 @@ impl SshClient {
             .await?;
 
         tracing::debug!("Connected and authenticated successfully");
+        if let Some(policy) = config.session_policy {
+            policy.run_local_command().await?;
+        }
         tracing::debug!("Executing command with sudo support: {}", command);
 
         // Execute command with sudo support and timeout
@@ -364,6 +415,7 @@ impl SshClient {
                 config.timeout_seconds,
                 output_sender,
                 sudo_password,
+                config.session_policy,
             )
             .await?;
 
@@ -380,13 +432,14 @@ impl SshClient {
         timeout_seconds: Option<u64>,
         output_sender: Sender<CommandOutput>,
         sudo_password: &SudoPassword,
+        session_policy: Option<&crate::ssh::SessionPolicy>,
     ) -> Result<u32> {
         if let Some(timeout_secs) = timeout_seconds {
             if timeout_secs == 0 {
                 // No timeout (unlimited)
                 tracing::debug!("Executing sudo command with no timeout (unlimited)");
                 client
-                    .execute_with_sudo(command, output_sender, sudo_password)
+                    .execute_with_sudo_policy(command, output_sender, sudo_password, session_policy)
                     .await
                     .with_context(|| {
                         format!(
@@ -403,7 +456,7 @@ impl SshClient {
                 );
                 tokio::time::timeout(
                     command_timeout,
-                    client.execute_with_sudo(command, output_sender, sudo_password)
+                    client.execute_with_sudo_policy(command, output_sender, sudo_password, session_policy)
                 )
                 .await
                 .with_context(|| format!("Command execution timeout: The sudo command '{}' did not complete within {} seconds on {}:{}", command, timeout_secs, self.host, self.port))?
@@ -415,7 +468,7 @@ impl SshClient {
             tracing::debug!("Executing sudo command with default timeout of 300 seconds");
             tokio::time::timeout(
                 command_timeout,
-                client.execute_with_sudo(command, output_sender, sudo_password)
+                client.execute_with_sudo_policy(command, output_sender, sudo_password, session_policy)
             )
             .await
             .with_context(|| format!("Command execution timeout: The sudo command '{}' did not complete within 5 minutes on {}:{}", command, self.host, self.port))?

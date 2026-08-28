@@ -16,7 +16,7 @@
 
 use super::constants::*;
 use super::escape_filter::EscapeSequenceFilter;
-use super::output_delivery::deliver_filtered_output;
+use super::output_delivery::deliver_session_output;
 use super::raw_input_task;
 use super::terminal_modes::configure_terminal_modes;
 use crate::pty::{
@@ -25,9 +25,29 @@ use crate::pty::{
 };
 use anyhow::{Context, Result};
 use russh::{Channel, ChannelMsg, client::Msg};
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use tokio::sync::{mpsc, watch};
 use tokio::time::Duration;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SessionSetupStep {
+    Environment(usize),
+    TerminalEnvironment,
+    RequestPty,
+    RequestShell,
+}
+
+fn session_setup_plan(config: &PtyConfig) -> Vec<SessionSetupStep> {
+    let mut steps = (0..config.environment.len())
+        .map(SessionSetupStep::Environment)
+        .collect::<Vec<_>>();
+    if !config.disable_pty {
+        steps.push(SessionSetupStep::TerminalEnvironment);
+        steps.push(SessionSetupStep::RequestPty);
+    }
+    steps.push(SessionSetupStep::RequestShell);
+    steps
+}
 
 /// A PTY session managing the bidirectional communication between
 /// local terminal and remote SSH session.
@@ -80,67 +100,70 @@ impl PtySession {
         self.state
     }
 
-    /// Initialize the PTY session with the remote terminal
+    pub(crate) fn requests_remote_pty(&self) -> bool {
+        !self.config.disable_pty
+    }
+
+    /// Initialize the raw session, optionally requesting a remote PTY.
     pub async fn initialize(&mut self) -> Result<()> {
         self.state = PtyState::Initializing;
 
-        // Get terminal size
-        let (width, height) = crate::pty::utils::get_terminal_size()?;
-
-        // Set TERM environment variable before requesting PTY
-        // This ensures the remote shell knows the terminal capabilities
-        // Note: The server may not accept this (AcceptEnv in sshd_config),
-        // but the PTY request will also include the term type
-        if let Err(e) = self
-            .channel
-            .set_env(false, "TERM", &self.config.term_type)
-            .await
-        {
-            // Log but don't fail - server may reject env requests
-            tracing::debug!(
-                "Server did not accept TERM environment variable: {}. \
-                This is expected if AcceptEnv is not configured for TERM in sshd_config. \
-                The terminal type will still be set via the PTY request.",
-                e
-            );
+        for step in session_setup_plan(&self.config) {
+            match step {
+                SessionSetupStep::Environment(index) => {
+                    let (name, value) = &self.config.environment[index];
+                    self.channel
+                        .set_env(false, name, value)
+                        .await
+                        .with_context(|| {
+                            format!("Failed to send SSH environment variable {name}")
+                        })?;
+                }
+                SessionSetupStep::TerminalEnvironment => {
+                    if let Err(error) = self
+                        .channel
+                        .set_env(false, "TERM", &self.config.term_type)
+                        .await
+                    {
+                        tracing::debug!("Server did not accept TERM environment variable: {error}");
+                    }
+                    if let Err(error) = self.channel.set_env(false, "COLORTERM", "truecolor").await
+                    {
+                        tracing::trace!(
+                            "Server did not accept COLORTERM environment variable: {error}"
+                        );
+                    }
+                }
+                SessionSetupStep::RequestPty => {
+                    let (width, height) = crate::pty::utils::get_terminal_size()?;
+                    let terminal_modes = configure_terminal_modes();
+                    self.channel
+                        .request_pty(
+                            false,
+                            &self.config.term_type,
+                            width,
+                            height,
+                            0,
+                            0,
+                            &terminal_modes,
+                        )
+                        .await
+                        .with_context(|| "Failed to request PTY on SSH channel")?;
+                }
+                SessionSetupStep::RequestShell => {
+                    self.channel
+                        .request_shell(false)
+                        .await
+                        .with_context(|| "Failed to request shell on SSH channel")?;
+                }
+            }
         }
-
-        // Also set COLORTERM for better color support detection
-        // Many modern terminals set this to indicate truecolor support
-        if let Err(e) = self.channel.set_env(false, "COLORTERM", "truecolor").await {
-            tracing::trace!(
-                "Server did not accept COLORTERM environment variable: {}",
-                e
-            );
-        }
-
-        // Request PTY on the SSH channel with properly configured terminal modes
-        // Configure terminal modes for proper sudo/passwd password input support
-        let terminal_modes = configure_terminal_modes();
-        self.channel
-            .request_pty(
-                false,
-                &self.config.term_type,
-                width,
-                height,
-                0,               // pixel width (0 means undefined)
-                0,               // pixel height (0 means undefined)
-                &terminal_modes, // Terminal modes using russh Pty enum
-            )
-            .await
-            .with_context(|| "Failed to request PTY on SSH channel")?;
-
-        // Request shell
-        self.channel
-            .request_shell(false)
-            .await
-            .with_context(|| "Failed to request shell on SSH channel")?;
 
         self.state = PtyState::Active;
         tracing::debug!(
-            "PTY session {} initialized with TERM={}",
+            "Raw SSH session {} initialized (remote PTY: {})",
             self.session_id,
-            self.config.term_type
+            !self.config.disable_pty
         );
         Ok(())
     }
@@ -155,13 +178,23 @@ impl PtySession {
             anyhow::bail!("PTY session is not in active state");
         }
 
-        // Set up terminal state guard
-        let mut terminal_guard = TerminalStateGuard::new()?;
+        // Match OpenSSH client_loop semantics: only a session with a remote PTY
+        // changes the local terminal to raw mode. No-PTY shells retain the OS
+        // line discipline and forward the bytes that stdin delivers unchanged.
+        let mut terminal_guard = if io::stdin().is_terminal() && io::stdout().is_terminal() {
+            if self.config.disable_pty {
+                TerminalStateGuard::new_without_raw_mode()?
+            } else {
+                TerminalStateGuard::new()?
+            }
+        } else {
+            TerminalStateGuard::new_without_raw_mode()?
+        };
         let pending_input = terminal_guard.take_pending_input();
         self.terminal_guard = Some(terminal_guard);
 
         // Enable mouse support if requested
-        if self.config.enable_mouse {
+        if self.config.enable_mouse && !self.config.disable_pty {
             TerminalOps::enable_mouse()?;
         }
 
@@ -171,50 +204,48 @@ impl PtySession {
             .take()
             .ok_or_else(|| anyhow::anyhow!("Message receiver already taken"))?;
 
-        // Set up resize signal handler
-        let mut resize_signals = crate::pty::utils::setup_resize_handler()?;
-        let cancel_for_resize = self.cancel_rx.clone();
+        // A no-PTY shell keeps the raw byte stream but must not send remote
+        // window-change requests.
+        let resize_task = if self.config.disable_pty {
+            None
+        } else {
+            let mut resize_signals = crate::pty::utils::setup_resize_handler()?;
+            let mut cancel_for_resize = self.cancel_rx.clone();
+            let resize_tx = self
+                .msg_tx
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Message sender not available"))?
+                .clone();
 
-        // Spawn resize handler task
-        let resize_tx = self
-            .msg_tx
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("Message sender not available"))?
-            .clone();
-
-        let resize_task = tokio::spawn(async move {
-            let mut cancel_for_resize = cancel_for_resize;
-
-            loop {
-                tokio::select! {
-                    // Handle resize signals
-                    signal = async {
-                        for signal in resize_signals.forever() {
-                            if signal == signal_hook::consts::SIGWINCH {
-                                return signal;
-                            }
-                        }
-                        signal_hook::consts::SIGWINCH // fallback, won't be reached
-                    } => {
-                        if signal == signal_hook::consts::SIGWINCH
-                            && let Ok((width, height)) = crate::pty::utils::get_terminal_size() {
-                                // Try to send resize message, but don't block if channel is full
-                                if resize_tx.try_send(PtyMessage::Resize { width, height }).is_err() {
-                                    // Channel full or closed, exit gracefully
-                                    break;
+            Some(tokio::spawn(async move {
+                loop {
+                    tokio::select! {
+                        signal = async {
+                            for signal in resize_signals.forever() {
+                                if signal == signal_hook::consts::SIGWINCH {
+                                    return signal;
                                 }
                             }
-                    }
-
-                    // Handle cancellation
-                    _ = cancel_for_resize.changed() => {
-                        if *cancel_for_resize.borrow() {
-                            break;
+                            signal_hook::consts::SIGWINCH
+                        } => {
+                            if signal == signal_hook::consts::SIGWINCH
+                                && let Ok((width, height)) = crate::pty::utils::get_terminal_size()
+                                && resize_tx
+                                    .try_send(PtyMessage::Resize { width, height })
+                                    .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        _ = cancel_for_resize.changed() => {
+                            if *cancel_for_resize.borrow() {
+                                break;
+                            }
                         }
                     }
                 }
-            }
-        });
+            }))
+        };
 
         // Spawn input reader task
         let input_tx = self
@@ -224,11 +255,12 @@ impl PtySession {
             .clone();
         let cancel_for_input = self.cancel_rx.clone();
 
-        // Spawn input reader in blocking thread pool to avoid blocking async runtime
-        // NOTE: TerminalStateGuard has already called enable_raw_mode() at this point,
-        // so stdin.read() will return raw bytes without line buffering
+        // Spawn input reader in the blocking thread pool. Local escape handling
+        // is an SSH PTY feature; a no-PTY shell forwards stdin without consuming
+        // sequences such as "~.".
+        let escape_enabled = !self.config.disable_pty;
         let input_task = tokio::task::spawn_blocking(move || {
-            raw_input_task::run(input_tx, cancel_for_input, pending_input);
+            raw_input_task::run(input_tx, cancel_for_input, pending_input, escape_enabled);
         });
 
         // We'll integrate channel reading into the main loop since russh Channel doesn't clone
@@ -253,11 +285,9 @@ impl PtySession {
 
                     match msg {
                         Some(ChannelMsg::Data { ref data }) => {
-                            // Filter terminal escape sequence responses before display
-                            // This prevents raw XTGETTCAP, DA1/DA2/DA3 responses from appearing
-                            // on screen when running applications like Neovim
                             let terminal_guard = &mut self.terminal_guard;
-                            if let Err(e) = deliver_filtered_output(
+                            if let Err(e) = deliver_session_output(
+                                self.config.disable_pty,
                                 &mut self.escape_filter,
                                 &mut io::stdout(),
                                 data,
@@ -273,19 +303,30 @@ impl PtySession {
                         }
                         Some(ChannelMsg::ExtendedData { ref data, ext }) => {
                             if ext == 1 {
-                                // stderr - also filter escape sequences
-                                let terminal_guard = &mut self.terminal_guard;
-                                if let Err(e) = deliver_filtered_output(
-                                    &mut self.escape_filter,
-                                    &mut io::stdout(),
-                                    data,
-                                    |delivered| {
-                                        if let Some(guard) = terminal_guard.as_mut() {
-                                            guard.observe_remote_output(delivered);
-                                        }
-                                    },
-                                ) {
-                                    tracing::error!("Failed to write stderr to stdout: {e}");
+                                let result = if self.config.disable_pty {
+                                    deliver_session_output(
+                                        true,
+                                        &mut self.escape_filter,
+                                        &mut io::stderr(),
+                                        data,
+                                        |_| {},
+                                    )
+                                } else {
+                                    let terminal_guard = &mut self.terminal_guard;
+                                    deliver_session_output(
+                                        false,
+                                        &mut self.escape_filter,
+                                        &mut io::stdout(),
+                                        data,
+                                        |delivered| {
+                                            if let Some(guard) = terminal_guard.as_mut() {
+                                                guard.observe_remote_output(delivered);
+                                            }
+                                        },
+                                    )
+                                };
+                                if let Err(e) = result {
+                                    tracing::error!("Failed to write stderr: {e}");
                                     should_terminate = true;
                                 }
                             }
@@ -329,11 +370,9 @@ impl PtySession {
                             }
                         }
                         Some(PtyMessage::RemoteOutput(data)) => {
-                            // Apply escape filter for consistency with SSH channel data
-                            // This path may receive data from other sources that could
-                            // contain terminal responses that shouldn't be displayed
                             let terminal_guard = &mut self.terminal_guard;
-                            if let Err(e) = deliver_filtered_output(
+                            if let Err(e) = deliver_session_output(
+                                self.config.disable_pty,
                                 &mut self.escape_filter,
                                 &mut io::stdout(),
                                 &data,
@@ -348,10 +387,12 @@ impl PtySession {
                             }
                         }
                         Some(PtyMessage::Resize { width, height }) => {
-                            if let Err(e) = self.channel.window_change(width, height, 0, 0).await {
-                                tracing::warn!("Failed to send window resize to remote: {e}");
-                            } else {
-                                tracing::debug!("Terminal resized to {width}x{height}");
+                            if !self.config.disable_pty {
+                                if let Err(e) = self.channel.window_change(width, height, 0, 0).await {
+                                    tracing::warn!("Failed to send window resize to remote: {e}");
+                                } else {
+                                    tracing::debug!("Terminal resized to {width}x{height}");
+                                }
                             }
                         }
                         Some(PtyMessage::Terminate) => {
@@ -410,19 +451,24 @@ impl PtySession {
         // No need to abort since they check cancellation signal
 
         // Wait for tasks to complete gracefully with select!
+        let resize_cleanup = async {
+            if let Some(task) = resize_task {
+                let _ = task.await;
+            } else {
+                std::future::pending::<()>().await;
+            }
+        };
         let _ = tokio::time::timeout(Duration::from_millis(TASK_CLEANUP_TIMEOUT_MS), async {
             tokio::select! {
-                _ = resize_task => {},
+                _ = resize_cleanup => {},
                 _ = input_task => {},
-                _ = tokio::time::sleep(Duration::from_millis(TASK_CLEANUP_TIMEOUT_MS)) => {
-                    // Timeout reached, tasks should have finished by now
-                }
+                _ = tokio::time::sleep(Duration::from_millis(TASK_CLEANUP_TIMEOUT_MS)) => {}
             }
         })
         .await;
 
         // Disable mouse support if we enabled it
-        if self.config.enable_mouse {
+        if self.config.enable_mouse && !self.config.disable_pty {
             let _ = TerminalOps::disable_mouse();
         }
 
@@ -462,5 +508,76 @@ impl Drop for PtySession {
         // Signal cancellation to all tasks when session is dropped
         let _ = self.cancel_tx.send(true);
         // Terminal guard will be dropped automatically, restoring terminal state
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn no_pty_setup_sends_policy_env_once_before_one_shell_request() {
+        let config = PtyConfig {
+            disable_pty: true,
+            environment: vec![
+                ("FIRST".into(), "one".into()),
+                ("SECOND".into(), "two".into()),
+            ],
+            ..Default::default()
+        };
+        let plan = session_setup_plan(&config);
+        assert_eq!(
+            plan,
+            [
+                SessionSetupStep::Environment(0),
+                SessionSetupStep::Environment(1),
+                SessionSetupStep::RequestShell,
+            ]
+        );
+        assert_eq!(
+            plan.iter()
+                .filter(|step| matches!(step, SessionSetupStep::RequestPty))
+                .count(),
+            0
+        );
+        assert_eq!(
+            plan.iter()
+                .filter(|step| matches!(step, SessionSetupStep::RequestShell))
+                .count(),
+            1
+        );
+        let environment_positions = plan
+            .iter()
+            .enumerate()
+            .filter_map(|(index, step)| {
+                matches!(step, SessionSetupStep::Environment(_)).then_some(index)
+            })
+            .collect::<Vec<_>>();
+        let shell_position = plan
+            .iter()
+            .position(|step| matches!(step, SessionSetupStep::RequestShell))
+            .unwrap();
+        assert!(
+            environment_positions
+                .iter()
+                .all(|position| *position < shell_position)
+        );
+    }
+
+    #[test]
+    fn pty_setup_orders_environment_terminal_pty_and_shell() {
+        let config = PtyConfig {
+            environment: vec![("POLICY".into(), "value".into())],
+            ..Default::default()
+        };
+        assert_eq!(
+            session_setup_plan(&config),
+            [
+                SessionSetupStep::Environment(0),
+                SessionSetupStep::TerminalEnvironment,
+                SessionSetupStep::RequestPty,
+                SessionSetupStep::RequestShell,
+            ]
+        );
     }
 }

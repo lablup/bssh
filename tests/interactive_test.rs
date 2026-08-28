@@ -43,6 +43,7 @@ async fn test_interactive_command_creation() {
         strict_mode: StrictHostKeyChecking::AcceptNew,
         pty_config: PtyConfig::default(),
         use_pty: None,
+        session_policy: None,
         jump_hosts: None,
         ssh_connection_config: SshConnectionConfig::default(),
     };
@@ -73,6 +74,7 @@ async fn test_interactive_with_no_nodes() {
         strict_mode: StrictHostKeyChecking::AcceptNew,
         pty_config: PtyConfig::default(),
         use_pty: None,
+        session_policy: None,
         jump_hosts: None,
         ssh_connection_config: SshConnectionConfig::default(),
     };

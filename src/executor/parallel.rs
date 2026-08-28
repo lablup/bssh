@@ -17,6 +17,7 @@
 use anyhow::Result;
 use futures::future::join_all;
 use indicatif::MultiProgress;
+use std::io::IsTerminal;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
@@ -24,11 +25,11 @@ use tokio::sync::Semaphore;
 use crate::diagnosticln as eprintln;
 use crate::node::Node;
 use crate::security::{Password, SudoPassword};
-use crate::ssh::SshConfig;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
 use crate::ssh::tokio_client::{
     AddressFamily, CommandOutput, SshConnectionConfig, SshConnectionConfigResolver,
 };
+use crate::ssh::{CliTtyMode, SessionPolicy, SshConfig};
 
 use super::connection_manager::{ExecutionConfig, download_from_node};
 use super::execution_strategy::{
@@ -60,6 +61,7 @@ pub struct ParallelExecutor {
     pub(crate) batch: bool,
     pub(crate) fail_fast: bool,
     pub(crate) ssh_config: Option<SshConfig>,
+    pub(crate) tty_mode: CliTtyMode,
     /// Per-host SSH connection configuration resolver.
     pub(crate) ssh_connection_config_resolver: SshConnectionConfigResolver,
 }
@@ -132,6 +134,7 @@ impl ParallelExecutor {
             batch: false,
             fail_fast: false,
             ssh_config: None,
+            tty_mode: CliTtyMode::Default,
             ssh_connection_config_resolver: SshConnectionConfigResolver::default(),
         }
     }
@@ -161,6 +164,7 @@ impl ParallelExecutor {
             batch: false,
             fail_fast: false,
             ssh_config: None,
+            tty_mode: CliTtyMode::Default,
             ssh_connection_config_resolver: SshConnectionConfigResolver::default(),
         }
     }
@@ -191,6 +195,7 @@ impl ParallelExecutor {
             batch: false,
             fail_fast: false,
             ssh_config: None,
+            tty_mode: CliTtyMode::Default,
             ssh_connection_config_resolver: SshConnectionConfigResolver::default(),
         }
     }
@@ -216,6 +221,11 @@ impl ParallelExecutor {
     /// Set SSH config for ProxyJump directive resolution.
     pub fn with_ssh_config(mut self, ssh_config: Option<SshConfig>) -> Self {
         self.ssh_config = ssh_config;
+        self
+    }
+
+    pub fn with_tty_mode(mut self, tty_mode: CliTtyMode) -> Self {
+        self.tty_mode = tty_mode;
         self
     }
 
@@ -323,6 +333,7 @@ impl ParallelExecutor {
 
     /// Execute a command on all nodes in parallel.
     pub async fn execute(&self, command: &str) -> Result<Vec<ExecutionResult>> {
+        let tty_mode = self.tty_mode;
         use std::time::Duration;
         use tokio::signal;
 
@@ -373,6 +384,7 @@ impl ParallelExecutor {
                         sudo_password: sudo_password.clone(),
                         ssh_password: ssh_password.clone(),
                         ssh_config: ssh_config_ref.as_ref(),
+                        tty_mode,
                         ssh_connection_config: Some(&ssh_connection_config),
                         ssh_connection_config_resolver: Some(&ssh_connection_config_resolver),
                     };
@@ -452,6 +464,7 @@ impl ParallelExecutor {
     /// Stops execution immediately when any node fails (connection error or non-zero exit code).
     /// Cancels pending commands and terminates running commands gracefully.
     async fn execute_with_fail_fast(&self, command: &str) -> Result<Vec<ExecutionResult>> {
+        let tty_mode = self.tty_mode;
         use tokio::sync::watch;
 
         let semaphore = Arc::new(Semaphore::new(self.max_parallel));
@@ -555,6 +568,7 @@ impl ParallelExecutor {
                     sudo_password: sudo_password.clone(),
                     ssh_password: ssh_password.clone(),
                     ssh_config: ssh_config_ref.as_ref(),
+                    tty_mode,
                     ssh_connection_config: Some(&ssh_connection_config),
                     ssh_connection_config_resolver: Some(&ssh_connection_config_resolver_ref),
                 };
@@ -1225,6 +1239,9 @@ impl ParallelExecutor {
         let raw_stream = output_mode.is_raw_stream();
         let mut manager = MultiNodeStreamManager::new();
         let mut handles = Vec::new();
+        let stdin_is_terminal = std::io::stdin().is_terminal();
+        let tty_mode = self.tty_mode;
+        let ssh_config_for_tasks = self.ssh_config.clone();
 
         // Spawn tasks for each node with streaming
         for node in &self.nodes {
@@ -1247,6 +1264,7 @@ impl ParallelExecutor {
             let semaphore = Arc::clone(&semaphore);
             let ssh_connection_config_resolver = self.ssh_connection_config_resolver.clone();
             let ssh_connection_config = self.connection_config_for_node(node);
+            let ssh_config = ssh_config_for_tasks.clone();
 
             let handle = tokio::spawn(async move {
                 // Use defer pattern to ensure cleanup even on panic
@@ -1282,6 +1300,25 @@ impl ParallelExecutor {
                     node_clone.username.clone(),
                 );
 
+                let session_policy = match ssh_config
+                    .as_ref()
+                    .map(|ssh_config| {
+                        let effective = ssh_config.find_host_config(node_clone.config_host());
+                        SessionPolicy::resolve_with_jump_spec(
+                            &effective,
+                            &node_clone,
+                            (!command.is_empty()).then_some(command.as_str()),
+                            tty_mode,
+                            stdin_is_terminal,
+                            jump_hosts.as_deref(),
+                        )
+                    })
+                    .transpose()
+                {
+                    Ok(policy) => policy,
+                    Err(error) => return (node_clone, Err(error)),
+                };
+
                 let config = ConnectionConfig {
                     key_path: key_path.as_deref().map(Path::new),
                     strict_mode: Some(strict_mode),
@@ -1294,6 +1331,7 @@ impl ParallelExecutor {
                     jump_hosts_spec: jump_hosts.as_deref(),
                     ssh_connection_config: Some(&ssh_connection_config),
                     ssh_connection_config_resolver: Some(&ssh_connection_config_resolver),
+                    session_policy: session_policy.as_ref(),
                     ssh_password: ssh_password.clone(),
                 };
 

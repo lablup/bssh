@@ -25,6 +25,7 @@ use zeroize::Zeroizing;
 use crate::jump::{JumpHostChain, parse_jump_hosts};
 use crate::node::Node;
 use crate::ssh::{
+    SessionRequest,
     known_hosts::get_check_method_for_target,
     tokio_client::{AuthMethod, Client, Error as SshError, ServerCheckMethod, SshConnectionConfig},
 };
@@ -221,6 +222,28 @@ impl InteractiveCommand {
         }
     }
 
+    /// Run post-authentication policy and open a session channel while
+    /// preserving ownership of the channel for the interactive byte-stream loop.
+    async fn open_interactive_channel(
+        &self,
+        client: &Client,
+        term_type: &str,
+        width: u32,
+        height: u32,
+    ) -> Result<Channel<Msg>> {
+        if let Some(policy) = self.session_policy.as_ref() {
+            if !matches!(policy.request, SessionRequest::Shell) {
+                anyhow::bail!("Interactive mode requires a shell session policy");
+            }
+            policy.run_local_command().await?;
+        }
+
+        client
+            .request_interactive_shell(term_type, width, height)
+            .await
+            .context("Failed to open interactive session channel")
+    }
+
     /// Connect to a single node and establish an interactive shell
     pub(super) async fn connect_to_node(&self, node: Node) -> Result<NodeSession> {
         // Determine authentication method using the same logic as exec mode
@@ -349,9 +372,16 @@ impl InteractiveCommand {
         // Get terminal dimensions
         let (width, height) = terminal::size().unwrap_or((80, 24));
 
-        // Request interactive shell with PTY
-        let channel = client
-            .request_interactive_shell("xterm-256color", u32::from(width), u32::from(height))
+        let channel = self
+            .open_interactive_channel(
+                &client,
+                "xterm-256color",
+                u32::from(width),
+                u32::from(height),
+            )
+            .await?;
+        channel
+            .request_shell(false)
             .await
             .context("Failed to request interactive shell")?;
 
@@ -502,13 +532,10 @@ impl InteractiveCommand {
         // Get terminal dimensions
         let (width, height) = crate::pty::utils::get_terminal_size().unwrap_or((80, 24));
 
-        // Request interactive shell with PTY using the SSH client's method
-        let channel = client
-            .request_interactive_shell(&self.pty_config.term_type, width, height)
+        // The PTY manager retains channel ownership for raw stdin, resize, and
+        // byte-transparent output. It requests PTY and shell after policy env.
+        self.open_interactive_channel(&client, &self.pty_config.term_type, width, height)
             .await
-            .context("Failed to request interactive shell with PTY")?;
-
-        Ok(channel)
     }
 }
 

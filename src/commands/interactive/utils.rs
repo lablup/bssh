@@ -23,6 +23,12 @@ use crate::pty::should_allocate_pty;
 use super::types::InteractiveCommand;
 
 impl InteractiveCommand {
+    /// SSH-compatible shells always retain byte-transparent input/output even
+    /// when their resolved policy suppresses the remote PTY request.
+    pub(super) fn should_use_raw_session(&self) -> Result<bool> {
+        Ok(self.session_policy.is_some() || self.should_use_pty()?)
+    }
+
     /// Determine whether to use PTY mode based on configuration
     pub(super) fn should_use_pty(&self) -> Result<bool> {
         match self.use_pty {
@@ -73,6 +79,44 @@ mod tests {
     use crate::ssh::tokio_client::SshConnectionConfig;
 
     #[test]
+    fn ssh_policy_shell_uses_raw_runner_when_remote_pty_is_disabled() {
+        let cmd = InteractiveCommand {
+            single_node: true,
+            multiplex: false,
+            prompt_format: String::new(),
+            history_file: PathBuf::from("~/.bssh_history"),
+            work_dir: None,
+            nodes: vec![],
+            config: Config::default(),
+            interactive_config: InteractiveConfig::default(),
+            cluster_name: None,
+            key_path: None,
+            use_agent: false,
+            use_password: false,
+            ssh_password: None,
+            #[cfg(target_os = "macos")]
+            use_keychain: false,
+            strict_mode: StrictHostKeyChecking::AcceptNew,
+            jump_hosts: None,
+            pty_config: PtyConfig {
+                disable_pty: true,
+                ..Default::default()
+            },
+            use_pty: Some(false),
+            session_policy: Some(crate::ssh::SessionPolicy {
+                environment: vec![("POLICY".into(), "value".into())],
+                local_command: None,
+                request_pty: false,
+                request: crate::ssh::SessionRequest::Shell,
+            }),
+            ssh_connection_config: SshConnectionConfig::default(),
+        };
+
+        assert!(cmd.should_use_raw_session().unwrap());
+        assert!(!cmd.should_use_pty().unwrap());
+    }
+
+    #[test]
     fn test_expand_path_with_tilde() {
         let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let cmd = InteractiveCommand {
@@ -95,6 +139,7 @@ mod tests {
             jump_hosts: None,
             pty_config: PtyConfig::default(),
             use_pty: None,
+            session_policy: None,
             ssh_connection_config: SshConnectionConfig::default(),
         };
 
@@ -130,6 +175,7 @@ mod tests {
             jump_hosts: None,
             pty_config: PtyConfig::default(),
             use_pty: None,
+            session_policy: None,
             ssh_connection_config: SshConnectionConfig::default(),
         };
 

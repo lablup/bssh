@@ -18,6 +18,23 @@ use std::io::{self, Write};
 
 use super::escape_filter::EscapeSequenceFilter;
 
+/// Deliver remote bytes for either a PTY terminal or a no-PTY transparent
+/// stream. Transparent delivery does not inspect or mutate escape/binary bytes.
+pub(super) fn deliver_session_output(
+    transparent: bool,
+    filter: &mut EscapeSequenceFilter,
+    writer: &mut impl Write,
+    input: &[u8],
+    commit: impl FnOnce(&[u8]),
+) -> io::Result<()> {
+    if transparent {
+        writer.write_all(input)?;
+        let _ = writer.flush();
+        return Ok(());
+    }
+    deliver_filtered_output(filter, writer, input, commit)
+}
+
 /// Filter remote bytes, write the surviving bytes, then commit only bytes the
 /// terminal actually accepted to the protocol observer.
 pub(super) fn deliver_filtered_output(
@@ -52,6 +69,22 @@ mod tests {
         fn flush(&mut self) -> io::Result<()> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn transparent_delivery_preserves_escape_nul_and_binary_bytes() {
+        let mut filter = EscapeSequenceFilter::new();
+        let input = b"\0\xff\x1b]10;payload\x07\x80";
+        let mut output = Vec::new();
+        let mut committed = false;
+
+        deliver_session_output(true, &mut filter, &mut output, input, |_| {
+            committed = true;
+        })
+        .unwrap();
+
+        assert_eq!(output, input);
+        assert!(!committed);
     }
 
     #[test]
