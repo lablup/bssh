@@ -17,6 +17,9 @@ use crate::jump::parser::JumpHost;
 use crate::jump::rate_limiter::ConnectionRateLimiter;
 use crate::security::Password;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
+use crate::ssh::tokio_client::connection::{
+    KnownHostRuntimePolicy, apply_known_hosts_command_order,
+};
 use crate::ssh::tokio_client::{
     AddressFamily, AuthMethod, Client, ClientHandler, Error as SshError, SshConnectionConfig,
 };
@@ -132,8 +135,23 @@ pub(super) async fn connect_through_tunnel(
     )
     .await?;
 
-    // Create russh client config with keepalive settings
-    let config = Arc::new(ssh_connection_config.to_russh_config());
+    let policy = KnownHostRuntimePolicy::from_config(
+        ssh_connection_config,
+        &jump_host.effective_user(),
+        &jump_host.host,
+        &jump_host.host,
+        jump_host.effective_port(),
+    );
+    let mut config = ssh_connection_config.to_russh_config();
+    if ssh_connection_config.order_host_key_algorithms {
+        apply_known_hosts_command_order(
+            &mut config,
+            &policy,
+            ssh_connection_config.host_key_alias.as_deref(),
+        )
+        .await?;
+    }
+    let config = Arc::new(config);
 
     // Create a simple handler for the connection. The address is used for
     // host key verification context and display, not to open a socket: this
@@ -162,8 +180,10 @@ pub(super) async fn connect_through_tunnel(
         &jump_host.effective_user(),
     );
 
-    let handler = ClientHandler::new(jump_host.host.clone(), socket_addr, check_method);
+    let handler =
+        ClientHandler::new_with_policy(jump_host.host.clone(), socket_addr, check_method, policy);
     let fatal_transport = handler.fatal_transport_state();
+    let hostkey_rotation = handler.hostkey_rotation_tasks();
 
     // Connect through the stream
     let handle = tokio::time::timeout(
@@ -214,12 +234,14 @@ pub(super) async fn connect_through_tunnel(
     })?;
 
     // Create our Client wrapper
-    let client = Client::from_handle_and_address_with_state(
+    let client = Client::from_authenticated_handle_with_policy_state(
         Arc::new(handle),
         jump_host.effective_user(),
         socket_addr,
         fatal_transport,
-    );
+        hostkey_rotation,
+    )
+    .await;
 
     Ok(client)
 }
@@ -273,8 +295,23 @@ pub(super) async fn connect_to_destination(
     // Convert the channel to a stream
     let stream = channel.into_stream();
 
-    // Create SSH client over the tunnel stream with keepalive settings
-    let config = Arc::new(ssh_connection_config.to_russh_config());
+    let policy = KnownHostRuntimePolicy::from_config(
+        ssh_connection_config,
+        destination_user,
+        destination_host,
+        destination_host,
+        destination_port,
+    );
+    let mut config = ssh_connection_config.to_russh_config();
+    if ssh_connection_config.order_host_key_algorithms {
+        apply_known_hosts_command_order(
+            &mut config,
+            &policy,
+            ssh_connection_config.host_key_alias.as_deref(),
+        )
+        .await?;
+    }
+    let config = Arc::new(config);
     let check_method = crate::ssh::known_hosts::get_check_method_for_target(
         strict_mode,
         ssh_connection_config,
@@ -295,8 +332,14 @@ pub(super) async fn connect_to_destination(
         format!("Failed to resolve destination address: {destination_host}:{destination_port}")
     })?;
 
-    let handler = ClientHandler::new(destination_host.to_string(), socket_addr, check_method);
+    let handler = ClientHandler::new_with_policy(
+        destination_host.to_string(),
+        socket_addr,
+        check_method,
+        policy,
+    );
     let fatal_transport = handler.fatal_transport_state();
+    let hostkey_rotation = handler.hostkey_rotation_tasks();
 
     // Connect through the stream
     let handle = tokio::time::timeout(
@@ -335,12 +378,14 @@ pub(super) async fn connect_to_destination(
         })?;
 
     // Create our Client wrapper
-    let client = Client::from_handle_and_address_with_state(
+    let client = Client::from_authenticated_handle_with_policy_state(
         Arc::new(handle),
         destination_user.to_string(),
         socket_addr,
         fatal_transport,
-    );
+        hostkey_rotation,
+    )
+    .await;
 
     Ok(client)
 }

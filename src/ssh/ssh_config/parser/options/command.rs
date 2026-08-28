@@ -265,6 +265,62 @@ fn validate_percent_tokens(
     Ok(())
 }
 
+fn sanitize_known_hosts_environment(
+    command: &str,
+    option_name: &str,
+    line_number: usize,
+) -> Result<String> {
+    let argv = shell_words::split(command).with_context(|| {
+        format!("Invalid argument quoting in {option_name} at line {line_number}")
+    })?;
+    let Some(program) = argv.first() else {
+        anyhow::bail!("{option_name} cannot be empty at line {line_number}");
+    };
+    if program.contains('$') {
+        anyhow::bail!(
+            "Security violation: {option_name} does not expand environment variables in argv[0] at line {line_number}"
+        );
+    }
+
+    let mut sanitized = String::with_capacity(command.len());
+    let mut chars = command.chars().peekable();
+    while let Some(character) = chars.next() {
+        if character != '$' {
+            sanitized.push(character);
+            continue;
+        }
+        if chars.next() != Some('{') {
+            anyhow::bail!(
+                "Security violation: {option_name} contains invalid '$' expansion at line {line_number}"
+            );
+        }
+        let mut name = String::new();
+        let mut closed = false;
+        for character in chars.by_ref() {
+            if character == '}' {
+                closed = true;
+                break;
+            }
+            name.push(character);
+        }
+        if !closed || !valid_environment_name(&name) {
+            anyhow::bail!(
+                "Security violation: {option_name} contains an invalid environment expansion at line {line_number}"
+            );
+        }
+        sanitized.push_str("ENVIRONMENT");
+    }
+    Ok(sanitized)
+}
+
+fn valid_environment_name(name: &str) -> bool {
+    let mut characters = name.chars();
+    characters
+        .next()
+        .is_some_and(|character| character == '_' || character.is_ascii_alphabetic())
+        && characters.all(|character| character == '_' || character.is_ascii_alphanumeric())
+}
+
 /// Validate a locally executed command after replacing its accepted tokens
 /// with inert placeholders. Runtime expansion performs a second validation at
 /// the actual local-shell boundary.
@@ -283,7 +339,12 @@ fn validate_command_with_tokens(
     };
     validate_percent_tokens(command, option_name, line_number, token_set, 16 * 1024)?;
 
-    let mut sanitized = command.replace("%%", "__DOUBLE_PERCENT__");
+    let mut sanitized = if option_name == "KnownHostsCommand" {
+        sanitize_known_hosts_environment(command, option_name, line_number)?
+    } else {
+        command.to_string()
+    };
+    sanitized = sanitized.replace("%%", "__DOUBLE_PERCENT__");
     let tokens = [
         ("%C", "CONNECTIONHASH"),
         ("%d", "HOME"),

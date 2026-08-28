@@ -46,29 +46,34 @@ impl Client {
         //https://github.com/AspectUnk/russh-sftp/issues/7#issuecomment-1738355245
         dest_file_path: U,
     ) -> Result<(), super::Error> {
-        // start sftp session
-        let channel = self.get_channel().await?;
-        channel.request_subsystem(true, "sftp").await?;
-        let sftp = SftpSession::new(channel.into_stream()).await?;
+        let transfer = async {
+            // start sftp session
+            let channel = self.get_channel().await?;
+            channel.request_subsystem(true, "sftp").await?;
+            let sftp = SftpSession::new(channel.into_stream()).await?;
 
-        // Stream local file with multiple SFTP WRITE requests in flight to
-        // hide per-request RTT and avoid loading the entire file in memory.
-        let mut local_file = tokio::fs::File::open(src_file_path)
-            .await
-            .map_err(super::Error::IoError)?;
+            // Stream local file with multiple SFTP WRITE requests in flight to
+            // hide per-request RTT and avoid loading the entire file in memory.
+            let mut local_file = tokio::fs::File::open(src_file_path)
+                .await
+                .map_err(super::Error::IoError)?;
 
-        let mut file = sftp
-            .open_with_flags(
-                dest_file_path,
-                OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE | OpenFlags::READ,
-            )
-            .await?;
-        file.write_all_pipelined(&mut local_file, MAX_INFLIGHT_REQUESTS)
-            .await?;
-        file.flush().await.map_err(super::Error::IoError)?;
-        file.shutdown().await.map_err(super::Error::IoError)?;
+            let mut file = sftp
+                .open_with_flags(
+                    dest_file_path,
+                    OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE | OpenFlags::READ,
+                )
+                .await?;
+            file.write_all_pipelined(&mut local_file, MAX_INFLIGHT_REQUESTS)
+                .await?;
+            file.flush().await.map_err(super::Error::IoError)?;
+            file.shutdown().await.map_err(super::Error::IoError)?;
 
-        Ok(())
+            Ok(())
+        }
+        .await;
+        self.flush_hostkey_updates().await;
+        transfer
     }
 
     /// Download a file from the remote server using sftp.
@@ -83,30 +88,35 @@ impl Client {
         remote_file_path: U,
         local_file_path: T,
     ) -> Result<(), super::Error> {
-        // start sftp session
-        let channel = self.get_channel().await?;
-        channel.request_subsystem(true, "sftp").await?;
-        let sftp = SftpSession::new(channel.into_stream()).await?;
+        let transfer = async {
+            // start sftp session
+            let channel = self.get_channel().await?;
+            channel.request_subsystem(true, "sftp").await?;
+            let sftp = SftpSession::new(channel.into_stream()).await?;
 
-        // Stream remote file with multiple SFTP READ requests in flight; chunks
-        // are reassembled in offset order before being written to disk.
-        let mut remote_file = sftp
-            .open_with_flags(remote_file_path, OpenFlags::READ)
-            .await?;
+            // Stream remote file with multiple SFTP READ requests in flight; chunks
+            // are reassembled in offset order before being written to disk.
+            let mut remote_file = sftp
+                .open_with_flags(remote_file_path, OpenFlags::READ)
+                .await?;
 
-        let mut local_file = tokio::fs::File::create(local_file_path.as_ref())
-            .await
-            .map_err(super::Error::IoError)?;
-        remote_file
-            .read_to_writer_pipelined(&mut local_file, MAX_INFLIGHT_REQUESTS)
-            .await?;
-        remote_file
-            .shutdown()
-            .await
-            .map_err(super::Error::IoError)?;
-        local_file.flush().await.map_err(super::Error::IoError)?;
+            let mut local_file = tokio::fs::File::create(local_file_path.as_ref())
+                .await
+                .map_err(super::Error::IoError)?;
+            remote_file
+                .read_to_writer_pipelined(&mut local_file, MAX_INFLIGHT_REQUESTS)
+                .await?;
+            remote_file
+                .shutdown()
+                .await
+                .map_err(super::Error::IoError)?;
+            local_file.flush().await.map_err(super::Error::IoError)?;
 
-        Ok(())
+            Ok(())
+        }
+        .await;
+        self.flush_hostkey_updates().await;
+        transfer
     }
 
     /// Upload a directory to the remote server using sftp recursively.
@@ -119,30 +129,35 @@ impl Client {
         local_dir_path: T,
         remote_dir_path: U,
     ) -> Result<(), super::Error> {
-        let local_dir = local_dir_path.as_ref();
-        let remote_dir = remote_dir_path.into();
+        let transfer = async {
+            let local_dir = local_dir_path.as_ref();
+            let remote_dir = remote_dir_path.into();
 
-        // Verify local directory exists
-        if !local_dir.is_dir() {
-            return Err(super::Error::IoError(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("Local directory does not exist: {local_dir:?}"),
-            )));
+            // Verify local directory exists
+            if !local_dir.is_dir() {
+                return Err(super::Error::IoError(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("Local directory does not exist: {local_dir:?}"),
+                )));
+            }
+
+            // Start SFTP session
+            let channel = self.get_channel().await?;
+            channel.request_subsystem(true, "sftp").await?;
+            let sftp = SftpSession::new(channel.into_stream()).await?;
+
+            // Create remote directory if it doesn't exist
+            let _ = sftp.create_dir(&remote_dir).await; // Ignore error if already exists
+
+            // Process directory recursively
+            self.upload_dir_recursive(&sftp, local_dir, &remote_dir)
+                .await?;
+
+            Ok(())
         }
-
-        // Start SFTP session
-        let channel = self.get_channel().await?;
-        channel.request_subsystem(true, "sftp").await?;
-        let sftp = SftpSession::new(channel.into_stream()).await?;
-
-        // Create remote directory if it doesn't exist
-        let _ = sftp.create_dir(&remote_dir).await; // Ignore error if already exists
-
-        // Process directory recursively
-        self.upload_dir_recursive(&sftp, local_dir, &remote_dir)
-            .await?;
-
-        Ok(())
+        .await;
+        self.flush_hostkey_updates().await;
+        transfer
     }
 
     /// Helper function to recursively upload directory contents
@@ -211,24 +226,29 @@ impl Client {
         remote_dir_path: U,
         local_dir_path: T,
     ) -> Result<(), super::Error> {
-        let local_dir = local_dir_path.as_ref();
-        let remote_dir = remote_dir_path.into();
+        let transfer = async {
+            let local_dir = local_dir_path.as_ref();
+            let remote_dir = remote_dir_path.into();
 
-        // Start SFTP session
-        let channel = self.get_channel().await?;
-        channel.request_subsystem(true, "sftp").await?;
-        let sftp = SftpSession::new(channel.into_stream()).await?;
+            // Start SFTP session
+            let channel = self.get_channel().await?;
+            channel.request_subsystem(true, "sftp").await?;
+            let sftp = SftpSession::new(channel.into_stream()).await?;
 
-        // Create local directory if it doesn't exist
-        tokio::fs::create_dir_all(local_dir)
-            .await
-            .map_err(super::Error::IoError)?;
+            // Create local directory if it doesn't exist
+            tokio::fs::create_dir_all(local_dir)
+                .await
+                .map_err(super::Error::IoError)?;
 
-        // Process directory recursively
-        self.download_dir_recursive(&sftp, &remote_dir, local_dir)
-            .await?;
+            // Process directory recursively
+            self.download_dir_recursive(&sftp, &remote_dir, local_dir)
+                .await?;
 
-        Ok(())
+            Ok(())
+        }
+        .await;
+        self.flush_hostkey_updates().await;
+        transfer
     }
 
     /// Helper function to recursively download directory contents

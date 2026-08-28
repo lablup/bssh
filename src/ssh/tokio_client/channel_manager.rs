@@ -328,73 +328,82 @@ impl Client {
         command: &str,
         sender: Sender<CommandOutput>,
     ) -> Result<u32, super::Error> {
-        // Sanitize command to prevent injection attacks
-        let sanitized_command = crate::utils::sanitize_command(command)
-            .map_err(|e| super::Error::CommandValidationFailed(e.to_string()))?;
+        let execution = async {
+            // Sanitize command to prevent injection attacks
+            let sanitized_command = crate::utils::sanitize_command(command)
+                .map_err(|e| super::Error::CommandValidationFailed(e.to_string()))?;
 
-        let mut channel = self
-            .connection_handle
-            .channel_open_session()
-            .await
-            .map_err(|source| self.session_error_or(super::Error::ChannelOpen { source }))?;
-        channel
-            .exec(true, sanitized_command.as_str())
-            .await
-            .map_err(|source| {
-                self.session_error_or(super::Error::CommandExecution {
-                    action: "exec request",
-                    source,
-                })
-            })?;
+            let mut channel = self
+                .connection_handle
+                .channel_open_session()
+                .await
+                .map_err(|source| self.session_error_or(super::Error::ChannelOpen { source }))?;
+            channel
+                .exec(true, sanitized_command.as_str())
+                .await
+                .map_err(|source| {
+                    self.session_error_or(super::Error::CommandExecution {
+                        action: "exec request",
+                        source,
+                    })
+                })?;
 
-        let mut result: Option<u32> = None;
-        let mut output_receiver_open = true;
+            let mut result: Option<u32> = None;
+            let mut output_receiver_open = true;
 
-        // While the channel has messages...
-        while let Some(msg) = channel.wait().await {
-            match msg {
-                // If we get data, send it to the streaming channel
-                // Note: We must clone the data here because russh owns it and will reuse the buffer
-                russh::ChannelMsg::Data { ref data } => {
-                    if output_receiver_open {
-                        output_receiver_open =
-                            forward_command_output(&sender, CommandOutput::StdOut(data.clone()))
-                                .await;
+            // While the channel has messages...
+            while let Some(msg) = channel.wait().await {
+                match msg {
+                    // If we get data, send it to the streaming channel
+                    // Note: We must clone the data here because russh owns it and will reuse the buffer
+                    russh::ChannelMsg::Data { ref data } => {
+                        if output_receiver_open {
+                            output_receiver_open = forward_command_output(
+                                &sender,
+                                CommandOutput::StdOut(data.clone()),
+                            )
+                            .await;
+                        }
                     }
-                }
-                russh::ChannelMsg::ExtendedData { ref data, ext: 1 } => {
-                    if output_receiver_open {
-                        output_receiver_open =
-                            forward_command_output(&sender, CommandOutput::StdErr(data.clone()))
-                                .await;
+                    russh::ChannelMsg::ExtendedData { ref data, ext: 1 } => {
+                        if output_receiver_open {
+                            output_receiver_open = forward_command_output(
+                                &sender,
+                                CommandOutput::StdErr(data.clone()),
+                            )
+                            .await;
+                        }
                     }
+
+                    // If we get an exit code report, store it, but crucially don't
+                    // assume this message means end of communications. The data might
+                    // not be finished yet!
+                    russh::ChannelMsg::ExitStatus { exit_status } => result = Some(exit_status),
+
+                    // We SHOULD get this EOF message, but 4254 sec 5.3 also permits
+                    // the channel to close without it being sent. And sometimes this
+                    // message can even precede the Data message, so don't handle it
+                    // russh::ChannelMsg::Eof => break,
+                    _ => {}
                 }
+            }
 
-                // If we get an exit code report, store it, but crucially don't
-                // assume this message means end of communications. The data might
-                // not be finished yet!
-                russh::ChannelMsg::ExitStatus { exit_status } => result = Some(exit_status),
+            // Drop sender to signal completion to receiver
+            // This is critical: dropping the sender causes receiver.recv() to return None,
+            // allowing the background task to finish collecting any remaining buffered data
+            drop(sender);
 
-                // We SHOULD get this EOF message, but 4254 sec 5.3 also permits
-                // the channel to close without it being sent. And sometimes this
-                // message can even precede the Data message, so don't handle it
-                // russh::ChannelMsg::Eof => break,
-                _ => {}
+            // If we received an exit code, report it back
+            if let Some(result) = result {
+                Ok(result)
+            // Otherwise, report an error
+            } else {
+                Err(self.session_error_or(super::Error::CommandDidntExit))
             }
         }
-
-        // Drop sender to signal completion to receiver
-        // This is critical: dropping the sender causes receiver.recv() to return None,
-        // allowing the background task to finish collecting any remaining buffered data
-        drop(sender);
-
-        // If we received an exit code, report it back
-        if let Some(result) = result {
-            Ok(result)
-        // Otherwise, report an error
-        } else {
-            Err(self.session_error_or(super::Error::CommandDidntExit))
-        }
+        .await;
+        self.flush_hostkey_updates().await;
+        execution
     }
 
     /// Execute a remote command with sudo password support.
@@ -432,6 +441,7 @@ impl Client {
         sudo_password: &SudoPassword,
         session_policy: Option<&crate::ssh::SessionPolicy>,
     ) -> Result<u32, super::Error> {
+        let execution = async {
         // Sanitize command to prevent injection attacks
         let sanitized_command = crate::utils::sanitize_command(command)
             .map_err(|e| super::Error::CommandValidationFailed(e.to_string()))?;
@@ -640,6 +650,10 @@ impl Client {
         } else {
             Err(self.session_error_or(super::Error::CommandDidntExit))
         }
+        }
+        .await;
+        self.flush_hostkey_updates().await;
+        execution
     }
 
     /// Execute a remote command via the ssh connection.

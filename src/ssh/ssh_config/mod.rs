@@ -962,4 +962,27 @@ Host plain.example.com
         // No matching Host block and no directive at all: unset.
         assert_eq!(config.get_compression("unconfigured.example.com"), None);
     }
+    #[test]
+    fn known_hosts_command_environment_expansion_reaches_runtime() {
+        let config = SshConfig::parse(
+            "Host test\n    KnownHostsCommand /usr/bin/helper %I ${PATH} %f %K %t\n",
+        )
+        .unwrap();
+        assert_eq!(
+            config
+                .find_host_config("test")
+                .known_hosts_command
+                .as_deref(),
+            Some("/usr/bin/helper %I ${PATH} %f %K %t")
+        );
+
+        for invalid in ["${1INVALID}", "${UNCLOSED", "$(whoami)", "$PATH"] {
+            let content = format!("Host test\n    KnownHostsCommand /usr/bin/helper {invalid}\n");
+            assert!(SshConfig::parse(&content).is_err(), "accepted {invalid}");
+        }
+        assert!(
+            SshConfig::parse("Host test\n    KnownHostsCommand ${PATH} %I\n").is_err(),
+            "argv[0] must not be environment-expanded"
+        );
+    }
 }

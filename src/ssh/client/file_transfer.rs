@@ -100,7 +100,8 @@ impl SshClient {
 
         // Use the built-in upload_file method with timeout (SFTP-based)
         let upload_timeout = Duration::from_secs(FILE_UPLOAD_TIMEOUT_SECS);
-        tokio::time::timeout(
+        let transfer: Result<()> = async {
+            tokio::time::timeout(
             upload_timeout,
             client.upload_file(local_path, remote_path.to_string()),
         )
@@ -117,6 +118,11 @@ impl SshClient {
                 local_path, self.host, remote_path
             )
         })?;
+            Ok(())
+        }
+        .await;
+        client.flush_hostkey_updates().await;
+        transfer?;
 
         tracing::debug!("File upload completed successfully");
 
@@ -165,6 +171,7 @@ impl SshClient {
 
         // Use the built-in download_file method with timeout (SFTP-based)
         let download_timeout = Duration::from_secs(FILE_DOWNLOAD_TIMEOUT_SECS);
+        let transfer: Result<()> = async {
         tokio::time::timeout(
             download_timeout,
             client.download_file(remote_path.to_string(), local_path),
@@ -182,6 +189,11 @@ impl SshClient {
                 self.host, remote_path, local_path
             )
         })?;
+            Ok(())
+        }
+        .await;
+        client.flush_hostkey_updates().await;
+        transfer?;
 
         tracing::debug!("File download completed successfully");
 
@@ -232,6 +244,7 @@ impl SshClient {
 
         // Use the built-in upload_dir method with timeout
         let upload_timeout = Duration::from_secs(DIR_UPLOAD_TIMEOUT_SECS);
+        let transfer: Result<()> = async {
         tokio::time::timeout(
             upload_timeout,
             client.upload_dir(local_dir_path, remote_dir_path.to_string()),
@@ -249,6 +262,11 @@ impl SshClient {
                 local_dir_path, self.host, remote_dir_path
             )
         })?;
+            Ok(())
+        }
+        .await;
+        client.flush_hostkey_updates().await;
+        transfer?;
 
         tracing::debug!("Directory upload completed successfully");
 
@@ -297,6 +315,7 @@ impl SshClient {
 
         // Use the built-in download_dir method with timeout
         let download_timeout = Duration::from_secs(DIR_DOWNLOAD_TIMEOUT_SECS);
+        let transfer: Result<()> = async {
         tokio::time::timeout(
             download_timeout,
             client.download_dir(remote_dir_path.to_string(), local_dir_path),
@@ -314,6 +333,11 @@ impl SshClient {
                 self.host, remote_dir_path, local_dir_path
             )
         })?;
+            Ok(())
+        }
+        .await;
+        client.flush_hostkey_updates().await;
+        transfer?;
 
         tracing::debug!("Directory download completed successfully");
 
@@ -379,7 +403,8 @@ impl SshClient {
 
         // Use the built-in upload_file method with timeout (SFTP-based)
         let upload_timeout = Duration::from_secs(FILE_UPLOAD_TIMEOUT_SECS);
-        tokio::time::timeout(
+        let transfer: Result<()> = async {
+            tokio::time::timeout(
             upload_timeout,
             client.upload_file(local_path, remote_path.to_string()),
         )
@@ -396,6 +421,11 @@ impl SshClient {
                 local_path, self.host, remote_path
             )
         })?;
+            Ok(())
+        }
+        .await;
+        client.flush_hostkey_updates().await;
+        transfer?;
 
         tracing::debug!("File upload completed successfully");
 
@@ -457,6 +487,7 @@ impl SshClient {
 
         // Use the built-in download_file method with timeout (SFTP-based)
         let download_timeout = Duration::from_secs(FILE_DOWNLOAD_TIMEOUT_SECS);
+        let transfer: Result<()> = async {
         tokio::time::timeout(
             download_timeout,
             client.download_file(remote_path.to_string(), local_path),
@@ -474,6 +505,11 @@ impl SshClient {
                 self.host, remote_path, local_path
             )
         })?;
+            Ok(())
+        }
+        .await;
+        client.flush_hostkey_updates().await;
+        transfer?;
 
         tracing::debug!("File download completed successfully");
 
@@ -537,6 +573,7 @@ impl SshClient {
 
         // Use the built-in upload_dir method with timeout
         let upload_timeout = Duration::from_secs(DIR_UPLOAD_TIMEOUT_SECS);
+        let transfer: Result<()> = async {
         tokio::time::timeout(
             upload_timeout,
             client.upload_dir(local_dir_path, remote_dir_path.to_string()),
@@ -554,6 +591,11 @@ impl SshClient {
                 local_dir_path, self.host, remote_dir_path
             )
         })?;
+            Ok(())
+        }
+        .await;
+        client.flush_hostkey_updates().await;
+        transfer?;
 
         tracing::debug!("Directory upload completed successfully");
 
@@ -615,6 +657,7 @@ impl SshClient {
 
         // Use the built-in download_dir method with timeout
         let download_timeout = Duration::from_secs(DIR_DOWNLOAD_TIMEOUT_SECS);
+        let transfer: Result<()> = async {
         tokio::time::timeout(
             download_timeout,
             client.download_dir(remote_dir_path.to_string(), local_dir_path),
@@ -632,6 +675,11 @@ impl SshClient {
                 self.host, remote_dir_path, local_dir_path
             )
         })?;
+            Ok(())
+        }
+        .await;
+        client.flush_hostkey_updates().await;
+        transfer?;
 
         tracing::debug!("Directory download completed successfully");
 

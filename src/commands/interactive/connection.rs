@@ -405,7 +405,7 @@ impl InteractiveCommand {
     }
 
     /// Connect to a single node and establish a PTY-enabled SSH channel
-    pub(super) async fn connect_to_node_pty(&self, node: Node) -> Result<Channel<Msg>> {
+    pub(super) async fn connect_to_node_pty(&self, node: Node) -> Result<(Client, Channel<Msg>)> {
         // Determine authentication method using the same logic as exec mode
         let auth_method = self.determine_auth_method(&node).await?;
 
@@ -534,8 +534,12 @@ impl InteractiveCommand {
 
         // The PTY manager retains channel ownership for raw stdin, resize, and
         // byte-transparent output. It requests PTY and shell after policy env.
-        self.open_interactive_channel(&client, &self.pty_config.term_type, width, height)
+        let channel = self
+            .open_interactive_channel(&client, &self.pty_config.term_type, width, height)
             .await
+            .context("Failed to request interactive shell with PTY")?;
+
+        Ok((client, channel))
     }
 }
 

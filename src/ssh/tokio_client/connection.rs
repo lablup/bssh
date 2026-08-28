@@ -20,7 +20,10 @@
 use russh::client::{Config, DisconnectReason, Handle, Handler};
 use std::borrow::Cow;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 use std::time::Duration;
 use std::{fmt::Debug, io};
 
@@ -116,12 +119,24 @@ pub struct SshConnectionConfig {
 
     /// Explicit known-hosts identity selected by `HostKeyAlias`.
     pub host_key_alias: Option<String>,
+    /// Hash host patterns when writing known_hosts.
+    pub hash_known_hosts: bool,
+    /// Verify the resolved peer address as an additional known-host identity.
+    pub check_host_ip: bool,
+    /// Optional external known-host lookup command.
+    pub known_hosts_command: Option<String>,
+    /// Effective VerifyHostKeyDNS policy (yes, ask, or no).
+    pub verify_host_key_dns: String,
+    /// Effective UpdateHostKeys policy (yes, ask, or no).
+    pub update_host_keys: String,
     /// Effective proxy selection for this target.
     pub proxy_mode: Option<ProxyMode>,
     pub cipher_preferences: Option<Vec<russh::cipher::Name>>,
     pub mac_preferences: Option<Vec<russh::mac::Name>>,
     pub kex_preferences: Option<Vec<russh::kex::Name>>,
     pub host_key_preferences: Option<Vec<ssh_key::Algorithm>>,
+    /// Whether known-host key types may reorder the default or modified preference list.
+    pub order_host_key_algorithms: bool,
     /// Public-key signature policy for the authentication follow-up.
     pub pubkey_accepted_algorithms: Option<Vec<String>>,
 }
@@ -138,11 +153,17 @@ impl Default for SshConnectionConfig {
             user_known_hosts_files: None,
             global_known_hosts_files: None,
             host_key_alias: None,
+            hash_known_hosts: false,
+            check_host_ip: false,
+            known_hosts_command: None,
+            verify_host_key_dns: "no".to_string(),
+            update_host_keys: "no".to_string(),
             proxy_mode: None,
             cipher_preferences: None,
             mac_preferences: None,
             kex_preferences: None,
             host_key_preferences: None,
+            order_host_key_algorithms: true,
             pubkey_accepted_algorithms: None,
         }
     }
@@ -311,6 +332,25 @@ impl SshConnectionConfigResolver {
                 .as_ref()
                 .and_then(|config| config.host_key_alias.clone())
         });
+        let hash_known_hosts = host_config
+            .as_ref()
+            .and_then(|config| config.hash_known_hosts)
+            .unwrap_or(false);
+        let check_host_ip = host_config
+            .as_ref()
+            .and_then(|config| config.check_host_ip)
+            .unwrap_or(false);
+        let known_hosts_command = host_config
+            .as_ref()
+            .and_then(|config| config.known_hosts_command.clone());
+        let verify_host_key_dns = host_config
+            .as_ref()
+            .and_then(|config| config.verify_host_key_dns.clone())
+            .unwrap_or_else(|| "no".to_string());
+        let update_host_keys = host_config
+            .as_ref()
+            .and_then(|config| config.update_host_keys.clone())
+            .unwrap_or_else(|| "no".to_string());
         let proxy_mode = self.resolve_proxy_mode(hostname, host_key_alias.clone());
         let cipher_preferences = host_config
             .as_ref()
@@ -324,6 +364,11 @@ impl SshConnectionConfigResolver {
         let host_key_preferences = host_config
             .as_ref()
             .and_then(|config| config.resolved_host_key_algorithms.clone());
+        let order_host_key_algorithms = host_config.as_ref().is_none_or(|config| {
+            config.host_key_algorithms.is_empty()
+                || config.host_key_algorithms[0].starts_with('+')
+                || config.host_key_algorithms[0].starts_with('-')
+        });
 
         let pubkey_accepted_algorithms = host_config
             .as_ref()
@@ -341,6 +386,13 @@ impl SshConnectionConfigResolver {
             .with_tcp_keep_alive(tcp_keep_alive)
             .with_known_hosts_files(user_known_hosts_files, global_known_hosts_files)
             .with_host_key_alias(host_key_alias)
+            .with_known_host_policy(
+                hash_known_hosts,
+                check_host_ip,
+                known_hosts_command,
+                verify_host_key_dns,
+                update_host_keys,
+            )
             .with_proxy_mode(proxy_mode)
             .with_algorithm_preferences(
                 cipher_preferences,
@@ -348,6 +400,7 @@ impl SshConnectionConfigResolver {
                 kex_preferences,
                 host_key_preferences,
             )
+            .with_known_host_algorithm_ordering(order_host_key_algorithms)
             .with_pubkey_accepted_algorithms(pubkey_accepted_algorithms)
     }
 
@@ -441,6 +494,23 @@ impl SshConnectionConfig {
         self
     }
 
+    #[must_use]
+    pub fn with_known_host_policy(
+        mut self,
+        hash_known_hosts: bool,
+        check_host_ip: bool,
+        known_hosts_command: Option<String>,
+        verify_host_key_dns: String,
+        update_host_keys: String,
+    ) -> Self {
+        self.hash_known_hosts = hash_known_hosts;
+        self.check_host_ip = check_host_ip;
+        self.known_hosts_command = known_hosts_command;
+        self.verify_host_key_dns = verify_host_key_dns;
+        self.update_host_keys = update_host_keys;
+        self
+    }
+
     /// Set the keepalive interval in seconds.
     /// Pass None, or Some(0), to disable keepalive.
     #[must_use]
@@ -505,6 +575,12 @@ impl SshConnectionConfig {
         self.mac_preferences = macs;
         self.kex_preferences = kex;
         self.host_key_preferences = host_keys;
+        self
+    }
+
+    #[must_use]
+    pub fn with_known_host_algorithm_ordering(mut self, enabled: bool) -> Self {
+        self.order_host_key_algorithms = enabled;
         self
     }
 
@@ -663,6 +739,79 @@ pub struct Client {
     pub session: Arc<Handle<ClientHandler>>,
     proxy_process: Option<Arc<ProxyCommandProcess>>,
     fatal_transport: FatalTransportState,
+    hostkey_rotation: HostkeyRotationTasks,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct HostkeyRotationTasks {
+    enabled: bool,
+    tasks: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+    protocol_barrier_complete: Arc<tokio::sync::Mutex<bool>>,
+}
+
+impl HostkeyRotationTasks {
+    fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            tasks: Arc::new(Mutex::new(Vec::new())),
+            protocol_barrier_complete: Arc::new(tokio::sync::Mutex::new(false)),
+        }
+    }
+
+    fn track(&self, task: tokio::task::JoinHandle<()>) {
+        self.tasks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .push(task);
+    }
+
+    async fn synchronize_protocol(&self, handle: &Handle<ClientHandler>) {
+        if !self.enabled {
+            return;
+        }
+        let mut complete = self.protocol_barrier_complete.lock().await;
+        if *complete {
+            return;
+        }
+        let completed = match tokio::time::timeout(Duration::from_secs(5), handle.send_ping()).await
+        {
+            Ok(Ok(())) => true,
+            Ok(Err(error)) => {
+                tracing::warn!("Could not complete UpdateHostKeys protocol barrier: {error}");
+                false
+            }
+            Err(_) => {
+                tracing::warn!("UpdateHostKeys protocol barrier timed out after 5 seconds");
+                false
+            }
+        };
+        if completed {
+            *complete = true;
+        }
+    }
+
+    async fn wait(&self) {
+        if !self.enabled {
+            return;
+        }
+        loop {
+            let tasks = {
+                let mut tasks = self
+                    .tasks
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                std::mem::take(&mut *tasks)
+            };
+            if tasks.is_empty() {
+                break;
+            }
+            for task in tasks {
+                if let Err(error) = task.await {
+                    tracing::warn!("Host-key rotation task failed to join: {error}");
+                }
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -776,6 +925,23 @@ impl Client {
     ) -> Result<Self, super::Error> {
         if let Some(ProxyMode::Command(proxy)) = ssh_config.proxy_mode.as_ref() {
             let (host, port) = addr.host_port().map_err(super::Error::AddressInvalid)?;
+            let policy = KnownHostRuntimePolicy::from_config(
+                ssh_config,
+                username,
+                &host,
+                &proxy.original_host,
+                port,
+            );
+            let mut config = ssh_config.to_russh_config();
+            if ssh_config.order_host_key_algorithms {
+                apply_known_hosts_command_order(
+                    &mut config,
+                    &policy,
+                    ssh_config.host_key_alias.as_deref(),
+                )
+                .await?;
+            }
+            let config = Arc::new(config);
             let attempts = ssh_config.connection_attempts.max(1);
             for round in 0..attempts {
                 let result = Self::connect_with_proxy_command(
@@ -784,7 +950,8 @@ impl Client {
                     username,
                     auth.clone(),
                     server_check.clone(),
-                    ssh_config.to_russh_config(),
+                    Arc::clone(&config),
+                    policy.clone(),
                     proxy,
                 )
                 .await;
@@ -806,7 +973,23 @@ impl Client {
             }
             unreachable!("the final ProxyCommand attempt always returns")
         }
-        let config = ssh_config.to_russh_config();
+        let (policy_host, policy_port) = addr.host_port().map_err(super::Error::AddressInvalid)?;
+        let policy = KnownHostRuntimePolicy::from_config(
+            ssh_config,
+            username,
+            &policy_host,
+            &policy_host,
+            policy_port,
+        );
+        let mut config = ssh_config.to_russh_config();
+        if ssh_config.order_host_key_algorithms {
+            apply_known_hosts_command_order(
+                &mut config,
+                &policy,
+                ssh_config.host_key_alias.as_deref(),
+            )
+            .await?;
+        }
         let tcp_keepalive = ssh_config.to_tcp_keepalive();
         Self::connect_with_config_inner(
             addr,
@@ -814,6 +997,7 @@ impl Client {
             auth,
             server_check,
             config,
+            policy,
             DirectCarrierOptions {
                 tcp_keepalive: tcp_keepalive.as_ref(),
                 address_family: ssh_config.address_family,
@@ -823,13 +1007,15 @@ impl Client {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn connect_with_proxy_command(
         host: &str,
         port: u16,
         username: &str,
         auth: AuthMethod,
         server_check: ServerCheckMethod,
-        config: Config,
+        config: Arc<Config>,
+        policy: KnownHostRuntimePolicy,
         proxy: &ProxyCommandConfig,
     ) -> Result<Self, super::Error> {
         let proxy_session = spawn_proxy_command(proxy, host, port, username)?;
@@ -847,34 +1033,33 @@ impl Client {
             std::net::IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
             verification_port,
         );
-        let handler = ClientHandler::new(
+        let handler = ClientHandler::new_with_policy(
             verification_host.to_string(),
             verification_address,
             server_check,
+            policy,
         );
         let fatal_transport = handler.fatal_transport_state();
-        let mut handle =
-            match russh::client::connect_stream(Arc::new(config), proxy_session.stream, handler)
-                .await
-            {
-                Ok(handle) => handle,
-                Err(error) => {
-                    if let Some(failure) =
-                        process.wait_for_failure(Duration::from_millis(250)).await
-                    {
-                        return Err(super::Error::ProxyCommandFailed {
-                            command: failure.command,
-                            status: failure.status,
-                            stderr: failure.stderr,
-                        });
-                    }
-                    return Err(super::Error::during_protocol_negotiation(
-                        host.to_string(),
-                        port,
-                        error,
-                    ));
+        let hostkey_rotation = handler.hostkey_rotation_tasks();
+        let mut handle = match russh::client::connect_stream(config, proxy_session.stream, handler)
+            .await
+        {
+            Ok(handle) => handle,
+            Err(error) => {
+                if let Some(failure) = process.wait_for_failure(Duration::from_millis(250)).await {
+                    return Err(super::Error::ProxyCommandFailed {
+                        command: failure.command,
+                        status: failure.status,
+                        stderr: failure.stderr,
+                    });
                 }
-            };
+                return Err(super::Error::during_protocol_negotiation(
+                    host.to_string(),
+                    port,
+                    error,
+                ));
+            }
+        };
 
         let username = username.to_string();
         if let Err(error) = super::authentication::authenticate(&mut handle, &username, auth).await
@@ -882,14 +1067,17 @@ impl Client {
             return Err(fatal_transport.take_error().unwrap_or(error));
         }
         let connection_handle = Arc::new(handle);
-        Ok(Self {
+        let client = Self {
             connection_handle: Arc::clone(&connection_handle),
             username,
             address,
             session: connection_handle,
             proxy_process: Some(process),
             fatal_transport,
-        })
+            hostkey_rotation,
+        };
+        client.flush_hostkey_updates().await;
+        Ok(client)
     }
 
     /// Same as `connect`, but with the option to specify a non default
@@ -904,12 +1092,15 @@ impl Client {
         server_check: ServerCheckMethod,
         config: Config,
     ) -> Result<Self, super::Error> {
+        let (policy_host, policy_port) = addr.host_port().map_err(super::Error::AddressInvalid)?;
+        let policy = KnownHostRuntimePolicy::unconfigured(username, &policy_host, policy_port);
         Self::connect_with_config_inner(
             addr,
             username,
             auth,
             server_check,
             config,
+            policy,
             DirectCarrierOptions {
                 tcp_keepalive: None,
                 address_family: AddressFamily::Any,
@@ -934,6 +1125,7 @@ impl Client {
         auth: AuthMethod,
         server_check: ServerCheckMethod,
         config: Config,
+        policy: KnownHostRuntimePolicy,
         carrier: DirectCarrierOptions<'_>,
     ) -> Result<Self, super::Error> {
         // A retry round covers only carrier creation: one DNS resolution and
@@ -1036,8 +1228,10 @@ impl Client {
             configure_tcp_keepalive(&stream, address, ka)?;
         }
 
-        let handler = ClientHandler::new(target_host.clone(), address, server_check);
+        let handler =
+            ClientHandler::new_with_policy(target_host.clone(), address, server_check, policy);
         let fatal_transport = handler.fatal_transport_state();
+        let hostkey_rotation = handler.hostkey_rotation_tasks();
         let mut handle = russh::client::connect_stream(Arc::new(config), stream, handler)
             .await
             .map_err(|error| {
@@ -1051,14 +1245,25 @@ impl Client {
         }
 
         let connection_handle = Arc::new(handle);
-        Ok(Self {
+        let client = Self {
             connection_handle: connection_handle.clone(),
             username,
             address,
             session: connection_handle,
             proxy_process: None,
             fatal_transport,
-        })
+            hostkey_rotation,
+        };
+        client.flush_hostkey_updates().await;
+        Ok(client)
+    }
+
+    /// Wait for any verified UpdateHostKeys rewrite already announced by the server.
+    pub async fn flush_hostkey_updates(&self) {
+        self.hostkey_rotation
+            .synchronize_protocol(&self.connection_handle)
+            .await;
+        self.hostkey_rotation.wait().await;
     }
 
     pub(super) fn session_error_or(&self, fallback: super::Error) -> super::Error {
@@ -1095,7 +1300,28 @@ impl Client {
             session: handle,
             proxy_process: None,
             fatal_transport,
+            hostkey_rotation: HostkeyRotationTasks::new(false),
         }
+    }
+
+    pub(crate) async fn from_authenticated_handle_with_policy_state(
+        handle: Arc<Handle<ClientHandler>>,
+        username: String,
+        address: SocketAddr,
+        fatal_transport: FatalTransportState,
+        hostkey_rotation: HostkeyRotationTasks,
+    ) -> Self {
+        let client = Self {
+            connection_handle: handle.clone(),
+            username,
+            address,
+            session: handle,
+            proxy_process: None,
+            fatal_transport,
+            hostkey_rotation,
+        };
+        client.flush_hostkey_updates().await;
+        client
     }
 
     /// A debugging function to get the username this client is connected as.
@@ -1110,6 +1336,7 @@ impl Client {
 
     /// Disconnect from the remote host.
     pub async fn disconnect(&self) -> Result<(), super::Error> {
+        self.flush_hostkey_updates().await;
         let result = self
             .connection_handle
             .disconnect(russh::Disconnect::ByApplication, "", "")
@@ -1184,28 +1411,698 @@ impl Debug for Client {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpdateHostKeysPolicy {
+    No,
+    Ask,
+    Yes,
+}
+
+impl UpdateHostKeysPolicy {
+    fn parse(value: &str) -> Self {
+        if value.eq_ignore_ascii_case("yes") {
+            Self::Yes
+        } else if value.eq_ignore_ascii_case("ask") {
+            Self::Ask
+        } else {
+            Self::No
+        }
+    }
+}
+
+/// Runtime-only policy derived from the effective ssh_config.
+#[derive(Debug, Clone)]
+pub(crate) struct KnownHostRuntimePolicy {
+    hash_known_hosts: bool,
+    check_host_ip: bool,
+    known_hosts_command: Option<String>,
+    verify_host_key_dns: super::sshfp::VerifyHostKeyDnsPolicy,
+    update_host_keys: UpdateHostKeysPolicy,
+    remote_user: String,
+    target_host: String,
+    target_port: u16,
+    original_host: String,
+    proxy_jump: String,
+    rotation_paths: Option<Vec<String>>,
+    known_hosts_paths: Vec<String>,
+    host_key_algorithms: Vec<ssh_key::Algorithm>,
+}
+
+impl KnownHostRuntimePolicy {
+    fn unconfigured(username: &str, target_host: &str, port: u16) -> Self {
+        Self {
+            hash_known_hosts: false,
+            check_host_ip: false,
+            known_hosts_command: None,
+            verify_host_key_dns: super::sshfp::VerifyHostKeyDnsPolicy::No,
+            update_host_keys: UpdateHostKeysPolicy::No,
+            remote_user: username.to_string(),
+            target_host: target_host.to_string(),
+            target_port: port,
+            original_host: target_host.to_string(),
+            proxy_jump: String::new(),
+            rotation_paths: None,
+            known_hosts_paths: Vec::new(),
+            host_key_algorithms: Vec::new(),
+        }
+    }
+
+    pub(crate) fn from_config(
+        config: &SshConnectionConfig,
+        username: &str,
+        target_host: &str,
+        original_host: &str,
+        port: u16,
+    ) -> Self {
+        let proxy_jump = match config.proxy_mode.as_ref() {
+            Some(ProxyMode::Jump(jump)) => jump.clone(),
+            _ => String::new(),
+        };
+        let rotation_paths =
+            crate::ssh::known_hosts::user_known_hosts_paths(config, target_host, port, username);
+        let known_hosts_paths =
+            crate::ssh::known_hosts::read_known_hosts_paths(config, target_host, port, username);
+        Self {
+            hash_known_hosts: config.hash_known_hosts,
+            check_host_ip: config.check_host_ip,
+            known_hosts_command: config.known_hosts_command.clone(),
+            verify_host_key_dns: super::sshfp::VerifyHostKeyDnsPolicy::parse(
+                &config.verify_host_key_dns,
+            ),
+            update_host_keys: UpdateHostKeysPolicy::parse(&config.update_host_keys),
+            remote_user: username.to_string(),
+            target_host: target_host.to_string(),
+            target_port: port,
+            original_host: original_host.to_string(),
+            proxy_jump,
+            rotation_paths: Some(rotation_paths),
+            known_hosts_paths,
+            host_key_algorithms: config
+                .host_key_preferences
+                .clone()
+                .unwrap_or_else(|| russh::Preferred::DEFAULT.key.as_ref().to_vec()),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HostVerification {
+    accepted: bool,
+    eligible_for_rotation: bool,
+    skip_address_check: bool,
+}
+
+impl HostVerification {
+    const fn configured(accepted: bool, method: &ServerCheckMethod) -> Self {
+        Self {
+            accepted,
+            eligible_for_rotation: accepted && !matches!(method, ServerCheckMethod::NoCheck),
+            skip_address_check: false,
+        }
+    }
+
+    const fn command() -> Self {
+        Self {
+            accepted: true,
+            eligible_for_rotation: false,
+            skip_address_check: false,
+        }
+    }
+
+    const fn dns() -> Self {
+        Self {
+            accepted: true,
+            eligible_for_rotation: true,
+            skip_address_check: true,
+        }
+    }
+}
+
 /// SSH client handler for managing server key verification.
 #[derive(Debug, Clone)]
 pub struct ClientHandler {
     hostname: String,
     host: SocketAddr,
     server_check: ServerCheckMethod,
+    policy: KnownHostRuntimePolicy,
+    verified_server_key: Arc<Mutex<Option<russh::keys::PublicKey>>>,
+    verified_server_algorithm: Arc<Mutex<Option<ssh_key::Algorithm>>>,
+    rotation_allowed: Arc<AtomicBool>,
+    proof_in_flight: Arc<AtomicBool>,
+    hostkey_rotation: HostkeyRotationTasks,
     fatal_transport: FatalTransportState,
 }
 
 impl ClientHandler {
     /// Create a new client handler.
     pub fn new(hostname: String, host: SocketAddr, server_check: ServerCheckMethod) -> Self {
+        Self::new_with_policy(
+            hostname.clone(),
+            host,
+            server_check,
+            KnownHostRuntimePolicy::unconfigured("", &hostname, host.port()),
+        )
+    }
+
+    pub(crate) fn new_with_policy(
+        hostname: String,
+        host: SocketAddr,
+        server_check: ServerCheckMethod,
+        policy: KnownHostRuntimePolicy,
+    ) -> Self {
+        let hostkey_rotation =
+            HostkeyRotationTasks::new(policy.update_host_keys == UpdateHostKeysPolicy::Yes);
         Self {
             hostname,
             host,
             server_check,
+            policy,
+            verified_server_key: Arc::new(Mutex::new(None)),
+            verified_server_algorithm: Arc::new(Mutex::new(None)),
+            rotation_allowed: Arc::new(AtomicBool::new(false)),
+            proof_in_flight: Arc::new(AtomicBool::new(false)),
+            hostkey_rotation,
             fatal_transport: FatalTransportState::default(),
         }
     }
 
+    pub(crate) fn hostkey_rotation_tasks(&self) -> HostkeyRotationTasks {
+        self.hostkey_rotation.clone()
+    }
+
     pub(crate) fn fatal_transport_state(&self) -> FatalTransportState {
         self.fatal_transport.clone()
+    }
+
+    async fn run_known_hosts_lookup(
+        &self,
+        hostname: &str,
+        port: u16,
+        invocation: &'static str,
+        server_key: &russh::keys::PublicKey,
+        host_key_alias: Option<&str>,
+    ) -> Result<Option<super::host_verification::KnownHostLookup>, super::Error> {
+        let Some(command) = self.policy.known_hosts_command.as_deref() else {
+            return Ok(None);
+        };
+
+        let lookup_host = super::host_verification::known_hosts_entry_name(hostname, port);
+        let fingerprint = server_key
+            .fingerprint(russh::keys::HashAlg::Sha256)
+            .to_string();
+        let key_blob =
+            server_key
+                .to_bytes()
+                .map_err(|error| super::Error::KnownHostsCommandFailed {
+                    reason: format!("could not encode the offered host key: {error}"),
+                })?;
+        let key_base64 =
+            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, key_blob);
+        let local_user = std::env::var("USER")
+            .or_else(|_| std::env::var("USERNAME"))
+            .or_else(|_| std::env::var("LOGNAME"))
+            .unwrap_or_else(|_| whoami::username().unwrap_or_else(|_| "user".to_string()));
+        let local_user_id = local_user_id();
+        let local_hostname_fqdn = whoami::hostname().unwrap_or_else(|_| "localhost".to_string());
+        let local_hostname = local_hostname_fqdn
+            .split('.')
+            .next()
+            .unwrap_or(&local_hostname_fqdn)
+            .to_string();
+        let home_dir = dirs::home_dir()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let key_type = server_key.algorithm().as_str().to_string();
+        let context = super::known_hosts_command::KnownHostsCommandContext {
+            lookup_host: &lookup_host,
+            target_host: &self.policy.target_host,
+            original_host: &self.policy.original_host,
+            host_key_alias,
+            connection_port: self.policy.target_port,
+            remote_user: &self.policy.remote_user,
+            local_user: &local_user,
+            local_user_id: &local_user_id,
+            local_hostname: &local_hostname,
+            local_hostname_fqdn: &local_hostname_fqdn,
+            home_dir: &home_dir,
+            proxy_jump: &self.policy.proxy_jump,
+            invocation,
+            fingerprint: &fingerprint,
+            key_base64: &key_base64,
+            key_type: &key_type,
+        };
+        let output = super::known_hosts_command::run_known_hosts_command(command, &context).await?;
+        super::host_verification::lookup_known_host_data(&output, hostname, port, server_key)
+            .map(Some)
+    }
+
+    fn rotation_paths(&self, method: &ServerCheckMethod) -> Vec<String> {
+        if let Some(paths) = self.policy.rotation_paths.as_ref() {
+            return paths.clone();
+        }
+        match method {
+            ServerCheckMethod::KnownHostsFile(path)
+            | ServerCheckMethod::AcceptNewKnownHostsFile(path) => vec![path.clone()],
+            ServerCheckMethod::KnownHostsFiles(paths) => paths.clone(),
+            ServerCheckMethod::AcceptNewKnownHostsFiles { files, write_path } => {
+                let mut paths = files.clone();
+                if let Some(write_path) = write_path
+                    && !paths.contains(write_path)
+                {
+                    paths.insert(0, write_path.clone());
+                }
+                paths
+            }
+            ServerCheckMethod::DefaultKnownHostsFile => {
+                crate::ssh::known_hosts::get_default_known_hosts_path()
+                    .map(|path| vec![path.to_string_lossy().into_owned()])
+                    .unwrap_or_default()
+            }
+            _ => Vec::new(),
+        }
+    }
+}
+
+pub(crate) async fn apply_known_hosts_command_order(
+    config: &mut Config,
+    policy: &KnownHostRuntimePolicy,
+    host_key_alias: Option<&str>,
+) -> Result<(), super::Error> {
+    let hostname = host_key_alias.unwrap_or(&policy.target_host);
+    let lookup_port = if host_key_alias.is_some() {
+        22
+    } else {
+        policy.target_port
+    };
+    let mut known_algorithms =
+        known_host_algorithms_from_paths(&policy.known_hosts_paths, hostname, lookup_port)?;
+
+    if let Some(command) = policy.known_hosts_command.as_deref() {
+        let lookup_host = super::host_verification::known_hosts_entry_name(hostname, lookup_port);
+        let local_user = std::env::var("USER")
+            .or_else(|_| std::env::var("USERNAME"))
+            .or_else(|_| std::env::var("LOGNAME"))
+            .unwrap_or_else(|_| whoami::username().unwrap_or_else(|_| "user".to_string()));
+        let local_user_id = local_user_id();
+        let local_hostname_fqdn = whoami::hostname().unwrap_or_else(|_| "localhost".to_string());
+        let local_hostname = local_hostname_fqdn
+            .split('.')
+            .next()
+            .unwrap_or(&local_hostname_fqdn)
+            .to_string();
+        let home_dir = dirs::home_dir()
+            .map(|path| path.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let context = super::known_hosts_command::KnownHostsCommandContext {
+            lookup_host: &lookup_host,
+            target_host: &policy.target_host,
+            original_host: &policy.original_host,
+            host_key_alias,
+            connection_port: policy.target_port,
+            remote_user: &policy.remote_user,
+            local_user: &local_user,
+            local_user_id: &local_user_id,
+            local_hostname: &local_hostname,
+            local_hostname_fqdn: &local_hostname_fqdn,
+            home_dir: &home_dir,
+            proxy_jump: &policy.proxy_jump,
+            invocation: "ORDER",
+            fingerprint: "NONE",
+            key_base64: "NONE",
+            key_type: "NONE",
+        };
+        let output = super::known_hosts_command::run_known_hosts_command(command, &context).await?;
+        for algorithm in
+            super::host_verification::known_host_algorithms_data(&output, hostname, lookup_port)?
+        {
+            if !known_algorithms.contains(&algorithm) {
+                known_algorithms.push(algorithm);
+            }
+        }
+    }
+
+    prefer_known_host_algorithms(config, &known_algorithms);
+    Ok(())
+}
+
+fn known_host_algorithms_from_paths(
+    paths: &[String],
+    hostname: &str,
+    port: u16,
+) -> Result<Vec<ssh_key::Algorithm>, super::Error> {
+    let mut algorithms = Vec::new();
+    for path in paths {
+        let data = match std::fs::read_to_string(path) {
+            Ok(data) => data,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                tracing::error!("Could not read known_hosts file '{path}' for ORDER: {error}");
+                return Err(super::Error::ServerCheckFailed);
+            }
+        };
+        for algorithm in
+            super::host_verification::known_host_algorithms_data(&data, hostname, port)?
+        {
+            if !algorithms.contains(&algorithm) {
+                algorithms.push(algorithm);
+            }
+        }
+    }
+    Ok(algorithms)
+}
+
+fn prefer_known_host_algorithms(config: &mut Config, known: &[ssh_key::Algorithm]) {
+    let matches_known = |candidate: &ssh_key::Algorithm| {
+        known.iter().any(|algorithm| {
+            (matches!(candidate, ssh_key::Algorithm::Rsa { .. })
+                && matches!(algorithm, ssh_key::Algorithm::Rsa { .. }))
+                || candidate == algorithm
+        })
+    };
+    if known.is_empty() || config.preferred.key.first().is_some_and(matches_known) {
+        return;
+    }
+    let mut preferred = config.preferred.key.iter().cloned().collect::<Vec<_>>();
+    preferred.sort_by_key(|algorithm| !matches_known(algorithm));
+    config.preferred.key = Cow::Owned(preferred);
+}
+
+#[cfg(unix)]
+fn local_user_id() -> String {
+    // SAFETY: geteuid takes no pointers and has no preconditions.
+    unsafe { libc::geteuid() }.to_string()
+}
+
+#[cfg(not(unix))]
+fn local_user_id() -> String {
+    "NONE".to_string()
+}
+
+fn check_host_ip_address(
+    policy: &KnownHostRuntimePolicy,
+    host: SocketAddr,
+    host_key_alias: Option<&str>,
+) -> Option<String> {
+    let address = host.ip().to_string();
+    (policy.check_host_ip
+        && host_key_alias.is_none()
+        && !host.ip().is_unspecified()
+        && address != policy.target_host)
+        .then_some(address)
+}
+
+fn method_uses_known_hosts(method: &ServerCheckMethod) -> bool {
+    matches!(
+        method,
+        ServerCheckMethod::DefaultKnownHostsFile
+            | ServerCheckMethod::KnownHostsFile(_)
+            | ServerCheckMethod::KnownHostsFiles(_)
+            | ServerCheckMethod::AcceptNewKnownHostsFiles { .. }
+            | ServerCheckMethod::AcceptNewKnownHostsFile(_)
+            | ServerCheckMethod::AcceptNewInMemory
+    )
+}
+
+fn method_is_accept_new(method: &ServerCheckMethod) -> bool {
+    matches!(
+        method,
+        ServerCheckMethod::AcceptNewKnownHostsFiles { .. }
+            | ServerCheckMethod::AcceptNewKnownHostsFile(_)
+            | ServerCheckMethod::AcceptNewInMemory
+    )
+}
+
+fn accept_new_stores(method: &ServerCheckMethod) -> Option<(Vec<String>, Option<String>)> {
+    match method {
+        ServerCheckMethod::AcceptNewKnownHostsFile(path) => {
+            Some((vec![path.clone()], Some(path.clone())))
+        }
+        ServerCheckMethod::AcceptNewKnownHostsFiles { files, write_path } => {
+            Some((files.clone(), write_path.clone()))
+        }
+        ServerCheckMethod::AcceptNewInMemory => Some((Vec::new(), None)),
+        _ => None,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn verify_accept_new_host_and_address(
+    method: &ServerCheckMethod,
+    hostname: &str,
+    hostname_port: u16,
+    address: &str,
+    address_port: u16,
+    server_key: &russh::keys::PublicKey,
+    hash_known_hosts: bool,
+    hostname_lookup: Option<super::host_verification::KnownHostLookup>,
+    address_lookup: Option<super::host_verification::KnownHostLookup>,
+) -> Result<HostVerification, super::Error> {
+    let (paths, write_path) = accept_new_stores(method)
+        .expect("combined accept-new verification requires an accept-new method");
+    let identities = [
+        (hostname, hostname_port, hostname_lookup),
+        (address, address_port, address_lookup),
+    ];
+    let mut configured_identities = Vec::with_capacity(2);
+    let mut primary_from_command = false;
+
+    for (index, (identity, port, lookup)) in identities.iter().enumerate() {
+        match lookup {
+            Some(super::host_verification::KnownHostLookup::Match) => {
+                match verify_configured_stores_without_recording(
+                    method, identity, *port, server_key,
+                ) {
+                    Ok(true) => configured_identities.push((*identity, *port)),
+                    Ok(false) | Err(super::Error::HostKeyChanged { .. }) => {
+                        primary_from_command |= index == 0;
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+            Some(super::host_verification::KnownHostLookup::Conflict { line }) => {
+                if verify_configured_stores_without_recording(method, identity, *port, server_key)?
+                {
+                    configured_identities.push((*identity, *port));
+                } else {
+                    return Err(command_conflict(identity, *port, server_key, *line));
+                }
+            }
+            Some(super::host_verification::KnownHostLookup::Unknown) | None => {
+                configured_identities.push((*identity, *port));
+            }
+        }
+    }
+
+    super::host_verification::verify_accept_new_identities_files_with_hash(
+        &configured_identities,
+        server_key,
+        &paths,
+        write_path.as_deref(),
+        hash_known_hosts,
+    )
+    .await?;
+
+    Ok(if primary_from_command {
+        HostVerification::command()
+    } else {
+        HostVerification::configured(true, method)
+    })
+}
+
+fn verify_configured_stores_without_recording(
+    method: &ServerCheckMethod,
+    hostname: &str,
+    port: u16,
+    server_key: &russh::keys::PublicKey,
+) -> Result<bool, super::Error> {
+    match method {
+        ServerCheckMethod::DefaultKnownHostsFile => {
+            let path = crate::ssh::known_hosts::get_default_known_hosts_path()
+                .ok_or(super::Error::ServerCheckFailed)?;
+            super::host_verification::verify_known_hosts_file(
+                hostname,
+                port,
+                server_key,
+                &path.to_string_lossy(),
+            )
+        }
+        ServerCheckMethod::KnownHostsFile(path)
+        | ServerCheckMethod::AcceptNewKnownHostsFile(path) => {
+            super::host_verification::verify_known_hosts_file(hostname, port, server_key, path)
+        }
+        ServerCheckMethod::KnownHostsFiles(paths)
+        | ServerCheckMethod::AcceptNewKnownHostsFiles { files: paths, .. } => {
+            super::host_verification::verify_known_hosts_files(hostname, port, server_key, paths)
+        }
+        ServerCheckMethod::AcceptNewInMemory => Ok(false),
+        _ => Ok(false),
+    }
+}
+
+async fn verify_server_check_method(
+    method: &ServerCheckMethod,
+    hostname: &str,
+    port: u16,
+    server_key: &russh::keys::PublicKey,
+    hash_known_hosts: bool,
+) -> Result<bool, super::Error> {
+    match method {
+        ServerCheckMethod::NoCheck => Ok(true),
+        ServerCheckMethod::PublicKey(key) => {
+            let expected = russh::keys::parse_public_key_base64(key)
+                .map_err(|_| super::Error::ServerCheckFailed)?;
+            Ok(expected == *server_key)
+        }
+        ServerCheckMethod::PublicKeyFile(path) => {
+            let expected =
+                russh::keys::load_public_key(path).map_err(|_| super::Error::ServerCheckFailed)?;
+            Ok(expected == *server_key)
+        }
+        ServerCheckMethod::KnownHostsFile(path) => {
+            super::host_verification::verify_known_hosts_file(hostname, port, server_key, path)
+        }
+        ServerCheckMethod::KnownHostsFiles(paths) => {
+            super::host_verification::verify_known_hosts_files(hostname, port, server_key, paths)
+        }
+        ServerCheckMethod::DefaultKnownHostsFile => {
+            let Some(path) = crate::ssh::known_hosts::get_default_known_hosts_path() else {
+                tracing::error!(
+                    "Cannot determine the known_hosts path; rejecting host key for '{}'",
+                    hostname
+                );
+                return Err(super::Error::ServerCheckFailed);
+            };
+            super::host_verification::verify_known_hosts_file(
+                hostname,
+                port,
+                server_key,
+                &path.to_string_lossy(),
+            )
+        }
+        ServerCheckMethod::AcceptNewKnownHostsFile(path) => {
+            super::host_verification::verify_accept_new_with_hash(
+                hostname,
+                port,
+                server_key,
+                path,
+                hash_known_hosts,
+            )
+            .await
+        }
+        ServerCheckMethod::AcceptNewKnownHostsFiles { files, write_path } => {
+            super::host_verification::verify_accept_new_files_with_hash(
+                hostname,
+                port,
+                server_key,
+                files,
+                write_path.as_deref(),
+                hash_known_hosts,
+            )
+            .await
+        }
+        ServerCheckMethod::AcceptNewInMemory => {
+            super::host_verification::verify_accept_new_in_memory(hostname, port, server_key).await
+        }
+        ServerCheckMethod::HostKeyAlias { .. } => {
+            unreachable!("aliases are unwrapped by ClientHandler")
+        }
+    }
+}
+
+fn command_conflict(
+    hostname: &str,
+    port: u16,
+    server_key: &russh::keys::PublicKey,
+    line: usize,
+) -> super::Error {
+    super::host_verification::map_known_hosts_error(
+        hostname,
+        port,
+        server_key,
+        "KnownHostsCommand",
+        russh::keys::Error::KeyChanged { line },
+    )
+}
+
+async fn verify_with_known_hosts_command(
+    method: &ServerCheckMethod,
+    hostname: &str,
+    port: u16,
+    server_key: &russh::keys::PublicKey,
+    command_lookup: Option<super::host_verification::KnownHostLookup>,
+    hash_known_hosts: bool,
+) -> Result<HostVerification, super::Error> {
+    if !method_uses_known_hosts(method) {
+        let accepted =
+            verify_server_check_method(method, hostname, port, server_key, hash_known_hosts)
+                .await?;
+        return Ok(HostVerification::configured(accepted, method));
+    }
+
+    match command_lookup {
+        Some(super::host_verification::KnownHostLookup::Match) => {
+            match verify_configured_stores_without_recording(method, hostname, port, server_key) {
+                Ok(true) => Ok(HostVerification::configured(true, method)),
+                Ok(false) | Err(super::Error::HostKeyChanged { .. }) => {
+                    Ok(HostVerification::command())
+                }
+                Err(error) => Err(error),
+            }
+        }
+        Some(super::host_verification::KnownHostLookup::Conflict { line })
+            if method_is_accept_new(method) =>
+        {
+            match verify_configured_stores_without_recording(method, hostname, port, server_key)? {
+                true => Ok(HostVerification::configured(true, method)),
+                false => Err(command_conflict(hostname, port, server_key, line)),
+            }
+        }
+        Some(super::host_verification::KnownHostLookup::Conflict { line }) => {
+            match verify_server_check_method(method, hostname, port, server_key, hash_known_hosts)
+                .await?
+            {
+                true => Ok(HostVerification::configured(true, method)),
+                false => Err(command_conflict(hostname, port, server_key, line)),
+            }
+        }
+        Some(super::host_verification::KnownHostLookup::Unknown) | None => {
+            let accepted =
+                verify_server_check_method(method, hostname, port, server_key, hash_known_hosts)
+                    .await?;
+            Ok(HostVerification::configured(accepted, method))
+        }
+    }
+}
+
+async fn verify_primary_host_after_sshfp<Lookup, LookupFuture>(
+    method: &ServerCheckMethod,
+    hostname: &str,
+    port: u16,
+    server_key: &russh::keys::PublicKey,
+    hash_known_hosts: bool,
+    sshfp: super::sshfp::SshfpDecision,
+    command_lookup: Lookup,
+) -> Result<HostVerification, super::Error>
+where
+    Lookup: FnOnce() -> LookupFuture,
+    LookupFuture: std::future::Future<
+            Output = Result<Option<super::host_verification::KnownHostLookup>, super::Error>,
+        >,
+{
+    match sshfp {
+        super::sshfp::SshfpDecision::Accept => Ok(HostVerification::dns()),
+        super::sshfp::SshfpDecision::Continue => {
+            let command_lookup = command_lookup().await?;
+            verify_with_known_hosts_command(
+                method,
+                hostname,
+                port,
+                server_key,
+                command_lookup,
+                hash_known_hosts,
+            )
+            .await
+        }
     }
 }
 
@@ -1229,13 +2126,15 @@ impl Handler for ClientHandler {
         &mut self,
         server_key: &russh::keys::PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
-        let mut server_check = &self.server_check;
+        let mut method = &self.server_check;
         let mut host_key_alias = None;
-        while let ServerCheckMethod::HostKeyAlias { alias, method } = server_check {
-            if host_key_alias.is_none() {
-                host_key_alias = Some(alias.as_str());
-            }
-            server_check = method;
+        while let ServerCheckMethod::HostKeyAlias {
+            alias,
+            method: inner,
+        } = method
+        {
+            host_key_alias.get_or_insert(alias.as_str());
+            method = inner;
         }
         let hostname = host_key_alias.unwrap_or(&self.hostname);
         let port = if host_key_alias.is_some() {
@@ -1244,25 +2143,27 @@ impl Handler for ClientHandler {
             self.host.port()
         };
 
-        // russh 0.63 widened this callback to also deliver OpenSSH *host
-        // certificates*. bssh never advertises certificate host key algorithms
-        // (both `Preferred` overrides only touch compression, and
-        // `Preferred::DEFAULT.host_key_certificates` is empty), so a server
-        // cannot legitimately negotiate one. Should a peer send one anyway,
-        // fail closed: bssh has no CA signature verification, so the key inside
-        // the certificate has never been vouched for by anything we trust, and
-        // matching it against known_hosts would answer the wrong question.
-        // `NoCheck` still wins, because there the user disabled verification.
+        // bssh does not yet validate OpenSSH host certificates. Never compare
+        // an unverified certificate's embedded key against ordinary
+        // known_hosts entries.
         let server_public_key = match server_key {
-            russh::keys::PublicKeyOrCertificate::PublicKey { key, .. } => key,
+            russh::keys::PublicKeyOrCertificate::PublicKey { key, hash_alg } => {
+                let algorithm = match key.algorithm() {
+                    ssh_key::Algorithm::Rsa { .. } => ssh_key::Algorithm::Rsa { hash: *hash_alg },
+                    algorithm => algorithm,
+                };
+                *self
+                    .verified_server_algorithm
+                    .lock()
+                    .map_err(|_| super::Error::ServerCheckFailed)? = Some(algorithm);
+                key
+            }
             russh::keys::PublicKeyOrCertificate::Certificate(cert) => {
-                if matches!(server_check, ServerCheckMethod::NoCheck) {
+                if matches!(method, ServerCheckMethod::NoCheck) {
                     return Ok(true);
                 }
                 tracing::error!(
-                    "Host '{}' presented an OpenSSH host certificate (key ID '{}'); \
-                     bssh cannot verify certificate signatures, so the host is rejected. \
-                     Configure the server to offer a plain host key.",
+                    "Host '{}' presented an unverifiable OpenSSH host certificate (key ID '{}')",
                     hostname,
                     cert.key_id()
                 );
@@ -1270,87 +2171,275 @@ impl Handler for ClientHandler {
             }
         };
 
-        match server_check {
-            ServerCheckMethod::NoCheck => Ok(true),
-            ServerCheckMethod::PublicKey(key) => {
-                let pk = russh::keys::parse_public_key_base64(key)
-                    .map_err(|_| super::Error::ServerCheckFailed)?;
+        // DNSSEC is evaluated before any KnownHostsCommand lookup or accept-new
+        // write. Only a DNSSEC-secure, consistently matching RRset accepts
+        // immediately. Every other outcome falls back to known_hosts.
+        let sshfp = super::sshfp::verify_sshfp(
+            &self.policy.target_host,
+            server_public_key,
+            self.policy.verify_host_key_dns,
+        )
+        .await;
+        let address = check_host_ip_address(&self.policy, self.host, host_key_alias);
+        let (verification, address_preflighted) = if sshfp == super::sshfp::SshfpDecision::Accept {
+            (HostVerification::dns(), true)
+        } else if let Some(address) = address.as_deref()
+            && method_is_accept_new(method)
+        {
+            // Run both helper invocations before either identity can be
+            // persisted. The grouped verifier rechecks both file identities
+            // under one lock and atomically appends all unknown rows.
+            let hostname_lookup = self
+                .run_known_hosts_lookup(
+                    hostname,
+                    port,
+                    "HOSTNAME",
+                    server_public_key,
+                    host_key_alias,
+                )
+                .await?;
+            let address_lookup = self
+                .run_known_hosts_lookup(
+                    address,
+                    self.host.port(),
+                    "ADDRESS",
+                    server_public_key,
+                    host_key_alias,
+                )
+                .await?;
+            (
+                verify_accept_new_host_and_address(
+                    method,
+                    hostname,
+                    port,
+                    address,
+                    self.host.port(),
+                    server_public_key,
+                    self.policy.hash_known_hosts,
+                    hostname_lookup,
+                    address_lookup,
+                )
+                .await?,
+                true,
+            )
+        } else {
+            (
+                verify_primary_host_after_sshfp(
+                    method,
+                    hostname,
+                    port,
+                    server_public_key,
+                    self.policy.hash_known_hosts,
+                    sshfp,
+                    || {
+                        self.run_known_hosts_lookup(
+                            hostname,
+                            port,
+                            "HOSTNAME",
+                            server_public_key,
+                            host_key_alias,
+                        )
+                    },
+                )
+                .await?,
+                false,
+            )
+        };
 
-                Ok(pk == *server_public_key)
-            }
-            ServerCheckMethod::PublicKeyFile(key_file_name) => {
-                let pk = russh::keys::load_public_key(key_file_name)
-                    .map_err(|_| super::Error::ServerCheckFailed)?;
-
-                Ok(pk == *server_public_key)
-            }
-            ServerCheckMethod::KnownHostsFile(known_hosts_path) => {
-                super::host_verification::verify_known_hosts_file(
-                    hostname,
-                    port,
-                    server_public_key,
-                    known_hosts_path,
-                )
-            }
-            ServerCheckMethod::KnownHostsFiles(known_hosts_paths) => {
-                super::host_verification::verify_known_hosts_files(
-                    hostname,
-                    port,
-                    server_public_key,
-                    known_hosts_paths,
-                )
-            }
-            ServerCheckMethod::DefaultKnownHostsFile => {
-                // Resolve the default path here rather than letting russh
-                // resolve it internally, so the check and the changed-key
-                // banner's `ssh-keygen -f "<file>"` hint agree on one path and
-                // both modes share `verify_known_hosts_file`. No home
-                // directory means no trust state at all, so fail closed.
-                let Some(known_hosts_path) =
-                    crate::ssh::known_hosts::get_default_known_hosts_path()
-                else {
-                    tracing::error!(
-                        "Cannot determine the known_hosts path; rejecting host key for '{}'",
-                        hostname
-                    );
-                    return Err(super::Error::ServerCheckFailed);
-                };
-                super::host_verification::verify_known_hosts_file(
-                    hostname,
-                    port,
-                    server_public_key,
-                    &known_hosts_path.to_string_lossy(),
-                )
-            }
-            ServerCheckMethod::AcceptNewKnownHostsFile(known_hosts_path) => {
-                super::host_verification::verify_accept_new(
-                    hostname,
-                    port,
-                    server_public_key,
-                    known_hosts_path,
-                )
-                .await
-            }
-            ServerCheckMethod::AcceptNewKnownHostsFiles { files, write_path } => {
-                super::host_verification::verify_accept_new_files(
-                    hostname,
-                    port,
-                    server_public_key,
-                    files,
-                    write_path.as_deref(),
-                )
-                .await
-            }
-            ServerCheckMethod::AcceptNewInMemory => {
-                super::host_verification::verify_accept_new_in_memory(
-                    hostname,
-                    port,
-                    server_public_key,
-                )
-                .await
-            }
-            ServerCheckMethod::HostKeyAlias { .. } => unreachable!("aliases are unwrapped above"),
+        if !verification.accepted {
+            return Ok(false);
         }
+
+        if !verification.skip_address_check
+            && !address_preflighted
+            && let Some(address) = address.as_deref()
+        {
+            let address_lookup = self
+                .run_known_hosts_lookup(
+                    address,
+                    self.host.port(),
+                    "ADDRESS",
+                    server_public_key,
+                    host_key_alias,
+                )
+                .await?;
+            // An unknown address does not invalidate an otherwise trusted
+            // hostname in strict mode, but a changed/revoked address does.
+            let _ = verify_with_known_hosts_command(
+                method,
+                address,
+                self.host.port(),
+                server_public_key,
+                address_lookup,
+                self.policy.hash_known_hosts,
+            )
+            .await?;
+        }
+        if matches!(method, ServerCheckMethod::NoCheck) && !verification.skip_address_check {
+            let mut identities = vec![(hostname, port)];
+            if let Some(address) = address.as_deref() {
+                identities.push((address, self.host.port()));
+            }
+            let write_path = self
+                .policy
+                .rotation_paths
+                .as_ref()
+                .and_then(|paths| paths.first())
+                .map(String::as_str);
+            super::host_verification::learn_accept_all_identities_files_with_hash(
+                &identities,
+                server_public_key,
+                &self.policy.known_hosts_paths,
+                write_path,
+                self.policy.hash_known_hosts,
+            )
+            .await?;
+        }
+
+        *self
+            .verified_server_key
+            .lock()
+            .map_err(|_| super::Error::ServerCheckFailed)? = Some(server_public_key.clone());
+        self.rotation_allowed
+            .store(verification.eligible_for_rotation, Ordering::Release);
+        Ok(true)
+    }
+
+    fn openssh_ext_host_keys_announced(
+        &mut self,
+        keys: Vec<russh::keys::PublicKey>,
+        session: &mut russh::client::Session,
+    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
+        match self.policy.update_host_keys {
+            UpdateHostKeysPolicy::No => return std::future::ready(Ok(())),
+            UpdateHostKeysPolicy::Ask => {
+                tracing::warn!(
+                    "UpdateHostKeys=ask requires a controlling terminal; bssh is non-interactive at the host-key callback and refuses the update"
+                );
+                return std::future::ready(Ok(()));
+            }
+            UpdateHostKeysPolicy::Yes => {}
+        }
+        let keys = keys
+            .into_iter()
+            .filter(|key| {
+                self.policy.host_key_algorithms.iter().any(|allowed| {
+                    match (key.algorithm(), allowed) {
+                        (ssh_key::Algorithm::Rsa { .. }, ssh_key::Algorithm::Rsa { .. }) => true,
+                        (offered, allowed) => offered == *allowed,
+                    }
+                })
+            })
+            .collect::<Vec<_>>();
+        if !self.rotation_allowed.load(Ordering::Acquire) || keys.is_empty() {
+            return std::future::ready(Ok(()));
+        }
+        if keys.len() > super::hostkey_rotation::MAX_ANNOUNCED_KEYS {
+            tracing::warn!(
+                "Ignoring {} announced host keys because the proof request is limited to {} keys",
+                keys.len(),
+                super::hostkey_rotation::MAX_ANNOUNCED_KEYS
+            );
+            return std::future::ready(Ok(()));
+        }
+        if self
+            .proof_in_flight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            tracing::warn!("Ignoring repeated host-key announcement while proof is pending");
+            return std::future::ready(Ok(()));
+        }
+
+        let mut method = &self.server_check;
+        let mut host_key_alias = None;
+        while let ServerCheckMethod::HostKeyAlias {
+            alias,
+            method: inner,
+        } = method
+        {
+            host_key_alias.get_or_insert(alias.as_str());
+            method = inner;
+        }
+        let hostname = host_key_alias.unwrap_or(&self.hostname).to_string();
+        let port = if host_key_alias.is_some() {
+            22
+        } else {
+            self.host.port()
+        };
+        let paths = self.rotation_paths(method);
+        if paths.is_empty() {
+            self.proof_in_flight.store(false, Ordering::Release);
+            tracing::debug!(
+                "UpdateHostKeys is enabled but no writable user known_hosts file is configured"
+            );
+            return std::future::ready(Ok(()));
+        }
+        let mut identities = vec![(hostname.clone(), port)];
+        if let Some(address) = check_host_ip_address(&self.policy, self.host, host_key_alias) {
+            identities.push((address, self.host.port()));
+        }
+        let current_key = match self.verified_server_key.lock() {
+            Ok(guard) => guard.clone(),
+            Err(_) => {
+                self.proof_in_flight.store(false, Ordering::Release);
+                return std::future::ready(Err(super::Error::ServerCheckFailed));
+            }
+        };
+        let negotiated_algorithm = match self.verified_server_algorithm.lock() {
+            Ok(guard) => guard.clone(),
+            Err(_) => {
+                self.proof_in_flight.store(false, Ordering::Release);
+                return std::future::ready(Err(super::Error::ServerCheckFailed));
+            }
+        };
+        let Some(current_key) = current_key else {
+            self.proof_in_flight.store(false, Ordering::Release);
+            return std::future::ready(Ok(()));
+        };
+
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        if let Err(error) = session.request_hostkeys_prove(sender, &keys) {
+            self.proof_in_flight.store(false, Ordering::Release);
+            tracing::warn!("Could not request announced host-key proof: {error}");
+            return std::future::ready(Ok(()));
+        }
+
+        let hash_known_hosts = self.policy.hash_known_hosts;
+        let proof_in_flight = Arc::clone(&self.proof_in_flight);
+        let task = tokio::spawn(async move {
+            let result = match tokio::time::timeout(Duration::from_secs(5), receiver).await {
+                Ok(Ok(Some(proof))) => {
+                    let identity_refs = identities
+                        .iter()
+                        .map(|(hostname, port)| (hostname.as_str(), *port))
+                        .collect::<Vec<_>>();
+                    super::hostkey_rotation::apply_hostkeys_proof(
+                        &paths,
+                        &identity_refs,
+                        &current_key,
+                        &keys,
+                        &proof,
+                        negotiated_algorithm.as_ref(),
+                        hash_known_hosts,
+                    )
+                    .await
+                }
+                Ok(Ok(None)) => Err("server rejected or malformed the host-key proof".to_string()),
+                Ok(Err(_)) => Err("host-key proof channel closed without a reply".to_string()),
+                Err(_) => Err("host-key proof request timed out after 5 seconds".to_string()),
+            };
+            if let Err(error) = result {
+                tracing::warn!(
+                    "Ignoring unsafe or unproven host-key announcement for '{}': {}",
+                    hostname,
+                    error
+                );
+            }
+            proof_in_flight.store(false, Ordering::Release);
+        });
+        self.hostkey_rotation.track(task);
+        std::future::ready(Ok(()))
     }
 }
 
@@ -1447,5 +2536,388 @@ mod fatal_transport_tests {
             first.fatal_transport_state().take_error().is_none(),
             "a consumed cause must not be reused by another operation"
         );
+    }
+}
+
+#[cfg(test)]
+mod known_host_policy_tests {
+    use super::*;
+    use russh::keys::{Algorithm, PrivateKey, PublicKeyOrCertificate};
+    use tempfile::tempdir;
+
+    fn key() -> russh::keys::PublicKey {
+        PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)
+            .unwrap()
+            .public_key()
+            .clone()
+    }
+
+    #[tokio::test]
+    async fn tracked_rotation_is_complete_before_flush_returns() {
+        let tasks = HostkeyRotationTasks::new(true);
+        let complete = Arc::new(AtomicBool::new(false));
+        let task_complete = Arc::clone(&complete);
+        tasks.track(tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            task_complete.store(true, Ordering::Release);
+        }));
+        tasks.wait().await;
+        assert!(complete.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn update_host_keys_ask_is_preserved_as_fail_closed_policy() {
+        assert_eq!(
+            UpdateHostKeysPolicy::parse("ask"),
+            UpdateHostKeysPolicy::Ask
+        );
+        assert_eq!(
+            UpdateHostKeysPolicy::parse("yes"),
+            UpdateHostKeysPolicy::Yes
+        );
+        assert_eq!(UpdateHostKeysPolicy::parse("no"), UpdateHostKeysPolicy::No);
+    }
+
+    #[test]
+    fn order_prefers_algorithms_backed_by_command_keys() {
+        let mut config = Config::default();
+        config.preferred.key = Cow::Owned(vec![
+            ssh_key::Algorithm::Ed25519,
+            ssh_key::Algorithm::Rsa {
+                hash: Some(ssh_key::HashAlg::Sha512),
+            },
+            ssh_key::Algorithm::Dsa,
+        ]);
+        prefer_known_host_algorithms(&mut config, &[ssh_key::Algorithm::Dsa]);
+        assert_eq!(config.preferred.key[0], ssh_key::Algorithm::Dsa);
+        assert_eq!(config.preferred.key[1], ssh_key::Algorithm::Ed25519);
+    }
+
+    #[tokio::test]
+    async fn check_host_ip_rejects_a_conflicting_address_key() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("known_hosts");
+        let offered = key();
+        let wrong_address_key = key();
+        std::fs::write(
+            &path,
+            format!(
+                "node.example {}\n127.0.0.1 {}\n",
+                offered.to_openssh().unwrap(),
+                wrong_address_key.to_openssh().unwrap()
+            ),
+        )
+        .unwrap();
+
+        let mut policy = KnownHostRuntimePolicy::unconfigured("remote", "node.example", 22);
+        policy.check_host_ip = true;
+        let mut handler = ClientHandler::new_with_policy(
+            "node.example".to_string(),
+            "127.0.0.1:22".parse().unwrap(),
+            ServerCheckMethod::KnownHostsFile(path.to_string_lossy().into_owned()),
+            policy,
+        );
+
+        let error = handler
+            .check_server_key(&PublicKeyOrCertificate::from(offered))
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            super::super::Error::HostKeyChanged {
+                ref host,
+                port: 22,
+                ..
+            } if host == "127.0.0.1"
+        ));
+    }
+
+    #[tokio::test]
+    async fn hashed_alias_write_uses_alias_identity_and_selected_path() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("selected-known-hosts");
+        let offered = key();
+        let mut policy = KnownHostRuntimePolicy::unconfigured("remote", "real.example", 2222);
+        policy.hash_known_hosts = true;
+        policy.check_host_ip = true;
+        let method = ServerCheckMethod::HostKeyAlias {
+            alias: "shared-alias".to_string(),
+            method: Box::new(ServerCheckMethod::AcceptNewKnownHostsFile(
+                path.to_string_lossy().into_owned(),
+            )),
+        };
+        let mut handler = ClientHandler::new_with_policy(
+            "real.example".to_string(),
+            "192.0.2.5:2222".parse().unwrap(),
+            method,
+            policy,
+        );
+
+        assert!(
+            handler
+                .check_server_key(&PublicKeyOrCertificate::from(offered.clone()))
+                .await
+                .unwrap()
+        );
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(contents.starts_with("|1|"));
+        assert!(!contents.contains("shared-alias"));
+        assert!(!contents.contains("real.example"));
+        let alias_keys =
+            russh::keys::known_hosts::known_host_keys_path("shared-alias", 22, &path).unwrap();
+        assert!(alias_keys.iter().any(|(_, key)| key == &offered));
+        assert!(
+            russh::keys::known_hosts::known_host_keys_path("real.example", 2222, &path)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            russh::keys::known_hosts::known_host_keys_path("192.0.2.5", 2222, &path)
+                .unwrap()
+                .is_empty(),
+            "HostKeyAlias must suppress CheckHostIP writes"
+        );
+    }
+    #[test]
+    fn order_eligibility_preserves_raw_host_key_algorithm_modifiers() {
+        for (directive, expected) in [
+            (None, true),
+            (Some("+ssh-rsa"), true),
+            (Some("-ssh-rsa"), true),
+            (Some("ssh-ed25519,rsa-sha2-512"), false),
+        ] {
+            let body = directive
+                .map(|value| format!("Host node\n    HostKeyAlgorithms {value}\n"))
+                .unwrap_or_else(|| "Host node\n".to_string());
+            let config = SshConfig::parse(&body).unwrap();
+            let resolved = SshConnectionConfigResolver::new()
+                .with_ssh_config(Some(config))
+                .resolve_for_host("node");
+            assert_eq!(
+                resolved.order_host_key_algorithms, expected,
+                "{directive:?}"
+            );
+            if directive == Some("+ssh-rsa") {
+                assert!(
+                    resolved
+                        .host_key_preferences
+                        .as_ref()
+                        .expect("modifier must materialize preferences")
+                        .contains(&ssh_key::Algorithm::Rsa { hash: None })
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn order_reads_alias_and_nondefault_port_from_multiple_stores() {
+        let directory = tempdir().unwrap();
+        let first = directory.path().join("known_hosts");
+        let second = directory.path().join("ssh_known_hosts");
+        let ed25519 = key();
+        let ecdsa = PrivateKey::random(
+            &mut rand::rng(),
+            Algorithm::Ecdsa {
+                curve: ssh_key::EcdsaCurve::NistP256,
+            },
+        )
+        .unwrap()
+        .public_key()
+        .clone();
+        std::fs::write(
+            &first,
+            format!("[node.example]:2222 {}\n", ed25519.to_openssh().unwrap()),
+        )
+        .unwrap();
+        std::fs::write(
+            &second,
+            format!(
+                "[node.example]:2222 {}\nshared-alias {}\n",
+                ecdsa.to_openssh().unwrap(),
+                ecdsa.to_openssh().unwrap()
+            ),
+        )
+        .unwrap();
+        let paths = [
+            first.to_string_lossy().into_owned(),
+            second.to_string_lossy().into_owned(),
+        ];
+
+        let algorithms = known_host_algorithms_from_paths(&paths, "node.example", 2222).unwrap();
+        assert!(algorithms.contains(&ssh_key::Algorithm::Ed25519));
+        assert!(algorithms.contains(&ssh_key::Algorithm::Ecdsa {
+            curve: ssh_key::EcdsaCurve::NistP256,
+        }));
+        assert_eq!(
+            known_host_algorithms_from_paths(&paths, "shared-alias", 22).unwrap(),
+            vec![ssh_key::Algorithm::Ecdsa {
+                curve: ssh_key::EcdsaCurve::NistP256,
+            }]
+        );
+    }
+
+    #[test]
+    fn ssh_rsa_sha1_is_not_default_but_remains_explicitly_available() {
+        let legacy = ssh_key::Algorithm::Rsa { hash: None };
+        let defaults = SshConnectionConfig::new().to_russh_config();
+        assert!(!defaults.preferred.key.contains(&legacy));
+
+        let opted_in = SshConnectionConfig::new()
+            .with_algorithm_preferences(None, None, None, Some(vec![legacy.clone()]))
+            .to_russh_config();
+        assert_eq!(opted_in.preferred.key.as_ref(), &[legacy]);
+    }
+    #[test]
+    fn host_key_alias_disables_address_verification_and_rotation_identity() {
+        let mut policy = KnownHostRuntimePolicy::unconfigured("remote", "real.example", 2222);
+        policy.check_host_ip = true;
+        let address: SocketAddr = "192.0.2.5:2222".parse().unwrap();
+        assert_eq!(
+            check_host_ip_address(&policy, address, Some("shared-alias")),
+            None
+        );
+        assert_eq!(
+            check_host_ip_address(&policy, address, None).as_deref(),
+            Some("192.0.2.5")
+        );
+    }
+    #[tokio::test]
+    async fn dns_secure_only_match_skips_lookup_address_and_tofu() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("known_hosts");
+        let method =
+            ServerCheckMethod::AcceptNewKnownHostsFile(path.to_string_lossy().into_owned());
+        let offered = key();
+        let lookup_called = Arc::new(AtomicBool::new(false));
+        let called = Arc::clone(&lookup_called);
+
+        let accepted = verify_primary_host_after_sshfp(
+            &method,
+            "node.example",
+            22,
+            &offered,
+            false,
+            super::super::sshfp::SshfpDecision::Accept,
+            move || async move {
+                called.store(true, Ordering::Release);
+                Ok(None)
+            },
+        )
+        .await
+        .unwrap();
+        assert!(accepted.accepted);
+        assert!(accepted.skip_address_check);
+        assert!(!lookup_called.load(Ordering::Acquire));
+        assert!(
+            !path.exists(),
+            "secure DNS match must not perform a TOFU write"
+        );
+    }
+
+    #[tokio::test]
+    async fn dns_mismatch_bogus_and_insecure_outcomes_fall_back_to_tofu() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("known_hosts");
+        let method =
+            ServerCheckMethod::AcceptNewKnownHostsFile(path.to_string_lossy().into_owned());
+        let offered = key();
+
+        for reason in [
+            "match plus mismatch",
+            "secure mismatch",
+            "bogus",
+            "insecure",
+        ] {
+            let _ = std::fs::remove_file(&path);
+            let lookup_called = Arc::new(AtomicBool::new(false));
+            let called = Arc::clone(&lookup_called);
+            let fallback = verify_primary_host_after_sshfp(
+                &method,
+                "node.example",
+                22,
+                &offered,
+                false,
+                super::super::sshfp::SshfpDecision::Continue,
+                move || async move {
+                    called.store(true, Ordering::Release);
+                    Ok(None)
+                },
+            )
+            .await
+            .unwrap();
+            assert!(fallback.accepted, "{reason}");
+            assert!(!fallback.skip_address_check, "{reason}");
+            assert!(lookup_called.load(Ordering::Acquire), "{reason}");
+            assert!(path.exists(), "{reason} must fall back to a TOFU write");
+        }
+    }
+
+    #[tokio::test]
+    async fn check_host_ip_conflict_leaves_unknown_hostname_unrecorded() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("known_hosts");
+        let offered = key();
+        let conflicting = key();
+        let original = format!("192.0.2.5 {}\n", conflicting.to_openssh().unwrap());
+        std::fs::write(&path, &original).unwrap();
+        let method =
+            ServerCheckMethod::AcceptNewKnownHostsFile(path.to_string_lossy().into_owned());
+
+        let result = verify_accept_new_host_and_address(
+            &method,
+            "node.example",
+            22,
+            "192.0.2.5",
+            22,
+            &offered,
+            false,
+            None,
+            None,
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(super::super::Error::HostKeyChanged { .. })
+        ));
+        assert_eq!(std::fs::read_to_string(path).unwrap(), original);
+    }
+
+    #[tokio::test]
+    async fn check_host_ip_records_both_unknown_identities_atomically() {
+        let directory = tempdir().unwrap();
+        let offered = key();
+        for hash_known_hosts in [false, true] {
+            let path = directory
+                .path()
+                .join(format!("known_hosts-{hash_known_hosts}"));
+            let method =
+                ServerCheckMethod::AcceptNewKnownHostsFile(path.to_string_lossy().into_owned());
+
+            let verification = verify_accept_new_host_and_address(
+                &method,
+                "node.example",
+                22,
+                "192.0.2.5",
+                22,
+                &offered,
+                hash_known_hosts,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+            assert!(verification.accepted);
+            let contents = std::fs::read_to_string(&path).unwrap();
+            assert_eq!(contents.lines().count(), 2);
+            if hash_known_hosts {
+                assert!(contents.lines().all(|line| line.starts_with("|1|")));
+            }
+            for identity in ["node.example", "192.0.2.5"] {
+                let keys =
+                    russh::keys::known_hosts::known_host_keys_path(identity, 22, &path).unwrap();
+                assert!(keys.iter().any(|(_, key)| key == &offered));
+            }
+        }
     }
 }

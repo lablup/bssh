@@ -127,6 +127,8 @@ pub enum Error {
     CommandDidntExit,
     #[error("Host key verification failed")]
     ServerCheckFailed,
+    #[error("KnownHostsCommand failed: {reason}")]
+    KnownHostsCommandFailed { reason: String },
     /// `port` is not interpolated into the `Display` text, but carrying it is
     /// what lets the client-facing messages name the actual known_hosts entry
     /// (`[host]:port` for non-standard ports) in their `ssh-keygen -R`
@@ -221,6 +223,7 @@ impl Error {
                 | Self::NoAddressForFamily { .. }
                 | Self::CommandDidntExit
                 | Self::ServerCheckFailed
+                | Self::KnownHostsCommandFailed { .. }
                 | Self::HostKeyChanged { .. }
                 | Self::HostKeyRevoked { .. }
                 | Self::SshError(_)

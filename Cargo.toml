@@ -1,6 +1,8 @@
 [workspace]
+resolver = "3"
 members = [
     ".",
+    "crates/bssh-russh",
     "crates/bssh-russh-sftp",
 ]
 
@@ -25,15 +27,15 @@ rust-version = "1.96"
 [dependencies]
 bytes = "1.11.1"
 tokio = { version = "1.52.3", features = ["full"] }
-# Upstream russh: both fork patches are now upstreamed
-# - handle-data high-frequency PTY output fix: upstream #731 (v0.62.0)
-# - SHA-1 MAC exclusion from Preferred::DEFAULT: upstream #690 (v0.60.2)
+# Internal russh fork based on 0.63.1. It adds bounded hostkeys-prove support,
+# defers automatic rekey until authentication, emits OpenSSH-compatible KEX
+# diagnostics, and excludes legacy ssh-rsa/SHA-1 host signatures by default.
 # 0.63 widened `client::Handler::check_server_key` to `PublicKeyOrCertificate`
 # and added opt-in host certificates. bssh leaves
 # `Preferred::host_key_certificates` empty, so it never negotiates one; the
 # handler in src/ssh/tokio_client/connection.rs refuses certificates because
 # bssh verifies no CA signatures.
-russh = "0.63.1"
+russh = { package = "bssh-russh", version = "0.63.1", path = "crates/bssh-russh" }
 # Use our internal russh-sftp fork tracking upstream 2.4.0
 # (adds pipelined File I/O and the server read-ahead / write-coalescing loop;
 # the serde_bytes perf fix is now upstreamed)
@@ -71,6 +73,11 @@ uuid = { version = "1.23.1", features = ["v4"] }
 tokio-util = "0.7.18"
 socket2 = "0.6"
 shell-words = "1.1.1"
+base64 = "0.22.1"
+hmac = "0.13.0"
+sha2 = "0.11.0"
+signature = "3.0.0"
+hickory-resolver = { version = "0.26.1", features = ["dnssec-ring"] }
 libc = "0.2"
 ipnetwork = "0.21"
 bcrypt = "0.19"
@@ -95,6 +102,9 @@ rustls-native-certs = "0.8"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3.7.0"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 tempfile = "3.27.0"
