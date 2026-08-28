@@ -41,6 +41,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Semaphore, mpsc};
+use tokio::task::JoinSet;
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
@@ -260,6 +261,7 @@ impl LocalForwarder {
 
         // Create semaphore to limit concurrent connections
         let connection_semaphore = Arc::new(Semaphore::new(self.config.max_connections));
+        let mut connections = JoinSet::new();
 
         loop {
             tokio::select! {
@@ -271,7 +273,12 @@ impl LocalForwarder {
                             self.stats.connections_accepted.fetch_add(1, Ordering::Relaxed);
 
                             // Spawn connection handler
-                            self.spawn_connection_handler(stream, peer_addr, Arc::clone(&connection_semaphore));
+                            self.spawn_connection_handler(
+                                stream,
+                                peer_addr,
+                                Arc::clone(&connection_semaphore),
+                                &mut connections,
+                            );
                         }
                         Err(e) => {
                             error!("Failed to accept connection: {}", e);
@@ -282,6 +289,7 @@ impl LocalForwarder {
                         }
                     }
                 }
+                _ = connections.join_next(), if !connections.is_empty() => {}
                 // Handle cancellation
                 _ = self.cancel_token.cancelled() => {
                     info!("Local forwarding cancelled, stopping listener");
@@ -289,6 +297,9 @@ impl LocalForwarder {
                 }
             }
         }
+
+        connections.abort_all();
+        while connections.join_next().await.is_some() {}
 
         info!("Local forwarding stopped");
         Ok(())
@@ -300,6 +311,7 @@ impl LocalForwarder {
         tcp_stream: TcpStream,
         peer_addr: SocketAddr,
         connection_semaphore: Arc<Semaphore>,
+        connections: &mut JoinSet<()>,
     ) {
         let _session_id = self.session_id;
         let remote_host = self.remote_host.clone();
@@ -310,14 +322,17 @@ impl LocalForwarder {
         let buffer_size = self.config.buffer_size;
         let address_family = self.config.address_family;
 
-        tokio::spawn(async move {
+        connections.spawn(async move {
             // Acquire connection semaphore permit
-            let _permit = match connection_semaphore.acquire().await {
-                Ok(permit) => permit,
-                Err(_) => {
-                    warn!("Failed to acquire connection permit for {}", peer_addr);
-                    return;
-                }
+            let _permit = tokio::select! {
+                permit = connection_semaphore.acquire() => match permit {
+                    Ok(permit) => permit,
+                    Err(_) => {
+                        warn!("Failed to acquire connection permit for {}", peer_addr);
+                        return;
+                    }
+                },
+                _ = cancel_token.cancelled() => return,
             };
 
             stats.active_connections.fetch_add(1, Ordering::Relaxed);
@@ -377,7 +392,7 @@ impl LocalForwarder {
         // Create SSH channel for this connection
         debug!("Creating SSH channel to {}:{}", remote_host, remote_port);
 
-        let target = format!("{remote_host}:{remote_port}");
+        let target = super::format_host_port(remote_host, remote_port);
         let ssh_channel = ssh_client
             .open_direct_tcpip_channel_with_family(target, None, address_family)
             .await

@@ -34,6 +34,8 @@ use super::authentication::{AuthMethod, ServerCheckMethod};
 use super::proxy_command::{
     ProxyCommandConfig, ProxyCommandProcess, ProxyMode, spawn_proxy_command,
 };
+use crate::forwarding::remote::RemoteForwardRegistry;
+use crate::forwarding::{ForwardingDirective, ForwardingPlan, ForwardingRuntime};
 use crate::ssh::SshConfig;
 
 /// Default keepalive interval in seconds.
@@ -143,6 +145,8 @@ pub struct SshConnectionConfig {
     pub pubkey_accepted_algorithms: Option<Vec<String>>,
     // Authentication method, identity, certificate, and prompt policy for this host.
     pub auth_policy: SshAuthenticationPolicy,
+    /// Forwarding directives resolved for this destination.
+    pub forwarding_plan: ForwardingPlan,
 }
 
 impl Default for SshConnectionConfig {
@@ -170,6 +174,7 @@ impl Default for SshConnectionConfig {
             order_host_key_algorithms: true,
             pubkey_accepted_algorithms: None,
             auth_policy: SshAuthenticationPolicy::default(),
+            forwarding_plan: ForwardingPlan::default(),
         }
     }
 }
@@ -194,6 +199,10 @@ pub struct SshConnectionConfigResolver {
     cli_proxy_jump: Option<String>,
     yaml_proxy_jump: Option<String>,
     cli_identity_files: Vec<PathBuf>,
+    cli_local_forwards: Vec<String>,
+    cli_remote_forwards: Vec<String>,
+    cli_dynamic_forwards: Vec<String>,
+    cli_forwarding_order: Vec<ForwardingDirective>,
 }
 
 impl SshConnectionConfigResolver {
@@ -277,6 +286,25 @@ impl SshConnectionConfigResolver {
     #[must_use]
     pub fn with_yaml_proxy_jump(mut self, jump: Option<String>) -> Self {
         self.yaml_proxy_jump = jump;
+        self
+    }
+
+    #[must_use]
+    pub fn with_cli_forwarding_order(mut self, order: Vec<ForwardingDirective>) -> Self {
+        self.cli_forwarding_order = order;
+        self
+    }
+
+    #[must_use]
+    pub fn with_cli_forwardings(
+        mut self,
+        local: Vec<String>,
+        remote: Vec<String>,
+        dynamic: Vec<String>,
+    ) -> Self {
+        self.cli_local_forwards = local;
+        self.cli_remote_forwards = remote;
+        self.cli_dynamic_forwards = dynamic;
         self
     }
 
@@ -424,6 +452,80 @@ impl SshConnectionConfigResolver {
         auth_policy
             .cli_identity_files
             .clone_from(&self.cli_identity_files);
+        let mut local_forwards = Vec::new();
+        let mut remote_forwards = Vec::new();
+        if self.cli_forwarding_order.is_empty() {
+            local_forwards.extend(
+                self.cli_local_forwards
+                    .iter()
+                    .cloned()
+                    .map(ForwardingDirective::Local),
+            );
+            local_forwards.extend(
+                self.cli_dynamic_forwards
+                    .iter()
+                    .cloned()
+                    .map(ForwardingDirective::Dynamic),
+            );
+            remote_forwards.extend(
+                self.cli_remote_forwards
+                    .iter()
+                    .cloned()
+                    .map(ForwardingDirective::Remote),
+            );
+        } else {
+            for directive in &self.cli_forwarding_order {
+                match directive {
+                    ForwardingDirective::Remote(_) => remote_forwards.push(directive.clone()),
+                    _ => local_forwards.push(directive.clone()),
+                }
+            }
+        }
+        if let Some(config) = host_config.as_ref() {
+            if config.forwarding_directives.is_empty() {
+                local_forwards.extend(
+                    config
+                        .local_forward
+                        .iter()
+                        .cloned()
+                        .map(ForwardingDirective::Local),
+                );
+                local_forwards.extend(
+                    config
+                        .dynamic_forward
+                        .iter()
+                        .cloned()
+                        .map(ForwardingDirective::Dynamic),
+                );
+                remote_forwards.extend(
+                    config
+                        .remote_forward
+                        .iter()
+                        .cloned()
+                        .map(ForwardingDirective::Remote),
+                );
+            } else {
+                for directive in &config.forwarding_directives {
+                    match directive {
+                        ForwardingDirective::Remote(_) => remote_forwards.push(directive.clone()),
+                        _ => local_forwards.push(directive.clone()),
+                    }
+                }
+            }
+        }
+        local_forwards.extend(remote_forwards);
+        let forwarding_plan = ForwardingPlan {
+            directives: local_forwards,
+            clear_all: host_config
+                .as_ref()
+                .and_then(|config| config.clear_all_forwardings)
+                .unwrap_or(false),
+            exit_on_failure: host_config
+                .as_ref()
+                .and_then(|config| config.exit_on_forward_failure)
+                .unwrap_or(false),
+            address_family,
+        };
         SshConnectionConfig::new()
             .with_keepalive_interval(if keepalive_interval == 0 {
                 None
@@ -454,6 +556,7 @@ impl SshConnectionConfigResolver {
             .with_known_host_algorithm_ordering(order_host_key_algorithms)
             .with_pubkey_accepted_algorithms(pubkey_accepted_algorithms)
             .with_auth_policy(auth_policy)
+            .with_forwarding_plan(forwarding_plan)
     }
 
     fn resolve_proxy_mode(
@@ -650,6 +753,19 @@ impl SshConnectionConfig {
         self
     }
 
+    #[must_use]
+    pub fn with_forwarding_plan(mut self, plan: ForwardingPlan) -> Self {
+        self.forwarding_plan = plan;
+        self
+    }
+
+    /// Strip destination forwarding from a configuration used for a jump hop.
+    #[must_use]
+    pub fn without_forwarding(mut self) -> Self {
+        self.forwarding_plan = ForwardingPlan::default();
+        self
+    }
+
     /// Convert this configuration to a russh client Config.
     ///
     /// `inactivity_timeout` stays disabled for client sessions. A healthy
@@ -799,6 +915,8 @@ pub struct Client {
     proxy_process: Option<Arc<ProxyCommandProcess>>,
     fatal_transport: FatalTransportState,
     hostkey_rotation: HostkeyRotationTasks,
+    forwarding_runtime: Arc<ForwardingRuntime>,
+    remote_forward_registry: RemoteForwardRegistry,
 }
 
 #[derive(Debug, Clone)]
@@ -1015,7 +1133,12 @@ impl Client {
                 )
                 .await;
                 match result {
-                    Ok(client) => return Ok(client),
+                    Ok(client) => {
+                        client
+                            .initialize_forwarding(&ssh_config.forwarding_plan)
+                            .await?;
+                        return Ok(client);
+                    }
                     Err(error)
                         if is_retryable_proxy_carrier_error(&error) && round + 1 < attempts =>
                     {
@@ -1050,7 +1173,7 @@ impl Client {
             .await?;
         }
         let tcp_keepalive = ssh_config.to_tcp_keepalive();
-        Self::connect_with_config_inner(
+        let client = Self::connect_with_config_inner(
             addr,
             username,
             auth,
@@ -1063,7 +1186,11 @@ impl Client {
                 connection_attempts: ssh_config.connection_attempts,
             },
         )
-        .await
+        .await?;
+        client
+            .initialize_forwarding(&ssh_config.forwarding_plan)
+            .await?;
+        Ok(client)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1100,6 +1227,7 @@ impl Client {
         );
         let fatal_transport = handler.fatal_transport_state();
         let hostkey_rotation = handler.hostkey_rotation_tasks();
+        let remote_forward_registry = handler.remote_forward_registry();
         let mut handle = match russh::client::connect_stream(config, proxy_session.stream, handler)
             .await
         {
@@ -1134,6 +1262,8 @@ impl Client {
             proxy_process: Some(process),
             fatal_transport,
             hostkey_rotation,
+            forwarding_runtime: Arc::new(ForwardingRuntime::default()),
+            remote_forward_registry,
         };
         client.flush_hostkey_updates().await;
         Ok(client)
@@ -1291,6 +1421,7 @@ impl Client {
             ClientHandler::new_with_policy(target_host.clone(), address, server_check, policy);
         let fatal_transport = handler.fatal_transport_state();
         let hostkey_rotation = handler.hostkey_rotation_tasks();
+        let remote_forward_registry = handler.remote_forward_registry();
         let mut handle = russh::client::connect_stream(Arc::new(config), stream, handler)
             .await
             .map_err(|error| {
@@ -1312,6 +1443,8 @@ impl Client {
             proxy_process: None,
             fatal_transport,
             hostkey_rotation,
+            forwarding_runtime: Arc::new(ForwardingRuntime::default()),
+            remote_forward_registry,
         };
         client.flush_hostkey_updates().await;
         Ok(client)
@@ -1343,6 +1476,7 @@ impl Client {
             username,
             address,
             FatalTransportState::default(),
+            RemoteForwardRegistry::default(),
         )
     }
 
@@ -1351,6 +1485,7 @@ impl Client {
         username: String,
         address: SocketAddr,
         fatal_transport: FatalTransportState,
+        remote_forward_registry: RemoteForwardRegistry,
     ) -> Self {
         Self {
             connection_handle: handle.clone(),
@@ -1360,6 +1495,8 @@ impl Client {
             proxy_process: None,
             fatal_transport,
             hostkey_rotation: HostkeyRotationTasks::new(false),
+            forwarding_runtime: Arc::new(ForwardingRuntime::default()),
+            remote_forward_registry,
         }
     }
 
@@ -1369,6 +1506,7 @@ impl Client {
         address: SocketAddr,
         fatal_transport: FatalTransportState,
         hostkey_rotation: HostkeyRotationTasks,
+        remote_forward_registry: RemoteForwardRegistry,
     ) -> Self {
         let client = Self {
             connection_handle: handle.clone(),
@@ -1378,9 +1516,32 @@ impl Client {
             proxy_process: None,
             fatal_transport,
             hostkey_rotation,
+            forwarding_runtime: Arc::new(ForwardingRuntime::default()),
+            remote_forward_registry,
         };
         client.flush_hostkey_updates().await;
         client
+    }
+
+    pub(crate) fn forwarding_transport_clone(&self) -> Self {
+        Self {
+            forwarding_runtime: Arc::new(ForwardingRuntime::default()),
+            ..self.clone()
+        }
+    }
+
+    pub(crate) async fn initialize_forwarding(
+        &self,
+        plan: &ForwardingPlan,
+    ) -> Result<(), super::Error> {
+        self.forwarding_runtime
+            .start(self, plan)
+            .await
+            .map_err(|error| super::Error::PortForwardRequestFailed(format!("{error:#}")))
+    }
+
+    pub(crate) fn remote_forward_registry(&self) -> RemoteForwardRegistry {
+        self.remote_forward_registry.clone()
     }
 
     /// A debugging function to get the username this client is connected as.
@@ -1395,6 +1556,10 @@ impl Client {
 
     /// Disconnect from the remote host.
     pub async fn disconnect(&self) -> Result<(), super::Error> {
+        self.forwarding_runtime
+            .shutdown()
+            .await
+            .map_err(|error| super::Error::PortForwardRequestFailed(format!("{error:#}")))?;
         self.flush_hostkey_updates().await;
         let result = self
             .connection_handle
@@ -1412,10 +1577,7 @@ impl Client {
         self.connection_handle.is_closed()
     }
 
-    /// Request remote port forwarding (tcpip-forward) - Future Implementation Placeholder
-    ///
-    /// **TODO**: This method needs to be implemented once russh provides
-    /// global request functionality or we find the appropriate API.
+    /// Request remote port forwarding with an SSH `tcpip-forward` global request.
     ///
     /// This sends a global request to the SSH server to bind a port on the remote end
     /// and forward connections back to the client. This is used for remote port forwarding (-R).
@@ -1428,19 +1590,22 @@ impl Client {
     /// The actual port number that was bound by the server (useful when bind_port is 0)
     pub async fn request_port_forward(
         &self,
-        _bind_address: String,
-        _bind_port: u32,
+        bind_address: String,
+        bind_port: u32,
     ) -> Result<u32, super::Error> {
-        // **TODO**: Implement actual tcpip-forward global request
-        // For now, return an error indicating this is not yet implemented
-        tracing::warn!("Remote port forwarding request not yet implemented - TODO");
-        Err(super::Error::PortForwardingNotSupported)
+        let allocated = self
+            .connection_handle
+            .tcpip_forward(bind_address.clone(), bind_port)
+            .await
+            .map_err(|error| {
+                super::Error::PortForwardRequestFailed(format!(
+                    "{bind_address}:{bind_port}: {error}"
+                ))
+            })?;
+        Ok(if bind_port == 0 { allocated } else { bind_port })
     }
 
-    /// Cancel remote port forwarding (cancel-tcpip-forward) - Future Implementation Placeholder
-    ///
-    /// **TODO**: This method needs to be implemented once russh provides
-    /// global request functionality or we find the appropriate API.
+    /// Cancel remote port forwarding with an SSH `cancel-tcpip-forward` global request.
     ///
     /// This sends a global request to cancel a previously established remote port forward.
     ///
@@ -1449,13 +1614,17 @@ impl Client {
     /// * `bind_port` - Port that was bound on the remote server
     pub async fn cancel_port_forward(
         &self,
-        _bind_address: String,
-        _bind_port: u32,
+        bind_address: String,
+        bind_port: u32,
     ) -> Result<(), super::Error> {
-        // **TODO**: Implement actual cancel-tcpip-forward global request
-        // For now, return an error indicating this is not yet implemented
-        tracing::warn!("Cancel remote port forwarding not yet implemented - TODO");
-        Err(super::Error::PortForwardingNotSupported)
+        self.connection_handle
+            .cancel_tcpip_forward(bind_address.clone(), bind_port)
+            .await
+            .map_err(|error| {
+                super::Error::PortForwardRequestFailed(format!(
+                    "cancel {bind_address}:{bind_port}: {error}"
+                ))
+            })
     }
 }
 
@@ -1610,6 +1779,7 @@ pub struct ClientHandler {
     proof_in_flight: Arc<AtomicBool>,
     hostkey_rotation: HostkeyRotationTasks,
     fatal_transport: FatalTransportState,
+    remote_forward_registry: RemoteForwardRegistry,
 }
 
 impl ClientHandler {
@@ -1642,6 +1812,7 @@ impl ClientHandler {
             proof_in_flight: Arc::new(AtomicBool::new(false)),
             hostkey_rotation,
             fatal_transport: FatalTransportState::default(),
+            remote_forward_registry: RemoteForwardRegistry::default(),
         }
     }
 
@@ -2163,6 +2334,10 @@ where
             .await
         }
     }
+
+    pub(crate) fn remote_forward_registry(&self) -> RemoteForwardRegistry {
+        self.remote_forward_registry.clone()
+    }
 }
 
 impl Handler for ClientHandler {
@@ -2178,6 +2353,34 @@ impl Handler for ClientHandler {
                 self.fatal_transport.record(&error);
                 Err(error)
             }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn server_channel_open_forwarded_tcpip(
+        &mut self,
+        channel: russh::Channel<russh::client::Msg>,
+        connected_address: &str,
+        connected_port: u32,
+        _originator_address: &str,
+        _originator_port: u32,
+        reply: russh::client::ChannelOpenHandle,
+        _session: &mut russh::client::Session,
+    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
+        let registry = self.remote_forward_registry.clone();
+        let connected_address = connected_address.to_string();
+        async move {
+            if registry
+                .route(&connected_address, connected_port, channel)
+                .await
+            {
+                reply.accept().await;
+            } else {
+                reply
+                    .reject(russh::ChannelOpenFailure::AdministrativelyProhibited)
+                    .await;
+            }
+            Ok(())
         }
     }
 

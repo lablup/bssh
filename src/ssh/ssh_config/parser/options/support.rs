@@ -15,6 +15,7 @@ pub(super) enum RuntimeConsumer {
     Transport,
     Proxy,
     Session,
+    Forwarding,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,7 +26,7 @@ pub(super) struct KeywordSpec {
 
 use KeywordSupport::{Delegated, Runtime, Unimplemented};
 use RuntimeConsumer::{
-    Authentication, HostVerification, NodeResolution, Proxy, Session, Transport,
+    Authentication, Forwarding, HostVerification, NodeResolution, Proxy, Session, Transport,
 };
 
 pub(super) const ACCEPTED_KEYWORDS: &[(&str, &str, KeywordSupport)] = &[
@@ -154,17 +155,21 @@ pub(super) const ACCEPTED_KEYWORDS: &[(&str, &str, KeywordSupport)] = &[
     ("fingerprinthash", "fingerprinthash", Unimplemented),
     ("forwardagent", "forwardagent", Unimplemented),
     ("forwardx11", "forwardx11", Unimplemented),
-    ("localforward", "localforward", Delegated(298)),
-    ("remoteforward", "remoteforward", Delegated(298)),
-    ("dynamicforward", "dynamicforward", Delegated(298)),
+    ("localforward", "localforward", Runtime(Forwarding)),
+    ("remoteforward", "remoteforward", Runtime(Forwarding)),
+    ("dynamicforward", "dynamicforward", Runtime(Forwarding)),
     ("gatewayports", "gatewayports", Unimplemented),
     (
         "exitonforwardfailure",
         "exitonforwardfailure",
-        Delegated(298),
+        Runtime(Forwarding),
     ),
     ("permitremoteopen", "permitremoteopen", Unimplemented),
-    ("clearallforwardings", "clearallforwardings", Delegated(298)),
+    (
+        "clearallforwardings",
+        "clearallforwardings",
+        Runtime(Forwarding),
+    ),
     ("forwardx11timeout", "forwardx11timeout", Unimplemented),
     ("forwardx11trusted", "forwardx11trusted", Unimplemented),
     (
@@ -303,6 +308,11 @@ mod tests {
             ("hostkeyalias", HostVerification),
             ("verifyhostkeydns", HostVerification),
             ("updatehostkeys", HostVerification),
+            ("localforward", Forwarding),
+            ("remoteforward", Forwarding),
+            ("dynamicforward", Forwarding),
+            ("exitonforwardfailure", Forwarding),
+            ("clearallforwardings", Forwarding),
             ("serveraliveinterval", Transport),
             ("serveralivecountmax", Transport),
             ("connectionattempts", Transport),
@@ -341,11 +351,6 @@ mod tests {
     #[test]
     fn first_wave_delegations_match_the_split_issue_dag() {
         let expected = HashMap::from([
-            ("localforward", 298),
-            ("remoteforward", 298),
-            ("dynamicforward", 298),
-            ("clearallforwardings", 298),
-            ("exitonforwardfailure", 298),
             ("ipqos", 300),
             ("bindaddress", 300),
             ("bindinterface", 300),

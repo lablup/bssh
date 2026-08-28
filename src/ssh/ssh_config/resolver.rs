@@ -207,6 +207,10 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
         base.dynamic_forward
             .extend(overlay.dynamic_forward.iter().cloned());
     }
+    if !overlay.forwarding_directives.is_empty() {
+        base.forwarding_directives
+            .extend(overlay.forwarding_directives.iter().cloned());
+    }
     if base.request_tty.is_none() && overlay.request_tty.is_some() {
         base.request_tty = overlay.request_tty.clone();
     }

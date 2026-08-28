@@ -69,6 +69,12 @@ fn build_ssh_connection_config_resolver(
         .with_cli_host_key_alias(cli.get_ssh_option("HostKeyAlias"))
         .with_cli_proxy_jump(cli.jump_hosts.clone())
         .with_yaml_proxy_jump(ctx.config.get_cluster_jump_host(cluster_name))
+        .with_cli_forwarding_order(cli.forwarding_order.clone())
+        .with_cli_forwardings(
+            cli.local_forwards.clone(),
+            cli.remote_forwards.clone(),
+            cli.dynamic_forwards.clone(),
+        )
 }
 
 /// Decide whether `-S` (sudo-password) is meaningful for the given dispatch path.
@@ -717,14 +723,6 @@ async fn handle_exec_command(
         // task resolves it against that task's node host.
         let ssh_connection_config_resolver =
             build_ssh_connection_config_resolver(cli, ctx, effective_cluster_name);
-        let forwarding_config_hostname = ctx
-            .nodes
-            .first()
-            .map(|node| node.host.as_str())
-            .or(hostname.as_deref())
-            .unwrap_or("*");
-        let forwarding_ssh_connection_config =
-            ssh_connection_config_resolver.resolve_for_host(forwarding_config_hostname);
 
         let params = ExecuteCommandParams {
             nodes: ctx.nodes.clone(),
@@ -745,11 +743,6 @@ async fn handle_exec_command(
             timeout,
             connect_timeout: Some(cli.connect_timeout),
             jump_hosts: jump_hosts.as_deref(),
-            port_forwards: if cli.has_port_forwards() {
-                Some(cli.parse_port_forwards(forwarding_ssh_connection_config.address_family)?)
-            } else {
-                None
-            },
             require_all_success: cli.require_all_success,
             check_all_nodes: cli.check_all_nodes,
             sudo_password,

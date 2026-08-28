@@ -364,6 +364,9 @@ pub struct Cli {
         help = "Dynamic port forwarding (SOCKS proxy) [bind_address:]port[/socks_version]\nCreates a local SOCKS proxy that dynamically forwards connections via SSH.\nSOCKS5 accepts IPv4 literals, domain names, and IPv6 literals; SOCKS4 destinations are IPv4-only and fail when IPv6 is forced.\nMultiple -D options can be specified for multiple SOCKS proxies.\nExample: -D 1080 (SOCKS5 proxy on localhost:1080), -D *:1080/4 (SOCKS4 on all interfaces)"
     )]
     pub dynamic_forwards: Vec<String>,
+    /// Dedicated -L/-R/-D options in argv order (filled during initialization).
+    #[arg(skip)]
+    pub forwarding_order: Vec<crate::forwarding::ForwardingDirective>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -648,6 +651,126 @@ impl Cli {
         }
         options.extend(self.ssh_options.iter().cloned());
         options
+    }
+
+    fn forwarding_ssh_option(option: &str) -> Option<crate::forwarding::ForwardingDirective> {
+        use crate::forwarding::ForwardingDirective;
+
+        let separator =
+            option.find(|character: char| character == '=' || character.is_whitespace())?;
+        let keyword = &option[..separator];
+        let value = option[separator..]
+            .trim_start_matches(|character: char| character == '=' || character.is_whitespace());
+        if value.is_empty() {
+            return None;
+        }
+        if keyword.eq_ignore_ascii_case("LocalForward") {
+            Some(ForwardingDirective::Local(value.to_string()))
+        } else if keyword.eq_ignore_ascii_case("RemoteForward") {
+            Some(ForwardingDirective::Remote(value.to_string()))
+        } else if keyword.eq_ignore_ascii_case("DynamicForward") {
+            Some(ForwardingDirective::Dynamic(value.to_string()))
+        } else {
+            None
+        }
+    }
+
+    /// Preserve the order in which dedicated flags and generic `-o`
+    /// forwarding options were obtained.
+    pub fn record_forwarding_order(&mut self, args: &[String]) {
+        use crate::forwarding::ForwardingDirective;
+
+        self.forwarding_order.clear();
+        let mut local = 0usize;
+        let mut remote = 0usize;
+        let mut dynamic = 0usize;
+        let mut index = 1usize;
+        while index < args.len() {
+            let argument = &args[index];
+            if argument == "--"
+                || self
+                    .destination
+                    .as_ref()
+                    .is_some_and(|destination| destination == argument)
+            {
+                break;
+            }
+            let generic_option = if argument == "-o" && index + 1 < args.len() {
+                Some((args[index + 1].as_str(), true))
+            } else {
+                argument.strip_prefix("-o").map(|value| (value, false))
+            };
+            if let Some((option, consumed_next)) = generic_option
+                && let Some(directive) = Self::forwarding_ssh_option(option)
+            {
+                self.forwarding_order.push(directive);
+                index += usize::from(consumed_next) + 1;
+                continue;
+            }
+            let (kind, value, consumed_next) = match argument.as_str() {
+                "-L" | "--local-forward" if index + 1 < args.len() => {
+                    ("local", args[index + 1].as_str(), true)
+                }
+                "-R" | "--remote-forward" if index + 1 < args.len() => {
+                    ("remote", args[index + 1].as_str(), true)
+                }
+                "-D" | "--dynamic-forward" if index + 1 < args.len() => {
+                    ("dynamic", args[index + 1].as_str(), true)
+                }
+                value if value.starts_with("--local-forward=") => ("local", &value[16..], false),
+                value if value.starts_with("--remote-forward=") => ("remote", &value[17..], false),
+                value if value.starts_with("--dynamic-forward=") => {
+                    ("dynamic", &value[18..], false)
+                }
+                value if value.starts_with("-L") && value.len() > 2 => {
+                    ("local", &value[2..], false)
+                }
+                value if value.starts_with("-R") && value.len() > 2 => {
+                    ("remote", &value[2..], false)
+                }
+                value if value.starts_with("-D") && value.len() > 2 => {
+                    ("dynamic", &value[2..], false)
+                }
+                _ => {
+                    index += 1;
+                    continue;
+                }
+            };
+            let directive = match kind {
+                "local"
+                    if self
+                        .local_forwards
+                        .get(local)
+                        .is_some_and(|item| item == value) =>
+                {
+                    local += 1;
+                    Some(ForwardingDirective::Local(value.to_string()))
+                }
+                "remote"
+                    if self
+                        .remote_forwards
+                        .get(remote)
+                        .is_some_and(|item| item == value) =>
+                {
+                    remote += 1;
+                    Some(ForwardingDirective::Remote(value.to_string()))
+                }
+                "dynamic"
+                    if self
+                        .dynamic_forwards
+                        .get(dynamic)
+                        .is_some_and(|item| item == value) =>
+                {
+                    dynamic += 1;
+                    Some(ForwardingDirective::Dynamic(value.to_string()))
+                }
+                _ => None,
+            };
+            if let Some(directive) = directive {
+                self.forwarding_order.push(directive);
+            }
+            index += usize::from(consumed_next) + 1;
+        }
     }
 
     /// Parse port forwarding specifications into ForwardingType instances

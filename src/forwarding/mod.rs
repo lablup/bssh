@@ -24,17 +24,89 @@ pub mod dynamic;
 pub mod local;
 pub mod manager;
 pub mod remote;
+pub mod runtime;
 pub mod spec;
 pub mod tunnel;
 
 // Re-export key types for convenience
 pub use manager::{ForwardingId, ForwardingManager, ForwardingMessage};
+pub use runtime::ForwardingRuntime;
 pub use spec::ForwardingSpec;
 
 use crate::ssh::tokio_client::AddressFamily;
 use anyhow::{Context, Result};
 use std::fmt;
 use std::net::{IpAddr, SocketAddr};
+
+pub(crate) fn format_host_port(host: &str, port: u16) -> String {
+    if host.contains(':') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
+}
+
+/// One forwarding directive in the order OpenSSH obtained it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ForwardingDirective {
+    Local(String),
+    Remote(String),
+    Dynamic(String),
+}
+
+/// Forwarding policy resolved for one destination host.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForwardingPlan {
+    pub directives: Vec<ForwardingDirective>,
+    pub clear_all: bool,
+    pub exit_on_failure: bool,
+    pub address_family: AddressFamily,
+}
+
+impl Default for ForwardingPlan {
+    fn default() -> Self {
+        Self {
+            directives: Vec::new(),
+            clear_all: false,
+            exit_on_failure: false,
+            address_family: AddressFamily::Any,
+        }
+    }
+}
+
+impl ForwardingPlan {
+    pub fn is_empty(&self) -> bool {
+        self.clear_all || self.directives.is_empty()
+    }
+
+    /// Parse and de-duplicate directives while preserving first-obtained order.
+    pub fn parse(&self) -> Result<Vec<ForwardingType>> {
+        if self.clear_all {
+            return Ok(Vec::new());
+        }
+
+        let mut forwards = Vec::with_capacity(self.directives.len());
+        for directive in &self.directives {
+            let forward = match directive {
+                ForwardingDirective::Local(spec) => {
+                    ForwardingSpec::parse_local(spec, self.address_family)
+                        .with_context(|| format!("Invalid LocalForward specification: {spec}"))?
+                }
+                ForwardingDirective::Remote(spec) => ForwardingSpec::parse_remote(spec)
+                    .with_context(|| format!("Invalid RemoteForward specification: {spec}"))?,
+                ForwardingDirective::Dynamic(spec) => {
+                    ForwardingSpec::parse_dynamic(spec, self.address_family)
+                        .with_context(|| format!("Invalid DynamicForward specification: {spec}"))?
+                }
+            };
+            ForwardingSpec::validate(&forward)?;
+            if !forwards.contains(&forward) {
+                forwards.push(forward);
+            }
+        }
+        Ok(forwards)
+    }
+}
 
 /// Port forwarding specification types
 #[derive(Debug, Clone, PartialEq, Eq)]

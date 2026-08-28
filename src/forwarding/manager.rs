@@ -56,7 +56,7 @@ use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::{Mutex, RwLock, mpsc};
+use tokio::sync::{Mutex, Notify, RwLock, mpsc};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -104,6 +104,8 @@ struct ForwardingSession {
     created_at: Instant,
     /// Last update time
     updated_at: Instant,
+    /// Wakes setup code when the listener or request becomes active or fails.
+    ready: Arc<Notify>,
 }
 
 /// Central manager for all port forwarding sessions
@@ -206,6 +208,7 @@ impl ForwardingManager {
                     let mut session = session_arc.lock().await;
                     session.status = status;
                     session.updated_at = Instant::now();
+                    session.ready.notify_waiters();
                     tracing::debug!("Updated status for forwarding {}: {}", id, session.status);
                 }
             }
@@ -228,6 +231,7 @@ impl ForwardingManager {
                     };
                     session.updated_at = Instant::now();
                     session.task_handle = None; // Task has finished
+                    session.ready.notify_waiters();
                     tracing::info!("Forwarding session {} terminated: {}", id, session.status);
                 }
             }
@@ -253,9 +257,10 @@ impl ForwardingManager {
             status: ForwardingStatus::Initializing,
             stats: ForwardingStats::default(),
             task_handle: None,
-            cancel_token: CancellationToken::new(),
+            cancel_token: self.shutdown_token.child_token(),
             created_at: now,
             updated_at: now,
+            ready: Arc::new(Notify::new()),
         };
 
         let mut sessions = self.sessions.write().await;
@@ -287,42 +292,50 @@ impl ForwardingManager {
         let cancel_token = session.cancel_token.clone();
         let message_tx = self.message_tx.clone();
 
-        // Start the appropriate forwarding task based on type
-        let task = match &spec {
-            ForwardingType::Local { .. } => tokio::spawn(async move {
-                super::local::LocalForwarder::run(
-                    session_id,
-                    spec.clone(),
-                    ssh_client,
-                    config,
-                    cancel_token,
-                    message_tx,
-                )
-                .await
-            }),
-            ForwardingType::Remote { .. } => tokio::spawn(async move {
-                super::remote::RemoteForwarder::run(
-                    session_id,
-                    spec.clone(),
-                    ssh_client,
-                    config,
-                    cancel_token,
-                    message_tx,
-                )
-                .await
-            }),
-            ForwardingType::Dynamic { .. } => tokio::spawn(async move {
-                super::dynamic::DynamicForwarder::run(
-                    session_id,
-                    spec.clone(),
-                    ssh_client,
-                    config,
-                    cancel_token,
-                    message_tx,
-                )
-                .await
-            }),
-        };
+        // Start the appropriate forwarding task and always publish its
+        // terminal state so readiness cannot wait for a silent task exit.
+        let task = tokio::spawn(async move {
+            let result = match &spec {
+                ForwardingType::Local { .. } => {
+                    super::local::LocalForwarder::run(
+                        session_id,
+                        spec.clone(),
+                        ssh_client,
+                        config,
+                        cancel_token,
+                        message_tx.clone(),
+                    )
+                    .await
+                }
+                ForwardingType::Remote { .. } => {
+                    super::remote::RemoteForwarder::run(
+                        session_id,
+                        spec.clone(),
+                        ssh_client,
+                        config,
+                        cancel_token,
+                        message_tx.clone(),
+                    )
+                    .await
+                }
+                ForwardingType::Dynamic { .. } => {
+                    super::dynamic::DynamicForwarder::run(
+                        session_id,
+                        spec.clone(),
+                        ssh_client,
+                        config,
+                        cancel_token,
+                        message_tx.clone(),
+                    )
+                    .await
+                }
+            };
+            let _ = message_tx.send(ForwardingMessage::SessionTerminated {
+                id: session_id,
+                reason: result.as_ref().err().map(ToString::to_string),
+            });
+            result
+        });
 
         session.task_handle = Some(task);
         session.status = ForwardingStatus::Initializing;
@@ -330,6 +343,50 @@ impl ForwardingManager {
 
         tracing::info!("Started forwarding session {}", id);
         Ok(())
+    }
+
+    /// Start one forward and wait until its listener or remote request is ready.
+    pub async fn start_forwarding_and_wait(
+        &self,
+        id: ForwardingId,
+        ssh_client: Arc<Client>,
+    ) -> Result<()> {
+        self.start_forwarding(id, ssh_client).await?;
+        let sessions = self.sessions.read().await;
+        let session_arc = sessions
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Forwarding session {id} not found"))?;
+        drop(sessions);
+
+        let wait = async {
+            loop {
+                let notified = {
+                    let session = session_arc.lock().await;
+                    match &session.status {
+                        ForwardingStatus::Active => return Ok(()),
+                        ForwardingStatus::Failed(reason) => {
+                            return Err(anyhow::anyhow!(reason.clone()));
+                        }
+                        ForwardingStatus::Stopped => {
+                            return Err(anyhow::anyhow!(
+                                "Forwarding session {id} stopped before becoming ready"
+                            ));
+                        }
+                        ForwardingStatus::Initializing | ForwardingStatus::Reconnecting => {}
+                    }
+                    Arc::clone(&session.ready).notified_owned()
+                };
+                notified.await;
+            }
+        };
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(self.config.connect_timeout_secs),
+            wait,
+        )
+        .await
+        .map_err(|_| anyhow::anyhow!("Timed out waiting for forwarding session {id}"))?
     }
 
     /// Start all configured forwarding sessions

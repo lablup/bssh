@@ -11,6 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, trace, warn};
 use uuid::Uuid;
@@ -53,6 +54,7 @@ impl ConnectionHandler {
         tcp_stream: TcpStream,
         peer_addr: SocketAddr,
         connection_semaphore: Arc<Semaphore>,
+        connections: &mut JoinSet<()>,
     ) {
         let _session_id = self.session_id;
         let socks_version = self.socks_version;
@@ -62,17 +64,20 @@ impl ConnectionHandler {
         let buffer_size = self.buffer_size;
         let address_family = self.address_family;
 
-        tokio::spawn(async move {
+        connections.spawn(async move {
             // Acquire connection semaphore permit
-            let _permit = match connection_semaphore.acquire().await {
-                Ok(permit) => permit,
-                Err(_) => {
-                    warn!(
-                        "Failed to acquire connection permit for SOCKS client {}",
-                        peer_addr
-                    );
-                    return;
-                }
+            let _permit = tokio::select! {
+                permit = connection_semaphore.acquire() => match permit {
+                    Ok(permit) => permit,
+                    Err(_) => {
+                        warn!(
+                            "Failed to acquire connection permit for SOCKS client {}",
+                            peer_addr
+                        );
+                        return;
+                    }
+                },
+                _ = cancel_token.cancelled() => return,
             };
 
             stats.inc_active();
@@ -160,6 +165,7 @@ impl ConnectionHandler {
         listener: tokio::net::TcpListener,
         connection_semaphore: Arc<Semaphore>,
     ) -> anyhow::Result<()> {
+        let mut connections = JoinSet::new();
         loop {
             tokio::select! {
                 // Accept new SOCKS connections
@@ -170,7 +176,12 @@ impl ConnectionHandler {
                             self.stats.inc_accepted();
 
                             // Spawn SOCKS connection handler
-                            self.spawn_handler(stream, peer_addr, Arc::clone(&connection_semaphore));
+                            self.spawn_handler(
+                                stream,
+                                peer_addr,
+                                Arc::clone(&connection_semaphore),
+                                &mut connections,
+                            );
                         }
                         Err(e) => {
                             error!("Failed to accept SOCKS connection: {}", e);
@@ -181,6 +192,7 @@ impl ConnectionHandler {
                         }
                     }
                 }
+                _ = connections.join_next(), if !connections.is_empty() => {}
                 // Handle cancellation
                 _ = self.cancel_token.cancelled() => {
                     debug!("SOCKS proxy cancelled, stopping listener");
@@ -189,6 +201,8 @@ impl ConnectionHandler {
             }
         }
 
+        connections.abort_all();
+        while connections.join_next().await.is_some() {}
         Ok(())
     }
 }
