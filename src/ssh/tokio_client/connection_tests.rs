@@ -33,7 +33,9 @@ use super::connection::{
     resolve_interface_address,
 };
 use super::proxy_command::{ProxyCommandConfig, ProxyMode};
-use crate::ssh::ssh_config::{IpQosPolicy, IpQosValue};
+use crate::ssh::ssh_config::{
+    IpQosPolicy, IpQosValue, RekeyDataLimit, RekeyLimit, RekeyTimeLimit,
+};
 use crate::ssh::{SessionPurpose, SshConfig};
 
 #[test]
@@ -888,4 +890,37 @@ fn ipv6_qos_sets_the_exact_traffic_class_byte() {
     let destination = "[::1]:22".parse().unwrap();
     apply_ip_qos(&socket, destination, IpQosValue::Class(0x48)).unwrap();
     assert_eq!(socket.tclass_v6().unwrap(), 0x48);
+}
+
+#[test]
+fn rekey_limit_reaches_the_russh_transport() {
+    let ssh_config = SshConfig::parse("Host target\n    RekeyLimit 4K 30s\n").unwrap();
+    let connection_config = SshConnectionConfigResolver::new()
+        .with_ssh_config(Some(ssh_config))
+        .resolve_for_host("target");
+
+    assert_eq!(
+        connection_config.rekey_limit,
+        RekeyLimit {
+            data: RekeyDataLimit::Bytes(4_096),
+            time: RekeyTimeLimit::Seconds(30),
+        }
+    );
+    let limits = connection_config.to_russh_config().limits;
+    assert_eq!(limits.rekey_write_limit, 4_096);
+    assert_eq!(limits.rekey_read_limit, 4_096);
+    assert_eq!(limits.rekey_time_limit, Duration::from_secs(30));
+}
+
+#[test]
+fn rekey_limit_default_none_preserves_russh_nonce_safety_ceiling() {
+    let ssh_config = SshConfig::parse("Host target\n    RekeyLimit default none\n").unwrap();
+    let connection_config = SshConnectionConfigResolver::new()
+        .with_ssh_config(Some(ssh_config))
+        .resolve_for_host("target");
+    let limits = connection_config.to_russh_config().limits;
+
+    assert_eq!(limits.rekey_write_limit, 1 << 30);
+    assert_eq!(limits.rekey_read_limit, 1 << 30);
+    assert_eq!(limits.rekey_time_limit, Duration::MAX);
 }

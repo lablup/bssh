@@ -25,6 +25,7 @@ use russh::Channel;
 use russh::client::Msg;
 use std::io;
 use std::net::SocketAddr;
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tokio::task::JoinHandle;
 
@@ -84,6 +85,27 @@ async fn forward_command_output(sender: &Sender<CommandOutput>, output: CommandO
             tracing::debug!("Output receiver dropped; continuing to drain SSH channel");
             false
         }
+    }
+}
+
+async fn handle_command_message(
+    sender: &Sender<CommandOutput>,
+    message: russh::ChannelMsg,
+    output_receiver_open: &mut bool,
+    result: &mut Option<u32>,
+) {
+    match message {
+        russh::ChannelMsg::Data { data } if *output_receiver_open => {
+            *output_receiver_open =
+                forward_command_output(sender, CommandOutput::StdOut(data)).await;
+        }
+        russh::ChannelMsg::ExtendedData { data, ext: 1 } if *output_receiver_open => {
+            *output_receiver_open =
+                forward_command_output(sender, CommandOutput::StdErr(data)).await;
+        }
+        // An exit status does not imply that all channel data has arrived.
+        russh::ChannelMsg::ExitStatus { exit_status } => *result = Some(exit_status),
+        _ => {}
     }
 }
 
@@ -301,8 +323,6 @@ impl Client {
     /// Returns only the exit status of the command. Stdout and stderr are streamed
     /// through the sender channel.
     ///
-    /// Make sure your commands don't read from stdin and exit after bounded time.
-    ///
     /// Can be called multiple times, but every invocation is a new shell context.
     /// Thus `cd`, setting variables and alike have no effect on future invocations.
     ///
@@ -328,6 +348,30 @@ impl Client {
         command: &str,
         sender: Sender<CommandOutput>,
     ) -> Result<u32, super::Error> {
+        self.execute_streaming_with_input(command, sender, tokio::io::empty())
+            .await
+    }
+
+    /// Execute a remote command while forwarding the process stdin with
+    /// bounded reads and SSH channel backpressure.
+    pub async fn execute_streaming_with_stdin(
+        &self,
+        command: &str,
+        sender: Sender<CommandOutput>,
+    ) -> Result<u32, super::Error> {
+        self.execute_streaming_with_input(command, sender, tokio::io::stdin())
+            .await
+    }
+
+    async fn execute_streaming_with_input<R>(
+        &self,
+        command: &str,
+        sender: Sender<CommandOutput>,
+        mut input: R,
+    ) -> Result<u32, super::Error>
+    where
+        R: AsyncRead + Unpin,
+    {
         let execution = async {
             // Sanitize command to prevent injection attacks
             let sanitized_command = crate::utils::sanitize_command(command)
@@ -350,56 +394,51 @@ impl Client {
 
             let mut result: Option<u32> = None;
             let mut output_receiver_open = true;
+            let mut input_open = true;
+            let mut input_buffer = [0_u8; 32 * 1024];
 
-            // While the channel has messages...
-            while let Some(msg) = channel.wait().await {
-                match msg {
-                    // If we get data, send it to the streaming channel
-                    // Note: We must clone the data here because russh owns it and will reuse the buffer
-                    russh::ChannelMsg::Data { ref data } => {
-                        if output_receiver_open {
-                            output_receiver_open = forward_command_output(
+            loop {
+                if input_open {
+                    tokio::select! {
+                        read = input.read(&mut input_buffer) => {
+                            match read.map_err(super::Error::IoError)? {
+                                0 => {
+                                    channel.eof().await?;
+                                    input_open = false;
+                                }
+                                count => channel.data(&input_buffer[..count]).await?,
+                            }
+                        }
+                        message = channel.wait() => {
+                            let Some(message) = message else {
+                                break;
+                            };
+                            handle_command_message(
                                 &sender,
-                                CommandOutput::StdOut(data.clone()),
-                            )
-                            .await;
+                                message,
+                                &mut output_receiver_open,
+                                &mut result,
+                            ).await;
                         }
                     }
-                    russh::ChannelMsg::ExtendedData { ref data, ext: 1 } => {
-                        if output_receiver_open {
-                            output_receiver_open = forward_command_output(
-                                &sender,
-                                CommandOutput::StdErr(data.clone()),
-                            )
-                            .await;
-                        }
-                    }
-
-                    // If we get an exit code report, store it, but crucially don't
-                    // assume this message means end of communications. The data might
-                    // not be finished yet!
-                    russh::ChannelMsg::ExitStatus { exit_status } => result = Some(exit_status),
-
-                    // We SHOULD get this EOF message, but 4254 sec 5.3 also permits
-                    // the channel to close without it being sent. And sometimes this
-                    // message can even precede the Data message, so don't handle it
-                    // russh::ChannelMsg::Eof => break,
-                    _ => {}
+                } else {
+                    let Some(message) = channel.wait().await else {
+                        break;
+                    };
+                    handle_command_message(
+                        &sender,
+                        message,
+                        &mut output_receiver_open,
+                        &mut result,
+                    )
+                    .await;
                 }
             }
 
-            // Drop sender to signal completion to receiver
-            // This is critical: dropping the sender causes receiver.recv() to return None,
-            // allowing the background task to finish collecting any remaining buffered data
+            // Dropping the sender signals the output collector after the SSH channel is drained.
             drop(sender);
 
-            // If we received an exit code, report it back
-            if let Some(result) = result {
-                Ok(result)
-            // Otherwise, report an error
-            } else {
-                Err(self.session_error_or(super::Error::CommandDidntExit))
-            }
+            result.ok_or_else(|| self.session_error_or(super::Error::CommandDidntExit))
         }
         .await;
         self.flush_hostkey_updates().await;

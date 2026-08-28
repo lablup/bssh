@@ -17,7 +17,7 @@
 //! Handles connection-related configuration options including keepalive
 //! settings, timeouts, compression, and network settings.
 
-use crate::ssh::ssh_config::IpQosPolicy;
+use crate::ssh::ssh_config::{IpQosPolicy, RekeyLimit};
 use crate::ssh::ssh_config::parser::helpers::parse_yes_no;
 use crate::ssh::ssh_config::types::SshHostConfig;
 use anyhow::{Context, Result};
@@ -177,162 +177,20 @@ pub(super) fn parse_connection_option(
             if args.is_empty() {
                 anyhow::bail!("RekeyLimit requires a value at line {line_number}");
             }
-            // RekeyLimit can have one or two values (data limit and time limit)
-            // Format: <data> [<time>]
-            // Data: default, none, or number with optional suffix (K/M/G/T)
-            // Time: none or number with optional suffix (s/m/h/d/w)
-
-            if args.len() > 2 {
-                anyhow::bail!(
-                    "RekeyLimit at line {} accepts at most 2 values (data and time), got {}",
-                    line_number,
-                    args.len()
-                );
-            }
-
-            // Validate data limit (first argument)
-            let data_limit = &args[0];
-            if data_limit != "default" && data_limit != "none" {
-                // Parse size with optional suffix
-                let (number_part, _suffix, multiplier) =
-                    if let Some(stripped) = data_limit.strip_suffix(&['K', 'k'][..]) {
-                        (stripped, "K", 1024u64)
-                    } else if let Some(stripped) = data_limit.strip_suffix(&['M', 'm'][..]) {
-                        (stripped, "M", 1024u64 * 1024)
-                    } else if let Some(stripped) = data_limit.strip_suffix(&['G', 'g'][..]) {
-                        (stripped, "G", 1024u64 * 1024 * 1024)
-                    } else if let Some(stripped) = data_limit.strip_suffix(&['T', 't'][..]) {
-                        (stripped, "T", 1024u64 * 1024 * 1024 * 1024)
-                    } else {
-                        // Plain number (bytes)
-                        (data_limit.as_str(), "", 1u64)
-                    };
-
-                match number_part.parse::<u64>() {
-                    Ok(num) => {
-                        // Check for overflow when applying multiplier
-                        if let Some(total) = num.checked_mul(multiplier) {
-                            // Warn if rekey limit is very large (> 1TB)
-                            if total > 1024u64 * 1024 * 1024 * 1024 {
-                                tracing::warn!(
-                                    "RekeyLimit data limit '{}' at line {} is very large ({}TB). \
-                                     This may not be effective for security",
-                                    data_limit,
-                                    line_number,
-                                    total / (1024u64 * 1024 * 1024 * 1024)
-                                );
-                            }
-                            // Warn if rekey limit is very small (< 1KB)
-                            if total < 1024 && total != 0 {
-                                tracing::warn!(
-                                    "RekeyLimit data limit '{}' at line {} is very small ({} bytes). \
-                                     This may cause frequent rekeying",
-                                    data_limit,
-                                    line_number,
-                                    total
-                                );
-                            }
-                        } else {
-                            anyhow::bail!(
-                                "RekeyLimit data limit '{data_limit}' at line {line_number} would overflow. \
-                                 Please use a smaller value"
-                            );
-                        }
-                    }
-                    Err(_) => {
-                        anyhow::bail!(
-                            "RekeyLimit data limit '{data_limit}' at line {line_number} is invalid. \
-                             Use 'default', 'none', or a number with optional suffix (K/M/G/T)"
-                        );
-                    }
-                }
-
-                // Prevent absurdly long input strings
-                if data_limit.len() > 20 {
-                    anyhow::bail!(
-                        "RekeyLimit data limit at line {line_number} is too long (max 20 characters)"
-                    );
-                }
-            }
-
-            // Validate time limit (second argument, if present)
-            if args.len() > 1 {
-                let time_limit = &args[1];
-                if time_limit != "none" {
-                    // Parse time with optional suffix
-                    let (number_part, _suffix, multiplier) =
-                        if let Some(stripped) = time_limit.strip_suffix(&['s', 'S'][..]) {
-                            (stripped, "s", 1u64)
-                        } else if let Some(stripped) = time_limit.strip_suffix(&['m', 'M'][..]) {
-                            (stripped, "m", 60u64)
-                        } else if let Some(stripped) = time_limit.strip_suffix(&['h', 'H'][..]) {
-                            (stripped, "h", 3600u64)
-                        } else if let Some(stripped) = time_limit.strip_suffix(&['d', 'D'][..]) {
-                            (stripped, "d", 86400u64)
-                        } else if let Some(stripped) = time_limit.strip_suffix(&['w', 'W'][..]) {
-                            (stripped, "w", 604800u64)
-                        } else {
-                            // Plain number (seconds)
-                            (time_limit.as_str(), "", 1u64)
-                        };
-
-                    match number_part.parse::<u64>() {
-                        Ok(num) => {
-                            // Check for overflow when applying multiplier
-                            if let Some(total_seconds) = num.checked_mul(multiplier) {
-                                // Warn if rekey time is very long (> 1 week)
-                                if total_seconds > 604800 {
-                                    tracing::warn!(
-                                        "RekeyLimit time limit '{}' at line {} is very long ({} days). \
-                                         This may reduce security",
-                                        time_limit,
-                                        line_number,
-                                        total_seconds / 86400
-                                    );
-                                }
-                                // Warn if rekey time is very short (< 60 seconds)
-                                if total_seconds < 60 && total_seconds != 0 {
-                                    tracing::warn!(
-                                        "RekeyLimit time limit '{}' at line {} is very short ({} seconds). \
-                                         This may cause frequent rekeying",
-                                        time_limit,
-                                        line_number,
-                                        total_seconds
-                                    );
-                                }
-                            } else {
-                                anyhow::bail!(
-                                    "RekeyLimit time limit '{time_limit}' at line {line_number} would overflow. \
-                                     Please use a smaller value"
-                                );
-                            }
-                        }
-                        Err(_) => {
-                            anyhow::bail!(
-                                "RekeyLimit time limit '{time_limit}' at line {line_number} is invalid. \
-                                 Use 'none' or a number with optional suffix (s/m/h/d/w)"
-                            );
-                        }
-                    }
-
-                    // Prevent absurdly long input strings
-                    if time_limit.len() > 20 {
-                        anyhow::bail!(
-                            "RekeyLimit time limit at line {line_number} is too long (max 20 characters)"
-                        );
-                    }
-                }
-            }
-
-            // Limit total length to prevent memory exhaustion
-            let combined = args.join(" ");
-            if combined.len() > 50 {
+            if args.iter().any(|value| value.len() > 20) || args.join(" ").len() > 50 {
                 anyhow::bail!(
                     "RekeyLimit value at line {line_number} is too long (max 50 characters total)"
                 );
             }
-
-            host.rekey_limit = Some(combined);
+            let policy = RekeyLimit::parse(args)
+                .with_context(|| format!("Invalid RekeyLimit value at line {line_number}"))?;
+            if policy.data_is_capped() {
+                tracing::warn!(
+                    "RekeyLimit data policy at line {line_number} exceeds russh's 1 GiB \
+                     nonce-safety ceiling and will be capped"
+                );
+            }
+            host.rekey_limit = Some(policy);
         }
         _ => unreachable!("Unexpected keyword in parse_connection_option: {}", keyword),
     }

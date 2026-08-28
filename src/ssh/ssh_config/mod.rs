@@ -30,6 +30,7 @@ mod match_directive;
 mod parser;
 mod path;
 mod pattern;
+mod rekey;
 mod resolver;
 #[cfg(test)]
 mod resolver_tests;
@@ -40,6 +41,9 @@ mod types;
 
 // Re-export public types
 pub use ip_qos::{IpQosParseError, IpQosPolicy, IpQosValue};
+pub use rekey::{
+    RUSSH_REKEY_BYTE_CEILING, RekeyDataLimit, RekeyLimit, RekeyLimitParseError, RekeyTimeLimit,
+};
 pub use types::SshHostConfig;
 
 /// SSH configuration parser and resolver
@@ -635,7 +639,13 @@ Host backup-server
                 bulk: IpQosValue::None,
             })
         );
-        assert_eq!(host1.rekey_limit, Some("1G 1h".to_string()));
+        assert_eq!(
+            host1.rekey_limit,
+            Some(RekeyLimit {
+                data: RekeyDataLimit::Bytes(1 << 30),
+                time: RekeyTimeLimit::Seconds(3_600),
+            })
+        );
 
         // Verify backup-server config
         let host2 = &config.hosts[1];
@@ -647,7 +657,13 @@ Host backup-server
                 bulk: IpQosValue::Class(0x48),
             })
         );
-        assert_eq!(host2.rekey_limit, Some("default none".to_string()));
+        assert_eq!(
+            host2.rekey_limit,
+            Some(RekeyLimit {
+                data: RekeyDataLimit::Default,
+                time: RekeyTimeLimit::None,
+            })
+        );
     }
 
     #[test]
@@ -740,7 +756,13 @@ Host web1.example.com
         );
 
         // RekeyLimit should be from web1.example.com (most specific)
-        assert_eq!(host_config.rekey_limit, Some("1G 2h".to_string()));
+        assert_eq!(
+            host_config.rekey_limit,
+            Some(RekeyLimit {
+                data: RekeyDataLimit::Bytes(1 << 30),
+                time: RekeyTimeLimit::Seconds(7_200),
+            })
+        );
 
         // ForwardX11Timeout should be from *.example.com
         assert_eq!(host_config.forward_x11_timeout, Some("30m".to_string()));
@@ -917,7 +939,13 @@ Host test
     RekeyLimit 1G 1h
 "#;
         let config = SshConfig::parse(config_content).unwrap();
-        assert_eq!(config.hosts[0].rekey_limit, Some("1G 1h".to_string()));
+        assert_eq!(
+            config.hosts[0].rekey_limit,
+            Some(RekeyLimit {
+                data: RekeyDataLimit::Bytes(1 << 30),
+                time: RekeyTimeLimit::Seconds(3_600),
+            })
+        );
 
         // Test ForwardX11Timeout - should reject invalid format
         let config_content = r#"

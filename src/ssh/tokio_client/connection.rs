@@ -36,7 +36,7 @@ use super::proxy_command::{
 };
 use crate::forwarding::remote::RemoteForwardRegistry;
 use crate::forwarding::{ForwardingDirective, ForwardingPlan, ForwardingRuntime};
-use crate::ssh::ssh_config::{IpQosPolicy, IpQosValue};
+use crate::ssh::ssh_config::{IpQosPolicy, IpQosValue, RekeyLimit};
 use crate::ssh::{SessionPurpose, SshConfig};
 
 /// Default keepalive interval in seconds.
@@ -160,6 +160,8 @@ pub struct SshConnectionConfig {
     pub auth_policy: SshAuthenticationPolicy,
     /// Forwarding directives resolved for this destination.
     pub forwarding_plan: ForwardingPlan,
+    /// Effective byte/time policy for SSH transport key exchange.
+    pub rekey_limit: RekeyLimit,
 }
 
 impl Default for SshConnectionConfig {
@@ -192,6 +194,7 @@ impl Default for SshConnectionConfig {
             pubkey_accepted_algorithms: None,
             auth_policy: SshAuthenticationPolicy::default(),
             forwarding_plan: ForwardingPlan::default(),
+            rekey_limit: RekeyLimit::default(),
         }
     }
 }
@@ -553,6 +556,10 @@ impl SshConnectionConfigResolver {
                 .unwrap_or(false),
             address_family,
         };
+        let rekey_limit = host_config
+            .as_ref()
+            .and_then(|config| config.rekey_limit)
+            .unwrap_or_default();
         SshConnectionConfig::new()
             .with_keepalive_interval(if keepalive_interval == 0 {
                 None
@@ -586,6 +593,7 @@ impl SshConnectionConfigResolver {
             .with_pubkey_accepted_algorithms(pubkey_accepted_algorithms)
             .with_auth_policy(auth_policy)
             .with_forwarding_plan(forwarding_plan)
+            .with_rekey_limit(rekey_limit)
     }
 
     fn resolve_proxy_mode(
@@ -830,6 +838,13 @@ impl SshConnectionConfig {
         self
     }
 
+    /// Set the effective ssh_config `RekeyLimit` policy.
+    #[must_use]
+    pub fn with_rekey_limit(mut self, rekey_limit: RekeyLimit) -> Self {
+        self.rekey_limit = rekey_limit;
+        self
+    }
+
     /// Convert this configuration to a russh client Config.
     ///
     /// `inactivity_timeout` stays disabled for client sessions. A healthy
@@ -877,6 +892,7 @@ impl SshConnectionConfig {
         };
 
         Config {
+            limits: self.rekey_limit.to_russh_limits(),
             keepalive_interval: self.keepalive_interval.map(Duration::from_secs),
             keepalive_max: self.keepalive_max,
             inactivity_timeout: None,

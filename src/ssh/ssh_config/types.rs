@@ -20,7 +20,7 @@ use std::path::PathBuf;
 
 use crate::forwarding::ForwardingDirective;
 
-use super::IpQosPolicy;
+use super::{IpQosPolicy, RekeyLimit};
 
 /// Configuration block type
 #[derive(Debug, Clone, PartialEq)]
@@ -126,7 +126,7 @@ pub struct SshHostConfig {
     // Network & connection
     pub bind_interface: Option<String>,
     pub ipqos: Option<IpQosPolicy>,
-    pub rekey_limit: Option<String>,
+    pub rekey_limit: Option<RekeyLimit>,
     // X11 forwarding
     pub forward_x11_timeout: Option<String>,
     pub forward_x11_trusted: Option<bool>,

@@ -1238,6 +1238,10 @@ impl ParallelExecutor {
 
         let semaphore = Arc::new(Semaphore::new(self.max_parallel));
         let raw_stream = output_mode.is_raw_stream();
+        // A single OpenSSH-compatible destination owns piped stdin. Never let
+        // parallel fan-out race multiple readers over the process input, and
+        // leave terminal input to the interactive/PTY path.
+        let forward_stdin = raw_stream && self.nodes.len() == 1 && !std::io::stdin().is_terminal();
         let mut manager = MultiNodeStreamManager::new();
         let mut handles = Vec::new();
         let stdin_is_terminal = std::io::stdin().is_terminal();
@@ -1364,10 +1368,24 @@ impl ParallelExecutor {
                         }
                     }
                 } else {
-                    match client
-                        .connect_and_execute_with_output_streaming(&command, &config, tx.clone())
-                        .await
-                    {
+                    let execution = if forward_stdin {
+                        client
+                            .connect_and_execute_with_output_streaming_and_stdin(
+                                &command,
+                                &config,
+                                tx.clone(),
+                            )
+                            .await
+                    } else {
+                        client
+                            .connect_and_execute_with_output_streaming(
+                                &command,
+                                &config,
+                                tx.clone(),
+                            )
+                            .await
+                    };
+                    match execution {
                         Ok(exit_status) => {
                             tracing::debug!(
                                 "Command completed for {}: exit code {}",

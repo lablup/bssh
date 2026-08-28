@@ -360,7 +360,7 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
         base.ipqos = overlay.ipqos;
     }
     if base.rekey_limit.is_none() && overlay.rekey_limit.is_some() {
-        base.rekey_limit = overlay.rekey_limit.clone();
+        base.rekey_limit = overlay.rekey_limit;
     }
     // X11 forwarding
     if base.forward_x11_timeout.is_none() && overlay.forward_x11_timeout.is_some() {
