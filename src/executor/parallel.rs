@@ -51,6 +51,7 @@ pub struct ParallelExecutor {
     pub(crate) use_keychain: bool,
     pub(crate) timeout: Option<u64>,
     pub(crate) connect_timeout: Option<u64>,
+    /// Explicit caller override; dispatcher callers pass only CLI provenance.
     pub(crate) jump_hosts: Option<String>,
     pub(crate) sudo_password: Option<Arc<SudoPassword>>,
     /// SSH password collected once up-front by the dispatcher.
@@ -212,7 +213,7 @@ impl ParallelExecutor {
         self
     }
 
-    /// Set jump hosts for connections.
+    /// Set an explicit jump-host override for connections.
     pub fn with_jump_hosts(mut self, jump_hosts: Option<String>) -> Self {
         self.jump_hosts = jump_hosts;
         self

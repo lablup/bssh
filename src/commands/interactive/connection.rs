@@ -28,8 +28,8 @@ use crate::ssh::{
     SessionPolicy, SessionPurpose, SessionRequest,
     known_hosts::get_check_method_for_target,
     tokio_client::{
-        AuthMethod, Client, Error as SshError, ProxyMode, ServerCheckMethod, SshConnectionConfig,
-        SshConnectionConfigResolver, is_direct_proxy_jump,
+        AuthMethod, Client, Error as SshError, ServerCheckMethod, SshConnectionConfig,
+        SshConnectionConfigResolver, select_proxy_jump,
     },
 };
 
@@ -72,13 +72,7 @@ fn interactive_jump_spec<'a>(
     target_config: &'a SshConnectionConfig,
     fallback: Option<&'a str>,
 ) -> Option<&'a str> {
-    if let Some(requested) = fallback {
-        return (!is_direct_proxy_jump(requested)).then_some(requested);
-    }
-    match target_config.proxy_mode.as_ref() {
-        Some(ProxyMode::Jump(jump)) if !is_direct_proxy_jump(jump) => Some(jump.as_str()),
-        Some(ProxyMode::Jump(_) | ProxyMode::Command(_) | ProxyMode::Direct) | None => None,
-    }
+    select_proxy_jump(fallback, target_config.proxy_mode.as_ref())
 }
 
 impl InteractiveCommand {
@@ -691,6 +685,7 @@ pub fn is_auth_error_for_password_fallback(error: &SshError) -> bool {
 mod tests {
     use super::*;
     use crate::ssh::ssh_config::{IpQosPolicy, IpQosValue, SshConfig};
+    use crate::ssh::tokio_client::ProxyMode;
 
     #[test]
     fn no_pty_shell_uses_bulk_ipqos_for_direct_and_jump_connections() {
@@ -716,6 +711,57 @@ mod tests {
             })
             .with_session_purpose(interactive_session_purpose(Some(&policy)));
         assert_eq!(config.selected_ip_qos(), IpQosValue::Class(0x20));
+    }
+
+    #[test]
+    fn interactive_jump_selection_is_cli_then_ssh_config_then_yaml() {
+        let node = Node::new("effective-target".to_string(), 22, "user".to_string())
+            .with_original_host("target-alias".to_string());
+        let resolve = |ssh_config: SshConfig, cli_jump: Option<&str>| {
+            SshConnectionConfigResolver::new()
+                .with_ssh_config(Some(ssh_config))
+                .with_cli_proxy_jump(cli_jump.map(str::to_owned))
+                .with_yaml_proxy_jump(Some("yaml-bastion".to_string()))
+                .resolve_for_host(node.config_host())
+        };
+
+        let config_jump = SshConfig::parse(
+            r#"
+Host target-alias
+    HostName effective-target
+    ProxyJump config-bastion
+"#,
+        )
+        .unwrap();
+        let target = resolve(config_jump.clone(), None);
+        assert_eq!(interactive_jump_spec(&target, None), Some("config-bastion"));
+        assert_eq!(
+            interactive_jump_spec(&target, Some("cli-bastion")),
+            Some("cli-bastion")
+        );
+        for cli_direct in ["none", "direct"] {
+            assert_eq!(interactive_jump_spec(&target, Some(cli_direct)), None);
+        }
+
+        for config_direct in ["none", "direct"] {
+            let ssh_config = SshConfig::parse(&format!(
+                "Host target-alias\n    HostName effective-target\n    ProxyJump {config_direct}\n"
+            ))
+            .unwrap();
+            let target = resolve(ssh_config, None);
+            assert_eq!(interactive_jump_spec(&target, None), None);
+        }
+
+        let yaml_target = resolve(SshConfig::new(), None);
+        assert_eq!(
+            interactive_jump_spec(&yaml_target, None),
+            Some("yaml-bastion")
+        );
+        let cli_target = resolve(config_jump, Some("cli-bastion"));
+        assert_eq!(
+            interactive_jump_spec(&cli_target, Some("cli-bastion")),
+            Some("cli-bastion")
+        );
     }
 
     #[test]

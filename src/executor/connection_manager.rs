@@ -39,6 +39,8 @@ pub(crate) struct ExecutionConfig<'a> {
     pub use_keychain: bool,
     pub timeout: Option<u64>,
     pub connect_timeout: Option<u64>,
+    /// Explicit CLI/caller override. ssh_config and YAML are resolved through
+    /// their own sources and must not be pre-combined into this value.
     pub jump_hosts: Option<&'a str>,
     pub sudo_password: Option<Arc<SudoPassword>>,
     /// Pre-collected SSH password (collected once by the dispatcher and shared
@@ -321,6 +323,63 @@ fn normalize_jump_hosts(jump_hosts: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ssh::tokio_client::select_proxy_jump;
+
+    fn selected_jump_with_yaml_fallback(
+        cli_jump: Option<&str>,
+        ssh_config: &SshConfig,
+        yaml_jump: &str,
+    ) -> Option<String> {
+        let resolver = SshConnectionConfigResolver::new()
+            .with_ssh_config(Some(ssh_config.clone()))
+            .with_cli_proxy_jump(cli_jump.map(str::to_owned))
+            .with_yaml_proxy_jump(Some(yaml_jump.to_string()));
+        let target_config = resolver.resolve_for_host("target-alias");
+        let explicit = resolve_effective_jump_hosts(cli_jump, Some(ssh_config), "target-alias");
+        select_proxy_jump(explicit.as_deref(), target_config.proxy_mode.as_ref()).map(str::to_owned)
+    }
+
+    #[test]
+    fn command_and_transfer_selection_is_cli_then_ssh_config_then_yaml() {
+        let config_jump = SshConfig::parse(
+            r#"
+Host target-alias
+    HostName effective-target
+    ProxyJump config-bastion
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            selected_jump_with_yaml_fallback(None, &config_jump, "yaml-bastion"),
+            Some("config-bastion".to_string())
+        );
+        assert_eq!(
+            selected_jump_with_yaml_fallback(Some("cli-bastion"), &config_jump, "yaml-bastion"),
+            Some("cli-bastion".to_string())
+        );
+        for cli_direct in ["none", "direct"] {
+            assert_eq!(
+                selected_jump_with_yaml_fallback(Some(cli_direct), &config_jump, "yaml-bastion"),
+                None
+            );
+        }
+
+        for config_direct in ["none", "direct"] {
+            let ssh_config = SshConfig::parse(&format!(
+                "Host target-alias\n    HostName effective-target\n    ProxyJump {config_direct}\n"
+            ))
+            .unwrap();
+            assert_eq!(
+                selected_jump_with_yaml_fallback(None, &ssh_config, "yaml-bastion"),
+                None
+            );
+        }
+
+        assert_eq!(
+            selected_jump_with_yaml_fallback(None, &SshConfig::new(), "yaml-bastion"),
+            Some("yaml-bastion".to_string())
+        );
+    }
 
     #[test]
     fn command_and_transfer_proxy_jump_uses_original_host_alias() {
@@ -505,6 +564,105 @@ Host *.example.com
         }
     }
 
+    async fn all_connection_path_errors(
+        node: Node,
+        cli_jump: Option<&str>,
+        ssh_config: &SshConfig,
+        resolver: &SshConnectionConfigResolver,
+    ) -> Vec<(&'static str, anyhow::Error)> {
+        let target_config = resolver.resolve_for_host(node.config_host());
+        let password = Arc::new(Password::new("test-password".to_string()).unwrap());
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let upload_file = temp_dir.path().join("upload.txt");
+        std::fs::write(&upload_file, b"test").unwrap();
+        let mut errors = Vec::with_capacity(5);
+
+        let execution_config = ExecutionConfig {
+            key_path: None,
+            strict_mode: StrictHostKeyChecking::AcceptNew,
+            use_agent: false,
+            use_password: true,
+            #[cfg(target_os = "macos")]
+            use_keychain: false,
+            timeout: Some(1),
+            connect_timeout: Some(1),
+            jump_hosts: cli_jump,
+            sudo_password: None,
+            ssh_password: Some(password.clone()),
+            ssh_config: Some(ssh_config),
+            tty_mode: CliTtyMode::Disable,
+            ssh_connection_config: Some(&target_config),
+            ssh_connection_config_resolver: Some(resolver),
+        };
+        let error = execute_on_node_with_jump_hosts(node.clone(), "true", &execution_config)
+            .await
+            .unwrap_err();
+        errors.push(("command", error));
+
+        for (path, local_path) in [
+            ("upload-file", upload_file.as_path()),
+            ("upload-directory", temp_dir.path()),
+        ] {
+            let error = upload_to_node(
+                node.clone(),
+                local_path,
+                "/tmp/remote",
+                None,
+                StrictHostKeyChecking::AcceptNew,
+                false,
+                true,
+                cli_jump,
+                Some(1),
+                Some(ssh_config),
+                Some(password.clone()),
+                &target_config,
+                resolver,
+            )
+            .await
+            .unwrap_err();
+            errors.push((path, error));
+        }
+
+        let error = download_from_node(
+            node.clone(),
+            "/tmp/remote-file",
+            &temp_dir.path().join("download.txt"),
+            None,
+            StrictHostKeyChecking::AcceptNew,
+            false,
+            true,
+            cli_jump,
+            Some(1),
+            Some(ssh_config),
+            Some(password.clone()),
+            &target_config,
+            resolver,
+        )
+        .await
+        .unwrap_err();
+        errors.push(("download-file", error));
+
+        let error = download_dir_from_node(
+            node,
+            "/tmp/remote-dir",
+            &temp_dir.path().join("download-dir"),
+            None,
+            StrictHostKeyChecking::AcceptNew,
+            false,
+            true,
+            cli_jump,
+            Some(1),
+            Some(ssh_config),
+            Some(password),
+            &target_config,
+            resolver,
+        )
+        .await
+        .unwrap_err();
+        errors.push(("download-directory", error));
+        errors
+    }
+
     #[tokio::test]
     async fn command_and_all_transfer_paths_never_dial_proxy_jump_none() {
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -519,108 +677,57 @@ Host direct-target
 "#,
         )
         .unwrap();
-        let resolver = SshConnectionConfigResolver::new().with_ssh_config(Some(ssh_config.clone()));
-        let target_config = resolver.resolve_for_host("direct-target");
+        let resolver = SshConnectionConfigResolver::new()
+            .with_ssh_config(Some(ssh_config.clone()))
+            .with_yaml_proxy_jump(Some("127.0.0.3:1".to_string()));
         let node = Node::new("127.0.0.1".to_string(), port, "user".to_string())
             .with_original_host("direct-target".to_string());
-        let password = Arc::new(Password::new("test-password".to_string()).unwrap());
-        let temp_dir = tempfile::TempDir::new().unwrap();
-        let upload_file = temp_dir.path().join("upload.txt");
-        std::fs::write(&upload_file, b"test").unwrap();
 
-        let assert_direct_target = |path: &str, error: anyhow::Error| {
+        for (path, error) in all_connection_path_errors(node, None, &ssh_config, &resolver).await {
             let message = format!("{error:#}");
             assert!(message.contains("127.0.0.1"), "path={path}: {message}");
             assert!(!message.contains("none:22"), "path={path}: {message}");
+            assert!(!message.contains("127.0.0.3"), "path={path}: {message}");
             assert!(
                 !message.contains("jump host none"),
                 "path={path}: {message}"
             );
-        };
+        }
+    }
 
-        let execution_config = ExecutionConfig {
-            key_path: None,
-            strict_mode: StrictHostKeyChecking::AcceptNew,
-            use_agent: false,
-            use_password: true,
-            #[cfg(target_os = "macos")]
-            use_keychain: false,
-            timeout: Some(1),
-            connect_timeout: Some(1),
-            jump_hosts: None,
-            sudo_password: None,
-            ssh_password: Some(password.clone()),
-            ssh_config: Some(&ssh_config),
-            tty_mode: CliTtyMode::Disable,
-            ssh_connection_config: Some(&target_config),
-            ssh_connection_config_resolver: Some(&resolver),
-        };
-        let error = execute_on_node_with_jump_hosts(node.clone(), "true", &execution_config)
-            .await
-            .unwrap_err();
-        assert_direct_target("command", error);
-
-        for (path, local_path) in [
-            ("upload-file", upload_file.as_path()),
-            ("upload-directory", temp_dir.path()),
-        ] {
-            let error = upload_to_node(
-                node.clone(),
-                local_path,
-                "/tmp/remote",
-                None,
-                StrictHostKeyChecking::AcceptNew,
-                false,
-                true,
-                None,
-                Some(1),
-                Some(&ssh_config),
-                Some(password.clone()),
-                &target_config,
-                &resolver,
-            )
-            .await
-            .unwrap_err();
-            assert_direct_target(path, error);
+    #[tokio::test]
+    async fn all_connection_paths_prefer_config_then_cli_over_yaml() {
+        let ssh_config = SshConfig::parse(
+            r#"
+Host target-alias
+    HostName 127.0.0.1
+    ProxyJump config-bastion:not-a-port
+"#,
+        )
+        .unwrap();
+        let node = Node::new("127.0.0.1".to_string(), 1, "user".to_string())
+            .with_original_host("target-alias".to_string());
+        let yaml_jump = "yaml-bastion:not-a-port";
+        let resolver = SshConnectionConfigResolver::new()
+            .with_ssh_config(Some(ssh_config.clone()))
+            .with_yaml_proxy_jump(Some(yaml_jump.to_string()));
+        for (path, error) in
+            all_connection_path_errors(node.clone(), None, &ssh_config, &resolver).await
+        {
+            let message = format!("{error:#}");
+            assert!(message.contains("config-bastion"), "path={path}: {message}");
+            assert!(!message.contains("yaml-bastion"), "path={path}: {message}");
         }
 
-        let error = download_from_node(
-            node.clone(),
-            "/tmp/remote-file",
-            &temp_dir.path().join("download.txt"),
-            None,
-            StrictHostKeyChecking::AcceptNew,
-            false,
-            true,
-            None,
-            Some(1),
-            Some(&ssh_config),
-            Some(password.clone()),
-            &target_config,
-            &resolver,
-        )
-        .await
-        .unwrap_err();
-        assert_direct_target("download-file", error);
-
-        let error = download_dir_from_node(
-            node,
-            "/tmp/remote-dir",
-            &temp_dir.path().join("download-dir"),
-            None,
-            StrictHostKeyChecking::AcceptNew,
-            false,
-            true,
-            None,
-            Some(1),
-            Some(&ssh_config),
-            Some(password),
-            &target_config,
-            &resolver,
-        )
-        .await
-        .unwrap_err();
-        assert_direct_target("download-directory", error);
+        let cli_jump = "cli-bastion:not-a-port";
+        let resolver = resolver.with_cli_proxy_jump(Some(cli_jump.to_string()));
+        for (path, error) in
+            all_connection_path_errors(node, Some(cli_jump), &ssh_config, &resolver).await
+        {
+            let message = format!("{error:#}");
+            assert!(message.contains("cli-bastion"), "path={path}: {message}");
+            assert!(!message.contains("yaml-bastion"), "path={path}: {message}");
+        }
     }
 
     /// Test complex multi-hop chain with user and ports

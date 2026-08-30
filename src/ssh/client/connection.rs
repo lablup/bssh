@@ -18,8 +18,7 @@ use crate::security::Password;
 use crate::ssh::SessionPurpose;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
 use crate::ssh::tokio_client::{
-    AuthMethod, Client, ProxyMode, SshConnectionConfig, SshConnectionConfigResolver,
-    is_direct_proxy_jump,
+    AuthMethod, Client, SshConnectionConfig, SshConnectionConfigResolver, select_proxy_jump,
 };
 use anyhow::{Context, Result};
 use std::path::Path;
@@ -57,13 +56,7 @@ fn client_jump_spec<'a>(
     target_config: &'a SshConnectionConfig,
     requested_jump_hosts: Option<&'a str>,
 ) -> Option<&'a str> {
-    if let Some(requested) = requested_jump_hosts {
-        return (!is_direct_proxy_jump(requested)).then_some(requested);
-    }
-    match target_config.proxy_mode.as_ref() {
-        Some(ProxyMode::Jump(jump)) if !is_direct_proxy_jump(jump) => Some(jump.as_str()),
-        Some(ProxyMode::Jump(_) | ProxyMode::Command(_) | ProxyMode::Direct) | None => None,
-    }
+    select_proxy_jump(requested_jump_hosts, target_config.proxy_mode.as_ref())
 }
 
 /// Build the friendly, outer-context message for a failed direct SSH
@@ -399,6 +392,7 @@ mod tests {
     use super::*;
     use crate::ssh::SshConfig;
     use crate::ssh::ssh_config::{IpQosPolicy, IpQosValue};
+    use crate::ssh::tokio_client::ProxyMode;
     use crate::test_helpers::EnvGuard;
     use serial_test::serial;
     use tempfile::TempDir;

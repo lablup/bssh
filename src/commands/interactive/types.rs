@@ -62,7 +62,8 @@ pub struct InteractiveCommand {
     #[cfg(target_os = "macos")]
     pub use_keychain: bool,
     pub strict_mode: StrictHostKeyChecking,
-    // Jump hosts
+    /// Explicit CLI jump-host override. Per-host ssh_config and YAML fallback
+    /// are selected by `ssh_connection_config_resolver`.
     pub jump_hosts: Option<String>,
     // PTY configuration
     pub pty_config: PtyConfig,

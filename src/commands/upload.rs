@@ -39,7 +39,8 @@ pub struct FileTransferParams<'a> {
     pub ssh_password: Option<Arc<Password>>,
     pub recursive: bool,
     pub ssh_config: Option<&'a SshConfig>,
-    /// Jump hosts specification for connections.
+    /// Explicit CLI jump-host override. ssh_config and YAML remain in the
+    /// resolver so a YAML fallback cannot override a per-host ProxyJump.
     pub jump_hosts: Option<String>,
     /// Per-host SSH connection configuration resolver.
     pub ssh_connection_config_resolver: SshConnectionConfigResolver,
