@@ -299,13 +299,18 @@ pub struct Cli {
     )]
     pub quiet: bool,
 
-    #[arg(short = 't', long = "tty", help = "Force pseudo-terminal allocation")]
+    #[arg(
+        short = 't',
+        long = "tty",
+        overrides_with_all = ["force_tty", "no_tty"],
+        help = "Force pseudo-terminal allocation"
+    )]
     pub force_tty: bool,
 
     #[arg(
         short = 'T',
         long = "no-tty",
-        conflicts_with = "force_tty",
+        overrides_with_all = ["force_tty", "no_tty"],
         help = "Disable pseudo-terminal allocation"
     )]
     pub no_tty: bool,
@@ -840,6 +845,27 @@ mod tests {
             cli.identity,
             [PathBuf::from("first-key"), PathBuf::from("second-key")]
         );
+    }
+
+    #[test]
+    fn openssh_tty_flags_accept_repetition_and_last_flag_wins() {
+        for (args, expected) in [
+            (vec!["bssh", "-t", "target"], (true, false, false)),
+            (vec!["bssh", "-tt", "target"], (true, false, false)),
+            (vec!["bssh", "-ttq", "target"], (true, false, true)),
+            (vec!["bssh", "-T", "target"], (false, true, false)),
+            (vec!["bssh", "-tT", "target"], (false, true, false)),
+            (vec!["bssh", "-Tt", "target"], (true, false, false)),
+        ] {
+            let cli = Cli::try_parse_from(&args)
+                .unwrap_or_else(|error| panic!("failed to parse {args:?}: {error}"));
+
+            assert_eq!(
+                (cli.force_tty, cli.no_tty, cli.quiet),
+                expected,
+                "unexpected tty mode for {args:?}"
+            );
+        }
     }
 
     #[test]

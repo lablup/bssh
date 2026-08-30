@@ -16,6 +16,7 @@ use super::config::CacheConfig;
 use super::entry::CacheEntry;
 use super::stats::CacheStats;
 use crate::ssh::SshConfig;
+use crate::ssh::ssh_config::diagnostic::escape_path;
 use anyhow::{Context, Result};
 use lru::LruCache;
 use std::path::{Path, PathBuf};
@@ -67,16 +68,16 @@ impl SshConfigCache {
         let path_ref = path.as_ref();
         let path = tokio::fs::canonicalize(path_ref)
             .await
-            .with_context(|| format!("Failed to canonicalize path: {}", path_ref.display()))?;
+            .with_context(|| format!("Failed to canonicalize path: {}", escape_path(path_ref)))?;
 
         // Check if file exists and get its modification time
         let file_metadata = tokio::fs::metadata(&path)
             .await
-            .with_context(|| format!("Failed to read file metadata: {}", path.display()))?;
+            .with_context(|| format!("Failed to read file metadata: {}", escape_path(&path)))?;
 
         let current_mtime = file_metadata
             .modified()
-            .with_context(|| format!("Failed to get modification time: {}", path.display()))?;
+            .with_context(|| format!("Failed to get modification time: {}", escape_path(&path)))?;
 
         // Try to get from cache first
         if let Some(config) = self.try_get_cached(&path, current_mtime)? {
@@ -84,10 +85,13 @@ impl SshConfigCache {
         }
 
         // Cache miss - load from file
-        trace!("Cache miss for SSH config: {}", path.display());
-        let config = SshConfig::load_from_file(&path)
-            .await
-            .with_context(|| format!("Failed to load SSH config from file: {}", path.display()))?;
+        trace!("Cache miss for SSH config: {}", escape_path(&path));
+        let config = SshConfig::load_from_file(&path).await.with_context(|| {
+            format!(
+                "Failed to load SSH config from file: {}",
+                escape_path(&path)
+            )
+        })?;
 
         // Store in cache
         if let Err(e) = self.put(path, config.clone(), current_mtime) {
@@ -120,7 +124,7 @@ impl SshConfigCache {
         if let Some(entry) = cache.get_mut(path) {
             // Check if entry is expired
             if entry.is_expired(self.config.ttl) {
-                debug!("SSH config cache entry expired: {}", path.display());
+                debug!("SSH config cache entry expired: {}", escape_path(path));
                 cache.pop(path);
 
                 let mut stats = self.stats.write().map_err(|e| {
@@ -132,7 +136,7 @@ impl SshConfigCache {
 
             // Check if entry is stale (file was modified)
             if entry.is_stale(current_mtime) {
-                debug!("SSH config cache entry stale: {}", path.display());
+                debug!("SSH config cache entry stale: {}", escape_path(path));
                 cache.pop(path);
 
                 let mut stats = self.stats.write().map_err(|e| {
@@ -153,7 +157,7 @@ impl SshConfigCache {
                 stats.hits += 1;
             }
 
-            trace!("SSH config cache hit: {}", path.display());
+            trace!("SSH config cache hit: {}", escape_path(path));
             return Ok(Some(config));
         }
 
@@ -185,7 +189,7 @@ impl SshConfigCache {
             stats.current_entries = cache.len();
         }
 
-        trace!("SSH config cached: {}", path.display());
+        trace!("SSH config cached: {}", escape_path(&path));
         Ok(())
     }
 

@@ -29,9 +29,11 @@ mod security;
 mod support;
 mod ui;
 
+use super::diagnostic::DiagnosticSource;
+use crate::ssh::ssh_config::diagnostic::escape_field;
 use crate::ssh::ssh_config::types::SshHostConfig;
 use anyhow::Result;
-use std::{collections::HashSet, path::Path};
+use std::collections::HashSet;
 
 /// Parse a configuration option for a host
 ///
@@ -41,43 +43,27 @@ pub fn parse_option(
     host: &mut SshHostConfig,
     accepted_keyword: &str,
     args: &[String],
-    source_path: Option<&Path>,
-    line_number: usize,
+    source: DiagnosticSource<'_>,
     reported_diagnostics: &mut HashSet<String>,
 ) -> Result<()> {
+    let line_number = source.number();
     let Some(spec) = support::keyword_spec(accepted_keyword) else {
         if reported_diagnostics.insert(format!("unknown:{accepted_keyword}")) {
-            let location = source_path.map_or_else(
-                || format!("line {line_number}"),
-                |path| format!("{}:{line_number}", path.display()),
-            );
-            crate::diagnosticln!("Unknown SSH config option '{accepted_keyword}' at {location}");
+            let keyword = escape_field(accepted_keyword);
+            let location = source.location();
+            crate::diagnosticln!("Unknown SSH config option '{keyword}' at {location}");
         }
         return Ok(());
     };
     let keyword = spec.canonical;
 
-    let tracking_issue = match spec.support {
-        support::KeywordSupport::Runtime(_) => None,
-        support::KeywordSupport::Delegated(issue) => Some(issue),
-        support::KeywordSupport::Unimplemented => Some(0),
-    };
-    if let Some(issue) =
-        tracking_issue.filter(|_| reported_diagnostics.insert(format!("unsupported:{keyword}")))
+    if spec.support == support::KeywordSupport::Unimplemented
+        && reported_diagnostics.insert(format!("unsupported:{keyword}"))
     {
-        let location = source_path.map_or_else(
-            || format!("line {line_number}"),
-            |path| format!("{}:{line_number}", path.display()),
+        let location = source.location();
+        crate::diagnosticln!(
+            "Unsupported SSH config option '{keyword}' at {location}; bssh parses this value for inspection but does not implement its runtime behavior"
         );
-        if issue == 0 {
-            crate::diagnosticln!(
-                "Unsupported SSH config option '{keyword}' at {location}; bssh parses this value for inspection but does not implement its runtime behavior"
-            );
-        } else {
-            crate::diagnosticln!(
-                "SSH config option '{keyword}' at {location} is not implemented yet; tracked in #{issue}"
-            );
-        }
     }
 
     match keyword {

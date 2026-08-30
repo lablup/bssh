@@ -97,6 +97,14 @@ fn canonical_unimplemented_and_unknown_diagnostics_use_real_source_and_log_file(
             log.to_str().expect("UTF-8 log path"),
             "-F",
             config.to_str().expect("UTF-8 config path"),
+            "-o",
+            "ChallengeResponseAuthentication=no",
+            "-o",
+            "KbdInteractiveAuthentication=no",
+            "-o",
+            "DefinitelyUnknownOption=no",
+            "-o",
+            "AnotherUnknownOption=yes",
             "--connect-timeout=1",
             "--strict-host-key-checking=no",
             "127.0.0.1:1",
@@ -106,6 +114,10 @@ fn canonical_unimplemented_and_unknown_diagnostics_use_real_source_and_log_file(
         .expect("bssh should parse the ssh config");
 
     assert!(!output.status.success());
+    assert!(
+        output.stdout.is_empty(),
+        "config diagnostics leaked to stdout"
+    );
     assert!(output.stderr.is_empty(), "-E diagnostics leaked to stderr");
 
     let diagnostics = fs::read_to_string(log).expect("diagnostic log should exist");
@@ -117,6 +129,7 @@ fn canonical_unimplemented_and_unknown_diagnostics_use_real_source_and_log_file(
         "Unsupported SSH config option 'securitykeyprovider' at {included}:4; bssh parses this value for inspection but does not implement its runtime behavior"
     );
     let unknown = format!("Unknown SSH config option 'definitelyunknownoption' at {included}:5");
+    let distinct_unknown = "Unknown SSH config option 'anotherunknownoption' at -o option #4";
 
     assert_eq!(
         diagnostics.lines().filter(|line| line == &alias).count(),
@@ -136,7 +149,101 @@ fn canonical_unimplemented_and_unknown_diagnostics_use_real_source_and_log_file(
         1,
         "unknown diagnostic must be emitted once: {diagnostics:?}"
     );
+    assert_eq!(
+        diagnostics
+            .lines()
+            .filter(|line| line == &distinct_unknown)
+            .count(),
+        1,
+        "distinct unknown diagnostic must remain independent: {diagnostics:?}"
+    );
     assert!(!diagnostics.contains("/spoofed/config"));
+}
+
+#[cfg(unix)]
+#[test]
+fn config_diagnostics_escape_control_characters_in_paths_and_keywords() {
+    let directory = tempdir().expect("temporary directory should be created");
+    let config = directory.path().join("ssh_config\nFORGED PATH");
+    let log = directory.path().join("bssh.log");
+    fs::write(&config, "Host *\nBad\u{1b}[31mKeyword yes\n")
+        .expect("maliciously named SSH config should be written");
+
+    let output = bssh()
+        .arg("-E")
+        .arg(&log)
+        .arg("-F")
+        .arg(&config)
+        .args([
+            "--connect-timeout=1",
+            "--strict-host-key-checking=no",
+            "127.0.0.1:1",
+            "true",
+        ])
+        .output()
+        .expect("bssh should parse the maliciously named SSH config");
+
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+
+    let diagnostics = fs::read_to_string(log).expect("diagnostic log should exist");
+    let escaped_path = config.to_string_lossy().replace('\n', "\\n");
+    let expected =
+        format!("Unknown SSH config option 'bad\\u{{1b}}[31mkeyword' at {escaped_path}:2");
+    assert_eq!(
+        diagnostics
+            .lines()
+            .filter(|line| line.starts_with("Unknown SSH config option"))
+            .collect::<Vec<_>>(),
+        [expected],
+        "untrusted diagnostic fields must remain on one escaped line: {diagnostics:?}"
+    );
+    assert!(!diagnostics.contains('\u{1b}'));
+    assert!(
+        !diagnostics
+            .lines()
+            .any(|line| line.starts_with("FORGED PATH")),
+        "config path forged a separate diagnostic line: {diagnostics:?}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn config_load_errors_escape_control_characters_in_nonexistent_paths() {
+    let directory = tempdir().expect("temporary directory should be created");
+    let missing = directory.path().join("missing\nFORGED-ERROR\u{1b}[31m");
+    let log = directory.path().join("bssh.log");
+
+    let output = bssh()
+        .arg("-E")
+        .arg(&log)
+        .arg("-F")
+        .arg(&missing)
+        .args(["127.0.0.1", "true"])
+        .output()
+        .expect("bssh should report the missing malicious SSH config path");
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+
+    let diagnostics = fs::read_to_string(log).expect("diagnostic log should exist");
+    let escaped_path = missing
+        .to_string_lossy()
+        .replace('\n', "\\n")
+        .replace('\u{1b}', "\\u{1b}");
+    assert!(
+        diagnostics.contains(&format!("Failed to canonicalize path: {escaped_path}")),
+        "escaped missing path is absent from diagnostic chain: {diagnostics:?}"
+    );
+    assert!(!diagnostics.contains('\u{1b}'));
+    assert!(
+        !diagnostics
+            .lines()
+            .any(|line| line.starts_with("FORGED-ERROR")),
+        "missing config path forged a separate error line: {diagnostics:?}"
+    );
 }
 
 #[test]

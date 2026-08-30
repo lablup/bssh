@@ -17,6 +17,8 @@
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
+use super::super::diagnostic::{escape_field, escape_path};
+
 /// Validate a glob pattern for security
 pub fn validate_glob_pattern(pattern: &str) -> Result<()> {
     // Check for dangerous glob patterns
@@ -27,13 +29,19 @@ pub fn validate_glob_pattern(pattern: &str) -> Result<()> {
     // Check for excessive wildcards that could cause exponential expansion
     let wildcard_count = pattern.chars().filter(|&c| c == '*').count();
     if wildcard_count > 5 {
-        anyhow::bail!("Too many wildcards in pattern '{pattern}'. Maximum 5 wildcards allowed.");
+        anyhow::bail!(
+            "Too many wildcards in pattern '{}'. Maximum 5 wildcards allowed.",
+            escape_field(pattern)
+        );
     }
 
     // Check for overly broad patterns that could match system files
     // But allow common SSH config patterns like ~/.ssh/config.d/*
     if (pattern == "*" || pattern == "/*") && !pattern.contains("ssh") {
-        anyhow::bail!("Pattern '{pattern}' is too broad and could match system files");
+        anyhow::bail!(
+            "Pattern '{}' is too broad and could match system files",
+            escape_field(pattern)
+        );
     }
 
     // Check pattern length
@@ -69,32 +77,32 @@ pub fn validate_include_path(path: &Path) -> Result<()> {
 
     // Get metadata without following symlinks
     let metadata = std::fs::symlink_metadata(path)
-        .with_context(|| format!("Failed to get metadata for {}", path.display()))?;
+        .with_context(|| format!("Failed to get metadata for {}", escape_path(path)))?;
 
     // Reject symbolic links for security
     if metadata.is_symlink() {
         anyhow::bail!(
             "Include path {} is a symbolic link. Symlinks are not allowed for security reasons.",
-            path.display()
+            escape_path(path)
         );
     }
 
     // Check if it's a regular file
     if !metadata.is_file() {
-        anyhow::bail!("Include path is not a regular file: {}", path.display());
+        anyhow::bail!("Include path is not a regular file: {}", escape_path(path));
     }
 
     // Canonicalize and verify the path doesn't escape expected directories
     let canonical = path
         .canonicalize()
-        .with_context(|| format!("Failed to canonicalize {}", path.display()))?;
+        .with_context(|| format!("Failed to canonicalize {}", escape_path(path)))?;
 
     // Check for directory traversal attempts
     let path_str = canonical.to_string_lossy();
     if path_str.contains("../") || path_str.contains("..\\") {
         anyhow::bail!(
             "Include path {} contains directory traversal sequences",
-            path.display()
+            escape_path(path)
         );
     }
 
@@ -113,7 +121,7 @@ pub fn validate_include_path(path: &Path) -> Result<()> {
     if !is_safe {
         tracing::warn!(
             "Include path {} is outside of standard SSH config directories. This may be a security risk.",
-            canonical.display()
+            escape_path(&canonical)
         );
     }
 
@@ -130,7 +138,7 @@ pub fn validate_include_path(path: &Path) -> Result<()> {
         if mode & 0o002 != 0 {
             anyhow::bail!(
                 "SSH config file {} is world-writable. This is a security vulnerability.",
-                path.display()
+                escape_path(path)
             );
         }
 
@@ -138,7 +146,7 @@ pub fn validate_include_path(path: &Path) -> Result<()> {
         if mode & 0o020 != 0 {
             tracing::warn!(
                 "SSH config file {} is group-writable. This is a potential security risk.",
-                path.display()
+                escape_path(path)
             );
         }
     }

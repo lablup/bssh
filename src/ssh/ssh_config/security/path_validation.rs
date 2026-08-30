@@ -18,6 +18,7 @@ use anyhow::{Context, Result};
 use std::path::PathBuf;
 
 use super::checks;
+use crate::ssh::ssh_config::diagnostic::{escape_field, escape_path};
 use crate::ssh::ssh_config::path::expand_path_internal;
 
 /// Securely validate and expand a file path to prevent path traversal attacks
@@ -40,8 +41,12 @@ use crate::ssh::ssh_config::path::expand_path_internal;
 /// * `Err(anyhow::Error)` if the path is unsafe or invalid
 pub fn secure_validate_path(path: &str, path_type: &str, line_number: usize) -> Result<PathBuf> {
     // First expand the path using the existing logic
-    let expanded_path = expand_path_internal(path)
-        .with_context(|| format!("Failed to expand path '{path}' at line {line_number}"))?;
+    let expanded_path = expand_path_internal(path).with_context(|| {
+        format!(
+            "Failed to expand path '{}' at line {line_number}",
+            escape_field(path)
+        )
+    })?;
 
     // Convert to string for analysis
     let path_str = expanded_path.to_string_lossy();
@@ -70,9 +75,9 @@ pub fn secure_validate_path(path: &str, path_type: &str, line_number: usize) -> 
                 tracing::debug!(
                     "Could not canonicalize {} path '{}' at line {}: {}. Using expanded path as-is.",
                     path_type,
-                    path_str,
+                    escape_path(&expanded_path),
                     line_number,
-                    e
+                    escape_field(&e.to_string())
                 );
                 expanded_path.clone()
             }
@@ -91,8 +96,8 @@ pub fn secure_validate_path(path: &str, path_type: &str, line_number: usize) -> 
             || canonical_str.split('\\').any(|component| component == "..")
         {
             anyhow::bail!(
-                "Security violation: Canonicalized {path_type} path '{canonical_str}' contains parent directory references at line {line_number}. \
-                 This could indicate a path traversal attempt."
+                "Security violation: Canonicalized {path_type} path '{}' contains parent directory references at line {line_number}. This could indicate a path traversal attempt.",
+                escape_path(&canonical_path)
             );
         }
     }

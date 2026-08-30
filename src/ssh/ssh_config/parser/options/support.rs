@@ -4,10 +4,6 @@
 pub(super) enum KeywordSupport {
     Runtime(RuntimeConsumer),
     Unimplemented,
-    // Keep the classification available for future split issue waves even
-    // when the current wave has no remaining delegated keywords.
-    #[allow(dead_code)]
-    Delegated(u32),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -260,7 +256,11 @@ pub(super) fn keyword_spec(keyword: &str) -> Option<KeywordSpec> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashSet;
+
+    const ACCEPTED_SPELLING_COUNT: usize = 91;
+    const RUNTIME_SPELLING_COUNT: usize = 51;
+    const UNIMPLEMENTED_SPELLING_COUNT: usize = 40;
 
     #[test]
     fn accepted_keywords_and_aliases_have_one_consistent_classification() {
@@ -279,6 +279,20 @@ mod tests {
             assert_eq!(canonical_spec.canonical, *canonical);
             assert_eq!(canonical_spec.support, *support);
         }
+
+        let runtime_count = ACCEPTED_KEYWORDS
+            .iter()
+            .filter(|(_, _, support)| matches!(support, KeywordSupport::Runtime(_)))
+            .count();
+        let unimplemented_count = ACCEPTED_KEYWORDS
+            .iter()
+            .filter(|(_, _, support)| matches!(support, KeywordSupport::Unimplemented))
+            .count();
+
+        assert_eq!(ACCEPTED_KEYWORDS.len(), ACCEPTED_SPELLING_COUNT);
+        assert_eq!(runtime_count, RUNTIME_SPELLING_COUNT);
+        assert_eq!(unimplemented_count, UNIMPLEMENTED_SPELLING_COUNT);
+        assert_eq!(runtime_count + unimplemented_count, ACCEPTED_KEYWORDS.len());
     }
 
     #[test]
@@ -347,7 +361,7 @@ mod tests {
                 }
                 match support {
                     KeywordSupport::Runtime(consumer) => Some((*keyword, *consumer)),
-                    KeywordSupport::Delegated(_) | KeywordSupport::Unimplemented => None,
+                    KeywordSupport::Unimplemented => None,
                 }
             })
             .collect::<Vec<_>>();
@@ -356,18 +370,55 @@ mod tests {
     }
 
     #[test]
-    fn first_wave_delegations_match_the_split_issue_dag() {
-        let expected = HashMap::new();
-        let delegated = ACCEPTED_KEYWORDS
+    fn unimplemented_keywords_are_exactly_the_audited_named_set() {
+        let expected = [
+            "addkeystoagent",
+            "identityagent",
+            "kbdinteractiveauthentication",
+            "gssapiauthentication",
+            "hostbasedauthentication",
+            "hostbasedacceptedalgorithms",
+            "enablesshkeysign",
+            "usekeychain",
+            "casignaturealgorithms",
+            "nohostauthenticationforlocalhost",
+            "visualhostkey",
+            "requiredrsasize",
+            "fingerprinthash",
+            "forwardagent",
+            "forwardx11",
+            "gatewayports",
+            "permitremoteopen",
+            "forwardx11timeout",
+            "forwardx11trusted",
+            "connecttimeout",
+            "controlmaster",
+            "controlpath",
+            "controlpersist",
+            "escapechar",
+            "loglevel",
+            "syslogfacility",
+            "protocol",
+            "forkafterauthentication",
+            "stdinnull",
+            "cipher",
+            "fallbacktorsh",
+            "globalknownhostsfile2",
+            "rhostsauthentication",
+            "securitykeyprovider",
+            "userknownhostsfile2",
+            "useroaming",
+            "usersh",
+            "useprivilegedport",
+        ];
+        let unimplemented = ACCEPTED_KEYWORDS
             .iter()
             .filter_map(|(keyword, canonical, support)| match support {
-                KeywordSupport::Delegated(issue) if keyword == canonical => {
-                    Some((*keyword, *issue))
-                }
+                KeywordSupport::Unimplemented if keyword == canonical => Some(*keyword),
                 _ => None,
             })
-            .collect::<HashMap<_, _>>();
+            .collect::<Vec<_>>();
 
-        assert_eq!(delegated, expected);
+        assert_eq!(unimplemented, expected);
     }
 }

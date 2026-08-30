@@ -17,6 +17,7 @@
 use anyhow::{Context, Result};
 use std::path::PathBuf;
 
+use super::super::diagnostic::{escape_field, escape_path};
 use super::super::path::expand_path_internal;
 #[cfg(not(test))]
 use super::validation::is_path_allowed;
@@ -82,7 +83,7 @@ pub async fn resolve_include_pattern(
     // Convert to string for glob
     let pattern_str = search_path
         .to_str()
-        .ok_or_else(|| anyhow::anyhow!("Invalid UTF-8 in path: {search_path:?}"))?;
+        .ok_or_else(|| anyhow::anyhow!("Invalid UTF-8 in path: {}", escape_path(&search_path)))?;
 
     // Additional validation after expansion
     validate_glob_pattern(pattern_str)?;
@@ -99,12 +100,12 @@ pub async fn resolve_include_pattern(
     };
 
     for entry in glob::glob_with(pattern_str, glob_options)
-        .with_context(|| format!("Invalid glob pattern: {pattern_str}"))?
+        .with_context(|| format!("Invalid glob pattern: {}", escape_field(pattern_str)))?
     {
         if files.len() >= MAX_GLOB_RESULTS {
             anyhow::bail!(
-                "Glob pattern '{pattern}' matched too many files (>{MAX_GLOB_RESULTS}). \
-                 Please use a more specific pattern."
+                "Glob pattern '{}' matched too many files (>{MAX_GLOB_RESULTS}). Please use a more specific pattern.",
+                escape_field(pattern)
             );
         }
 
@@ -118,7 +119,11 @@ pub async fn resolve_include_pattern(
                         Ok(c) => c,
                         Err(_) if !path.exists() => continue, // Skip non-existent files
                         Err(e) => {
-                            tracing::debug!("Failed to canonicalize {}: {}", path.display(), e);
+                            tracing::debug!(
+                                "Failed to canonicalize {}: {}",
+                                escape_path(&path),
+                                escape_field(&e.to_string())
+                            );
                             continue;
                         }
                     };
@@ -127,7 +132,7 @@ pub async fn resolve_include_pattern(
                     if !is_path_allowed(&canonical) {
                         tracing::warn!(
                             "Glob result {} escapes allowed directories, skipping",
-                            path.display()
+                            escape_path(&path)
                         );
                         continue;
                     }
@@ -144,13 +149,21 @@ pub async fn resolve_include_pattern(
                         }
                     }
                     Err(e) => {
-                        tracing::debug!("Failed to get metadata for {}: {}", path.display(), e);
+                        tracing::debug!(
+                            "Failed to get metadata for {}: {}",
+                            escape_path(&path),
+                            escape_field(&e.to_string())
+                        );
                     }
                 }
             }
             Err(e) => {
                 // Log glob errors but continue
-                tracing::warn!("Error processing glob pattern '{}': {}", pattern_str, e);
+                tracing::warn!(
+                    "Error processing glob pattern '{}': {}",
+                    escape_field(pattern_str),
+                    escape_field(&e.to_string())
+                );
             }
         }
     }
@@ -162,7 +175,7 @@ pub async fn resolve_include_pattern(
     if files.is_empty() && !pattern.contains('*') && !pattern.contains('?') {
         tracing::debug!(
             "Include pattern '{}' matched no files (this may be intentional)",
-            pattern
+            escape_field(pattern)
         );
     }
 
