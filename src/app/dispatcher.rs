@@ -260,11 +260,9 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<i32> {
             let use_keychain =
                 determine_use_keychain(&ctx.ssh_config, hostname_for_ssh_config.as_deref());
 
-            // Resolve jump_hosts: CLI takes precedence, then config
-            let jump_hosts = cli.jump_hosts.clone().or_else(|| {
-                ctx.config
-                    .get_cluster_jump_host(ctx.cluster_name.as_deref().or(cli.cluster.as_deref()))
-            });
+            // Preserve provenance: the resolver owns ssh_config and YAML
+            // fallback, while this field carries only an explicit CLI choice.
+            let cli_jump_hosts = cli.jump_hosts.clone();
 
             let ssh_connection_config_resolver = build_ssh_connection_config_resolver(
                 cli,
@@ -286,7 +284,7 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<i32> {
                 use_keychain,
                 cli.timeout,
                 Some(cli.connect_timeout),
-                jump_hosts,
+                cli_jump_hosts,
                 ssh_password.clone(),
                 ssh_connection_config_resolver,
             )
@@ -307,11 +305,7 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<i32> {
                 ctx.cluster_name.as_deref().or(cli.cluster.as_deref()),
             );
 
-            // Resolve jump_hosts: CLI takes precedence, then config
-            let jump_hosts = cli.jump_hosts.clone().or_else(|| {
-                ctx.config
-                    .get_cluster_jump_host(ctx.cluster_name.as_deref().or(cli.cluster.as_deref()))
-            });
+            let cli_jump_hosts = cli.jump_hosts.clone();
 
             let params = FileTransferParams {
                 nodes: ctx.nodes.clone(),
@@ -323,7 +317,7 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<i32> {
                 ssh_password: ssh_password.clone(),
                 recursive: *recursive,
                 ssh_config: Some(&ctx.ssh_config),
-                jump_hosts,
+                jump_hosts: cli_jump_hosts,
                 ssh_connection_config_resolver: build_ssh_connection_config_resolver(
                     cli,
                     ctx,
@@ -346,11 +340,7 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<i32> {
                 ctx.cluster_name.as_deref().or(cli.cluster.as_deref()),
             );
 
-            // Resolve jump_hosts: CLI takes precedence, then config
-            let jump_hosts = cli.jump_hosts.clone().or_else(|| {
-                ctx.config
-                    .get_cluster_jump_host(ctx.cluster_name.as_deref().or(cli.cluster.as_deref()))
-            });
+            let cli_jump_hosts = cli.jump_hosts.clone();
 
             let params = FileTransferParams {
                 nodes: ctx.nodes.clone(),
@@ -362,7 +352,7 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<i32> {
                 ssh_password: ssh_password.clone(),
                 recursive: *recursive,
                 ssh_config: Some(&ctx.ssh_config),
-                jump_hosts,
+                jump_hosts: cli_jump_hosts,
                 ssh_connection_config_resolver: build_ssh_connection_config_resolver(
                     cli,
                     ctx,
@@ -486,11 +476,9 @@ async fn handle_interactive_command(
     #[cfg(target_os = "macos")]
     let use_keychain = determine_use_keychain(&ctx.ssh_config, hostname.as_deref());
 
-    // Resolve jump_hosts: CLI takes precedence, then config
-    let jump_hosts = cli.jump_hosts.clone().or_else(|| {
-        ctx.config
-            .get_cluster_jump_host(ctx.cluster_name.as_deref().or(cli.cluster.as_deref()))
-    });
+    // The resolver retains ssh_config and YAML provenance. Thread only the
+    // explicit CLI override through the interactive command.
+    let cli_jump_hosts = cli.jump_hosts.clone();
 
     // Build SSH connection config with keepalive settings for interactive mode
     let effective_cluster_name = ctx.cluster_name.as_deref().or(cli.cluster.as_deref());
@@ -519,11 +507,12 @@ async fn handle_interactive_command(
         #[cfg(target_os = "macos")]
         use_keychain,
         strict_mode: ctx.strict_mode,
-        jump_hosts,
+        jump_hosts: cli_jump_hosts,
         pty_config,
         use_pty,
         session_policy: None,
         ssh_connection_config,
+        ssh_connection_config_resolver: Some(ssh_connection_config_resolver),
     };
 
     let result = interactive_cmd.execute().await?;
@@ -562,6 +551,16 @@ fn resolve_ssh_mode_interactive_policy(
     Ok(matches!(policy.request, SessionRequest::Shell).then_some(policy))
 }
 
+fn session_policy_jump_spec(proxy_mode: Option<&ProxyMode>) -> Option<&str> {
+    match proxy_mode {
+        Some(ProxyMode::Jump(jump)) => Some(jump.as_str()),
+        // An empty authoritative value suppresses SessionPolicy's raw
+        // ssh_config fallback for explicit direct and ProxyCommand modes.
+        Some(ProxyMode::Direct | ProxyMode::Command(_)) => Some(""),
+        None => None,
+    }
+}
+
 /// Handle exec command or SSH mode interactive session
 async fn handle_exec_command(
     cli: &Cli,
@@ -579,8 +578,10 @@ async fn handle_exec_command(
             .context("SSH interactive mode requires a destination node")?;
         let effective = ctx.ssh_config.find_host_config(node.config_host());
         let effective_cluster_name = ctx.cluster_name.as_deref().or(cli.cluster.as_deref());
-        let yaml_jump = ctx.config.get_cluster_jump_host(effective_cluster_name);
-        let jump_spec = cli.jump_hosts.as_deref().or(yaml_jump.as_deref());
+        let connection_config =
+            build_ssh_connection_config_resolver(cli, ctx, effective_cluster_name)
+                .resolve_for_host(node.config_host());
+        let jump_spec = session_policy_jump_spec(connection_config.proxy_mode.as_ref());
         resolve_ssh_mode_interactive_policy(
             &effective,
             node,
@@ -615,11 +616,7 @@ async fn handle_exec_command(
         #[cfg(target_os = "macos")]
         let use_keychain = determine_use_keychain(&ctx.ssh_config, hostname.as_deref());
 
-        // Resolve jump_hosts: CLI takes precedence, then config
-        let jump_hosts = cli.jump_hosts.clone().or_else(|| {
-            ctx.config
-                .get_cluster_jump_host(ctx.cluster_name.as_deref().or(cli.cluster.as_deref()))
-        });
+        let cli_jump_hosts = cli.jump_hosts.clone();
 
         // Build SSH connection config with keepalive settings for SSH mode interactive session
         let effective_cluster_name = ctx.cluster_name.as_deref().or(cli.cluster.as_deref());
@@ -649,11 +646,12 @@ async fn handle_exec_command(
             #[cfg(target_os = "macos")]
             use_keychain,
             strict_mode: ctx.strict_mode,
-            jump_hosts,
+            jump_hosts: cli_jump_hosts,
             pty_config,
             use_pty,
             session_policy: Some(session_policy),
             ssh_connection_config,
+            ssh_connection_config_resolver: Some(ssh_connection_config_resolver),
         };
 
         let result = interactive_cmd.execute().await?;
@@ -701,22 +699,22 @@ async fn handle_exec_command(
             None
         };
 
-        // Resolve jump_hosts: CLI takes precedence, then config
+        // Preserve source precedence in the resolver. Downstream receives only
+        // the explicit CLI override and must not mistake YAML for CLI input.
         let effective_cluster_name = ctx.cluster_name.as_deref().or(cli.cluster.as_deref());
         let config_jump_host = ctx.config.get_cluster_jump_host(effective_cluster_name);
-        let jump_hosts = cli.jump_hosts.clone().or(config_jump_host.clone());
+        let cli_jump_hosts = cli.jump_hosts.clone();
 
         // Debug logging for jump host resolution
         tracing::debug!(
-            "Jump host resolution: cli={:?}, config={:?}, effective={:?}, cluster={:?}",
+            "Jump host sources: cli={:?}, yaml={:?}, cluster={:?}",
             cli.jump_hosts,
             config_jump_host,
-            jump_hosts,
             effective_cluster_name
         );
 
-        if let Some(ref jh) = jump_hosts {
-            tracing::info!("Using jump host: {}", jh);
+        if let Some(ref jump_hosts) = cli_jump_hosts {
+            tracing::info!("Using CLI jump host override: {jump_hosts}");
         }
 
         // Build SSH connection config resolver for exec mode. Each executor
@@ -742,7 +740,7 @@ async fn handle_exec_command(
             byte_transparent: cli.is_ssh_mode(),
             timeout,
             connect_timeout: Some(cli.connect_timeout),
-            jump_hosts: jump_hosts.as_deref(),
+            jump_hosts: cli_jump_hosts.as_deref(),
             require_all_success: cli.require_all_success,
             check_all_nodes: cli.check_all_nodes,
             sudo_password,
@@ -768,6 +766,17 @@ mod tests {
             history_file: PathBuf::from("~/.bssh_history"),
             work_dir: None,
         })
+    }
+
+    #[test]
+    fn ssh_mode_policy_uses_the_resolved_proxy_decision() {
+        let jump = ProxyMode::Jump("resolved-bastion".to_string());
+        assert_eq!(
+            session_policy_jump_spec(Some(&jump)),
+            Some("resolved-bastion")
+        );
+        assert_eq!(session_policy_jump_spec(Some(&ProxyMode::Direct)), Some(""));
+        assert_eq!(session_policy_jump_spec(None), None);
     }
 
     #[test]

@@ -48,6 +48,8 @@ pub struct ExecuteCommandParams<'a> {
     pub byte_transparent: bool,
     pub timeout: Option<u64>,
     pub connect_timeout: Option<u64>,
+    /// Explicit CLI jump-host override. ssh_config and YAML fallbacks remain
+    /// in `ssh_connection_config_resolver` so their precedence is preserved.
     pub jump_hosts: Option<&'a str>,
     pub require_all_success: bool,
     pub check_all_nodes: bool,

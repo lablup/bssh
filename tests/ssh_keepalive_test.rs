@@ -698,6 +698,7 @@ fn test_interactive_mode_ssh_connection_config_default() {
         use_pty: None,
         session_policy: None,
         ssh_connection_config: SshConnectionConfig::default(),
+        ssh_connection_config_resolver: Default::default(),
     };
 
     // Verify default values are applied
@@ -747,6 +748,7 @@ fn test_interactive_mode_ssh_connection_config_custom() {
         use_pty: None,
         session_policy: None,
         ssh_connection_config: custom_config,
+        ssh_connection_config_resolver: Default::default(),
     };
 
     // Verify custom values are applied
@@ -794,6 +796,7 @@ fn test_interactive_mode_ssh_connection_config_disabled_keepalive() {
         use_pty: None,
         session_policy: None,
         ssh_connection_config: disabled_config,
+        ssh_connection_config_resolver: Default::default(),
     };
 
     // Verify keepalive is disabled

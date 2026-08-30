@@ -45,6 +45,7 @@ pub use connection::{
 };
 pub use error::{Error, TransportIntegrityCause};
 pub use proxy_command::{ProxyCommandConfig, ProxyMode};
+pub(crate) use proxy_command::{is_direct_proxy_jump, select_proxy_jump};
 pub use to_socket_addrs_with_hostname::ToSocketAddrsWithHostname;
 
 // Re-export russh types commonly used with this module

@@ -29,6 +29,30 @@ pub enum ProxyMode {
     Jump(String),
 }
 
+/// Return whether a ProxyJump value explicitly requests a direct connection.
+///
+/// The empty value is the internal sentinel used to retain an explicit direct
+/// decision while passing through APIs that represent jump hosts as a string.
+pub(crate) fn is_direct_proxy_jump(value: &str) -> bool {
+    let value = value.trim();
+    value.is_empty() || value.eq_ignore_ascii_case("none") || value.eq_ignore_ascii_case("direct")
+}
+
+/// Select the actual jump chain from an explicit caller override and the
+/// resolver's lower-priority transport decision.
+pub(crate) fn select_proxy_jump<'a>(
+    explicit_jump: Option<&'a str>,
+    resolved_mode: Option<&'a ProxyMode>,
+) -> Option<&'a str> {
+    if let Some(explicit) = explicit_jump {
+        return (!is_direct_proxy_jump(explicit)).then_some(explicit);
+    }
+    match resolved_mode {
+        Some(ProxyMode::Jump(jump)) if !is_direct_proxy_jump(jump) => Some(jump.as_str()),
+        Some(ProxyMode::Jump(_) | ProxyMode::Command(_) | ProxyMode::Direct) | None => None,
+    }
+}
+
 /// The unexpanded `ProxyCommand` and the context needed by its percent tokens.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProxyCommandConfig {

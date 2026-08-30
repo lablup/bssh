@@ -127,6 +127,35 @@ fn request_tty_obeys_cli_precedence_and_config_modes() {
     );
 }
 
+#[test]
+fn session_purpose_tracks_the_resolved_pty_policy() {
+    let interactive = SessionPolicy::resolve(
+        &SshHostConfig {
+            request_tty: Some("force".into()),
+            ..Default::default()
+        },
+        &node(),
+        Some("true"),
+        CliTtyMode::Default,
+        false,
+    )
+    .unwrap();
+    assert_eq!(
+        interactive.purpose(),
+        crate::ssh::SessionPurpose::Interactive
+    );
+
+    let bulk = SessionPolicy::resolve(
+        &SshHostConfig::default(),
+        &node(),
+        Some("true"),
+        CliTtyMode::Default,
+        false,
+    )
+    .unwrap();
+    assert_eq!(bulk.purpose(), crate::ssh::SessionPurpose::Bulk);
+}
+
 #[cfg(unix)]
 #[tokio::test]
 async fn local_command_runs_once_and_propagates_failure() {

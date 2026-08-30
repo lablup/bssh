@@ -192,9 +192,9 @@ pub(super) const ACCEPTED_KEYWORDS: &[(&str, &str, KeywordSupport)] = &[
     ("compression", "compression", Runtime(Transport)),
     ("tcpkeepalive", "tcpkeepalive", Runtime(Transport)),
     ("addressfamily", "addressfamily", Runtime(Transport)),
-    ("bindaddress", "bindaddress", Delegated(300)),
-    ("bindinterface", "bindinterface", Delegated(300)),
-    ("ipqos", "ipqos", Delegated(300)),
+    ("bindaddress", "bindaddress", Runtime(Transport)),
+    ("bindinterface", "bindinterface", Runtime(Transport)),
+    ("ipqos", "ipqos", Runtime(Transport)),
     ("rekeylimit", "rekeylimit", Delegated(301)),
     ("proxyjump", "proxyjump", Runtime(Proxy)),
     ("proxycommand", "proxycommand", Runtime(Proxy)),
@@ -320,6 +320,9 @@ mod tests {
             ("compression", Transport),
             ("tcpkeepalive", Transport),
             ("addressfamily", Transport),
+            ("bindaddress", Transport),
+            ("bindinterface", Transport),
+            ("ipqos", Transport),
             ("proxyjump", Proxy),
             ("proxycommand", Proxy),
             ("proxyusefdpass", Proxy),
@@ -350,12 +353,7 @@ mod tests {
 
     #[test]
     fn first_wave_delegations_match_the_split_issue_dag() {
-        let expected = HashMap::from([
-            ("ipqos", 300),
-            ("bindaddress", 300),
-            ("bindinterface", 300),
-            ("rekeylimit", 301),
-        ]);
+        let expected = HashMap::from([("rekeylimit", 301)]);
         let delegated = ACCEPTED_KEYWORDS
             .iter()
             .filter_map(|(keyword, canonical, support)| match support {

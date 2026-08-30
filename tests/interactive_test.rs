@@ -46,6 +46,7 @@ async fn test_interactive_command_creation() {
         session_policy: None,
         jump_hosts: None,
         ssh_connection_config: SshConnectionConfig::default(),
+        ssh_connection_config_resolver: Default::default(),
     };
 
     assert!(!cmd.single_node);
@@ -77,6 +78,7 @@ async fn test_interactive_with_no_nodes() {
         session_policy: None,
         jump_hosts: None,
         ssh_connection_config: SshConnectionConfig::default(),
+        ssh_connection_config_resolver: Default::default(),
     };
 
     let result = cmd.execute().await;

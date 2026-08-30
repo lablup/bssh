@@ -28,10 +28,13 @@ use std::time::Duration;
 use super::address_family::AddressFamily;
 use super::authentication::{AuthMethod, ServerCheckMethod};
 use super::connection::{
-    Client, SshConnectionConfig, SshConnectionConfigResolver, configure_tcp_keepalive,
+    Client, SshConnectionConfig, SshConnectionConfigResolver, apply_ip_qos,
+    configure_tcp_keepalive, connect_direct_socket, resolve_bind_address,
+    resolve_interface_address,
 };
 use super::proxy_command::{ProxyCommandConfig, ProxyMode};
-use crate::ssh::SshConfig;
+use crate::ssh::ssh_config::{IpQosPolicy, IpQosValue};
+use crate::ssh::{SessionPurpose, SshConfig};
 
 #[test]
 fn test_default_compression_advertises_none_only() {
@@ -344,7 +347,12 @@ Host original-host
 
 #[test]
 fn test_proxy_none_disables_yaml_jump_fallback() {
-    for directive in ["ProxyCommand none", "ProxyJump none"] {
+    for directive in [
+        "ProxyCommand none",
+        "ProxyJump none",
+        "ProxyJump direct",
+        "ProxyJump DIRECT",
+    ] {
         let ssh_config =
             SshConfig::parse(&format!("Host target\n    {directive}\n")).expect("valid ssh_config");
         let config = SshConnectionConfigResolver::new()
@@ -739,4 +747,145 @@ fn authentication_yes_no_defaults_and_overrides_are_preserved() {
     assert!(policy.pubkey_authentication);
     assert!(!policy.password_authentication);
     assert!(!policy.batch_mode);
+}
+
+#[test]
+fn source_binding_and_ipqos_reach_the_connection_config() {
+    let ssh_config = SshConfig::parse(
+        "Host target\n    BindAddress 127.0.0.1\n    BindInterface lo\n    IPQoS ef cs1\n",
+    )
+    .unwrap();
+    let config = SshConnectionConfigResolver::new()
+        .with_ssh_config(Some(ssh_config))
+        .resolve_for_host("target");
+
+    assert_eq!(config.bind_address.as_deref(), Some("127.0.0.1"));
+    assert_eq!(config.bind_interface.as_deref(), Some("lo"));
+    assert_eq!(
+        config.ip_qos,
+        IpQosPolicy {
+            interactive: IpQosValue::Class(0xb8),
+            bulk: IpQosValue::Class(0x20),
+        }
+    );
+    assert_eq!(config.session_purpose, SessionPurpose::Bulk);
+    assert_eq!(config.selected_ip_qos(), IpQosValue::Class(0x20));
+    assert_eq!(
+        config
+            .clone()
+            .with_session_purpose(SessionPurpose::Interactive)
+            .selected_ip_qos(),
+        IpQosValue::Class(0xb8)
+    );
+}
+
+#[tokio::test]
+async fn direct_socket_binds_the_requested_loopback_source() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let destination = listener.local_addr().unwrap();
+    let client = connect_direct_socket(
+        destination,
+        "localhost",
+        destination.port(),
+        Some("127.0.0.1"),
+        Some("definitely-not-an-interface"),
+        IpQosValue::Class(0x20),
+    )
+    .await
+    .unwrap();
+    let (_server, peer) = listener.accept().await.unwrap();
+
+    assert_eq!(peer.ip(), "127.0.0.1".parse::<std::net::IpAddr>().unwrap());
+    assert_eq!(client.local_addr().unwrap().ip(), peer.ip());
+    assert_eq!(socket2::SockRef::from(&client).tos_v4().unwrap(), 0x20);
+}
+
+#[tokio::test]
+async fn nonlocal_bind_address_fails_without_unbound_fallback() {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let destination = listener.local_addr().unwrap();
+    let error = connect_direct_socket(
+        destination,
+        "localhost",
+        destination.port(),
+        Some("192.0.2.123"),
+        None,
+        IpQosValue::None,
+    )
+    .await
+    .unwrap_err();
+
+    assert!(matches!(error, super::Error::SourceBind { .. }));
+}
+
+#[test]
+fn incompatible_bind_address_family_is_explicit() {
+    let destination = "127.0.0.1:22".parse().unwrap();
+    let error = resolve_bind_address("::1", destination).unwrap_err();
+    assert!(matches!(error, super::Error::BindAddressFamily { .. }));
+    assert!(error.to_string().contains("no IPv4 address"));
+}
+
+#[cfg(unix)]
+#[test]
+fn bind_interface_selects_a_same_family_loopback_address() {
+    #[cfg(any(
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    ))]
+    let interface = "lo0";
+    #[cfg(not(any(
+        target_os = "macos",
+        target_os = "freebsd",
+        target_os = "netbsd",
+        target_os = "openbsd"
+    )))]
+    let interface = "lo";
+
+    let destination = "127.0.0.1:22".parse().unwrap();
+    let source = resolve_interface_address(interface, destination).unwrap();
+    assert!(source.is_ipv4());
+    assert!(source.ip().is_loopback());
+
+    let error = resolve_interface_address("bssh-no-such-if", destination).unwrap_err();
+    assert!(matches!(error, super::Error::BindInterface { .. }));
+}
+
+#[test]
+fn ipv4_qos_sets_the_exact_tos_byte() {
+    let socket = socket2::Socket::new(
+        socket2::Domain::IPV4,
+        socket2::Type::STREAM,
+        Some(socket2::Protocol::TCP),
+    )
+    .unwrap();
+    let destination = "127.0.0.1:22".parse().unwrap();
+    apply_ip_qos(&socket, destination, IpQosValue::Class(0xb8)).unwrap();
+    assert_eq!(socket.tos_v4().unwrap(), 0xb8);
+}
+
+#[cfg(any(
+    target_os = "android",
+    target_os = "dragonfly",
+    target_os = "freebsd",
+    target_os = "fuchsia",
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "illumos",
+))]
+#[test]
+fn ipv6_qos_sets_the_exact_traffic_class_byte() {
+    let socket = socket2::Socket::new(
+        socket2::Domain::IPV6,
+        socket2::Type::STREAM,
+        Some(socket2::Protocol::TCP),
+    )
+    .unwrap();
+    let destination = "[::1]:22".parse().unwrap();
+    apply_ip_qos(&socket, destination, IpQosValue::Class(0x48)).unwrap();
+    assert_eq!(socket.tclass_v6().unwrap(), 0x48);
 }

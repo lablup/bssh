@@ -22,15 +22,58 @@ use std::io::{self, IsTerminal, Write};
 use tokio::time::{Duration, timeout};
 use zeroize::Zeroizing;
 
-use crate::jump::{JumpHostChain, parse_jump_hosts};
+use crate::jump::{JumpHostChain, parse_jump_hosts, parser::JumpHost};
 use crate::node::Node;
 use crate::ssh::{
-    SessionRequest,
+    SessionPolicy, SessionPurpose, SessionRequest,
     known_hosts::get_check_method_for_target,
-    tokio_client::{AuthMethod, Client, Error as SshError, ServerCheckMethod, SshConnectionConfig},
+    tokio_client::{
+        AuthMethod, Client, Error as SshError, ServerCheckMethod, SshConnectionConfig,
+        SshConnectionConfigResolver, select_proxy_jump,
+    },
 };
 
 use super::types::{InteractiveCommand, NodeSession};
+
+fn build_interactive_jump_chain(
+    jump_hosts: Vec<JumpHost>,
+    adjusted_timeout: Duration,
+    ssh_connection_config: &SshConnectionConfig,
+    resolver: Option<&SshConnectionConfigResolver>,
+    session_purpose: SessionPurpose,
+) -> JumpHostChain {
+    let mut chain = JumpHostChain::new(jump_hosts)
+        .with_connect_timeout(adjusted_timeout)
+        .with_command_timeout(Duration::from_secs(300))
+        .with_ssh_connection_config(ssh_connection_config.clone())
+        .with_session_purpose(session_purpose);
+    if let Some(resolver) = resolver {
+        chain = chain.with_ssh_connection_config_resolver(resolver.clone());
+    }
+    chain
+}
+
+fn interactive_session_purpose(session_policy: Option<&SessionPolicy>) -> SessionPurpose {
+    session_policy.map_or(SessionPurpose::Interactive, SessionPolicy::purpose)
+}
+
+fn interactive_target_connection_config(
+    node: &Node,
+    fixed_config: &SshConnectionConfig,
+    resolver: Option<&SshConnectionConfigResolver>,
+) -> SshConnectionConfig {
+    resolver.map_or_else(
+        || fixed_config.clone(),
+        |resolver| resolver.resolve_for_host(node.config_host()),
+    )
+}
+
+fn interactive_jump_spec<'a>(
+    target_config: &'a SshConnectionConfig,
+    fallback: Option<&'a str>,
+) -> Option<&'a str> {
+    select_proxy_jump(fallback, target_config.proxy_mode.as_ref())
+}
 
 impl InteractiveCommand {
     /// Helper function to establish SSH connection with proper error handling and rate limiting
@@ -50,9 +93,11 @@ impl InteractiveCommand {
         port: u16,
         allow_password_fallback: bool,
         ssh_config: &SshConnectionConfig,
+        session_purpose: SessionPurpose,
     ) -> Result<Client> {
         const SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
         let connect_timeout = Duration::from_secs(SSH_CONNECT_TIMEOUT_SECS);
+        let ssh_config = ssh_config.clone().with_session_purpose(session_purpose);
 
         // SECURITY: Add a small delay before connection attempts to prevent rapid-fire attempts
         // This helps mitigate brute-force attacks and prevents triggering fail2ban too quickly
@@ -72,7 +117,7 @@ impl InteractiveCommand {
                 username,
                 auth_method,
                 check_method.clone(),
-                ssh_config,
+                &ssh_config,
             ),
         )
         .await
@@ -116,7 +161,7 @@ impl InteractiveCommand {
                         username,
                         password_auth,
                         check_method,
-                        ssh_config,
+                        &ssh_config,
                     ),
                 )
                 .await
@@ -144,6 +189,26 @@ impl InteractiveCommand {
         result
     }
 
+    fn session_purpose(&self) -> SessionPurpose {
+        interactive_session_purpose(self.session_policy.as_ref())
+    }
+
+    fn build_jump_chain(
+        &self,
+        jump_hosts: Vec<JumpHost>,
+        adjusted_timeout: Duration,
+        target_config: &SshConnectionConfig,
+    ) -> JumpHostChain {
+        build_interactive_jump_chain(
+            jump_hosts,
+            adjusted_timeout,
+            target_config,
+            self.ssh_connection_config_resolver.as_ref(),
+            self.session_purpose(),
+        )
+        .with_ssh_password(self.ssh_password.clone())
+    }
+
     /// Prompt for password with secure handling
     async fn prompt_password(username: &str, host: &str) -> Result<Zeroizing<String>> {
         let username = username.to_string();
@@ -160,8 +225,11 @@ impl InteractiveCommand {
         .with_context(|| "Password prompt task failed")?
     }
 
-    /// Determine authentication method based on node and config (same logic as exec mode)
-    pub(super) async fn determine_auth_method(&self, node: &Node) -> Result<AuthMethod> {
+    fn auth_context(
+        &self,
+        node: &Node,
+        target_config: &SshConnectionConfig,
+    ) -> Result<crate::ssh::AuthContext> {
         // Use centralized authentication logic from auth module
         let mut auth_ctx = crate::ssh::AuthContext::new(node.username.clone(), node.host.clone())
             .with_context(|| {
@@ -180,7 +248,7 @@ impl InteractiveCommand {
             .with_password(self.use_password)
             .with_password_fallback(!self.use_password) // Enable fallback only if not using explicit password
             .with_pre_collected_password(self.ssh_password.clone());
-        auth_ctx = auth_ctx.with_policy(self.ssh_connection_config.auth_policy.clone());
+        auth_ctx = auth_ctx.with_policy(target_config.auth_policy.clone());
 
         // Set macOS Keychain integration if available
         #[cfg(target_os = "macos")]
@@ -188,7 +256,18 @@ impl InteractiveCommand {
             auth_ctx = auth_ctx.with_keychain(self.use_keychain);
         }
 
-        auth_ctx.determine_method().await
+        Ok(auth_ctx)
+    }
+
+    /// Determine authentication method based on node and config (same logic as exec mode)
+    pub(super) async fn determine_auth_method(
+        &self,
+        node: &Node,
+        target_config: &SshConnectionConfig,
+    ) -> Result<AuthMethod> {
+        self.auth_context(node, target_config)?
+            .determine_method()
+            .await
     }
 
     /// Select nodes to connect to based on configuration
@@ -249,13 +328,20 @@ impl InteractiveCommand {
 
     /// Connect to a single node and establish an interactive shell
     pub(super) async fn connect_to_node(&self, node: Node) -> Result<NodeSession> {
-        // Determine authentication method using the same logic as exec mode
-        let auth_method = self.determine_auth_method(&node).await?;
+        let target_config = interactive_target_connection_config(
+            &node,
+            &self.ssh_connection_config,
+            self.ssh_connection_config_resolver.as_ref(),
+        );
+        // Resolve from the node's original ssh_config alias before selecting
+        // credentials so authentication, host verification, and transport all
+        // consume the same destination policy.
+        let auth_method = self.determine_auth_method(&node, &target_config).await?;
 
         // Set up host key checking using the configured strict mode
         let check_method = get_check_method_for_target(
             self.strict_mode,
-            &self.ssh_connection_config,
+            &target_config,
             &node.host,
             node.port,
             &node.username,
@@ -265,7 +351,9 @@ impl InteractiveCommand {
         let addr = (node.host.as_str(), node.port);
 
         // Create client connection - either direct or through jump hosts
-        let client = if let Some(ref jump_spec) = self.jump_hosts {
+        let client = if let Some(jump_spec) =
+            interactive_jump_spec(&target_config, self.jump_hosts.as_deref())
+        {
             // Parse jump hosts
             let jump_hosts = parse_jump_hosts(jump_spec).with_context(|| {
                 format!("Failed to parse jump host specification: '{jump_spec}'")
@@ -284,7 +372,8 @@ impl InteractiveCommand {
                     &node.host,
                     node.port,
                     !self.use_password, // Allow fallback unless explicit password mode
-                    &self.ssh_connection_config,
+                    &target_config,
+                    self.session_purpose(),
                 )
                 .await?
             } else {
@@ -312,11 +401,7 @@ impl InteractiveCommand {
                 // Pass SSH connection config to jump host chain for keepalive settings.
                 // Also pass the dispatcher's pre-collected password so jump-host
                 // authentication consumes it instead of re-prompting per call. See #200.
-                let chain = JumpHostChain::new(jump_hosts)
-                    .with_connect_timeout(adjusted_timeout)
-                    .with_command_timeout(Duration::from_secs(300))
-                    .with_ssh_connection_config(self.ssh_connection_config.clone())
-                    .with_ssh_password(self.ssh_password.clone());
+                let chain = self.build_jump_chain(jump_hosts, adjusted_timeout, &target_config);
 
                 // Connect through the chain
                 let connection = timeout(
@@ -367,7 +452,8 @@ impl InteractiveCommand {
                 &node.host,
                 node.port,
                 !self.use_password, // Allow fallback unless explicit password mode
-                &self.ssh_connection_config,
+                &target_config,
+                self.session_purpose(),
             )
             .await?
         };
@@ -409,13 +495,19 @@ impl InteractiveCommand {
 
     /// Connect to a single node and establish a PTY-enabled SSH channel
     pub(super) async fn connect_to_node_pty(&self, node: Node) -> Result<(Client, Channel<Msg>)> {
-        // Determine authentication method using the same logic as exec mode
-        let auth_method = self.determine_auth_method(&node).await?;
+        let target_config = interactive_target_connection_config(
+            &node,
+            &self.ssh_connection_config,
+            self.ssh_connection_config_resolver.as_ref(),
+        );
+        // Keep PTY authentication on the same per-node alias policy used by
+        // host verification and the direct or jump transport.
+        let auth_method = self.determine_auth_method(&node, &target_config).await?;
 
         // Set up host key checking using the configured strict mode
         let check_method = get_check_method_for_target(
             self.strict_mode,
-            &self.ssh_connection_config,
+            &target_config,
             &node.host,
             node.port,
             &node.username,
@@ -425,7 +517,9 @@ impl InteractiveCommand {
         let addr = (node.host.as_str(), node.port);
 
         // Create client connection - either direct or through jump hosts
-        let client = if let Some(ref jump_spec) = self.jump_hosts {
+        let client = if let Some(jump_spec) =
+            interactive_jump_spec(&target_config, self.jump_hosts.as_deref())
+        {
             // Parse jump hosts
             let jump_hosts = parse_jump_hosts(jump_spec).with_context(|| {
                 format!("Failed to parse jump host specification: '{jump_spec}'")
@@ -444,7 +538,8 @@ impl InteractiveCommand {
                     &node.host,
                     node.port,
                     !self.use_password, // Allow fallback unless explicit password mode
-                    &self.ssh_connection_config,
+                    &target_config,
+                    self.session_purpose(),
                 )
                 .await?
             } else {
@@ -472,11 +567,7 @@ impl InteractiveCommand {
                 // Pass SSH connection config to jump host chain for keepalive settings.
                 // Also pass the dispatcher's pre-collected password so jump-host
                 // authentication consumes it instead of re-prompting per call. See #200.
-                let chain = JumpHostChain::new(jump_hosts)
-                    .with_connect_timeout(adjusted_timeout)
-                    .with_command_timeout(Duration::from_secs(300))
-                    .with_ssh_connection_config(self.ssh_connection_config.clone())
-                    .with_ssh_password(self.ssh_password.clone());
+                let chain = self.build_jump_chain(jump_hosts, adjusted_timeout, &target_config);
 
                 // Connect through the chain
                 let connection = timeout(
@@ -527,7 +618,8 @@ impl InteractiveCommand {
                 &node.host,
                 node.port,
                 !self.use_password, // Allow fallback unless explicit password mode
-                &self.ssh_connection_config,
+                &target_config,
+                self.session_purpose(),
             )
             .await?
         };
@@ -609,6 +701,343 @@ pub fn is_auth_error_for_password_fallback(error: &SshError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{Config, InteractiveConfig};
+    use crate::pty::PtyConfig;
+    use crate::ssh::known_hosts::StrictHostKeyChecking;
+    use crate::ssh::ssh_config::{IpQosPolicy, IpQosValue, SshConfig};
+    use crate::ssh::tokio_client::ProxyMode;
+    use std::path::PathBuf;
+
+    fn alias_auth_command(fixed_alias: &str) -> (InteractiveCommand, Node, Node) {
+        let ssh_config = SshConfig::parse(
+            r#"
+Host alpha
+    HostName effective-alpha
+    IdentityFile /alpha-identity
+    IdentitiesOnly yes
+    PreferredAuthentications password
+    PubkeyAuthentication no
+    PasswordAuthentication no
+    NumberOfPasswordPrompts 1
+    BatchMode no
+
+Host beta
+    HostName effective-beta
+    IdentityFile /beta-identity
+    IdentitiesOnly no
+    PreferredAuthentications password
+    PubkeyAuthentication no
+    PasswordAuthentication yes
+    NumberOfPasswordPrompts 7
+    BatchMode yes
+"#,
+        )
+        .expect("valid ssh_config");
+        let resolver = SshConnectionConfigResolver::new()
+            .with_ssh_config(Some(ssh_config))
+            .with_cli_identity_files(vec![PathBuf::from("/cli-identity")]);
+        let fixed_config = resolver.resolve_for_host(fixed_alias);
+        let alpha = Node::new("effective-alpha".to_string(), 22, "user".to_string())
+            .with_original_host("alpha".to_string());
+        let beta = Node::new("effective-beta".to_string(), 22, "user".to_string())
+            .with_original_host("beta".to_string());
+        let command = InteractiveCommand {
+            single_node: false,
+            multiplex: true,
+            prompt_format: String::new(),
+            history_file: PathBuf::new(),
+            work_dir: None,
+            nodes: vec![alpha.clone(), beta.clone()],
+            config: Config::default(),
+            interactive_config: InteractiveConfig::default(),
+            cluster_name: None,
+            key_path: Some(PathBuf::from("/explicit-identity")),
+            use_agent: true,
+            use_password: false,
+            ssh_password: None,
+            #[cfg(target_os = "macos")]
+            use_keychain: false,
+            strict_mode: StrictHostKeyChecking::No,
+            jump_hosts: None,
+            pty_config: PtyConfig::default(),
+            use_pty: None,
+            session_policy: None,
+            ssh_connection_config: fixed_config,
+            ssh_connection_config_resolver: Some(resolver),
+        };
+
+        (command, alpha, beta)
+    }
+
+    fn assert_distinct_alias_auth_policies(
+        command: &InteractiveCommand,
+        alpha: &Node,
+        beta: &Node,
+    ) {
+        let resolver = command.ssh_connection_config_resolver.as_ref();
+        let alpha_config =
+            interactive_target_connection_config(alpha, &command.ssh_connection_config, resolver);
+        let beta_config =
+            interactive_target_connection_config(beta, &command.ssh_connection_config, resolver);
+        let alpha_context = command.auth_context(alpha, &alpha_config).unwrap();
+        let beta_context = command.auth_context(beta, &beta_config).unwrap();
+
+        for context in [&alpha_context, &beta_context] {
+            assert_eq!(
+                context.key_path.as_deref(),
+                Some(std::path::Path::new("/explicit-identity"))
+            );
+            assert!(context.use_agent);
+            assert_eq!(
+                context.policy.cli_identity_files,
+                [PathBuf::from("/cli-identity")]
+            );
+        }
+        assert_eq!(
+            alpha_context.policy.identity_files,
+            [PathBuf::from("/alpha-identity")]
+        );
+        assert!(alpha_context.policy.identities_only);
+        assert!(!alpha_context.policy.password_authentication);
+        assert!(!alpha_context.policy.batch_mode);
+        assert_eq!(alpha_context.policy.number_of_password_prompts, 1);
+
+        assert_eq!(
+            beta_context.policy.identity_files,
+            [PathBuf::from("/beta-identity")]
+        );
+        assert!(!beta_context.policy.identities_only);
+        assert!(beta_context.policy.password_authentication);
+        assert!(beta_context.policy.batch_mode);
+        assert_eq!(beta_context.policy.number_of_password_prompts, 7);
+    }
+
+    #[tokio::test]
+    async fn connect_to_node_resolves_each_alias_auth_policy_before_authentication() {
+        // The shared fallback intentionally carries alpha's policy. The beta
+        // connection must still stop with beta's BatchMode decision before any
+        // network connection is attempted.
+        let (command, alpha, beta) = alias_auth_command("alpha");
+        assert_distinct_alias_auth_policies(&command, &alpha, &beta);
+
+        let error = match command.connect_to_node(beta).await {
+            Ok(_) => panic!("beta authentication policy must reject all methods"),
+            Err(error) => error,
+        };
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("disabled by BatchMode"), "{rendered}");
+        assert!(
+            !rendered.contains("disabled by PasswordAuthentication"),
+            "{rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_to_node_pty_resolves_each_alias_auth_policy_before_authentication() {
+        // Reverse the shared fallback. The alpha PTY path must use alpha's
+        // PasswordAuthentication policy instead of inheriting beta's BatchMode.
+        let (command, alpha, beta) = alias_auth_command("beta");
+        assert_distinct_alias_auth_policies(&command, &alpha, &beta);
+
+        let error = match command.connect_to_node_pty(alpha).await {
+            Ok(_) => panic!("alpha authentication policy must reject all methods"),
+            Err(error) => error,
+        };
+        let rendered = format!("{error:#}");
+        assert!(
+            rendered.contains("disabled by PasswordAuthentication"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("disabled by BatchMode"), "{rendered}");
+    }
+
+    #[test]
+    fn no_pty_shell_uses_bulk_ipqos_for_direct_and_jump_connections() {
+        let policy = SessionPolicy {
+            environment: Vec::new(),
+            local_command: None,
+            request_pty: false,
+            request: SessionRequest::Shell,
+        };
+
+        assert_eq!(
+            interactive_session_purpose(Some(&policy)),
+            SessionPurpose::Bulk
+        );
+        assert_eq!(
+            interactive_session_purpose(None),
+            SessionPurpose::Interactive
+        );
+        let config = SshConnectionConfig::new()
+            .with_ip_qos(IpQosPolicy {
+                interactive: IpQosValue::Class(0xb8),
+                bulk: IpQosValue::Class(0x20),
+            })
+            .with_session_purpose(interactive_session_purpose(Some(&policy)));
+        assert_eq!(config.selected_ip_qos(), IpQosValue::Class(0x20));
+    }
+
+    #[test]
+    fn interactive_jump_selection_is_cli_then_ssh_config_then_yaml() {
+        let node = Node::new("effective-target".to_string(), 22, "user".to_string())
+            .with_original_host("target-alias".to_string());
+        let resolve = |ssh_config: SshConfig, cli_jump: Option<&str>| {
+            SshConnectionConfigResolver::new()
+                .with_ssh_config(Some(ssh_config))
+                .with_cli_proxy_jump(cli_jump.map(str::to_owned))
+                .with_yaml_proxy_jump(Some("yaml-bastion".to_string()))
+                .resolve_for_host(node.config_host())
+        };
+
+        let config_jump = SshConfig::parse(
+            r#"
+Host target-alias
+    HostName effective-target
+    ProxyJump config-bastion
+"#,
+        )
+        .unwrap();
+        let target = resolve(config_jump.clone(), None);
+        assert_eq!(interactive_jump_spec(&target, None), Some("config-bastion"));
+        assert_eq!(
+            interactive_jump_spec(&target, Some("cli-bastion")),
+            Some("cli-bastion")
+        );
+        for cli_direct in ["none", "direct"] {
+            assert_eq!(interactive_jump_spec(&target, Some(cli_direct)), None);
+        }
+
+        for config_direct in ["none", "direct"] {
+            let ssh_config = SshConfig::parse(&format!(
+                "Host target-alias\n    HostName effective-target\n    ProxyJump {config_direct}\n"
+            ))
+            .unwrap();
+            let target = resolve(ssh_config, None);
+            assert_eq!(interactive_jump_spec(&target, None), None);
+        }
+
+        let yaml_target = resolve(SshConfig::new(), None);
+        assert_eq!(
+            interactive_jump_spec(&yaml_target, None),
+            Some("yaml-bastion")
+        );
+        let cli_target = resolve(config_jump, Some("cli-bastion"));
+        assert_eq!(
+            interactive_jump_spec(&cli_target, Some("cli-bastion")),
+            Some("cli-bastion")
+        );
+    }
+
+    #[test]
+    fn interactive_jump_chain_keeps_distinct_bastion_and_target_socket_policies() {
+        let ssh_config = SshConfig::parse(
+            r#"
+Host bastion
+    BindAddress 127.0.0.2
+    BindInterface lo
+    IPQoS cs5 cs1
+
+Host alpha
+    HostName effective-alpha
+    HostKeyAlias alpha-key
+    BindAddress 127.0.0.3
+    BindInterface alpha0
+    IPQoS ef cs2
+    ProxyJump bastion
+
+Host beta
+    HostName effective-beta
+    HostKeyAlias beta-key
+    BindAddress 127.0.0.4
+    BindInterface beta0
+    IPQoS cs6 cs3
+    ProxyJump beta-bastion
+
+Host effective-alpha
+    HostKeyAlias wrong-key
+    BindAddress 127.0.0.9
+    BindInterface wrong0
+    IPQoS cs7 cs7
+"#,
+        )
+        .expect("valid ssh_config");
+        let resolver = SshConnectionConfigResolver::new().with_ssh_config(Some(ssh_config));
+        let alpha = Node::new("effective-alpha".to_string(), 22, "user".to_string())
+            .with_original_host("alpha".to_string());
+        let beta = Node::new("effective-beta".to_string(), 22, "user".to_string())
+            .with_original_host("beta".to_string());
+        let fixed_config = SshConnectionConfig::default();
+        let alpha_config =
+            interactive_target_connection_config(&alpha, &fixed_config, Some(&resolver));
+        let beta_config =
+            interactive_target_connection_config(&beta, &fixed_config, Some(&resolver));
+
+        assert_eq!(alpha_config.bind_address.as_deref(), Some("127.0.0.3"));
+        assert_eq!(alpha_config.bind_interface.as_deref(), Some("alpha0"));
+        assert_eq!(alpha_config.host_key_alias.as_deref(), Some("alpha-key"));
+        assert_eq!(alpha_config.ip_qos.bulk, IpQosValue::Class(0x40));
+        assert_eq!(beta_config.bind_address.as_deref(), Some("127.0.0.4"));
+        assert_eq!(beta_config.bind_interface.as_deref(), Some("beta0"));
+        assert_eq!(beta_config.host_key_alias.as_deref(), Some("beta-key"));
+        assert_eq!(beta_config.ip_qos.bulk, IpQosValue::Class(0x60));
+        assert_eq!(interactive_jump_spec(&alpha_config, None), Some("bastion"));
+        assert_eq!(
+            interactive_jump_spec(&alpha_config, Some("manual-bastion")),
+            Some("manual-bastion")
+        );
+        for direct in ["", "none", "direct", " NONE "] {
+            assert_eq!(interactive_jump_spec(&alpha_config, Some(direct)), None);
+        }
+        assert_eq!(
+            interactive_jump_spec(&beta_config, None),
+            Some("beta-bastion")
+        );
+
+        let chain = build_interactive_jump_chain(
+            vec![JumpHost::new("bastion".to_string(), None, None)],
+            Duration::from_secs(45),
+            &alpha_config,
+            Some(&resolver),
+            SessionPurpose::Bulk,
+        );
+
+        let bastion = chain.connection_config_for_jump_host("bastion");
+        assert_eq!(bastion.bind_address.as_deref(), Some("127.0.0.2"));
+        assert_eq!(bastion.bind_interface.as_deref(), Some("lo"));
+        assert_eq!(bastion.session_purpose, SessionPurpose::Bulk);
+        assert_eq!(bastion.selected_ip_qos(), IpQosValue::Class(0x20));
+
+        let target = chain.destination_connection_config();
+        assert_eq!(target.bind_address.as_deref(), Some("127.0.0.3"));
+        assert_eq!(target.bind_interface.as_deref(), Some("alpha0"));
+        assert_eq!(target.host_key_alias.as_deref(), Some("alpha-key"));
+        assert!(matches!(
+            target.proxy_mode.as_ref(),
+            Some(ProxyMode::Jump(jump)) if jump == "bastion"
+        ));
+        assert_eq!(target.session_purpose, SessionPurpose::Bulk);
+        assert_eq!(target.selected_ip_qos(), IpQosValue::Class(0x40));
+
+        let manual_config = SshConnectionConfig::new()
+            .with_source_binding(Some("127.0.0.4".to_string()), Some("lo".to_string()))
+            .with_ip_qos(IpQosPolicy {
+                interactive: IpQosValue::Class(0xb8),
+                bulk: IpQosValue::Class(0x60),
+            });
+        let fixed_chain = build_interactive_jump_chain(
+            vec![JumpHost::new("manual-bastion".to_string(), None, None)],
+            Duration::from_secs(45),
+            &manual_config,
+            None,
+            SessionPurpose::Bulk,
+        );
+        let manual_bastion = fixed_chain.connection_config_for_jump_host("manual-bastion");
+        assert_eq!(manual_bastion.bind_address.as_deref(), Some("127.0.0.4"));
+        assert_eq!(manual_bastion.selected_ip_qos(), IpQosValue::Class(0x60));
+        let manual_target = fixed_chain.destination_connection_config();
+        assert_eq!(manual_target.bind_address.as_deref(), Some("127.0.0.4"));
+        assert_eq!(manual_target.selected_ip_qos(), IpQosValue::Class(0x60));
+    }
 
     #[test]
     fn test_key_auth_failed_triggers_password_fallback() {

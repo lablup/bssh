@@ -357,7 +357,7 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
         base.bind_interface = overlay.bind_interface.clone();
     }
     if base.ipqos.is_none() && overlay.ipqos.is_some() {
-        base.ipqos = overlay.ipqos.clone();
+        base.ipqos = overlay.ipqos;
     }
     if base.rekey_limit.is_none() && overlay.rekey_limit.is_some() {
         base.rekey_limit = overlay.rekey_limit.clone();

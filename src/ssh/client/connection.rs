@@ -13,11 +13,12 @@
 // limitations under the License.
 
 use super::core::SshClient;
-use crate::jump::{JumpHostChain, parse_jump_hosts};
+use crate::jump::{JumpHostChain, parse_jump_hosts, parser::JumpHost};
 use crate::security::Password;
+use crate::ssh::SessionPurpose;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
 use crate::ssh::tokio_client::{
-    AuthMethod, Client, ProxyMode, SshConnectionConfig, SshConnectionConfigResolver,
+    AuthMethod, Client, SshConnectionConfig, SshConnectionConfigResolver, select_proxy_jump,
 };
 use anyhow::{Context, Result};
 use std::path::Path;
@@ -29,6 +30,34 @@ use std::time::Duration;
 // - Industry standard for SSH client connections
 // - Balances user patience with reliability on poor networks
 const SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
+
+fn build_client_jump_chain(
+    jump_hosts: &[JumpHost],
+    connect_timeout: Duration,
+    target_config: Option<&SshConnectionConfig>,
+    jump_host_resolver: Option<&SshConnectionConfigResolver>,
+    pre_collected_password: Option<Arc<Password>>,
+    session_purpose: SessionPurpose,
+) -> JumpHostChain {
+    let mut chain = JumpHostChain::new(jump_hosts.to_vec())
+        .with_connect_timeout(connect_timeout)
+        .with_command_timeout(Duration::from_secs(300))
+        .with_ssh_password(pre_collected_password);
+    if let Some(config) = target_config {
+        chain = chain.with_ssh_connection_config(config.clone());
+    }
+    if let Some(resolver) = jump_host_resolver {
+        chain = chain.with_ssh_connection_config_resolver(resolver.clone());
+    }
+    chain.with_session_purpose(session_purpose)
+}
+
+fn client_jump_spec<'a>(
+    target_config: &'a SshConnectionConfig,
+    requested_jump_hosts: Option<&'a str>,
+) -> Option<&'a str> {
+    select_proxy_jump(requested_jump_hosts, target_config.proxy_mode.as_ref())
+}
 
 /// Build the friendly, outer-context message for a failed direct SSH
 /// connection attempt.
@@ -236,20 +265,19 @@ impl SshClient {
         ssh_connection_config: Option<&SshConnectionConfig>,
         ssh_connection_config_resolver: Option<&SshConnectionConfigResolver>,
         pre_collected_password: Option<Arc<Password>>,
+        session_purpose: SessionPurpose,
     ) -> Result<Client> {
         // Create jump host chain with user-specified or default connect timeout
         let connect_timeout =
             Duration::from_secs(connect_timeout_seconds.unwrap_or(SSH_CONNECT_TIMEOUT_SECS));
-        let mut chain = JumpHostChain::new(jump_hosts.to_vec())
-            .with_connect_timeout(connect_timeout)
-            .with_command_timeout(Duration::from_secs(300))
-            .with_ssh_password(pre_collected_password);
-        if let Some(cfg) = ssh_connection_config {
-            chain = chain.with_ssh_connection_config(cfg.clone());
-        }
-        if let Some(resolver) = ssh_connection_config_resolver {
-            chain = chain.with_ssh_connection_config_resolver(resolver.clone());
-        }
+        let chain = build_client_jump_chain(
+            jump_hosts,
+            connect_timeout,
+            ssh_connection_config,
+            ssh_connection_config_resolver,
+            pre_collected_password,
+            session_purpose,
+        );
 
         // Connect through the chain
         let connection = chain
@@ -293,13 +321,14 @@ impl SshClient {
         ssh_connection_config: Option<&SshConnectionConfig>,
         ssh_connection_config_resolver: Option<&SshConnectionConfigResolver>,
         pre_collected_password: Option<Arc<Password>>,
+        session_purpose: SessionPurpose,
     ) -> Result<Client> {
-        let jump_hosts_spec =
-            match ssh_connection_config.and_then(|config| config.proxy_mode.as_ref()) {
-                Some(ProxyMode::Jump(jump)) => Some(jump.as_str()),
-                Some(ProxyMode::Command(_) | ProxyMode::Direct) => None,
-                None => jump_hosts_spec,
-            };
+        let selected_config = ssh_connection_config
+            .cloned()
+            .unwrap_or_default()
+            .with_session_purpose(session_purpose);
+        let ssh_connection_config = Some(&selected_config);
+        let jump_hosts_spec = client_jump_spec(&selected_config, jump_hosts_spec);
 
         if let Some(jump_spec) = jump_hosts_spec {
             // Parse jump hosts
@@ -340,6 +369,7 @@ impl SshClient {
                     ssh_connection_config,
                     ssh_connection_config_resolver,
                     pre_collected_password,
+                    session_purpose,
                 )
                 .await
             }
@@ -360,6 +390,9 @@ impl SshClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ssh::SshConfig;
+    use crate::ssh::ssh_config::{IpQosPolicy, IpQosValue};
+    use crate::ssh::tokio_client::ProxyMode;
     use crate::test_helpers::EnvGuard;
     use serial_test::serial;
     use tempfile::TempDir;
@@ -369,6 +402,95 @@ mod tests {
 
         let key = PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
         std::fs::write(path, key.to_openssh(LineEnding::LF).unwrap().as_bytes()).unwrap();
+    }
+
+    #[test]
+    fn command_and_transfer_jump_chain_preserves_alias_target_policy() {
+        let ssh_config = SshConfig::parse(
+            r#"
+Host bastion
+    BindAddress 127.0.0.2
+    IPQoS cs5 cs1
+
+Host target-alias
+    HostName effective-target
+    HostKeyAlias alias-key
+    BindAddress 127.0.0.3
+    IPQoS ef cs2
+    ProxyJump bastion
+
+Host effective-target
+    HostKeyAlias wrong-key
+    BindAddress 127.0.0.9
+    IPQoS cs7 cs7
+"#,
+        )
+        .expect("valid ssh_config");
+        let resolver = SshConnectionConfigResolver::new().with_ssh_config(Some(ssh_config));
+        let target_config = resolver.resolve_for_host("target-alias");
+        let chain = build_client_jump_chain(
+            &[JumpHost::new("bastion".to_string(), None, None)],
+            Duration::from_secs(30),
+            Some(&target_config),
+            Some(&resolver),
+            None,
+            SessionPurpose::Bulk,
+        );
+
+        let bastion = chain.connection_config_for_jump_host("bastion");
+        assert_eq!(bastion.bind_address.as_deref(), Some("127.0.0.2"));
+        assert_eq!(bastion.selected_ip_qos(), IpQosValue::Class(0x20));
+        let destination = chain.destination_connection_config();
+        assert_eq!(destination.bind_address.as_deref(), Some("127.0.0.3"));
+        assert_eq!(destination.host_key_alias.as_deref(), Some("alias-key"));
+        assert_eq!(destination.selected_ip_qos(), IpQosValue::Class(0x40));
+        assert!(matches!(
+            destination.proxy_mode.as_ref(),
+            Some(ProxyMode::Jump(jump)) if jump == "bastion"
+        ));
+        assert_eq!(client_jump_spec(&destination, None), Some("bastion"));
+        assert_eq!(
+            client_jump_spec(&destination, Some("manual-bastion")),
+            Some("manual-bastion")
+        );
+        for direct in ["", "none", "direct", " NONE "] {
+            assert_eq!(client_jump_spec(&destination, Some(direct)), None);
+        }
+
+        let direct_destination =
+            SshConnectionConfig::new().with_proxy_mode(Some(ProxyMode::Direct));
+        assert_eq!(
+            client_jump_spec(&direct_destination, Some("cli-bastion")),
+            Some("cli-bastion")
+        );
+
+        let fixed_config = SshConnectionConfig::new()
+            .with_source_binding(Some("127.0.0.4".to_string()), None)
+            .with_ip_qos(IpQosPolicy {
+                interactive: IpQosValue::Class(0xb8),
+                bulk: IpQosValue::Class(0x60),
+            });
+        let fixed_chain = build_client_jump_chain(
+            &[JumpHost::new("fixed-bastion".to_string(), None, None)],
+            Duration::from_secs(30),
+            Some(&fixed_config),
+            None,
+            None,
+            SessionPurpose::Bulk,
+        );
+        assert_eq!(
+            fixed_chain
+                .connection_config_for_jump_host("fixed-bastion")
+                .bind_address
+                .as_deref(),
+            Some("127.0.0.4")
+        );
+        assert_eq!(
+            fixed_chain
+                .destination_connection_config()
+                .selected_ip_qos(),
+            IpQosValue::Class(0x60)
+        );
     }
 
     #[tokio::test]

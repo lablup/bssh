@@ -25,7 +25,7 @@ use crate::ssh::{
     CliTtyMode, SessionPolicy, SshClient, SshConfig,
     client::{CommandResult, ConnectionConfig},
     known_hosts::StrictHostKeyChecking,
-    tokio_client::{SshConnectionConfig, SshConnectionConfigResolver},
+    tokio_client::{SshConnectionConfig, SshConnectionConfigResolver, is_direct_proxy_jump},
 };
 
 /// Configuration for node execution.
@@ -39,6 +39,8 @@ pub(crate) struct ExecutionConfig<'a> {
     pub use_keychain: bool,
     pub timeout: Option<u64>,
     pub connect_timeout: Option<u64>,
+    /// Explicit CLI/caller override. ssh_config and YAML are resolved through
+    /// their own sources and must not be pre-combined into this value.
     pub jump_hosts: Option<&'a str>,
     pub sudo_password: Option<Arc<SudoPassword>>,
     /// Pre-collected SSH password (collected once by the dispatcher and shared
@@ -66,19 +68,10 @@ pub(crate) async fn execute_on_node_with_jump_hosts(
 
     let key_path = config.key_path.map(Path::new);
 
-    // Determine effective jump hosts: CLI takes precedence, then SSH config
-    // Store the SSH config jump hosts String to extend its lifetime
-    let ssh_config_jump_hosts = config
-        .ssh_config
-        .and_then(|ssh_config| ssh_config.get_proxy_jump(&node.host));
-
-    let effective_jump_hosts = if config.jump_hosts.is_some() {
-        // CLI jump hosts specified
-        config.jump_hosts
-    } else {
-        // Fall back to SSH config ProxyJump for this specific host
-        ssh_config_jump_hosts.as_deref()
-    };
+    // Resolve ProxyJump against the original ssh_config alias, before HostName
+    // expansion. CLI remains authoritative.
+    let effective_jump_hosts =
+        resolve_effective_jump_hosts(config.jump_hosts, config.ssh_config, node.config_host());
 
     let session_policy = config
         .ssh_config
@@ -90,7 +83,7 @@ pub(crate) async fn execute_on_node_with_jump_hosts(
                 (!command.is_empty()).then_some(command),
                 config.tty_mode,
                 std::io::stdin().is_terminal(),
-                effective_jump_hosts,
+                effective_jump_hosts.as_deref(),
             )
         })
         .transpose()?;
@@ -104,7 +97,7 @@ pub(crate) async fn execute_on_node_with_jump_hosts(
         use_keychain: config.use_keychain,
         timeout_seconds: config.timeout,
         connect_timeout_seconds: config.connect_timeout,
-        jump_hosts_spec: effective_jump_hosts,
+        jump_hosts_spec: effective_jump_hosts.as_deref(),
         ssh_connection_config: config.ssh_connection_config,
         ssh_connection_config_resolver: config.ssh_connection_config_resolver,
         session_policy: session_policy.as_ref(),
@@ -169,15 +162,8 @@ pub(crate) async fn upload_to_node(
 
     let key_path = key_path.map(Path::new);
 
-    // Determine effective jump hosts: CLI takes precedence, then SSH config
-    let ssh_config_jump_hosts =
-        ssh_config.and_then(|ssh_config| ssh_config.get_proxy_jump(&node.host));
-
-    let effective_jump_hosts = if jump_hosts.is_some() {
-        jump_hosts
-    } else {
-        ssh_config_jump_hosts.as_deref()
-    };
+    let effective_jump_hosts =
+        resolve_effective_jump_hosts(jump_hosts, ssh_config, node.config_host());
 
     // Check if the local path is a directory
     if local_path.is_dir() {
@@ -189,7 +175,7 @@ pub(crate) async fn upload_to_node(
                 Some(strict_mode),
                 use_agent,
                 use_password,
-                effective_jump_hosts,
+                effective_jump_hosts.as_deref(),
                 connect_timeout_seconds,
                 pre_collected_password,
                 ssh_connection_config,
@@ -205,7 +191,7 @@ pub(crate) async fn upload_to_node(
                 Some(strict_mode),
                 use_agent,
                 use_password,
-                effective_jump_hosts,
+                effective_jump_hosts.as_deref(),
                 connect_timeout_seconds,
                 pre_collected_password,
                 ssh_connection_config,
@@ -236,15 +222,8 @@ pub(crate) async fn download_from_node(
 
     let key_path = key_path.map(Path::new);
 
-    // Determine effective jump hosts: CLI takes precedence, then SSH config
-    let ssh_config_jump_hosts =
-        ssh_config.and_then(|ssh_config| ssh_config.get_proxy_jump(&node.host));
-
-    let effective_jump_hosts = if jump_hosts.is_some() {
-        jump_hosts
-    } else {
-        ssh_config_jump_hosts.as_deref()
-    };
+    let effective_jump_hosts =
+        resolve_effective_jump_hosts(jump_hosts, ssh_config, node.config_host());
 
     // This function handles both files and directories
     // The caller should check if it's a directory and use the appropriate method
@@ -256,7 +235,7 @@ pub(crate) async fn download_from_node(
             Some(strict_mode),
             use_agent,
             use_password,
-            effective_jump_hosts,
+            effective_jump_hosts.as_deref(),
             connect_timeout_seconds,
             pre_collected_password,
             ssh_connection_config,
@@ -288,15 +267,8 @@ pub async fn download_dir_from_node(
 
     let key_path = key_path.map(Path::new);
 
-    // Determine effective jump hosts: CLI takes precedence, then SSH config
-    let ssh_config_jump_hosts =
-        ssh_config.and_then(|ssh_config| ssh_config.get_proxy_jump(&node.host));
-
-    let effective_jump_hosts = if jump_hosts.is_some() {
-        jump_hosts
-    } else {
-        ssh_config_jump_hosts.as_deref()
-    };
+    let effective_jump_hosts =
+        resolve_effective_jump_hosts(jump_hosts, ssh_config, node.config_host());
 
     client
         .download_dir_with_jump_hosts(
@@ -306,7 +278,7 @@ pub async fn download_dir_from_node(
             Some(strict_mode),
             use_agent,
             use_password,
-            effective_jump_hosts,
+            effective_jump_hosts.as_deref(),
             connect_timeout_seconds,
             pre_collected_password,
             ssh_connection_config,
@@ -322,23 +294,114 @@ pub async fn download_dir_from_node(
 /// 2. SSH config ProxyJump for the specific host
 /// 3. None (direct connection)
 ///
-/// This is extracted for testing purposes and used internally by all connection functions.
-#[allow(dead_code)] // Used for testing
 #[inline]
 fn resolve_effective_jump_hosts(
     cli_jump_hosts: Option<&str>,
     ssh_config: Option<&SshConfig>,
-    hostname: &str,
+    config_host: &str,
 ) -> Option<String> {
-    if cli_jump_hosts.is_some() {
-        return cli_jump_hosts.map(String::from);
+    if let Some(jump_hosts) = cli_jump_hosts {
+        return Some(normalize_jump_hosts(jump_hosts));
     }
-    ssh_config.and_then(|config| config.get_proxy_jump(hostname))
+    ssh_config
+        .and_then(|config| config.get_proxy_jump(config_host))
+        .map(|jump_hosts| normalize_jump_hosts(&jump_hosts))
+}
+
+/// Preserve an explicit direct decision as an empty jump specification.
+///
+/// `Some("")` remains authoritative over lower-priority ssh_config values,
+/// while both the session-policy and SSH client layers interpret it as no hop.
+fn normalize_jump_hosts(jump_hosts: &str) -> String {
+    if is_direct_proxy_jump(jump_hosts) {
+        String::new()
+    } else {
+        jump_hosts.to_string()
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ssh::tokio_client::select_proxy_jump;
+
+    fn selected_jump_with_yaml_fallback(
+        cli_jump: Option<&str>,
+        ssh_config: &SshConfig,
+        yaml_jump: &str,
+    ) -> Option<String> {
+        let resolver = SshConnectionConfigResolver::new()
+            .with_ssh_config(Some(ssh_config.clone()))
+            .with_cli_proxy_jump(cli_jump.map(str::to_owned))
+            .with_yaml_proxy_jump(Some(yaml_jump.to_string()));
+        let target_config = resolver.resolve_for_host("target-alias");
+        let explicit = resolve_effective_jump_hosts(cli_jump, Some(ssh_config), "target-alias");
+        select_proxy_jump(explicit.as_deref(), target_config.proxy_mode.as_ref()).map(str::to_owned)
+    }
+
+    #[test]
+    fn command_and_transfer_selection_is_cli_then_ssh_config_then_yaml() {
+        let config_jump = SshConfig::parse(
+            r#"
+Host target-alias
+    HostName effective-target
+    ProxyJump config-bastion
+"#,
+        )
+        .unwrap();
+        assert_eq!(
+            selected_jump_with_yaml_fallback(None, &config_jump, "yaml-bastion"),
+            Some("config-bastion".to_string())
+        );
+        assert_eq!(
+            selected_jump_with_yaml_fallback(Some("cli-bastion"), &config_jump, "yaml-bastion"),
+            Some("cli-bastion".to_string())
+        );
+        for cli_direct in ["none", "direct"] {
+            assert_eq!(
+                selected_jump_with_yaml_fallback(Some(cli_direct), &config_jump, "yaml-bastion"),
+                None
+            );
+        }
+
+        for config_direct in ["none", "direct"] {
+            let ssh_config = SshConfig::parse(&format!(
+                "Host target-alias\n    HostName effective-target\n    ProxyJump {config_direct}\n"
+            ))
+            .unwrap();
+            assert_eq!(
+                selected_jump_with_yaml_fallback(None, &ssh_config, "yaml-bastion"),
+                None
+            );
+        }
+
+        assert_eq!(
+            selected_jump_with_yaml_fallback(None, &SshConfig::new(), "yaml-bastion"),
+            Some("yaml-bastion".to_string())
+        );
+    }
+
+    #[test]
+    fn command_and_transfer_proxy_jump_uses_original_host_alias() {
+        let ssh_config = SshConfig::parse(
+            r#"
+Host target-alias
+    HostName effective-target
+    ProxyJump alias-bastion
+
+Host effective-target
+    ProxyJump wrong-bastion
+"#,
+        )
+        .expect("valid ssh_config");
+        let node = Node::new("effective-target".to_string(), 22, "user".to_string())
+            .with_original_host("target-alias".to_string());
+
+        assert_eq!(
+            resolve_effective_jump_hosts(None, Some(&ssh_config), node.config_host()),
+            Some("alias-bastion".to_string())
+        );
+    }
 
     /// Test that CLI jump hosts take precedence over SSH config
     #[test]
@@ -356,6 +419,15 @@ Host example.com
             "example.com",
         );
         assert_eq!(result, Some("cli-bastion.example.com".to_string()));
+
+        // CLI can explicitly disable a configured jump without allowing the
+        // ssh_config fallback to become active again.
+        for direct in ["none", "direct", " NONE "] {
+            assert_eq!(
+                resolve_effective_jump_hosts(Some(direct), Some(&ssh_config), "example.com"),
+                Some(String::new())
+            );
+        }
     }
 
     /// Test that SSH config ProxyJump is used when no CLI jump hosts
@@ -466,23 +538,196 @@ Host *.internal.example.com
         assert_eq!(result, None);
     }
 
-    /// Test ProxyJump none value (disables jump)
     #[test]
-    fn test_resolve_effective_jump_hosts_none_value() {
-        let ssh_config_content = r#"
+    fn direct_proxy_jump_values_normalize_to_an_empty_chain() {
+        for directive in ["none", "direct", "NONE", "DIRECT"] {
+            let ssh_config_content = format!(
+                r#"
 Host direct.example.com
-    ProxyJump none
+    ProxyJump {directive}
 
 Host *.example.com
     ProxyJump gateway.example.com
-"#;
-        let ssh_config = SshConfig::parse(ssh_config_content).unwrap();
+"#
+            );
+            let ssh_config = SshConfig::parse(&ssh_config_content).unwrap();
 
-        // The explicit disable must be obtained before the wildcard fallback.
-        // Note: The actual handling of "none" as special value would be
-        // done by the connection layer, but the config should return it
-        let result = resolve_effective_jump_hosts(None, Some(&ssh_config), "direct.example.com");
-        assert_eq!(result, Some("none".to_string()));
+            let result =
+                resolve_effective_jump_hosts(None, Some(&ssh_config), "direct.example.com");
+            assert_eq!(result.as_deref(), Some(""), "value={directive}");
+            assert!(
+                crate::jump::parse_jump_hosts(result.as_deref().unwrap())
+                    .unwrap()
+                    .is_empty(),
+                "value={directive}"
+            );
+        }
+    }
+
+    async fn all_connection_path_errors(
+        node: Node,
+        cli_jump: Option<&str>,
+        ssh_config: &SshConfig,
+        resolver: &SshConnectionConfigResolver,
+    ) -> Vec<(&'static str, anyhow::Error)> {
+        let target_config = resolver.resolve_for_host(node.config_host());
+        let password = Arc::new(Password::new("test-password".to_string()).unwrap());
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let upload_file = temp_dir.path().join("upload.txt");
+        std::fs::write(&upload_file, b"test").unwrap();
+        let mut errors = Vec::with_capacity(5);
+
+        let execution_config = ExecutionConfig {
+            key_path: None,
+            strict_mode: StrictHostKeyChecking::AcceptNew,
+            use_agent: false,
+            use_password: true,
+            #[cfg(target_os = "macos")]
+            use_keychain: false,
+            timeout: Some(1),
+            connect_timeout: Some(1),
+            jump_hosts: cli_jump,
+            sudo_password: None,
+            ssh_password: Some(password.clone()),
+            ssh_config: Some(ssh_config),
+            tty_mode: CliTtyMode::Disable,
+            ssh_connection_config: Some(&target_config),
+            ssh_connection_config_resolver: Some(resolver),
+        };
+        let error = execute_on_node_with_jump_hosts(node.clone(), "true", &execution_config)
+            .await
+            .unwrap_err();
+        errors.push(("command", error));
+
+        for (path, local_path) in [
+            ("upload-file", upload_file.as_path()),
+            ("upload-directory", temp_dir.path()),
+        ] {
+            let error = upload_to_node(
+                node.clone(),
+                local_path,
+                "/tmp/remote",
+                None,
+                StrictHostKeyChecking::AcceptNew,
+                false,
+                true,
+                cli_jump,
+                Some(1),
+                Some(ssh_config),
+                Some(password.clone()),
+                &target_config,
+                resolver,
+            )
+            .await
+            .unwrap_err();
+            errors.push((path, error));
+        }
+
+        let error = download_from_node(
+            node.clone(),
+            "/tmp/remote-file",
+            &temp_dir.path().join("download.txt"),
+            None,
+            StrictHostKeyChecking::AcceptNew,
+            false,
+            true,
+            cli_jump,
+            Some(1),
+            Some(ssh_config),
+            Some(password.clone()),
+            &target_config,
+            resolver,
+        )
+        .await
+        .unwrap_err();
+        errors.push(("download-file", error));
+
+        let error = download_dir_from_node(
+            node,
+            "/tmp/remote-dir",
+            &temp_dir.path().join("download-dir"),
+            None,
+            StrictHostKeyChecking::AcceptNew,
+            false,
+            true,
+            cli_jump,
+            Some(1),
+            Some(ssh_config),
+            Some(password),
+            &target_config,
+            resolver,
+        )
+        .await
+        .unwrap_err();
+        errors.push(("download-directory", error));
+        errors
+    }
+
+    #[tokio::test]
+    async fn command_and_all_transfer_paths_never_dial_proxy_jump_none() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let ssh_config = SshConfig::parse(
+            r#"
+Host direct-target
+    HostName 127.0.0.1
+    ProxyJump none
+"#,
+        )
+        .unwrap();
+        let resolver = SshConnectionConfigResolver::new()
+            .with_ssh_config(Some(ssh_config.clone()))
+            .with_yaml_proxy_jump(Some("127.0.0.3:1".to_string()));
+        let node = Node::new("127.0.0.1".to_string(), port, "user".to_string())
+            .with_original_host("direct-target".to_string());
+
+        for (path, error) in all_connection_path_errors(node, None, &ssh_config, &resolver).await {
+            let message = format!("{error:#}");
+            assert!(message.contains("127.0.0.1"), "path={path}: {message}");
+            assert!(!message.contains("none:22"), "path={path}: {message}");
+            assert!(!message.contains("127.0.0.3"), "path={path}: {message}");
+            assert!(
+                !message.contains("jump host none"),
+                "path={path}: {message}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn all_connection_paths_prefer_config_then_cli_over_yaml() {
+        let ssh_config = SshConfig::parse(
+            r#"
+Host target-alias
+    HostName 127.0.0.1
+    ProxyJump config-bastion:not-a-port
+"#,
+        )
+        .unwrap();
+        let node = Node::new("127.0.0.1".to_string(), 1, "user".to_string())
+            .with_original_host("target-alias".to_string());
+        let yaml_jump = "yaml-bastion:not-a-port";
+        let resolver = SshConnectionConfigResolver::new()
+            .with_ssh_config(Some(ssh_config.clone()))
+            .with_yaml_proxy_jump(Some(yaml_jump.to_string()));
+        for (path, error) in
+            all_connection_path_errors(node.clone(), None, &ssh_config, &resolver).await
+        {
+            let message = format!("{error:#}");
+            assert!(message.contains("config-bastion"), "path={path}: {message}");
+            assert!(!message.contains("yaml-bastion"), "path={path}: {message}");
+        }
+
+        let cli_jump = "cli-bastion:not-a-port";
+        let resolver = resolver.with_cli_proxy_jump(Some(cli_jump.to_string()));
+        for (path, error) in
+            all_connection_path_errors(node, Some(cli_jump), &ssh_config, &resolver).await
+        {
+            let message = format!("{error:#}");
+            assert!(message.contains("cli-bastion"), "path={path}: {message}");
+            assert!(!message.contains("yaml-bastion"), "path={path}: {message}");
+        }
     }
 
     /// Test complex multi-hop chain with user and ports

@@ -30,5 +30,5 @@ pub use client::SshClient;
 pub use config_cache::{CacheConfig, CacheStats, GLOBAL_CACHE, SshConfigCache};
 pub use handler::BsshHandler;
 pub use pool::ConnectionPool;
-pub use session_policy::{CliTtyMode, SessionPolicy, SessionRequest};
+pub use session_policy::{CliTtyMode, SessionPolicy, SessionPurpose, SessionRequest};
 pub use ssh_config::{SshConfig, SshHostConfig};

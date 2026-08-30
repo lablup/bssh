@@ -27,7 +27,7 @@ use crate::pty::PtyConfig;
 use crate::security::Password;
 use crate::ssh::SessionPolicy;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
-use crate::ssh::tokio_client::{Client, SshConnectionConfig};
+use crate::ssh::tokio_client::{Client, SshConnectionConfig, SshConnectionConfigResolver};
 
 /// SSH output polling interval for responsive display
 /// - 10ms provides very responsive output display
@@ -62,15 +62,18 @@ pub struct InteractiveCommand {
     #[cfg(target_os = "macos")]
     pub use_keychain: bool,
     pub strict_mode: StrictHostKeyChecking,
-    // Jump hosts
+    /// Explicit CLI jump-host override. Per-host ssh_config and YAML fallback
+    /// are selected by `ssh_connection_config_resolver`.
     pub jump_hosts: Option<String>,
     // PTY configuration
     pub pty_config: PtyConfig,
     pub use_pty: Option<bool>, // None = auto-detect, Some(true) = force, Some(false) = disable
     /// Resolved live ssh_config policy for the SSH-compatible interactive path.
     pub session_policy: Option<SessionPolicy>,
-    // SSH connection configuration (keepalive settings)
+    /// Fixed connection-policy fallback for callers without a resolver.
     pub ssh_connection_config: SshConnectionConfig,
+    /// Per-host policy resolver for each interactive target and jump alias.
+    pub ssh_connection_config_resolver: Option<SshConnectionConfigResolver>,
 }
 
 /// Result of an interactive session
