@@ -1156,6 +1156,8 @@ pub(crate) async fn authenticate<H: Handler>(
 }
 
 fn is_retryable_rejection(error: &super::Error) -> bool {
+    // A signer timeout or key error can leave russh waiting for `Msg::Signed`.
+    // Reusing that transport for the next planned method could then hang.
     matches!(
         error,
         super::Error::KeyboardInteractiveAuthFailed
@@ -1164,8 +1166,6 @@ fn is_retryable_rejection(error: &super::Error) -> bool {
             | super::Error::KeyInvalid(_)
             | super::Error::KeyPassphrasePromptDisabled { .. }
             | super::Error::IdentityAlgorithmExcluded(_)
-            | super::Error::AgentOperationTimeout { .. }
-            | super::Error::AgentAuthError(russh::AgentAuthError::Key(_))
             | super::Error::PasswordWrong
             | super::Error::AgentConnectionFailed
             | super::Error::AgentRequestIdentitiesFailed
@@ -1894,14 +1894,14 @@ mod policy_execution_tests {
     }
 
     #[test]
-    fn agent_local_failures_are_retryable_but_ssh_send_failures_are_fatal() {
-        assert!(is_retryable_rejection(
+    fn agent_signer_failures_are_fatal_before_reusing_the_transport() {
+        assert!(!is_retryable_rejection(
             &super::super::Error::AgentOperationTimeout {
                 action: "request identities",
                 seconds: 5,
             }
         ));
-        assert!(is_retryable_rejection(
+        assert!(!is_retryable_rejection(
             &super::super::Error::AgentAuthError(russh::AgentAuthError::Key(
                 russh::keys::Error::AgentFailure,
             ))
