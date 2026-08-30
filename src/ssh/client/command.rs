@@ -255,6 +255,28 @@ impl SshClient {
         config: &ConnectionConfig<'_>,
         output_sender: Sender<CommandOutput>,
     ) -> Result<u32> {
+        self.connect_and_execute_with_output_streaming_inner(command, config, output_sender, false)
+            .await
+    }
+
+    /// Execute a command with byte-transparent stdout/stderr and piped stdin.
+    pub async fn connect_and_execute_with_output_streaming_and_stdin(
+        &mut self,
+        command: &str,
+        config: &ConnectionConfig<'_>,
+        output_sender: Sender<CommandOutput>,
+    ) -> Result<u32> {
+        self.connect_and_execute_with_output_streaming_inner(command, config, output_sender, true)
+            .await
+    }
+
+    async fn connect_and_execute_with_output_streaming_inner(
+        &mut self,
+        command: &str,
+        config: &ConnectionConfig<'_>,
+        output_sender: Sender<CommandOutput>,
+        forward_stdin: bool,
+    ) -> Result<u32> {
         tracing::debug!("Connecting to {}:{}", self.host, self.port);
 
         // Determine authentication method based on parameters
@@ -305,6 +327,7 @@ impl SshClient {
                 config.timeout_seconds,
                 output_sender,
                 config.session_policy,
+                forward_stdin,
             )
             .await
         }
@@ -321,14 +344,22 @@ impl SshClient {
         command: &str,
         output_sender: Sender<CommandOutput>,
         session_policy: Option<&crate::ssh::SessionPolicy>,
+        forward_stdin: bool,
     ) -> Result<u32, crate::ssh::tokio_client::Error> {
         match session_policy {
+            Some(policy) if forward_stdin => {
+                client
+                    .execute_session_streaming_with_stdin(policy, output_sender)
+                    .await
+            }
             Some(policy) => {
                 client
                     .execute_session_streaming(policy, output_sender)
                     .await
             }
-            None => client.execute_streaming(command, output_sender).await,
+            None => {
+                Self::execute_streaming_once(client, command, output_sender, forward_stdin).await
+            }
         }
     }
 
@@ -340,12 +371,19 @@ impl SshClient {
         timeout_seconds: Option<u64>,
         output_sender: Sender<CommandOutput>,
         session_policy: Option<&crate::ssh::SessionPolicy>,
+        forward_stdin: bool,
     ) -> Result<u32> {
         if let Some(timeout_secs) = timeout_seconds {
             if timeout_secs == 0 {
                 // No timeout (unlimited)
                 tracing::debug!("Executing command with streaming, no timeout (unlimited)");
-                Self::execute_resolved_session_streaming(client, command, output_sender, session_policy)
+                Self::execute_resolved_session_streaming(
+                    client,
+                    command,
+                    output_sender,
+                    session_policy,
+                    forward_stdin,
+                )
                     .await
                     .with_context(|| format!("Failed to execute command '{}' on {}:{}. The SSH connection was successful but the command could not be executed.", command, self.host, self.port))
             } else {
@@ -357,7 +395,13 @@ impl SshClient {
                 );
                 tokio::time::timeout(
                     command_timeout,
-                    Self::execute_resolved_session_streaming(client, command, output_sender, session_policy)
+                    Self::execute_resolved_session_streaming(
+                        client,
+                        command,
+                        output_sender,
+                        session_policy,
+                        forward_stdin,
+                    )
                 )
                 .await
                 .with_context(|| format!("Command execution timeout: The command '{}' did not complete within {} seconds on {}:{}", command, timeout_secs, self.host, self.port))?
@@ -369,11 +413,32 @@ impl SshClient {
             tracing::debug!("Executing command with streaming, default timeout of 300 seconds");
             tokio::time::timeout(
                 command_timeout,
-                Self::execute_resolved_session_streaming(client, command, output_sender, session_policy)
+                Self::execute_resolved_session_streaming(
+                    client,
+                    command,
+                    output_sender,
+                    session_policy,
+                    forward_stdin,
+                )
             )
             .await
             .with_context(|| format!("Command execution timeout: The command '{}' did not complete within 5 minutes on {}:{}", command, self.host, self.port))?
             .with_context(|| format!("Failed to execute command '{}' on {}:{}. The SSH connection was successful but the command could not be executed.", command, self.host, self.port))
+        }
+    }
+
+    async fn execute_streaming_once(
+        client: &crate::ssh::tokio_client::Client,
+        command: &str,
+        output_sender: Sender<CommandOutput>,
+        forward_stdin: bool,
+    ) -> Result<u32, crate::ssh::tokio_client::Error> {
+        if forward_stdin {
+            client
+                .execute_streaming_with_stdin(command, output_sender)
+                .await
+        } else {
+            client.execute_streaming(command, output_sender).await
         }
     }
 

@@ -2,6 +2,7 @@
 mod tests {
     use std::collections::HashMap;
     use std::sync::{Arc, Mutex};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use log::debug;
     use ssh_key::PrivateKey;
@@ -80,6 +81,31 @@ mod tests {
             _: &PublicKeyOrCertificate,
         ) -> Result<bool, Self::Error> {
             Ok(true)
+        }
+    }
+
+    struct CountingClient {
+        kex_count: Arc<AtomicUsize>,
+    }
+
+    impl Handler for CountingClient {
+        type Error = Error;
+
+        async fn check_server_key(
+            &mut self,
+            _: &PublicKeyOrCertificate,
+        ) -> Result<bool, Self::Error> {
+            Ok(true)
+        }
+
+        async fn kex_done(
+            &mut self,
+            _: Option<&[u8]>,
+            _: &crate::negotiation::Names,
+            _: &mut crate::client::Session,
+        ) -> Result<(), Self::Error> {
+            self.kex_count.fetch_add(1, Ordering::Relaxed);
+            Ok(())
         }
     }
 
@@ -163,5 +189,110 @@ mod tests {
             }
             msg => panic!("Unexpected message {msg:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn automatic_rekey_repeated_bidirectional_transfers_complete() {
+        let client_key = PrivateKey::random(&mut rng(), ssh_key::Algorithm::Ed25519).unwrap();
+
+        let mut server_config = server::Config::default();
+        server_config.auth_rejection_time = std::time::Duration::from_millis(1);
+        server_config.inactivity_timeout = None;
+        server_config.limits = crate::Limits::new(
+            8 * 1024,
+            8 * 1024,
+            std::time::Duration::from_secs(3600),
+        );
+        server_config
+            .keys
+            .push(PrivateKey::random(&mut rng(), ssh_key::Algorithm::Ed25519).unwrap());
+        let server_config = Arc::new(server_config);
+
+        let socket = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = socket.local_addr().unwrap();
+        let server = TestServer {
+            clients: Arc::new(Mutex::new(HashMap::new())),
+            id: 0,
+        };
+        let server_task = tokio::spawn(async move {
+            let (socket, _) = socket.accept().await.unwrap();
+            let running = server::run_stream(server_config, socket, server)
+                .await
+                .unwrap();
+            running.await
+        });
+
+        let mut client_config = Config::default();
+        client_config.limits = crate::Limits::new(
+            8 * 1024,
+            8 * 1024,
+            std::time::Duration::from_secs(3600),
+        );
+        let kex_count = Arc::new(AtomicUsize::new(0));
+
+        tokio::time::timeout(std::time::Duration::from_secs(20), async {
+            let mut session = connect(
+                Arc::new(client_config),
+                addr,
+                CountingClient {
+                    kex_count: Arc::clone(&kex_count),
+                },
+            )
+            .await
+            .unwrap();
+            let authenticated = session
+                .authenticate_publickey(
+                    "rekey-user",
+                    PrivateKeyWithHashAlg::new(
+                        Arc::new(client_key),
+                        session.best_supported_rsa_hash().await.unwrap().flatten(),
+                    ),
+            )
+            .await
+            .unwrap();
+            assert!(authenticated.success());
+            let kex_count_before_transfer = kex_count.load(Ordering::Relaxed);
+
+            let mut channel = session.channel_open_session().await.unwrap();
+            for round in 0_u8..6 {
+                let payload = vec![round; 32 * 1024];
+                channel.data(&payload[..]).await.unwrap();
+                let mut echoed = Vec::with_capacity(payload.len());
+                while echoed.len() < payload.len() {
+                    match channel.wait().await.unwrap() {
+                        crate::channels::ChannelMsg::Data { data } => {
+                            echoed.extend_from_slice(&data)
+                        }
+                        message => panic!("unexpected message during rekey transfer: {message:?}"),
+                    }
+                }
+                assert!(echoed == payload, "echo mismatch in rekey round {round}");
+            }
+
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while kex_count.load(Ordering::Relaxed) < kex_count_before_transfer + 2 {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("byte thresholds must complete repeated rekeys during transfer");
+            assert!(
+                kex_count.load(Ordering::Relaxed) >= kex_count_before_transfer + 2,
+                "six threshold-crossing rounds must observe repeated key exchanges"
+            );
+
+            session
+                .disconnect(crate::Disconnect::ByApplication, "test complete", "")
+                .await
+                .unwrap();
+        })
+        .await
+        .expect("repeated bidirectional rekeys must not stall");
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), server_task)
+            .await
+            .expect("server session must stop after client disconnect")
+            .unwrap()
+            .unwrap();
     }
 }

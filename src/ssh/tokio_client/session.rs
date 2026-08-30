@@ -16,6 +16,7 @@
 
 use russh::client::Msg;
 use russh::{Channel, ChannelMsg};
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::mpsc::Sender;
 
 use crate::ssh::{SessionPolicy, SessionRequest};
@@ -29,11 +30,35 @@ impl Client {
         policy: &SessionPolicy,
         sender: Sender<CommandOutput>,
     ) -> Result<u32, super::Error> {
+        self.execute_session_streaming_with_input(policy, sender, tokio::io::empty())
+            .await
+    }
+
+    /// Execute a resolved session while forwarding piped process input.
+    pub async fn execute_session_streaming_with_stdin(
+        &self,
+        policy: &SessionPolicy,
+        sender: Sender<CommandOutput>,
+    ) -> Result<u32, super::Error> {
+        self.execute_session_streaming_with_input(policy, sender, tokio::io::stdin())
+            .await
+    }
+
+    async fn execute_session_streaming_with_input<R>(
+        &self,
+        policy: &SessionPolicy,
+        sender: Sender<CommandOutput>,
+        input: R,
+    ) -> Result<u32, super::Error>
+    where
+        R: AsyncRead + Unpin,
+    {
         if matches!(policy.request, SessionRequest::None) {
             return Ok(0);
         }
         let channel = self.open_policy_channel(policy).await?;
-        self.drain_policy_channel(channel, sender).await
+        self.drain_policy_channel_with_input(channel, sender, input)
+            .await
     }
 
     pub async fn execute_session(
@@ -112,14 +137,41 @@ impl Client {
         Ok(channel)
     }
 
-    async fn drain_policy_channel(
+    async fn drain_policy_channel_with_input<R>(
         &self,
         mut channel: Channel<Msg>,
         sender: Sender<CommandOutput>,
-    ) -> Result<u32, super::Error> {
+        mut input: R,
+    ) -> Result<u32, super::Error>
+    where
+        R: AsyncRead + Unpin,
+    {
         let mut exit_status = None;
         let mut receiver_open = true;
-        while let Some(message) = channel.wait().await {
+        let mut input_open = true;
+        let mut input_buffer = [0_u8; 32 * 1024];
+        loop {
+            let message = if input_open {
+                tokio::select! {
+                    read = input.read(&mut input_buffer) => {
+                        match read.map_err(super::Error::IoError)? {
+                            0 => {
+                                channel.eof().await?;
+                                input_open = false;
+                            }
+                            count => channel.data(&input_buffer[..count]).await?,
+                        }
+                        continue;
+                    }
+                    message = channel.wait() => message,
+                }
+            } else {
+                channel.wait().await
+            };
+
+            let Some(message) = message else {
+                break;
+            };
             let output = match message {
                 ChannelMsg::Data { data } => Some(CommandOutput::StdOut(data)),
                 ChannelMsg::ExtendedData { data, ext: 1 } => Some(CommandOutput::StdErr(data)),

@@ -4,6 +4,9 @@
 pub(super) enum KeywordSupport {
     Runtime(RuntimeConsumer),
     Unimplemented,
+    // Keep the classification available for future split issue waves even
+    // when the current wave has no remaining delegated keywords.
+    #[allow(dead_code)]
     Delegated(u32),
 }
 
@@ -24,7 +27,7 @@ pub(super) struct KeywordSpec {
     pub support: KeywordSupport,
 }
 
-use KeywordSupport::{Delegated, Runtime, Unimplemented};
+use KeywordSupport::{Runtime, Unimplemented};
 use RuntimeConsumer::{
     Authentication, Forwarding, HostVerification, NodeResolution, Proxy, Session, Transport,
 };
@@ -195,7 +198,7 @@ pub(super) const ACCEPTED_KEYWORDS: &[(&str, &str, KeywordSupport)] = &[
     ("bindaddress", "bindaddress", Runtime(Transport)),
     ("bindinterface", "bindinterface", Runtime(Transport)),
     ("ipqos", "ipqos", Runtime(Transport)),
-    ("rekeylimit", "rekeylimit", Delegated(301)),
+    ("rekeylimit", "rekeylimit", Runtime(Transport)),
     ("proxyjump", "proxyjump", Runtime(Proxy)),
     ("proxycommand", "proxycommand", Runtime(Proxy)),
     ("proxyusefdpass", "proxyusefdpass", Runtime(Proxy)),
@@ -323,6 +326,7 @@ mod tests {
             ("bindaddress", Transport),
             ("bindinterface", Transport),
             ("ipqos", Transport),
+            ("rekeylimit", Transport),
             ("proxyjump", Proxy),
             ("proxycommand", Proxy),
             ("proxyusefdpass", Proxy),
@@ -353,7 +357,7 @@ mod tests {
 
     #[test]
     fn first_wave_delegations_match_the_split_issue_dag() {
-        let expected = HashMap::from([("rekeylimit", 301)]);
+        let expected = HashMap::new();
         let delegated = ACCEPTED_KEYWORDS
             .iter()
             .filter_map(|(keyword, canonical, support)| match support {
