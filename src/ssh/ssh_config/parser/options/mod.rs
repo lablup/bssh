@@ -57,27 +57,16 @@ pub fn parse_option(
     };
     let keyword = spec.canonical;
 
-    let tracking_issue = match spec.support {
-        support::KeywordSupport::Runtime(_) => None,
-        support::KeywordSupport::Delegated(issue) => Some(issue),
-        support::KeywordSupport::Unimplemented => Some(0),
-    };
-    if let Some(issue) =
-        tracking_issue.filter(|_| reported_diagnostics.insert(format!("unsupported:{keyword}")))
+    if spec.support == support::KeywordSupport::Unimplemented
+        && reported_diagnostics.insert(format!("unsupported:{keyword}"))
     {
         let location = source_path.map_or_else(
             || format!("line {line_number}"),
             |path| format!("{}:{line_number}", path.display()),
         );
-        if issue == 0 {
-            crate::diagnosticln!(
-                "Unsupported SSH config option '{keyword}' at {location}; bssh parses this value for inspection but does not implement its runtime behavior"
-            );
-        } else {
-            crate::diagnosticln!(
-                "SSH config option '{keyword}' at {location} is not implemented yet; tracked in #{issue}"
-            );
-        }
+        crate::diagnosticln!(
+            "Unsupported SSH config option '{keyword}' at {location}; bssh parses this value for inspection but does not implement its runtime behavior"
+        );
     }
 
     match keyword {

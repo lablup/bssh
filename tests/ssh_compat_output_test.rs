@@ -97,6 +97,14 @@ fn canonical_unimplemented_and_unknown_diagnostics_use_real_source_and_log_file(
             log.to_str().expect("UTF-8 log path"),
             "-F",
             config.to_str().expect("UTF-8 config path"),
+            "-o",
+            "ChallengeResponseAuthentication=no",
+            "-o",
+            "KbdInteractiveAuthentication=no",
+            "-o",
+            "DefinitelyUnknownOption=no",
+            "-o",
+            "AnotherUnknownOption=yes",
             "--connect-timeout=1",
             "--strict-host-key-checking=no",
             "127.0.0.1:1",
@@ -106,6 +114,10 @@ fn canonical_unimplemented_and_unknown_diagnostics_use_real_source_and_log_file(
         .expect("bssh should parse the ssh config");
 
     assert!(!output.status.success());
+    assert!(
+        output.stdout.is_empty(),
+        "config diagnostics leaked to stdout"
+    );
     assert!(output.stderr.is_empty(), "-E diagnostics leaked to stderr");
 
     let diagnostics = fs::read_to_string(log).expect("diagnostic log should exist");
@@ -117,6 +129,7 @@ fn canonical_unimplemented_and_unknown_diagnostics_use_real_source_and_log_file(
         "Unsupported SSH config option 'securitykeyprovider' at {included}:4; bssh parses this value for inspection but does not implement its runtime behavior"
     );
     let unknown = format!("Unknown SSH config option 'definitelyunknownoption' at {included}:5");
+    let distinct_unknown = "Unknown SSH config option 'anotherunknownoption' at line 4";
 
     assert_eq!(
         diagnostics.lines().filter(|line| line == &alias).count(),
@@ -135,6 +148,14 @@ fn canonical_unimplemented_and_unknown_diagnostics_use_real_source_and_log_file(
         diagnostics.lines().filter(|line| line == &unknown).count(),
         1,
         "unknown diagnostic must be emitted once: {diagnostics:?}"
+    );
+    assert_eq!(
+        diagnostics
+            .lines()
+            .filter(|line| line == &distinct_unknown)
+            .count(),
+        1,
+        "distinct unknown diagnostic must remain independent: {diagnostics:?}"
     );
     assert!(!diagnostics.contains("/spoofed/config"));
 }

@@ -18,7 +18,10 @@
 //! configurations, and provide a clean API for SSH connection setup.
 
 use anyhow::{Context, Result};
-use std::path::{Path, PathBuf};
+use std::{
+    collections::HashSet,
+    path::{Path, PathBuf},
+};
 
 // Internal modules
 mod env_cache;
@@ -50,6 +53,7 @@ pub use types::SshHostConfig;
 #[derive(Debug, Clone, Default)]
 pub struct SshConfig {
     pub hosts: Vec<SshHostConfig>,
+    reported_diagnostics: HashSet<String>,
 }
 
 impl SshConfig {
@@ -104,8 +108,12 @@ impl SshConfig {
 
     /// Parse SSH configuration from a string (without Include support)
     pub fn parse(content: &str) -> Result<Self> {
-        let hosts = parser::parse(content)?;
-        Ok(Self { hosts })
+        let mut reported_diagnostics = HashSet::new();
+        let hosts = parser::parse_with_diagnostics(content, &mut reported_diagnostics)?;
+        Ok(Self {
+            hosts,
+            reported_diagnostics,
+        })
     }
 
     /// Prepend command-line `-o` options as a structured `Host *` block.
@@ -114,7 +122,7 @@ impl SshConfig {
     /// accepted command-line options have CLI precedence without bypassing
     /// the parser's validation or first-obtained merge rules.
     pub fn apply_cli_options(&mut self, options: &[String]) -> Result<()> {
-        if let Some(overlay) = parser::parse_cli_options(options)? {
+        if let Some(overlay) = parser::parse_cli_options(options, &mut self.reported_diagnostics)? {
             self.hosts.insert(0, overlay);
         }
         Ok(())
@@ -122,8 +130,14 @@ impl SshConfig {
 
     /// Parse SSH configuration from a file with Include support
     pub async fn parse_from_file_with_content(path: &Path, content: &str) -> Result<Self> {
-        let hosts = parser::parse_from_file(path, content).await?;
-        Ok(Self { hosts })
+        let mut reported_diagnostics = HashSet::new();
+        let hosts =
+            parser::parse_from_file_with_diagnostics(path, content, &mut reported_diagnostics)
+                .await?;
+        Ok(Self {
+            hosts,
+            reported_diagnostics,
+        })
     }
 
     /// Find configuration for a specific hostname

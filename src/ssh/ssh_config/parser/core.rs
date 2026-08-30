@@ -28,28 +28,45 @@ use std::path::Path;
 use super::options;
 
 /// Parse SSH configuration content with Include and Match support
+#[cfg(test)]
 pub fn parse(content: &str) -> Result<Vec<SshHostConfig>> {
-    // For synchronous parsing without file path, we can't resolve includes
-    // This maintains backward compatibility for tests and simple usage
-    parse_without_includes(content)
+    let mut reported_diagnostics = HashSet::new();
+    parse_with_diagnostics(content, &mut reported_diagnostics)
 }
 
-/// Parse SSH configuration from a file with full Include support
-pub async fn parse_from_file(path: &Path, content: &str) -> Result<Vec<SshHostConfig>> {
+pub(crate) fn parse_with_diagnostics(
+    content: &str,
+    reported_diagnostics: &mut HashSet<String>,
+) -> Result<Vec<SshHostConfig>> {
+    // For synchronous parsing without file path, we can't resolve includes
+    // This maintains backward compatibility for tests and simple usage
+    parse_without_includes(content, reported_diagnostics)
+}
+
+/// Parse SSH configuration from a file with full Include support.
+pub(crate) async fn parse_from_file_with_diagnostics(
+    path: &Path,
+    content: &str,
+    reported_diagnostics: &mut HashSet<String>,
+) -> Result<Vec<SshHostConfig>> {
     // Pass 1: Resolve all Include directives
     let included_files = resolve_includes(path, content)
         .await
         .with_context(|| format!("Failed to resolve includes for {}", path.display()))?;
-    parse_included_files(&included_files)
+    parse_included_files(&included_files, reported_diagnostics)
 }
 
 /// Parse SSH configuration content without Include resolution
-pub(super) fn parse_without_includes(content: &str) -> Result<Vec<SshHostConfig>> {
+pub(super) fn parse_without_includes(
+    content: &str,
+    reported_diagnostics: &mut HashSet<String>,
+) -> Result<Vec<SshHostConfig>> {
     parse_lines(
         content
             .lines()
             .enumerate()
             .map(|(index, line)| (None, index + 1, line)),
+        reported_diagnostics,
     )
 }
 
@@ -58,7 +75,10 @@ pub(super) fn parse_without_includes(content: &str) -> Result<Vec<SshHostConfig>
 /// Keeping the overlay as a structured block lets the ordinary resolver apply
 /// OpenSSH's first-obtained rule: CLI options are visited before file blocks,
 /// while repeated `-o` scalars retain the first CLI value.
-pub(crate) fn parse_cli_options(options: &[String]) -> Result<Option<SshHostConfig>> {
+pub(crate) fn parse_cli_options(
+    options: &[String],
+    reported_diagnostics: &mut HashSet<String>,
+) -> Result<Option<SshHostConfig>> {
     const MAX_LINE_LENGTH: usize = 8192;
     const MAX_VALUE_LENGTH: usize = 4096;
 
@@ -71,8 +91,6 @@ pub(crate) fn parse_cli_options(options: &[String]) -> Result<Option<SshHostConf
         block_type: Some(ConfigBlock::Host(vec!["*".to_string()])),
         ..Default::default()
     };
-    let mut reported_diagnostics = HashSet::new();
-
     for (index, option) in options.iter().enumerate() {
         let option_number = index + 1;
         if option.contains(['\r', '\n']) {
@@ -93,7 +111,7 @@ pub(crate) fn parse_cli_options(options: &[String]) -> Result<Option<SshHostConf
             &args,
             None,
             option_number,
-            &mut reported_diagnostics,
+            reported_diagnostics,
         )
         .with_context(|| format!("Invalid -o option #{option_number} ({keyword})"))?;
     }
@@ -101,20 +119,27 @@ pub(crate) fn parse_cli_options(options: &[String]) -> Result<Option<SshHostConf
     Ok(Some(overlay))
 }
 
-fn parse_included_files(files: &[IncludedFile]) -> Result<Vec<SshHostConfig>> {
-    parse_lines(files.iter().flat_map(|file| {
-        file.content.lines().enumerate().map(move |(index, line)| {
-            (
-                Some(file.path.as_path()),
-                file.source_line_start + index,
-                line,
-            )
-        })
-    }))
+fn parse_included_files(
+    files: &[IncludedFile],
+    reported_diagnostics: &mut HashSet<String>,
+) -> Result<Vec<SshHostConfig>> {
+    parse_lines(
+        files.iter().flat_map(|file| {
+            file.content.lines().enumerate().map(move |(index, line)| {
+                (
+                    Some(file.path.as_path()),
+                    file.source_line_start + index,
+                    line,
+                )
+            })
+        }),
+        reported_diagnostics,
+    )
 }
 
 fn parse_lines<'a>(
     lines: impl IntoIterator<Item = (Option<&'a Path>, usize, &'a str)>,
+    reported_diagnostics: &mut HashSet<String>,
 ) -> Result<Vec<SshHostConfig>> {
     // Security: Set reasonable limits to prevent DoS attacks
     const MAX_LINE_LENGTH: usize = 8192; // 8KB per line should be more than enough
@@ -124,8 +149,6 @@ fn parse_lines<'a>(
     let mut current_config: Option<SshHostConfig> = None;
     let mut current_match: Option<MatchBlock> = None;
     let mut in_match_block = false;
-    let mut reported_diagnostics = HashSet::new();
-
     for (source_path, line_number, line) in lines {
         // Security: Check line length to prevent DoS
         if line.len() > MAX_LINE_LENGTH {
@@ -232,7 +255,7 @@ fn parse_lines<'a>(
                     &args,
                     source_path,
                     line_number,
-                    &mut reported_diagnostics,
+                    reported_diagnostics,
                 )
                 .with_context(|| format!("Error at line {line_number}: {line}"))?;
             }
@@ -243,7 +266,7 @@ fn parse_lines<'a>(
                 &args,
                 source_path,
                 line_number,
-                &mut reported_diagnostics,
+                reported_diagnostics,
             )
             .with_context(|| format!("Error at line {line_number}: {line}"))?;
         } else {
@@ -262,7 +285,7 @@ fn parse_lines<'a>(
                 &args,
                 source_path,
                 line_number,
-                &mut reported_diagnostics,
+                reported_diagnostics,
             )
             .with_context(|| format!("Error at line {line_number}: {line}"))?;
         }
