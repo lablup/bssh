@@ -33,9 +33,7 @@ use super::connection::{
     resolve_interface_address,
 };
 use super::proxy_command::{ProxyCommandConfig, ProxyMode};
-use crate::ssh::ssh_config::{
-    IpQosPolicy, IpQosValue, RekeyDataLimit, RekeyLimit, RekeyTimeLimit,
-};
+use crate::ssh::ssh_config::{IpQosPolicy, IpQosValue, RekeyDataLimit, RekeyLimit, RekeyTimeLimit};
 use crate::ssh::{SessionPurpose, SshConfig};
 
 #[test]

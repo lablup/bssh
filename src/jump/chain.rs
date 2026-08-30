@@ -510,6 +510,7 @@ fn intermediate_jump_hop_context(jump_host: &JumpHost, hop: usize) -> String {
 mod tests {
     use super::*;
     use crate::ssh::SshConfig;
+    use crate::ssh::ssh_config::{RekeyDataLimit, RekeyLimit, RekeyTimeLimit};
     use crate::ssh::tokio_client::AddressFamily;
 
     #[test]
@@ -573,6 +574,7 @@ Host bastion
     Compression yes
     ServerAliveInterval 11
     ServerAliveCountMax 2
+    RekeyLimit 4K 30s
 
 Host target-alias
     HostName effective-target
@@ -580,12 +582,14 @@ Host target-alias
     Compression no
     ServerAliveInterval 22
     ServerAliveCountMax 4
+    RekeyLimit 8K 60s
 
 Host effective-target
     AddressFamily inet
     Compression yes
     ServerAliveInterval 99
     ServerAliveCountMax 9
+    RekeyLimit 16K 90s
 "#,
         )
         .expect("valid ssh_config");
@@ -601,11 +605,26 @@ Host effective-target
         assert!(bastion.compression);
         assert_eq!(bastion.keepalive_interval, Some(11));
         assert_eq!(bastion.keepalive_max, 2);
+        assert_eq!(
+            bastion.rekey_limit,
+            RekeyLimit {
+                data: RekeyDataLimit::Bytes(4 * 1024),
+                time: RekeyTimeLimit::Seconds(30),
+            }
+        );
 
         let target = chain.destination_connection_config();
         assert_eq!(target.address_family, AddressFamily::V6);
         assert!(!target.compression);
         assert_eq!(target.keepalive_interval, Some(22));
         assert_eq!(target.keepalive_max, 4);
+        assert_eq!(
+            target.rekey_limit,
+            RekeyLimit {
+                data: RekeyDataLimit::Bytes(8 * 1024),
+                time: RekeyTimeLimit::Seconds(60),
+            },
+            "the destination must retain its original alias policy instead of re-resolving HostName"
+        );
     }
 }

@@ -4,6 +4,9 @@
 pub(super) enum KeywordSupport {
     Runtime(RuntimeConsumer),
     Unimplemented,
+    // Keep the classification available for future split issue waves even
+    // when the current wave has no remaining delegated keywords.
+    #[allow(dead_code)]
     Delegated(u32),
 }
 
@@ -24,7 +27,7 @@ pub(super) struct KeywordSpec {
     pub support: KeywordSupport,
 }
 
-use KeywordSupport::{Delegated, Runtime, Unimplemented};
+use KeywordSupport::{Runtime, Unimplemented};
 use RuntimeConsumer::{
     Authentication, Forwarding, HostVerification, NodeResolution, Proxy, Session, Transport,
 };

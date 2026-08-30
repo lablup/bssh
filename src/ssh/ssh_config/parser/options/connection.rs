@@ -17,9 +17,9 @@
 //! Handles connection-related configuration options including keepalive
 //! settings, timeouts, compression, and network settings.
 
-use crate::ssh::ssh_config::{IpQosPolicy, RekeyLimit};
 use crate::ssh::ssh_config::parser::helpers::parse_yes_no;
 use crate::ssh::ssh_config::types::SshHostConfig;
+use crate::ssh::ssh_config::{IpQosPolicy, RekeyLimit};
 use anyhow::{Context, Result};
 
 /// Parse connection-related SSH configuration options
