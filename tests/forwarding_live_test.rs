@@ -6,7 +6,10 @@ use std::time::Duration;
 
 use anyhow::Result;
 use bssh::forwarding::{ForwardingDirective, ForwardingPlan};
+use bssh::security::{Password, SudoPassword};
 use bssh::ssh::SshConfig;
+use bssh::ssh::client::{ConnectionConfig, SshClient};
+use bssh::ssh::known_hosts::StrictHostKeyChecking;
 use bssh::ssh::tokio_client::{
     AddressFamily, AuthMethod, Client, ServerCheckMethod, SshConnectionConfig,
     SshConnectionConfigResolver,
@@ -96,6 +99,33 @@ impl server::Handler for ForwardingServer {
         session.exit_status_request(channel, 0)?;
         session.eof(channel)?;
         session.close(channel)?;
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn pty_request(
+        &mut self,
+        channel: ChannelId,
+        _term: &str,
+        _col_width: u32,
+        _row_height: u32,
+        _pix_width: u32,
+        _pix_height: u32,
+        _modes: &[(russh::Pty, u32)],
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        self.state.record("pty");
+        session.channel_success(channel)?;
+        Ok(())
+    }
+
+    async fn shell_request(
+        &mut self,
+        channel: ChannelId,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        self.state.record("shell");
+        session.channel_success(channel)?;
         Ok(())
     }
 
@@ -670,4 +700,141 @@ async fn exit_on_forward_failure_controls_session_start_without_reauthentication
     client.disconnect().await.expect("disconnect client");
     permissive_server.shutdown().await;
     drop(occupied);
+}
+
+#[tokio::test]
+async fn pty_session_keeps_forwarding_alive_until_client_disconnect() {
+    let ssh = TestSshServer::start().await;
+    let echo = EchoServer::start().await;
+    let local_port = unused_port().await;
+    let config = connection_config(
+        vec![ForwardingDirective::Local(format!(
+            "{local_port}:127.0.0.1:{}",
+            echo.address.port()
+        ))],
+        true,
+    );
+    let client = Client::connect_with_ssh_config(
+        ssh.address,
+        "test",
+        AuthMethod::with_password("test"),
+        ServerCheckMethod::NoCheck,
+        &config,
+    )
+    .await
+    .expect("connect PTY client with forwarding");
+    let channel = client
+        .request_interactive_shell("xterm", 80, 24)
+        .await
+        .expect("open interactive channel");
+    channel
+        .request_pty(true, "xterm", 80, 24, 0, 0, &[])
+        .await
+        .expect("request PTY");
+    channel
+        .request_shell(true)
+        .await
+        .expect("request interactive shell");
+
+    let mut forwarded = TcpStream::connect((Ipv4Addr::LOCALHOST, local_port))
+        .await
+        .expect("connect PTY-owned local forward");
+    echo_round_trip(&mut forwarded, b"pty-forward-one").await;
+    sleep(Duration::from_millis(25)).await;
+    echo_round_trip(&mut forwarded, b"pty-forward-two").await;
+
+    client.disconnect().await.expect("disconnect PTY client");
+    assert_stream_closed(forwarded).await;
+    assert_listener_released(local_port).await;
+    assert!(ssh.state.events().iter().any(|event| event == "shell"));
+
+    echo.shutdown().await;
+    ssh.shutdown().await;
+}
+
+#[tokio::test]
+async fn high_level_command_paths_disconnect_and_release_forwarding() {
+    let ssh = TestSshServer::start().await;
+    let echo = EchoServer::start().await;
+    let password = Arc::new(Password::new("test".to_string()).expect("test SSH password"));
+
+    let normal_port = unused_port().await;
+    let normal_connection = connection_config(
+        vec![ForwardingDirective::Local(format!(
+            "{normal_port}:127.0.0.1:{}",
+            echo.address.port()
+        ))],
+        true,
+    );
+    let normal_config = command_config(&normal_connection, Arc::clone(&password));
+    let mut normal_client = high_level_client(ssh.address);
+    normal_client
+        .connect_and_execute_with_jump_hosts("true", &normal_config)
+        .await
+        .expect("normal command execution");
+    assert_listener_released(normal_port).await;
+
+    let streaming_port = unused_port().await;
+    let streaming_connection = connection_config(
+        vec![ForwardingDirective::Local(format!(
+            "{streaming_port}:127.0.0.1:{}",
+            echo.address.port()
+        ))],
+        true,
+    );
+    let streaming_config = command_config(&streaming_connection, Arc::clone(&password));
+    let mut streaming_client = high_level_client(ssh.address);
+    let (output_tx, _output_rx) = tokio::sync::mpsc::channel(4);
+    streaming_client
+        .connect_and_execute_with_output_streaming("true", &streaming_config, output_tx)
+        .await
+        .expect("streaming command execution");
+    assert_listener_released(streaming_port).await;
+
+    let sudo_port = unused_port().await;
+    let sudo_connection = connection_config(
+        vec![ForwardingDirective::Local(format!(
+            "{sudo_port}:127.0.0.1:{}",
+            echo.address.port()
+        ))],
+        true,
+    );
+    let sudo_config = command_config(&sudo_connection, password);
+    let mut sudo_client = high_level_client(ssh.address);
+    let sudo_password = SudoPassword::new("sudo".to_string()).expect("test sudo password");
+    let (sudo_tx, _sudo_rx) = tokio::sync::mpsc::channel(4);
+    sudo_client
+        .connect_and_execute_with_sudo("true", &sudo_config, sudo_tx, &sudo_password)
+        .await
+        .expect("sudo command execution");
+    assert_listener_released(sudo_port).await;
+
+    assert_eq!(ssh.state.authentications.load(Ordering::SeqCst), 3);
+    echo.shutdown().await;
+    ssh.shutdown().await;
+}
+
+fn high_level_client(address: SocketAddr) -> SshClient {
+    SshClient::new(address.ip().to_string(), address.port(), "test".to_string())
+}
+
+fn command_config<'a>(
+    connection: &'a SshConnectionConfig,
+    password: Arc<Password>,
+) -> ConnectionConfig<'a> {
+    ConnectionConfig {
+        key_path: None,
+        strict_mode: Some(StrictHostKeyChecking::No),
+        use_agent: false,
+        use_password: true,
+        #[cfg(target_os = "macos")]
+        use_keychain: false,
+        timeout_seconds: Some(5),
+        connect_timeout_seconds: Some(5),
+        jump_hosts_spec: None,
+        ssh_connection_config: Some(connection),
+        ssh_connection_config_resolver: None,
+        session_policy: None,
+        ssh_password: Some(password),
+    }
 }

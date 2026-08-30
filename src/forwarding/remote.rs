@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use russh::{Channel, client::Msg};
 use tokio::net::TcpStream;
-use tokio::sync::{Mutex, RwLock, mpsc};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore, mpsc};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -27,6 +27,7 @@ struct RemoteForwardTarget {
     closed: AtomicBool,
     tasks: Mutex<Vec<JoinHandle<()>>>,
     connect_timeout: Duration,
+    connection_semaphore: Arc<Semaphore>,
 }
 
 impl RemoteForwardTarget {
@@ -35,6 +36,7 @@ impl RemoteForwardTarget {
         local_port: u16,
         cancel: CancellationToken,
         connect_timeout: Duration,
+        max_connections: usize,
     ) -> Self {
         Self {
             local_host,
@@ -43,15 +45,29 @@ impl RemoteForwardTarget {
             closed: AtomicBool::new(false),
             tasks: Mutex::new(Vec::new()),
             connect_timeout,
+            connection_semaphore: Arc::new(Semaphore::new(max_connections)),
         }
+    }
+
+    fn try_acquire_connection(&self) -> Option<OwnedSemaphorePermit> {
+        Arc::clone(&self.connection_semaphore)
+            .try_acquire_owned()
+            .ok()
     }
 
     async fn route(self: &Arc<Self>, channel: Channel<Msg>) {
         if self.closed.load(Ordering::Acquire) {
             return;
         }
+        let Some(connection_permit) = self.try_acquire_connection() else {
+            tracing::warn!(
+                "Rejecting remote forwarding channel because the concurrent connection limit was reached"
+            );
+            return;
+        };
         let target = Arc::clone(self);
         let task = tokio::spawn(async move {
+            let _connection_permit = connection_permit;
             let address = super::format_host_port(&target.local_host, target.local_port);
             let stream = tokio::select! {
                 result = tokio::time::timeout(target.connect_timeout, TcpStream::connect(&address)) => match result {
@@ -242,6 +258,7 @@ impl RemoteForwarder {
             local_port,
             cancel.clone(),
             request_timeout,
+            config.max_connections,
         ));
         registry
             .register(address.clone(), requested_port, Arc::clone(&target))
@@ -314,5 +331,39 @@ impl RemoteForwarder {
         }
         send_status(ForwardingStatus::Stopped);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn remote_target_enforces_the_configured_connection_limit() {
+        let target = RemoteForwardTarget::new(
+            "127.0.0.1".to_string(),
+            22,
+            CancellationToken::new(),
+            Duration::from_secs(1),
+            2,
+        );
+
+        let first = target
+            .try_acquire_connection()
+            .expect("first remote connection permit");
+        let second = target
+            .try_acquire_connection()
+            .expect("second remote connection permit");
+        assert!(
+            target.try_acquire_connection().is_none(),
+            "a remote channel above max_connections must be rejected before spawning"
+        );
+
+        drop(first);
+        assert!(
+            target.try_acquire_connection().is_some(),
+            "a completed remote connection must release its permit"
+        );
+        drop(second);
     }
 }

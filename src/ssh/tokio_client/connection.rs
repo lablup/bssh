@@ -1556,12 +1556,13 @@ impl Client {
 
     /// Disconnect from the remote host.
     pub async fn disconnect(&self) -> Result<(), super::Error> {
-        self.forwarding_runtime
+        let forwarding_result = self
+            .forwarding_runtime
             .shutdown()
             .await
-            .map_err(|error| super::Error::PortForwardRequestFailed(format!("{error:#}")))?;
+            .map_err(|error| super::Error::PortForwardRequestFailed(format!("{error:#}")));
         self.flush_hostkey_updates().await;
-        let result = self
+        let disconnect_result = self
             .connection_handle
             .disconnect(russh::Disconnect::ByApplication, "", "")
             .await
@@ -1569,7 +1570,16 @@ impl Client {
         if let Some(process) = &self.proxy_process {
             process.terminate();
         }
-        result
+        match (forwarding_result, disconnect_result) {
+            (Err(forwarding_error), Err(disconnect_error)) => {
+                tracing::warn!(
+                    "Forwarding shutdown failed and SSH disconnect also failed: {disconnect_error}"
+                );
+                Err(forwarding_error)
+            }
+            (Err(forwarding_error), Ok(())) => Err(forwarding_error),
+            (Ok(()), disconnect_result) => disconnect_result,
+        }
     }
 
     /// Check if the connection is closed.
@@ -1822,6 +1832,10 @@ impl ClientHandler {
 
     pub(crate) fn fatal_transport_state(&self) -> FatalTransportState {
         self.fatal_transport.clone()
+    }
+
+    pub(crate) fn remote_forward_registry(&self) -> RemoteForwardRegistry {
+        self.remote_forward_registry.clone()
     }
 
     async fn run_known_hosts_lookup(
@@ -2333,10 +2347,6 @@ where
             )
             .await
         }
-    }
-
-    pub(crate) fn remote_forward_registry(&self) -> RemoteForwardRegistry {
-        self.remote_forward_registry.clone()
     }
 }
 
