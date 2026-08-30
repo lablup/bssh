@@ -66,19 +66,10 @@ pub(crate) async fn execute_on_node_with_jump_hosts(
 
     let key_path = config.key_path.map(Path::new);
 
-    // Determine effective jump hosts: CLI takes precedence, then SSH config
-    // Store the SSH config jump hosts String to extend its lifetime
-    let ssh_config_jump_hosts = config
-        .ssh_config
-        .and_then(|ssh_config| ssh_config.get_proxy_jump(&node.host));
-
-    let effective_jump_hosts = if config.jump_hosts.is_some() {
-        // CLI jump hosts specified
-        config.jump_hosts
-    } else {
-        // Fall back to SSH config ProxyJump for this specific host
-        ssh_config_jump_hosts.as_deref()
-    };
+    // Resolve ProxyJump against the original ssh_config alias, before HostName
+    // expansion. CLI remains authoritative.
+    let effective_jump_hosts =
+        resolve_effective_jump_hosts(config.jump_hosts, config.ssh_config, node.config_host());
 
     let session_policy = config
         .ssh_config
@@ -90,7 +81,7 @@ pub(crate) async fn execute_on_node_with_jump_hosts(
                 (!command.is_empty()).then_some(command),
                 config.tty_mode,
                 std::io::stdin().is_terminal(),
-                effective_jump_hosts,
+                effective_jump_hosts.as_deref(),
             )
         })
         .transpose()?;
@@ -104,7 +95,7 @@ pub(crate) async fn execute_on_node_with_jump_hosts(
         use_keychain: config.use_keychain,
         timeout_seconds: config.timeout,
         connect_timeout_seconds: config.connect_timeout,
-        jump_hosts_spec: effective_jump_hosts,
+        jump_hosts_spec: effective_jump_hosts.as_deref(),
         ssh_connection_config: config.ssh_connection_config,
         ssh_connection_config_resolver: config.ssh_connection_config_resolver,
         session_policy: session_policy.as_ref(),
@@ -169,15 +160,8 @@ pub(crate) async fn upload_to_node(
 
     let key_path = key_path.map(Path::new);
 
-    // Determine effective jump hosts: CLI takes precedence, then SSH config
-    let ssh_config_jump_hosts =
-        ssh_config.and_then(|ssh_config| ssh_config.get_proxy_jump(&node.host));
-
-    let effective_jump_hosts = if jump_hosts.is_some() {
-        jump_hosts
-    } else {
-        ssh_config_jump_hosts.as_deref()
-    };
+    let effective_jump_hosts =
+        resolve_effective_jump_hosts(jump_hosts, ssh_config, node.config_host());
 
     // Check if the local path is a directory
     if local_path.is_dir() {
@@ -189,7 +173,7 @@ pub(crate) async fn upload_to_node(
                 Some(strict_mode),
                 use_agent,
                 use_password,
-                effective_jump_hosts,
+                effective_jump_hosts.as_deref(),
                 connect_timeout_seconds,
                 pre_collected_password,
                 ssh_connection_config,
@@ -205,7 +189,7 @@ pub(crate) async fn upload_to_node(
                 Some(strict_mode),
                 use_agent,
                 use_password,
-                effective_jump_hosts,
+                effective_jump_hosts.as_deref(),
                 connect_timeout_seconds,
                 pre_collected_password,
                 ssh_connection_config,
@@ -236,15 +220,8 @@ pub(crate) async fn download_from_node(
 
     let key_path = key_path.map(Path::new);
 
-    // Determine effective jump hosts: CLI takes precedence, then SSH config
-    let ssh_config_jump_hosts =
-        ssh_config.and_then(|ssh_config| ssh_config.get_proxy_jump(&node.host));
-
-    let effective_jump_hosts = if jump_hosts.is_some() {
-        jump_hosts
-    } else {
-        ssh_config_jump_hosts.as_deref()
-    };
+    let effective_jump_hosts =
+        resolve_effective_jump_hosts(jump_hosts, ssh_config, node.config_host());
 
     // This function handles both files and directories
     // The caller should check if it's a directory and use the appropriate method
@@ -256,7 +233,7 @@ pub(crate) async fn download_from_node(
             Some(strict_mode),
             use_agent,
             use_password,
-            effective_jump_hosts,
+            effective_jump_hosts.as_deref(),
             connect_timeout_seconds,
             pre_collected_password,
             ssh_connection_config,
@@ -288,15 +265,8 @@ pub async fn download_dir_from_node(
 
     let key_path = key_path.map(Path::new);
 
-    // Determine effective jump hosts: CLI takes precedence, then SSH config
-    let ssh_config_jump_hosts =
-        ssh_config.and_then(|ssh_config| ssh_config.get_proxy_jump(&node.host));
-
-    let effective_jump_hosts = if jump_hosts.is_some() {
-        jump_hosts
-    } else {
-        ssh_config_jump_hosts.as_deref()
-    };
+    let effective_jump_hosts =
+        resolve_effective_jump_hosts(jump_hosts, ssh_config, node.config_host());
 
     client
         .download_dir_with_jump_hosts(
@@ -306,7 +276,7 @@ pub async fn download_dir_from_node(
             Some(strict_mode),
             use_agent,
             use_password,
-            effective_jump_hosts,
+            effective_jump_hosts.as_deref(),
             connect_timeout_seconds,
             pre_collected_password,
             ssh_connection_config,
@@ -322,23 +292,43 @@ pub async fn download_dir_from_node(
 /// 2. SSH config ProxyJump for the specific host
 /// 3. None (direct connection)
 ///
-/// This is extracted for testing purposes and used internally by all connection functions.
-#[allow(dead_code)] // Used for testing
 #[inline]
 fn resolve_effective_jump_hosts(
     cli_jump_hosts: Option<&str>,
     ssh_config: Option<&SshConfig>,
-    hostname: &str,
+    config_host: &str,
 ) -> Option<String> {
     if cli_jump_hosts.is_some() {
         return cli_jump_hosts.map(String::from);
     }
-    ssh_config.and_then(|config| config.get_proxy_jump(hostname))
+    ssh_config.and_then(|config| config.get_proxy_jump(config_host))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn command_and_transfer_proxy_jump_uses_original_host_alias() {
+        let ssh_config = SshConfig::parse(
+            r#"
+Host target-alias
+    HostName effective-target
+    ProxyJump alias-bastion
+
+Host effective-target
+    ProxyJump wrong-bastion
+"#,
+        )
+        .expect("valid ssh_config");
+        let node = Node::new("effective-target".to_string(), 22, "user".to_string())
+            .with_original_host("target-alias".to_string());
+
+        assert_eq!(
+            resolve_effective_jump_hosts(None, Some(&ssh_config), node.config_host()),
+            Some("alias-bastion".to_string())
+        );
+    }
 
     /// Test that CLI jump hosts take precedence over SSH config
     #[test]

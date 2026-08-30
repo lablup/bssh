@@ -69,9 +69,9 @@ pub struct InteractiveCommand {
     pub use_pty: Option<bool>, // None = auto-detect, Some(true) = force, Some(false) = disable
     /// Resolved live ssh_config policy for the SSH-compatible interactive path.
     pub session_policy: Option<SessionPolicy>,
-    // SSH connection configuration (keepalive settings)
+    /// Fixed connection-policy fallback for callers without a resolver.
     pub ssh_connection_config: SshConnectionConfig,
-    /// Per-host connection policy retained for ProxyJump bastions.
+    /// Per-host policy resolver for each interactive target and jump alias.
     pub ssh_connection_config_resolver: Option<SshConnectionConfigResolver>,
 }
 

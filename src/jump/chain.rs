@@ -67,9 +67,13 @@ pub struct JumpHostChain {
     max_idle_time: Duration,
     /// Maximum connection age before forced renewal (default: 30 minutes)
     max_connection_age: Duration,
-    /// SSH connection configuration (keepalive settings)
+    /// Pre-resolved final-destination configuration and fixed-config fallback.
+    ///
+    /// This is resolved from the destination's original ssh_config alias before
+    /// `HostName` expansion and must not be looked up again using the effective
+    /// network host. When no resolver is configured, jump hosts also use it.
     ssh_connection_config: SshConnectionConfig,
-    /// Per-host SSH connection configuration resolver.
+    /// Per-host SSH connection configuration resolver for jump hosts only.
     ssh_connection_config_resolver: Option<SshConnectionConfigResolver>,
     /// Traffic profile propagated to every direct socket in the chain.
     session_purpose: SessionPurpose,
@@ -131,7 +135,9 @@ impl JumpHostChain {
     /// Set SSH connection configuration (keepalive settings)
     ///
     /// Configures keepalive interval and maximum attempts to prevent
-    /// idle connection timeouts during jump host operations.
+    /// idle connection timeouts during jump host operations. The same config
+    /// is retained as the pre-resolved destination policy, while a later
+    /// per-host resolver applies only to jump-host aliases.
     pub fn with_ssh_connection_config(mut self, config: SshConnectionConfig) -> Self {
         self.ssh_connection_config = config;
         self.ssh_connection_config_resolver = None;
@@ -153,11 +159,17 @@ impl JumpHostChain {
         self
     }
 
-    pub(crate) fn connection_config_for_host(&self, host: &str) -> SshConnectionConfig {
+    pub(crate) fn connection_config_for_jump_host(&self, host: &str) -> SshConnectionConfig {
         self.ssh_connection_config_resolver
             .as_ref()
             .map(|resolver| resolver.resolve_for_host(host))
             .unwrap_or_else(|| self.ssh_connection_config.clone())
+            .with_session_purpose(self.session_purpose)
+    }
+
+    pub(crate) fn destination_connection_config(&self) -> SshConnectionConfig {
+        self.ssh_connection_config
+            .clone()
             .with_session_purpose(self.session_purpose)
     }
 
@@ -238,7 +250,7 @@ impl JumpHostChain {
         }
 
         if self.is_direct() {
-            let ssh_connection_config = self.connection_config_for_host(destination_host);
+            let ssh_connection_config = self.destination_connection_config();
             chain_connection::connect_direct(
                 destination_host,
                 destination_port,
@@ -310,7 +322,7 @@ impl JumpHostChain {
         // Step 2: Chain through intermediate jump hosts
         for (i, jump_host) in self.jump_hosts.iter().skip(1).enumerate() {
             let ssh_connection_config = self
-                .connection_config_for_host(&jump_host.host)
+                .connection_config_for_jump_host(&jump_host.host)
                 .without_forwarding();
             debug!(
                 "Connecting to intermediate jump host {} of {}: {}",
@@ -338,7 +350,7 @@ impl JumpHostChain {
         }
 
         // Step 3: Connect to final destination through the last jump host
-        let ssh_connection_config = self.connection_config_for_host(destination_host);
+        let ssh_connection_config = self.destination_connection_config();
         let final_client = tunnel::connect_to_destination(
             &current_client,
             destination_host,
@@ -388,7 +400,7 @@ impl JumpHostChain {
     ) -> Result<crate::ssh::tokio_client::Client> {
         let jump_host = &self.jump_hosts[0];
         let ssh_connection_config = self
-            .connection_config_for_host(&jump_host.host)
+            .connection_config_for_jump_host(&jump_host.host)
             .without_forwarding();
 
         debug!(
@@ -562,26 +574,35 @@ Host bastion
     ServerAliveInterval 11
     ServerAliveCountMax 2
 
-Host target
+Host target-alias
+    HostName effective-target
     AddressFamily inet6
     Compression no
     ServerAliveInterval 22
     ServerAliveCountMax 4
+
+Host effective-target
+    AddressFamily inet
+    Compression yes
+    ServerAliveInterval 99
+    ServerAliveCountMax 9
 "#,
         )
         .expect("valid ssh_config");
         let resolver = SshConnectionConfigResolver::new().with_ssh_config(Some(ssh_config));
+        let destination_config = resolver.resolve_for_host("target-alias");
 
         let chain = JumpHostChain::new(vec![JumpHost::new("bastion".to_string(), None, None)])
+            .with_ssh_connection_config(destination_config)
             .with_ssh_connection_config_resolver(resolver);
 
-        let bastion = chain.connection_config_for_host("bastion");
+        let bastion = chain.connection_config_for_jump_host("bastion");
         assert_eq!(bastion.address_family, AddressFamily::V4);
         assert!(bastion.compression);
         assert_eq!(bastion.keepalive_interval, Some(11));
         assert_eq!(bastion.keepalive_max, 2);
 
-        let target = chain.connection_config_for_host("target");
+        let target = chain.destination_connection_config();
         assert_eq!(target.address_family, AddressFamily::V6);
         assert!(!target.compression);
         assert_eq!(target.keepalive_interval, Some(22));
