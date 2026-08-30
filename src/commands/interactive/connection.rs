@@ -22,15 +22,40 @@ use std::io::{self, IsTerminal, Write};
 use tokio::time::{Duration, timeout};
 use zeroize::Zeroizing;
 
-use crate::jump::{JumpHostChain, parse_jump_hosts};
+use crate::jump::{JumpHostChain, parse_jump_hosts, parser::JumpHost};
 use crate::node::Node;
 use crate::ssh::{
-    SessionPurpose, SessionRequest,
+    SessionPolicy, SessionPurpose, SessionRequest,
     known_hosts::get_check_method_for_target,
-    tokio_client::{AuthMethod, Client, Error as SshError, ServerCheckMethod, SshConnectionConfig},
+    tokio_client::{
+        AuthMethod, Client, Error as SshError, ServerCheckMethod, SshConnectionConfig,
+        SshConnectionConfigResolver,
+    },
 };
 
 use super::types::{InteractiveCommand, NodeSession};
+
+fn build_interactive_jump_chain(
+    jump_hosts: Vec<JumpHost>,
+    adjusted_timeout: Duration,
+    ssh_connection_config: &SshConnectionConfig,
+    resolver: Option<&SshConnectionConfigResolver>,
+    session_purpose: SessionPurpose,
+) -> JumpHostChain {
+    let mut chain = JumpHostChain::new(jump_hosts)
+        .with_connect_timeout(adjusted_timeout)
+        .with_command_timeout(Duration::from_secs(300))
+        .with_ssh_connection_config(ssh_connection_config.clone())
+        .with_session_purpose(session_purpose);
+    if let Some(resolver) = resolver {
+        chain = chain.with_ssh_connection_config_resolver(resolver.clone());
+    }
+    chain
+}
+
+fn interactive_session_purpose(session_policy: Option<&SessionPolicy>) -> SessionPurpose {
+    session_policy.map_or(SessionPurpose::Interactive, SessionPolicy::purpose)
+}
 
 impl InteractiveCommand {
     /// Helper function to establish SSH connection with proper error handling and rate limiting
@@ -50,12 +75,11 @@ impl InteractiveCommand {
         port: u16,
         allow_password_fallback: bool,
         ssh_config: &SshConnectionConfig,
+        session_purpose: SessionPurpose,
     ) -> Result<Client> {
         const SSH_CONNECT_TIMEOUT_SECS: u64 = 30;
         let connect_timeout = Duration::from_secs(SSH_CONNECT_TIMEOUT_SECS);
-        let ssh_config = ssh_config
-            .clone()
-            .with_session_purpose(SessionPurpose::Interactive);
+        let ssh_config = ssh_config.clone().with_session_purpose(session_purpose);
 
         // SECURITY: Add a small delay before connection attempts to prevent rapid-fire attempts
         // This helps mitigate brute-force attacks and prevents triggering fail2ban too quickly
@@ -145,6 +169,25 @@ impl InteractiveCommand {
         }
 
         result
+    }
+
+    fn session_purpose(&self) -> SessionPurpose {
+        interactive_session_purpose(self.session_policy.as_ref())
+    }
+
+    fn build_jump_chain(
+        &self,
+        jump_hosts: Vec<JumpHost>,
+        adjusted_timeout: Duration,
+    ) -> JumpHostChain {
+        build_interactive_jump_chain(
+            jump_hosts,
+            adjusted_timeout,
+            &self.ssh_connection_config,
+            self.ssh_connection_config_resolver.as_ref(),
+            self.session_purpose(),
+        )
+        .with_ssh_password(self.ssh_password.clone())
     }
 
     /// Prompt for password with secure handling
@@ -288,6 +331,7 @@ impl InteractiveCommand {
                     node.port,
                     !self.use_password, // Allow fallback unless explicit password mode
                     &self.ssh_connection_config,
+                    self.session_purpose(),
                 )
                 .await?
             } else {
@@ -315,12 +359,7 @@ impl InteractiveCommand {
                 // Pass SSH connection config to jump host chain for keepalive settings.
                 // Also pass the dispatcher's pre-collected password so jump-host
                 // authentication consumes it instead of re-prompting per call. See #200.
-                let chain = JumpHostChain::new(jump_hosts)
-                    .with_connect_timeout(adjusted_timeout)
-                    .with_command_timeout(Duration::from_secs(300))
-                    .with_ssh_connection_config(self.ssh_connection_config.clone())
-                    .with_session_purpose(SessionPurpose::Interactive)
-                    .with_ssh_password(self.ssh_password.clone());
+                let chain = self.build_jump_chain(jump_hosts, adjusted_timeout);
 
                 // Connect through the chain
                 let connection = timeout(
@@ -372,6 +411,7 @@ impl InteractiveCommand {
                 node.port,
                 !self.use_password, // Allow fallback unless explicit password mode
                 &self.ssh_connection_config,
+                self.session_purpose(),
             )
             .await?
         };
@@ -449,6 +489,7 @@ impl InteractiveCommand {
                     node.port,
                     !self.use_password, // Allow fallback unless explicit password mode
                     &self.ssh_connection_config,
+                    self.session_purpose(),
                 )
                 .await?
             } else {
@@ -476,12 +517,7 @@ impl InteractiveCommand {
                 // Pass SSH connection config to jump host chain for keepalive settings.
                 // Also pass the dispatcher's pre-collected password so jump-host
                 // authentication consumes it instead of re-prompting per call. See #200.
-                let chain = JumpHostChain::new(jump_hosts)
-                    .with_connect_timeout(adjusted_timeout)
-                    .with_command_timeout(Duration::from_secs(300))
-                    .with_ssh_connection_config(self.ssh_connection_config.clone())
-                    .with_session_purpose(SessionPurpose::Interactive)
-                    .with_ssh_password(self.ssh_password.clone());
+                let chain = self.build_jump_chain(jump_hosts, adjusted_timeout);
 
                 // Connect through the chain
                 let connection = timeout(
@@ -533,6 +569,7 @@ impl InteractiveCommand {
                 node.port,
                 !self.use_password, // Allow fallback unless explicit password mode
                 &self.ssh_connection_config,
+                self.session_purpose(),
             )
             .await?
         };
@@ -614,6 +651,88 @@ pub fn is_auth_error_for_password_fallback(error: &SshError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ssh::ssh_config::{IpQosPolicy, IpQosValue, SshConfig};
+
+    #[test]
+    fn no_pty_shell_uses_bulk_ipqos_for_direct_and_jump_connections() {
+        let policy = SessionPolicy {
+            environment: Vec::new(),
+            local_command: None,
+            request_pty: false,
+            request: SessionRequest::Shell,
+        };
+
+        assert_eq!(
+            interactive_session_purpose(Some(&policy)),
+            SessionPurpose::Bulk
+        );
+        assert_eq!(
+            interactive_session_purpose(None),
+            SessionPurpose::Interactive
+        );
+        let config = SshConnectionConfig::new()
+            .with_ip_qos(IpQosPolicy {
+                interactive: IpQosValue::Class(0xb8),
+                bulk: IpQosValue::Class(0x20),
+            })
+            .with_session_purpose(interactive_session_purpose(Some(&policy)));
+        assert_eq!(config.selected_ip_qos(), IpQosValue::Class(0x20));
+    }
+
+    #[test]
+    fn interactive_jump_chain_keeps_distinct_bastion_and_target_socket_policies() {
+        let ssh_config = SshConfig::parse(
+            r#"
+Host bastion
+    BindAddress 127.0.0.2
+    BindInterface lo
+    IPQoS cs5 cs1
+
+Host target
+    BindAddress 127.0.0.3
+    BindInterface target0
+    IPQoS ef cs2
+"#,
+        )
+        .expect("valid ssh_config");
+        let resolver = SshConnectionConfigResolver::new().with_ssh_config(Some(ssh_config));
+        let chain = build_interactive_jump_chain(
+            vec![JumpHost::new("bastion".to_string(), None, None)],
+            Duration::from_secs(45),
+            &SshConnectionConfig::default(),
+            Some(&resolver),
+            SessionPurpose::Bulk,
+        );
+
+        let bastion = chain.connection_config_for_host("bastion");
+        assert_eq!(bastion.bind_address.as_deref(), Some("127.0.0.2"));
+        assert_eq!(bastion.bind_interface.as_deref(), Some("lo"));
+        assert_eq!(bastion.session_purpose, SessionPurpose::Bulk);
+        assert_eq!(bastion.selected_ip_qos(), IpQosValue::Class(0x20));
+
+        let target = chain.connection_config_for_host("target");
+        assert_eq!(target.bind_address.as_deref(), Some("127.0.0.3"));
+        assert_eq!(target.bind_interface.as_deref(), Some("target0"));
+        assert_eq!(target.session_purpose, SessionPurpose::Bulk);
+        assert_eq!(target.selected_ip_qos(), IpQosValue::Class(0x40));
+
+        let fixed_config = SshConnectionConfig::new()
+            .with_source_binding(Some("127.0.0.4".to_string()), Some("lo".to_string()))
+            .with_ip_qos(IpQosPolicy {
+                interactive: IpQosValue::Class(0xb8),
+                bulk: IpQosValue::Class(0x60),
+            });
+        let fixed_chain = build_interactive_jump_chain(
+            vec![JumpHost::new("manual-bastion".to_string(), None, None)],
+            Duration::from_secs(45),
+            &fixed_config,
+            None,
+            SessionPurpose::Bulk,
+        );
+        let manual_bastion = fixed_chain.connection_config_for_host("manual-bastion");
+        assert_eq!(manual_bastion.bind_address.as_deref(), Some("127.0.0.4"));
+        assert_eq!(manual_bastion.selected_ip_qos(), IpQosValue::Class(0x60));
+    }
 
     #[test]
     fn test_key_auth_failed_triggers_password_fallback() {

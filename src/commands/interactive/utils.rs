@@ -110,6 +110,7 @@ mod tests {
                 request: crate::ssh::SessionRequest::Shell,
             }),
             ssh_connection_config: SshConnectionConfig::default(),
+            ssh_connection_config_resolver: Default::default(),
         };
 
         assert!(cmd.should_use_raw_session().unwrap());
@@ -141,6 +142,7 @@ mod tests {
             use_pty: None,
             session_policy: None,
             ssh_connection_config: SshConnectionConfig::default(),
+            ssh_connection_config_resolver: Default::default(),
         };
 
         let path = PathBuf::from("~/test/file.txt");
@@ -177,6 +179,7 @@ mod tests {
             use_pty: None,
             session_policy: None,
             ssh_connection_config: SshConnectionConfig::default(),
+            ssh_connection_config_resolver: Default::default(),
         };
 
         let node = Node::new(String::from("example.com"), 22, String::from("alice"));

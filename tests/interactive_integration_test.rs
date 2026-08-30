@@ -56,6 +56,7 @@ fn test_interactive_command_builder() {
         session_policy: None,
         jump_hosts: None,
         ssh_connection_config: SshConnectionConfig::default(),
+        ssh_connection_config_resolver: Default::default(),
     };
 
     assert!(!cmd.single_node);
@@ -93,6 +94,7 @@ fn test_history_file_handling() {
         session_policy: None,
         jump_hosts: None,
         ssh_connection_config: SshConnectionConfig::default(),
+        ssh_connection_config_resolver: Default::default(),
     };
 
     assert_eq!(cmd.history_file, history_path);
@@ -193,6 +195,7 @@ async fn test_interactive_with_unreachable_nodes() {
         session_policy: None,
         jump_hosts: None,
         ssh_connection_config: SshConnectionConfig::default(),
+        ssh_connection_config_resolver: Default::default(),
     };
 
     // This should fail to connect
@@ -230,6 +233,7 @@ async fn test_interactive_with_no_nodes() {
         session_policy: None,
         jump_hosts: None,
         ssh_connection_config: SshConnectionConfig::default(),
+        ssh_connection_config_resolver: Default::default(),
     };
 
     let result = cmd.execute().await;
@@ -277,6 +281,7 @@ fn test_mode_configuration() {
         session_policy: None,
         jump_hosts: None,
         ssh_connection_config: SshConnectionConfig::default(),
+        ssh_connection_config_resolver: Default::default(),
     };
 
     assert!(single_cmd.single_node);
@@ -305,6 +310,7 @@ fn test_mode_configuration() {
         session_policy: None,
         jump_hosts: None,
         ssh_connection_config: SshConnectionConfig::default(),
+        ssh_connection_config_resolver: Default::default(),
     };
 
     assert!(!multi_cmd.single_node);
@@ -336,6 +342,7 @@ fn test_working_directory_config() {
         session_policy: None,
         jump_hosts: None,
         ssh_connection_config: SshConnectionConfig::default(),
+        ssh_connection_config_resolver: Default::default(),
     };
 
     assert_eq!(cmd_with_dir.work_dir, Some("/var/www".to_string()));
@@ -362,6 +369,7 @@ fn test_working_directory_config() {
         session_policy: None,
         jump_hosts: None,
         ssh_connection_config: SshConnectionConfig::default(),
+        ssh_connection_config_resolver: Default::default(),
     };
 
     assert_eq!(cmd_without_dir.work_dir, None);
@@ -400,6 +408,7 @@ fn test_prompt_format() {
             session_policy: None,
             jump_hosts: None,
             ssh_connection_config: SshConnectionConfig::default(),
+            ssh_connection_config_resolver: Default::default(),
         };
 
         assert_eq!(cmd.prompt_format, format);

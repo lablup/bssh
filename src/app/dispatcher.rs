@@ -524,6 +524,7 @@ async fn handle_interactive_command(
         use_pty,
         session_policy: None,
         ssh_connection_config,
+        ssh_connection_config_resolver: Some(ssh_connection_config_resolver),
     };
 
     let result = interactive_cmd.execute().await?;
@@ -654,6 +655,7 @@ async fn handle_exec_command(
             use_pty,
             session_policy: Some(session_policy),
             ssh_connection_config,
+            ssh_connection_config_resolver: Some(ssh_connection_config_resolver),
         };
 
         let result = interactive_cmd.execute().await?;

@@ -27,7 +27,7 @@ use crate::pty::PtyConfig;
 use crate::security::Password;
 use crate::ssh::SessionPolicy;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
-use crate::ssh::tokio_client::{Client, SshConnectionConfig};
+use crate::ssh::tokio_client::{Client, SshConnectionConfig, SshConnectionConfigResolver};
 
 /// SSH output polling interval for responsive display
 /// - 10ms provides very responsive output display
@@ -71,6 +71,8 @@ pub struct InteractiveCommand {
     pub session_policy: Option<SessionPolicy>,
     // SSH connection configuration (keepalive settings)
     pub ssh_connection_config: SshConnectionConfig,
+    /// Per-host connection policy retained for ProxyJump bastions.
+    pub ssh_connection_config_resolver: Option<SshConnectionConfigResolver>,
 }
 
 /// Result of an interactive session

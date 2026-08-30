@@ -92,7 +92,7 @@ fn parse_value(value: &str) -> Result<IpQosValue, IpQosParseError> {
         "cs7" => 0xe0,
         "ef" => 0xb8,
         "le" => 0x04,
-        "va" => 0x2c,
+        "va" => 0xb0,
         // OpenSSH retains these names for compatibility but deliberately
         // leaves the system traffic class unchanged.
         "lowdelay" | "throughput" | "reliability" => return Ok(IpQosValue::None),
@@ -147,6 +147,17 @@ mod tests {
                 })
             );
         }
+    }
+
+    #[test]
+    fn voice_admit_uses_the_on_wire_dscp_encoding() {
+        assert_eq!(
+            IpQosPolicy::parse(&values(&["va"])),
+            Ok(IpQosPolicy {
+                interactive: IpQosValue::Class(0xb0),
+                bulk: IpQosValue::Class(0xb0),
+            })
+        );
     }
 
     #[test]

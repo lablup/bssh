@@ -153,7 +153,7 @@ impl JumpHostChain {
         self
     }
 
-    fn connection_config_for_host(&self, host: &str) -> SshConnectionConfig {
+    pub(crate) fn connection_config_for_host(&self, host: &str) -> SshConnectionConfig {
         self.ssh_connection_config_resolver
             .as_ref()
             .map(|resolver| resolver.resolve_for_host(host))
