@@ -347,7 +347,12 @@ Host original-host
 
 #[test]
 fn test_proxy_none_disables_yaml_jump_fallback() {
-    for directive in ["ProxyCommand none", "ProxyJump none"] {
+    for directive in [
+        "ProxyCommand none",
+        "ProxyJump none",
+        "ProxyJump direct",
+        "ProxyJump DIRECT",
+    ] {
         let ssh_config =
             SshConfig::parse(&format!("Host target\n    {directive}\n")).expect("valid ssh_config");
         let config = SshConnectionConfigResolver::new()

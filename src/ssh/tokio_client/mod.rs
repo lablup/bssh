@@ -44,6 +44,7 @@ pub use connection::{
     SshConnectionConfigResolver,
 };
 pub use error::{Error, TransportIntegrityCause};
+pub(crate) use proxy_command::is_direct_proxy_jump;
 pub use proxy_command::{ProxyCommandConfig, ProxyMode};
 pub use to_socket_addrs_with_hostname::ToSocketAddrsWithHostname;
 

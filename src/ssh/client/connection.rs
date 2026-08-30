@@ -19,6 +19,7 @@ use crate::ssh::SessionPurpose;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
 use crate::ssh::tokio_client::{
     AuthMethod, Client, ProxyMode, SshConnectionConfig, SshConnectionConfigResolver,
+    is_direct_proxy_jump,
 };
 use anyhow::{Context, Result};
 use std::path::Path;
@@ -56,10 +57,13 @@ fn client_jump_spec<'a>(
     target_config: &'a SshConnectionConfig,
     requested_jump_hosts: Option<&'a str>,
 ) -> Option<&'a str> {
-    requested_jump_hosts.or(match target_config.proxy_mode.as_ref() {
-        Some(ProxyMode::Jump(jump)) => Some(jump.as_str()),
-        Some(ProxyMode::Command(_) | ProxyMode::Direct) | None => None,
-    })
+    if let Some(requested) = requested_jump_hosts {
+        return (!is_direct_proxy_jump(requested)).then_some(requested);
+    }
+    match target_config.proxy_mode.as_ref() {
+        Some(ProxyMode::Jump(jump)) if !is_direct_proxy_jump(jump) => Some(jump.as_str()),
+        Some(ProxyMode::Jump(_) | ProxyMode::Command(_) | ProxyMode::Direct) | None => None,
+    }
 }
 
 /// Build the friendly, outer-context message for a failed direct SSH
@@ -454,6 +458,16 @@ Host effective-target
         assert_eq!(
             client_jump_spec(&destination, Some("manual-bastion")),
             Some("manual-bastion")
+        );
+        for direct in ["", "none", "direct", " NONE "] {
+            assert_eq!(client_jump_spec(&destination, Some(direct)), None);
+        }
+
+        let direct_destination =
+            SshConnectionConfig::new().with_proxy_mode(Some(ProxyMode::Direct));
+        assert_eq!(
+            client_jump_spec(&direct_destination, Some("cli-bastion")),
+            Some("cli-bastion")
         );
 
         let fixed_config = SshConnectionConfig::new()

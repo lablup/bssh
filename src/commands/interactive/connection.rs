@@ -29,7 +29,7 @@ use crate::ssh::{
     known_hosts::get_check_method_for_target,
     tokio_client::{
         AuthMethod, Client, Error as SshError, ProxyMode, ServerCheckMethod, SshConnectionConfig,
-        SshConnectionConfigResolver,
+        SshConnectionConfigResolver, is_direct_proxy_jump,
     },
 };
 
@@ -72,10 +72,13 @@ fn interactive_jump_spec<'a>(
     target_config: &'a SshConnectionConfig,
     fallback: Option<&'a str>,
 ) -> Option<&'a str> {
-    fallback.or(match target_config.proxy_mode.as_ref() {
-        Some(ProxyMode::Jump(jump)) => Some(jump.as_str()),
-        Some(ProxyMode::Command(_) | ProxyMode::Direct) | None => None,
-    })
+    if let Some(requested) = fallback {
+        return (!is_direct_proxy_jump(requested)).then_some(requested);
+    }
+    match target_config.proxy_mode.as_ref() {
+        Some(ProxyMode::Jump(jump)) if !is_direct_proxy_jump(jump) => Some(jump.as_str()),
+        Some(ProxyMode::Jump(_) | ProxyMode::Command(_) | ProxyMode::Direct) | None => None,
+    }
 }
 
 impl InteractiveCommand {
@@ -772,6 +775,9 @@ Host effective-alpha
             interactive_jump_spec(&alpha_config, Some("manual-bastion")),
             Some("manual-bastion")
         );
+        for direct in ["", "none", "direct", " NONE "] {
+            assert_eq!(interactive_jump_spec(&alpha_config, Some(direct)), None);
+        }
         assert_eq!(
             interactive_jump_spec(&beta_config, None),
             Some("beta-bastion")

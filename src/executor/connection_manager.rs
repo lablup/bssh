@@ -25,7 +25,7 @@ use crate::ssh::{
     CliTtyMode, SessionPolicy, SshClient, SshConfig,
     client::{CommandResult, ConnectionConfig},
     known_hosts::StrictHostKeyChecking,
-    tokio_client::{SshConnectionConfig, SshConnectionConfigResolver},
+    tokio_client::{SshConnectionConfig, SshConnectionConfigResolver, is_direct_proxy_jump},
 };
 
 /// Configuration for node execution.
@@ -298,10 +298,24 @@ fn resolve_effective_jump_hosts(
     ssh_config: Option<&SshConfig>,
     config_host: &str,
 ) -> Option<String> {
-    if cli_jump_hosts.is_some() {
-        return cli_jump_hosts.map(String::from);
+    if let Some(jump_hosts) = cli_jump_hosts {
+        return Some(normalize_jump_hosts(jump_hosts));
     }
-    ssh_config.and_then(|config| config.get_proxy_jump(config_host))
+    ssh_config
+        .and_then(|config| config.get_proxy_jump(config_host))
+        .map(|jump_hosts| normalize_jump_hosts(&jump_hosts))
+}
+
+/// Preserve an explicit direct decision as an empty jump specification.
+///
+/// `Some("")` remains authoritative over lower-priority ssh_config values,
+/// while both the session-policy and SSH client layers interpret it as no hop.
+fn normalize_jump_hosts(jump_hosts: &str) -> String {
+    if is_direct_proxy_jump(jump_hosts) {
+        String::new()
+    } else {
+        jump_hosts.to_string()
+    }
 }
 
 #[cfg(test)]
@@ -346,6 +360,15 @@ Host example.com
             "example.com",
         );
         assert_eq!(result, Some("cli-bastion.example.com".to_string()));
+
+        // CLI can explicitly disable a configured jump without allowing the
+        // ssh_config fallback to become active again.
+        for direct in ["none", "direct", " NONE "] {
+            assert_eq!(
+                resolve_effective_jump_hosts(Some(direct), Some(&ssh_config), "example.com"),
+                Some(String::new())
+            );
+        }
     }
 
     /// Test that SSH config ProxyJump is used when no CLI jump hosts
@@ -456,23 +479,148 @@ Host *.internal.example.com
         assert_eq!(result, None);
     }
 
-    /// Test ProxyJump none value (disables jump)
     #[test]
-    fn test_resolve_effective_jump_hosts_none_value() {
-        let ssh_config_content = r#"
+    fn direct_proxy_jump_values_normalize_to_an_empty_chain() {
+        for directive in ["none", "direct", "NONE", "DIRECT"] {
+            let ssh_config_content = format!(
+                r#"
 Host direct.example.com
-    ProxyJump none
+    ProxyJump {directive}
 
 Host *.example.com
     ProxyJump gateway.example.com
-"#;
-        let ssh_config = SshConfig::parse(ssh_config_content).unwrap();
+"#
+            );
+            let ssh_config = SshConfig::parse(&ssh_config_content).unwrap();
 
-        // The explicit disable must be obtained before the wildcard fallback.
-        // Note: The actual handling of "none" as special value would be
-        // done by the connection layer, but the config should return it
-        let result = resolve_effective_jump_hosts(None, Some(&ssh_config), "direct.example.com");
-        assert_eq!(result, Some("none".to_string()));
+            let result =
+                resolve_effective_jump_hosts(None, Some(&ssh_config), "direct.example.com");
+            assert_eq!(result.as_deref(), Some(""), "value={directive}");
+            assert!(
+                crate::jump::parse_jump_hosts(result.as_deref().unwrap())
+                    .unwrap()
+                    .is_empty(),
+                "value={directive}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn command_and_all_transfer_paths_never_dial_proxy_jump_none() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let ssh_config = SshConfig::parse(
+            r#"
+Host direct-target
+    HostName 127.0.0.1
+    ProxyJump none
+"#,
+        )
+        .unwrap();
+        let resolver = SshConnectionConfigResolver::new().with_ssh_config(Some(ssh_config.clone()));
+        let target_config = resolver.resolve_for_host("direct-target");
+        let node = Node::new("127.0.0.1".to_string(), port, "user".to_string())
+            .with_original_host("direct-target".to_string());
+        let password = Arc::new(Password::new("test-password".to_string()).unwrap());
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let upload_file = temp_dir.path().join("upload.txt");
+        std::fs::write(&upload_file, b"test").unwrap();
+
+        let assert_direct_target = |path: &str, error: anyhow::Error| {
+            let message = format!("{error:#}");
+            assert!(message.contains("127.0.0.1"), "path={path}: {message}");
+            assert!(!message.contains("none:22"), "path={path}: {message}");
+            assert!(
+                !message.contains("jump host none"),
+                "path={path}: {message}"
+            );
+        };
+
+        let execution_config = ExecutionConfig {
+            key_path: None,
+            strict_mode: StrictHostKeyChecking::AcceptNew,
+            use_agent: false,
+            use_password: true,
+            #[cfg(target_os = "macos")]
+            use_keychain: false,
+            timeout: Some(1),
+            connect_timeout: Some(1),
+            jump_hosts: None,
+            sudo_password: None,
+            ssh_password: Some(password.clone()),
+            ssh_config: Some(&ssh_config),
+            tty_mode: CliTtyMode::Disable,
+            ssh_connection_config: Some(&target_config),
+            ssh_connection_config_resolver: Some(&resolver),
+        };
+        let error = execute_on_node_with_jump_hosts(node.clone(), "true", &execution_config)
+            .await
+            .unwrap_err();
+        assert_direct_target("command", error);
+
+        for (path, local_path) in [
+            ("upload-file", upload_file.as_path()),
+            ("upload-directory", temp_dir.path()),
+        ] {
+            let error = upload_to_node(
+                node.clone(),
+                local_path,
+                "/tmp/remote",
+                None,
+                StrictHostKeyChecking::AcceptNew,
+                false,
+                true,
+                None,
+                Some(1),
+                Some(&ssh_config),
+                Some(password.clone()),
+                &target_config,
+                &resolver,
+            )
+            .await
+            .unwrap_err();
+            assert_direct_target(path, error);
+        }
+
+        let error = download_from_node(
+            node.clone(),
+            "/tmp/remote-file",
+            &temp_dir.path().join("download.txt"),
+            None,
+            StrictHostKeyChecking::AcceptNew,
+            false,
+            true,
+            None,
+            Some(1),
+            Some(&ssh_config),
+            Some(password.clone()),
+            &target_config,
+            &resolver,
+        )
+        .await
+        .unwrap_err();
+        assert_direct_target("download-file", error);
+
+        let error = download_dir_from_node(
+            node,
+            "/tmp/remote-dir",
+            &temp_dir.path().join("download-dir"),
+            None,
+            StrictHostKeyChecking::AcceptNew,
+            false,
+            true,
+            None,
+            Some(1),
+            Some(&ssh_config),
+            Some(password),
+            &target_config,
+            &resolver,
+        )
+        .await
+        .unwrap_err();
+        assert_direct_target("download-directory", error);
     }
 
     /// Test complex multi-hop chain with user and ports

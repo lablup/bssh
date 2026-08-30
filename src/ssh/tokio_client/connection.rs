@@ -32,7 +32,7 @@ use super::address_family::AddressFamily;
 use super::auth_policy::SshAuthenticationPolicy;
 use super::authentication::{AuthMethod, ServerCheckMethod};
 use super::proxy_command::{
-    ProxyCommandConfig, ProxyCommandProcess, ProxyMode, spawn_proxy_command,
+    ProxyCommandConfig, ProxyCommandProcess, ProxyMode, is_direct_proxy_jump, spawn_proxy_command,
 };
 use crate::forwarding::remote::RemoteForwardRegistry;
 use crate::forwarding::{ForwardingDirective, ForwardingPlan, ForwardingRuntime};
@@ -619,7 +619,7 @@ impl SshConnectionConfigResolver {
 }
 
 fn proxy_jump_mode(jump: &str) -> ProxyMode {
-    if jump.eq_ignore_ascii_case("none") || jump.is_empty() {
+    if is_direct_proxy_jump(jump) {
         ProxyMode::Direct
     } else {
         ProxyMode::Jump(jump.to_string())
