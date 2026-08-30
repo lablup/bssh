@@ -225,8 +225,11 @@ impl InteractiveCommand {
         .with_context(|| "Password prompt task failed")?
     }
 
-    /// Determine authentication method based on node and config (same logic as exec mode)
-    pub(super) async fn determine_auth_method(&self, node: &Node) -> Result<AuthMethod> {
+    fn auth_context(
+        &self,
+        node: &Node,
+        target_config: &SshConnectionConfig,
+    ) -> Result<crate::ssh::AuthContext> {
         // Use centralized authentication logic from auth module
         let mut auth_ctx = crate::ssh::AuthContext::new(node.username.clone(), node.host.clone())
             .with_context(|| {
@@ -245,7 +248,7 @@ impl InteractiveCommand {
             .with_password(self.use_password)
             .with_password_fallback(!self.use_password) // Enable fallback only if not using explicit password
             .with_pre_collected_password(self.ssh_password.clone());
-        auth_ctx = auth_ctx.with_policy(self.ssh_connection_config.auth_policy.clone());
+        auth_ctx = auth_ctx.with_policy(target_config.auth_policy.clone());
 
         // Set macOS Keychain integration if available
         #[cfg(target_os = "macos")]
@@ -253,7 +256,18 @@ impl InteractiveCommand {
             auth_ctx = auth_ctx.with_keychain(self.use_keychain);
         }
 
-        auth_ctx.determine_method().await
+        Ok(auth_ctx)
+    }
+
+    /// Determine authentication method based on node and config (same logic as exec mode)
+    pub(super) async fn determine_auth_method(
+        &self,
+        node: &Node,
+        target_config: &SshConnectionConfig,
+    ) -> Result<AuthMethod> {
+        self.auth_context(node, target_config)?
+            .determine_method()
+            .await
     }
 
     /// Select nodes to connect to based on configuration
@@ -314,13 +328,15 @@ impl InteractiveCommand {
 
     /// Connect to a single node and establish an interactive shell
     pub(super) async fn connect_to_node(&self, node: Node) -> Result<NodeSession> {
-        // Determine authentication method using the same logic as exec mode
-        let auth_method = self.determine_auth_method(&node).await?;
         let target_config = interactive_target_connection_config(
             &node,
             &self.ssh_connection_config,
             self.ssh_connection_config_resolver.as_ref(),
         );
+        // Resolve from the node's original ssh_config alias before selecting
+        // credentials so authentication, host verification, and transport all
+        // consume the same destination policy.
+        let auth_method = self.determine_auth_method(&node, &target_config).await?;
 
         // Set up host key checking using the configured strict mode
         let check_method = get_check_method_for_target(
@@ -479,13 +495,14 @@ impl InteractiveCommand {
 
     /// Connect to a single node and establish a PTY-enabled SSH channel
     pub(super) async fn connect_to_node_pty(&self, node: Node) -> Result<(Client, Channel<Msg>)> {
-        // Determine authentication method using the same logic as exec mode
-        let auth_method = self.determine_auth_method(&node).await?;
         let target_config = interactive_target_connection_config(
             &node,
             &self.ssh_connection_config,
             self.ssh_connection_config_resolver.as_ref(),
         );
+        // Keep PTY authentication on the same per-node alias policy used by
+        // host verification and the direct or jump transport.
+        let auth_method = self.determine_auth_method(&node, &target_config).await?;
 
         // Set up host key checking using the configured strict mode
         let check_method = get_check_method_for_target(
@@ -684,8 +701,155 @@ pub fn is_auth_error_for_password_fallback(error: &SshError) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::{Config, InteractiveConfig};
+    use crate::pty::PtyConfig;
+    use crate::ssh::known_hosts::StrictHostKeyChecking;
     use crate::ssh::ssh_config::{IpQosPolicy, IpQosValue, SshConfig};
     use crate::ssh::tokio_client::ProxyMode;
+    use std::path::PathBuf;
+
+    fn alias_auth_command(fixed_alias: &str) -> (InteractiveCommand, Node, Node) {
+        let ssh_config = SshConfig::parse(
+            r#"
+Host alpha
+    HostName effective-alpha
+    IdentityFile /alpha-identity
+    IdentitiesOnly yes
+    PreferredAuthentications password
+    PubkeyAuthentication no
+    PasswordAuthentication no
+    NumberOfPasswordPrompts 1
+    BatchMode no
+
+Host beta
+    HostName effective-beta
+    IdentityFile /beta-identity
+    IdentitiesOnly no
+    PreferredAuthentications password
+    PubkeyAuthentication no
+    PasswordAuthentication yes
+    NumberOfPasswordPrompts 7
+    BatchMode yes
+"#,
+        )
+        .expect("valid ssh_config");
+        let resolver = SshConnectionConfigResolver::new()
+            .with_ssh_config(Some(ssh_config))
+            .with_cli_identity_files(vec![PathBuf::from("/cli-identity")]);
+        let fixed_config = resolver.resolve_for_host(fixed_alias);
+        let alpha = Node::new("effective-alpha".to_string(), 22, "user".to_string())
+            .with_original_host("alpha".to_string());
+        let beta = Node::new("effective-beta".to_string(), 22, "user".to_string())
+            .with_original_host("beta".to_string());
+        let command = InteractiveCommand {
+            single_node: false,
+            multiplex: true,
+            prompt_format: String::new(),
+            history_file: PathBuf::new(),
+            work_dir: None,
+            nodes: vec![alpha.clone(), beta.clone()],
+            config: Config::default(),
+            interactive_config: InteractiveConfig::default(),
+            cluster_name: None,
+            key_path: Some(PathBuf::from("/explicit-identity")),
+            use_agent: true,
+            use_password: false,
+            ssh_password: None,
+            #[cfg(target_os = "macos")]
+            use_keychain: false,
+            strict_mode: StrictHostKeyChecking::No,
+            jump_hosts: None,
+            pty_config: PtyConfig::default(),
+            use_pty: None,
+            session_policy: None,
+            ssh_connection_config: fixed_config,
+            ssh_connection_config_resolver: Some(resolver),
+        };
+
+        (command, alpha, beta)
+    }
+
+    fn assert_distinct_alias_auth_policies(
+        command: &InteractiveCommand,
+        alpha: &Node,
+        beta: &Node,
+    ) {
+        let resolver = command.ssh_connection_config_resolver.as_ref();
+        let alpha_config =
+            interactive_target_connection_config(alpha, &command.ssh_connection_config, resolver);
+        let beta_config =
+            interactive_target_connection_config(beta, &command.ssh_connection_config, resolver);
+        let alpha_context = command.auth_context(alpha, &alpha_config).unwrap();
+        let beta_context = command.auth_context(beta, &beta_config).unwrap();
+
+        for context in [&alpha_context, &beta_context] {
+            assert_eq!(
+                context.key_path.as_deref(),
+                Some(std::path::Path::new("/explicit-identity"))
+            );
+            assert!(context.use_agent);
+            assert_eq!(
+                context.policy.cli_identity_files,
+                [PathBuf::from("/cli-identity")]
+            );
+        }
+        assert_eq!(
+            alpha_context.policy.identity_files,
+            [PathBuf::from("/alpha-identity")]
+        );
+        assert!(alpha_context.policy.identities_only);
+        assert!(!alpha_context.policy.password_authentication);
+        assert!(!alpha_context.policy.batch_mode);
+        assert_eq!(alpha_context.policy.number_of_password_prompts, 1);
+
+        assert_eq!(
+            beta_context.policy.identity_files,
+            [PathBuf::from("/beta-identity")]
+        );
+        assert!(!beta_context.policy.identities_only);
+        assert!(beta_context.policy.password_authentication);
+        assert!(beta_context.policy.batch_mode);
+        assert_eq!(beta_context.policy.number_of_password_prompts, 7);
+    }
+
+    #[tokio::test]
+    async fn connect_to_node_resolves_each_alias_auth_policy_before_authentication() {
+        // The shared fallback intentionally carries alpha's policy. The beta
+        // connection must still stop with beta's BatchMode decision before any
+        // network connection is attempted.
+        let (command, alpha, beta) = alias_auth_command("alpha");
+        assert_distinct_alias_auth_policies(&command, &alpha, &beta);
+
+        let error = match command.connect_to_node(beta).await {
+            Ok(_) => panic!("beta authentication policy must reject all methods"),
+            Err(error) => error,
+        };
+        let rendered = format!("{error:#}");
+        assert!(rendered.contains("disabled by BatchMode"), "{rendered}");
+        assert!(
+            !rendered.contains("disabled by PasswordAuthentication"),
+            "{rendered}"
+        );
+    }
+
+    #[tokio::test]
+    async fn connect_to_node_pty_resolves_each_alias_auth_policy_before_authentication() {
+        // Reverse the shared fallback. The alpha PTY path must use alpha's
+        // PasswordAuthentication policy instead of inheriting beta's BatchMode.
+        let (command, alpha, beta) = alias_auth_command("beta");
+        assert_distinct_alias_auth_policies(&command, &alpha, &beta);
+
+        let error = match command.connect_to_node_pty(alpha).await {
+            Ok(_) => panic!("alpha authentication policy must reject all methods"),
+            Err(error) => error,
+        };
+        let rendered = format!("{error:#}");
+        assert!(
+            rendered.contains("disabled by PasswordAuthentication"),
+            "{rendered}"
+        );
+        assert!(!rendered.contains("disabled by BatchMode"), "{rendered}");
+    }
 
     #[test]
     fn no_pty_shell_uses_bulk_ipqos_for_direct_and_jump_connections() {
