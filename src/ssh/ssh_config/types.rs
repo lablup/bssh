@@ -18,6 +18,8 @@ use std::collections::HashMap;
 use std::fmt;
 use std::path::PathBuf;
 
+use crate::forwarding::ForwardingDirective;
+
 /// Configuration block type
 #[derive(Debug, Clone, PartialEq)]
 pub enum ConfigBlock {
@@ -78,6 +80,8 @@ pub struct SshHostConfig {
     pub local_forward: Vec<String>,
     pub remote_forward: Vec<String>,
     pub dynamic_forward: Vec<String>,
+    /// Local, remote, and dynamic directives in source order.
+    pub forwarding_directives: Vec<ForwardingDirective>,
     pub request_tty: Option<String>,
     pub escape_char: Option<String>,
     pub log_level: Option<String>,

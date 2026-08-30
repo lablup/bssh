@@ -117,14 +117,23 @@ impl InteractiveCommand {
             Ok(())
         }
         .await;
-        for client in &clients {
-            client.flush_hostkey_updates().await;
-        }
-        session_result?;
+        let disconnect_result = Self::disconnect_clients(&clients).await;
 
         if requested_remote_pty {
             crate::pty::terminal::force_terminal_cleanup();
             let _ = std::io::Write::flush(&mut std::io::stdout());
+        }
+
+        match (session_result, disconnect_result) {
+            (Err(session_error), Err(disconnect_error)) => {
+                tracing::warn!(
+                    "Interactive session failed and SSH teardown also failed: {disconnect_error:#}"
+                );
+                return Err(session_error);
+            }
+            (Err(session_error), Ok(())) => return Err(session_error),
+            (Ok(()), Err(disconnect_error)) => return Err(disconnect_error),
+            (Ok(()), Ok(())) => {}
         }
 
         Ok(InteractiveResult {
@@ -132,6 +141,21 @@ impl InteractiveCommand {
             commands_executed: 0, // PTY mode doesn't count discrete commands
             nodes_connected,
         })
+    }
+
+    async fn disconnect_clients(clients: &[crate::ssh::tokio_client::Client]) -> Result<()> {
+        let mut first_error = None;
+        for client in clients {
+            if let Err(error) = client.disconnect().await {
+                let error = anyhow::Error::new(error).context("Failed to disconnect SSH session");
+                if first_error.is_none() {
+                    first_error = Some(error);
+                } else {
+                    tracing::warn!("Additional SSH teardown failure: {error:#}");
+                }
+            }
+        }
+        first_error.map_or(Ok(()), Err)
     }
 
     /// Execute traditional interactive session (existing implementation)

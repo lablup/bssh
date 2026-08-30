@@ -32,6 +32,30 @@ use tokio::sync::mpsc::Sender;
 const DEFAULT_COMMAND_TIMEOUT_SECS: u64 = 300;
 
 impl SshClient {
+    async fn finish_with_disconnect<T>(
+        &self,
+        client: &crate::ssh::tokio_client::Client,
+        operation: Result<T>,
+    ) -> Result<T> {
+        let disconnect = client.disconnect().await.with_context(|| {
+            format!(
+                "Failed to disconnect SSH connection from {}:{}",
+                self.host, self.port
+            )
+        });
+        match (operation, disconnect) {
+            (Err(operation_error), Err(disconnect_error)) => {
+                tracing::warn!(
+                    "SSH operation failed and connection teardown also failed: {disconnect_error:#}"
+                );
+                Err(operation_error)
+            }
+            (Err(operation_error), Ok(())) => Err(operation_error),
+            (Ok(_), Err(disconnect_error)) => Err(disconnect_error),
+            (Ok(value), Ok(())) => Ok(value),
+        }
+    }
+
     /// Execute a command on the remote host with basic configuration
     pub async fn connect_and_execute(
         &mut self,
@@ -127,20 +151,21 @@ impl SshClient {
             .await?;
 
         tracing::debug!("Connected and authenticated successfully");
-        if let Some(policy) = config.session_policy {
-            policy.run_local_command().await?;
-        }
-        tracing::debug!("Executing command: {}", command);
-
-        // Execute command with timeout
-        let result = self
-            .execute_with_timeout(
+        let operation = async {
+            if let Some(policy) = config.session_policy {
+                policy.run_local_command().await?;
+            }
+            tracing::debug!("Executing command: {}", command);
+            self.execute_with_timeout(
                 &client,
                 command,
                 config.timeout_seconds,
                 config.session_policy,
             )
-            .await?;
+            .await
+        }
+        .await;
+        let result = self.finish_with_disconnect(&client, operation).await?;
 
         tracing::debug!(
             "Command execution completed with status: {}",
@@ -263,21 +288,22 @@ impl SshClient {
             .await?;
 
         tracing::debug!("Connected and authenticated successfully");
-        if let Some(policy) = config.session_policy {
-            policy.run_local_command().await?;
-        }
-        tracing::debug!("Executing command with streaming: {}", command);
-
-        // Execute command with streaming and timeout
-        let exit_status = self
-            .execute_streaming_with_timeout(
+        let operation = async {
+            if let Some(policy) = config.session_policy {
+                policy.run_local_command().await?;
+            }
+            tracing::debug!("Executing command with streaming: {}", command);
+            self.execute_streaming_with_timeout(
                 &client,
                 command,
                 config.timeout_seconds,
                 output_sender,
                 config.session_policy,
             )
-            .await?;
+            .await
+        }
+        .await;
+        let exit_status = self.finish_with_disconnect(&client, operation).await?;
 
         tracing::debug!("Command execution completed with status: {}", exit_status);
 
@@ -405,14 +431,12 @@ impl SshClient {
             .await?;
 
         tracing::debug!("Connected and authenticated successfully");
-        if let Some(policy) = config.session_policy {
-            policy.run_local_command().await?;
-        }
-        tracing::debug!("Executing command with sudo support: {}", command);
-
-        // Execute command with sudo support and timeout
-        let exit_status = self
-            .execute_sudo_with_timeout(
+        let operation = async {
+            if let Some(policy) = config.session_policy {
+                policy.run_local_command().await?;
+            }
+            tracing::debug!("Executing command with sudo support: {}", command);
+            self.execute_sudo_with_timeout(
                 &client,
                 command,
                 config.timeout_seconds,
@@ -420,7 +444,10 @@ impl SshClient {
                 sudo_password,
                 config.session_policy,
             )
-            .await?;
+            .await
+        }
+        .await;
+        let exit_status = self.finish_with_disconnect(&client, operation).await?;
 
         tracing::debug!("Command execution completed with status: {}", exit_status);
 

@@ -298,7 +298,9 @@ impl JumpHostChain {
 
         // Step 2: Chain through intermediate jump hosts
         for (i, jump_host) in self.jump_hosts.iter().skip(1).enumerate() {
-            let ssh_connection_config = self.connection_config_for_host(&jump_host.host);
+            let ssh_connection_config = self
+                .connection_config_for_host(&jump_host.host)
+                .without_forwarding();
             debug!(
                 "Connecting to intermediate jump host {} of {}: {}",
                 i + 2,
@@ -374,7 +376,9 @@ impl JumpHostChain {
         use_password: bool,
     ) -> Result<crate::ssh::tokio_client::Client> {
         let jump_host = &self.jump_hosts[0];
-        let ssh_connection_config = self.connection_config_for_host(&jump_host.host);
+        let ssh_connection_config = self
+            .connection_config_for_host(&jump_host.host)
+            .without_forwarding();
 
         debug!(
             "Connecting to first jump host: {} ({}:{})",

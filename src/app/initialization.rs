@@ -137,6 +137,7 @@ pub fn looks_like_host_specification(s: &str) -> bool {
 pub async fn initialize_app(cli: &mut Cli, args: &[String]) -> Result<AppContext> {
     // Initialize logging
     init_logging(cli.verbose);
+    cli.record_forwarding_order(args);
     if let Some(path) = &cli.log_file {
         tracing::debug!(path = %path.display(), "Appending bssh diagnostics to log file");
     }

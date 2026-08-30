@@ -40,11 +40,20 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
+use tokio::task::JoinSet;
 use tokio::time::sleep;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 use uuid::Uuid;
+
+fn admit_connection(
+    stream: TcpStream,
+    semaphore: &Arc<Semaphore>,
+) -> Option<(TcpStream, OwnedSemaphorePermit)> {
+    let permit = Arc::clone(semaphore).try_acquire_owned().ok()?;
+    Some((stream, permit))
+}
 
 /// Local port forwarder implementation
 #[derive(Debug)]
@@ -260,6 +269,7 @@ impl LocalForwarder {
 
         // Create semaphore to limit concurrent connections
         let connection_semaphore = Arc::new(Semaphore::new(self.config.max_connections));
+        let mut connections = JoinSet::new();
 
         loop {
             tokio::select! {
@@ -270,8 +280,24 @@ impl LocalForwarder {
                             trace!("Accepted connection from {}", peer_addr);
                             self.stats.connections_accepted.fetch_add(1, Ordering::Relaxed);
 
+                            let Some((stream, connection_permit)) =
+                                admit_connection(stream, &connection_semaphore)
+                            else {
+                                warn!(
+                                    "Rejecting connection from {} because the local forwarding connection limit was reached",
+                                    peer_addr
+                                );
+                                self.stats.connections_failed.fetch_add(1, Ordering::Relaxed);
+                                continue;
+                            };
+
                             // Spawn connection handler
-                            self.spawn_connection_handler(stream, peer_addr, Arc::clone(&connection_semaphore));
+                            self.spawn_connection_handler(
+                                stream,
+                                peer_addr,
+                                connection_permit,
+                                &mut connections,
+                            );
                         }
                         Err(e) => {
                             error!("Failed to accept connection: {}", e);
@@ -282,6 +308,7 @@ impl LocalForwarder {
                         }
                     }
                 }
+                _ = connections.join_next(), if !connections.is_empty() => {}
                 // Handle cancellation
                 _ = self.cancel_token.cancelled() => {
                     info!("Local forwarding cancelled, stopping listener");
@@ -289,6 +316,9 @@ impl LocalForwarder {
                 }
             }
         }
+
+        connections.abort_all();
+        while connections.join_next().await.is_some() {}
 
         info!("Local forwarding stopped");
         Ok(())
@@ -299,7 +329,8 @@ impl LocalForwarder {
         &self,
         tcp_stream: TcpStream,
         peer_addr: SocketAddr,
-        connection_semaphore: Arc<Semaphore>,
+        connection_permit: OwnedSemaphorePermit,
+        connections: &mut JoinSet<()>,
     ) {
         let _session_id = self.session_id;
         let remote_host = self.remote_host.clone();
@@ -310,15 +341,8 @@ impl LocalForwarder {
         let buffer_size = self.config.buffer_size;
         let address_family = self.config.address_family;
 
-        tokio::spawn(async move {
-            // Acquire connection semaphore permit
-            let _permit = match connection_semaphore.acquire().await {
-                Ok(permit) => permit,
-                Err(_) => {
-                    warn!("Failed to acquire connection permit for {}", peer_addr);
-                    return;
-                }
-            };
+        connections.spawn(async move {
+            let _connection_permit = connection_permit;
 
             stats.active_connections.fetch_add(1, Ordering::Relaxed);
 
@@ -377,7 +401,7 @@ impl LocalForwarder {
         // Create SSH channel for this connection
         debug!("Creating SSH channel to {}:{}", remote_host, remote_port);
 
-        let target = format!("{remote_host}:{remote_port}");
+        let target = super::format_host_port(remote_host, remote_port);
         let ssh_channel = ssh_client
             .open_direct_tcpip_channel_with_family(target, None, address_family)
             .await
@@ -445,6 +469,7 @@ impl LocalForwarder {
 mod tests {
     use super::*;
     use std::net::{IpAddr, Ipv4Addr};
+    use tokio::io::AsyncReadExt;
     use tokio::sync::mpsc;
 
     #[tokio::test]
@@ -501,6 +526,46 @@ mod tests {
         assert_eq!(stats.connections_accepted.load(Ordering::Relaxed), 10);
         assert_eq!(stats.connections_failed.load(Ordering::Relaxed), 2);
         assert_eq!(stats.total_bytes_transferred.load(Ordering::Relaxed), 1024);
+    }
+
+    #[tokio::test]
+    async fn saturated_local_limit_rejects_immediately_and_recovers() {
+        let semaphore = Arc::new(Semaphore::new(1));
+        let active = Arc::clone(&semaphore)
+            .try_acquire_owned()
+            .expect("first local forwarding connection permit");
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind local saturation listener");
+        let address = listener.local_addr().expect("local saturation address");
+        let (saturated_client, saturated_server) =
+            tokio::join!(TcpStream::connect(address), listener.accept());
+        let mut saturated_client = saturated_client.expect("connect saturated local client");
+        let (saturated_server, _) = saturated_server.expect("accept saturated local client");
+
+        assert!(
+            admit_connection(saturated_server, &semaphore).is_none(),
+            "saturation must be detected before a local connection task is spawned"
+        );
+        let mut byte = [0_u8; 1];
+        let read = tokio::time::timeout(Duration::from_secs(1), saturated_client.read(&mut byte))
+            .await
+            .expect("saturated local socket must close immediately")
+            .expect("read saturated local socket");
+        assert_eq!(read, 0, "a rejected local socket must be dropped");
+
+        drop(active);
+        let (next_client, next_server) =
+            tokio::join!(TcpStream::connect(address), listener.accept());
+        let next_client = next_client.expect("connect later local client");
+        let (next_server, _) = next_server.expect("accept later local client");
+        let admitted = admit_connection(next_server, &semaphore);
+        assert!(
+            admitted.is_some(),
+            "permit release must admit a later local connection"
+        );
+        drop(admitted);
+        drop(next_client);
     }
 
     #[tokio::test]

@@ -10,10 +10,19 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::TcpStream;
-use tokio::sync::Semaphore;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, trace, warn};
 use uuid::Uuid;
+
+fn admit_connection(
+    stream: TcpStream,
+    semaphore: &Arc<Semaphore>,
+) -> Option<(TcpStream, OwnedSemaphorePermit)> {
+    let permit = Arc::clone(semaphore).try_acquire_owned().ok()?;
+    Some((stream, permit))
+}
 
 /// Handle SOCKS connection spawning and lifecycle
 pub struct ConnectionHandler {
@@ -52,7 +61,8 @@ impl ConnectionHandler {
         &self,
         tcp_stream: TcpStream,
         peer_addr: SocketAddr,
-        connection_semaphore: Arc<Semaphore>,
+        connection_permit: OwnedSemaphorePermit,
+        connections: &mut JoinSet<()>,
     ) {
         let _session_id = self.session_id;
         let socks_version = self.socks_version;
@@ -62,18 +72,8 @@ impl ConnectionHandler {
         let buffer_size = self.buffer_size;
         let address_family = self.address_family;
 
-        tokio::spawn(async move {
-            // Acquire connection semaphore permit
-            let _permit = match connection_semaphore.acquire().await {
-                Ok(permit) => permit,
-                Err(_) => {
-                    warn!(
-                        "Failed to acquire connection permit for SOCKS client {}",
-                        peer_addr
-                    );
-                    return;
-                }
-            };
+        connections.spawn(async move {
+            let _connection_permit = connection_permit;
 
             stats.inc_active();
 
@@ -160,6 +160,7 @@ impl ConnectionHandler {
         listener: tokio::net::TcpListener,
         connection_semaphore: Arc<Semaphore>,
     ) -> anyhow::Result<()> {
+        let mut connections = JoinSet::new();
         loop {
             tokio::select! {
                 // Accept new SOCKS connections
@@ -169,8 +170,24 @@ impl ConnectionHandler {
                             trace!("Accepted SOCKS connection from {}", peer_addr);
                             self.stats.inc_accepted();
 
+                            let Some((stream, connection_permit)) =
+                                admit_connection(stream, &connection_semaphore)
+                            else {
+                                warn!(
+                                    "Rejecting SOCKS client {} because the dynamic forwarding connection limit was reached",
+                                    peer_addr
+                                );
+                                self.stats.inc_failed();
+                                continue;
+                            };
+
                             // Spawn SOCKS connection handler
-                            self.spawn_handler(stream, peer_addr, Arc::clone(&connection_semaphore));
+                            self.spawn_handler(
+                                stream,
+                                peer_addr,
+                                connection_permit,
+                                &mut connections,
+                            );
                         }
                         Err(e) => {
                             error!("Failed to accept SOCKS connection: {}", e);
@@ -181,6 +198,7 @@ impl ConnectionHandler {
                         }
                     }
                 }
+                _ = connections.join_next(), if !connections.is_empty() => {}
                 // Handle cancellation
                 _ = self.cancel_token.cancelled() => {
                     debug!("SOCKS proxy cancelled, stopping listener");
@@ -189,6 +207,55 @@ impl ConnectionHandler {
             }
         }
 
+        connections.abort_all();
+        while connections.join_next().await.is_some() {}
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::Ipv4Addr;
+    use tokio::io::AsyncReadExt;
+
+    #[tokio::test]
+    async fn saturated_dynamic_limit_rejects_immediately_and_recovers() {
+        let semaphore = Arc::new(Semaphore::new(1));
+        let active = Arc::clone(&semaphore)
+            .try_acquire_owned()
+            .expect("first dynamic forwarding connection permit");
+        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind dynamic saturation listener");
+        let address = listener.local_addr().expect("dynamic saturation address");
+        let (saturated_client, saturated_server) =
+            tokio::join!(TcpStream::connect(address), listener.accept());
+        let mut saturated_client = saturated_client.expect("connect saturated SOCKS client");
+        let (saturated_server, _) = saturated_server.expect("accept saturated SOCKS client");
+
+        assert!(
+            admit_connection(saturated_server, &semaphore).is_none(),
+            "saturation must be detected before a SOCKS connection task is spawned"
+        );
+        let mut byte = [0_u8; 1];
+        let read = tokio::time::timeout(Duration::from_secs(1), saturated_client.read(&mut byte))
+            .await
+            .expect("saturated SOCKS socket must close immediately")
+            .expect("read saturated SOCKS socket");
+        assert_eq!(read, 0, "a rejected SOCKS socket must be dropped");
+
+        drop(active);
+        let (next_client, next_server) =
+            tokio::join!(TcpStream::connect(address), listener.accept());
+        let next_client = next_client.expect("connect later SOCKS client");
+        let (next_server, _) = next_server.expect("accept later SOCKS client");
+        let admitted = admit_connection(next_server, &semaphore);
+        assert!(
+            admitted.is_some(),
+            "permit release must admit a later SOCKS connection"
+        );
+        drop(admitted);
+        drop(next_client);
     }
 }

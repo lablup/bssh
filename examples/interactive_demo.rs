@@ -61,6 +61,7 @@ async fn main() -> anyhow::Result<()> {
         jump_hosts: None,
         pty_config: PtyConfig::default(),
         use_pty: None,
+        session_policy: None,
         ssh_connection_config: SshConnectionConfig::default(),
     };
 

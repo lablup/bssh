@@ -262,6 +262,7 @@ impl PdshCli {
         use std::path::PathBuf;
 
         super::Cli {
+            forwarding_order: Vec::new(),
             // Map -w hosts to -H hosts
             hosts: self.hosts.as_ref().map(|h| {
                 h.split(',')

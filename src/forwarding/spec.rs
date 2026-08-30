@@ -31,6 +31,55 @@ use std::net::{IpAddr, Ipv4Addr};
 pub struct ForwardingSpec;
 
 impl ForwardingSpec {
+    /// Accept both command-line colon syntax and ssh_config's two-argument
+    /// `listen connect` syntax.
+    fn normalize_stream_spec(spec: &str) -> Result<String> {
+        let fields: Vec<&str> = spec.split_whitespace().collect();
+        match fields.as_slice() {
+            [single] => Ok((*single).to_string()),
+            [listen, connect] => Ok(format!("{listen}:{connect}")),
+            _ => Err(anyhow::anyhow!(
+                "Invalid forwarding specification: '{spec}'. Expected one colon-form value or two ssh_config arguments"
+            )),
+        }
+    }
+
+    /// Split colon syntax without treating colons inside bracketed IPv6
+    /// literals as separators.
+    fn split_stream_fields(spec: &str) -> Result<Vec<String>> {
+        let mut fields = Vec::new();
+        let mut field = String::new();
+        let mut bracketed = false;
+        for character in spec.chars() {
+            match character {
+                '[' if !bracketed && field.is_empty() => bracketed = true,
+                ']' if bracketed => bracketed = false,
+                ':' if !bracketed => fields.push(std::mem::take(&mut field)),
+                _ => field.push(character),
+            }
+        }
+        if bracketed {
+            return Err(anyhow::anyhow!(
+                "Invalid forwarding specification '{spec}': unterminated IPv6 literal"
+            ));
+        }
+        fields.push(field);
+        if fields.iter().any(String::is_empty) {
+            return Err(anyhow::anyhow!(
+                "Invalid forwarding specification '{spec}': empty field"
+            ));
+        }
+        Ok(fields)
+    }
+
+    fn bind_spec(host: &str, port: &str) -> String {
+        if host.contains(':') {
+            format!("[{host}]:{port}")
+        } else {
+            format!("{host}:{port}")
+        }
+    }
+
     /// Parse local port forwarding specification (-L)
     ///
     /// Format: `[bind_address:]port:host:hostport`
@@ -44,7 +93,8 @@ impl ForwardingSpec {
     /// not name one: `-6` listens on `::1` instead of `127.0.0.1`. A spec that
     /// names a bind address explicitly overrides the flag.
     pub fn parse_local(spec: &str, address_family: AddressFamily) -> Result<ForwardingType> {
-        let parts: Vec<&str> = spec.split(':').collect();
+        let spec = Self::normalize_stream_spec(spec)?;
+        let parts = Self::split_stream_fields(&spec)?;
 
         match parts.len() {
             3 => {
@@ -52,7 +102,7 @@ impl ForwardingSpec {
                 let bind_port = parts[0]
                     .parse::<u16>()
                     .with_context(|| format!("Invalid local port: {}", parts[0]))?;
-                let remote_host = parts[1].to_string();
+                let remote_host = parts[1].clone();
                 let remote_port = parts[2]
                     .parse::<u16>()
                     .with_context(|| format!("Invalid remote port: {}", parts[2]))?;
@@ -66,9 +116,9 @@ impl ForwardingSpec {
             }
             4 => {
                 // Format: bind_address:port:host:hostport
-                let bind_spec = format!("{}:{}", parts[0], parts[1]);
+                let bind_spec = Self::bind_spec(&parts[0], &parts[1]);
                 let bind_addr = parse_bind_spec_with_family(&bind_spec, address_family)?;
-                let remote_host = parts[2].to_string();
+                let remote_host = parts[2].clone();
                 let remote_port = parts[3]
                     .parse::<u16>()
                     .with_context(|| format!("Invalid remote port: {}", parts[3]))?;
@@ -99,7 +149,8 @@ impl ForwardingSpec {
     /// flags therefore do not govern. The implicit default stays IPv4
     /// loopback; see issue #246 for the decision.
     pub fn parse_remote(spec: &str) -> Result<ForwardingType> {
-        let parts: Vec<&str> = spec.split(':').collect();
+        let spec = Self::normalize_stream_spec(spec)?;
+        let parts = Self::split_stream_fields(&spec)?;
 
         match parts.len() {
             3 => {
@@ -107,7 +158,7 @@ impl ForwardingSpec {
                 let bind_port = parts[0]
                     .parse::<u16>()
                     .with_context(|| format!("Invalid remote port: {}", parts[0]))?;
-                let local_host = parts[1].to_string();
+                let local_host = parts[1].clone();
                 let local_port = parts[2]
                     .parse::<u16>()
                     .with_context(|| format!("Invalid local port: {}", parts[2]))?;
@@ -121,9 +172,9 @@ impl ForwardingSpec {
             }
             4 => {
                 // Format: bind_address:port:host:hostport
-                let bind_spec = format!("{}:{}", parts[0], parts[1]);
+                let bind_spec = Self::bind_spec(&parts[0], &parts[1]);
                 let bind_addr = parse_bind_spec_with_family(&bind_spec, AddressFamily::Any)?;
-                let local_host = parts[2].to_string();
+                let local_host = parts[2].clone();
                 let local_port = parts[3]
                     .parse::<u16>()
                     .with_context(|| format!("Invalid local port: {}", parts[3]))?;
@@ -212,14 +263,10 @@ impl ForwardingSpec {
                 }
             }
             ForwardingType::Remote {
-                bind_port,
                 local_port,
                 local_host,
                 ..
             } => {
-                if *bind_port == 0 {
-                    return Err(anyhow::anyhow!("Remote bind port cannot be 0"));
-                }
                 if *local_port == 0 {
                     return Err(anyhow::anyhow!("Local port cannot be 0"));
                 }

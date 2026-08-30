@@ -22,17 +22,10 @@
 //! All traffic will be forwarded through the SSH connection with
 //! destinations determined by SOCKS requests.
 //!
-//! # Implementation Status
-//!
-//! **Placeholder Implementation**
-//! This is a placeholder implementation that provides the basic structure.
-//! The full SOCKS protocol implementation will be completed in a future update.
-//!
 //! # SOCKS Protocol Support
 //!
-//! **Planned Features:**
 //! - SOCKS4 protocol support
-//! - SOCKS5 protocol support with authentication
+//! - SOCKS5 `NO AUTHENTICATION REQUIRED` support
 //! - DNS resolution through remote connection
 //! - IPv4 and IPv6 destination support
 

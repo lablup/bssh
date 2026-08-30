@@ -114,6 +114,7 @@ impl Tunnel {
     ) -> Result<TunnelStats> {
         let stats = TunnelStats::new();
         let mut buffer = global::get_medium_buffer();
+        buffer.resize(buffer.capacity(), 0);
 
         debug!("Starting bidirectional tunnel");
 

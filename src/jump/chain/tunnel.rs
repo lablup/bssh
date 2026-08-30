@@ -183,6 +183,7 @@ pub(super) async fn connect_through_tunnel(
         ClientHandler::new_with_policy(jump_host.host.clone(), socket_addr, check_method, policy);
     let fatal_transport = handler.fatal_transport_state();
     let hostkey_rotation = handler.hostkey_rotation_tasks();
+    let remote_forward_registry = handler.remote_forward_registry();
 
     // Connect through the stream
     let handle = tokio::time::timeout(
@@ -239,6 +240,7 @@ pub(super) async fn connect_through_tunnel(
         socket_addr,
         fatal_transport,
         hostkey_rotation,
+        remote_forward_registry,
     )
     .await;
 
@@ -339,6 +341,7 @@ pub(super) async fn connect_to_destination(
     );
     let fatal_transport = handler.fatal_transport_state();
     let hostkey_rotation = handler.hostkey_rotation_tasks();
+    let remote_forward_registry = handler.remote_forward_registry();
 
     // Connect through the stream
     let handle = tokio::time::timeout(
@@ -383,8 +386,12 @@ pub(super) async fn connect_to_destination(
         socket_addr,
         fatal_transport,
         hostkey_rotation,
+        remote_forward_registry,
     )
     .await;
+    client
+        .initialize_forwarding(&ssh_connection_config.forwarding_plan)
+        .await?;
 
     Ok(client)
 }

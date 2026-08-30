@@ -72,13 +72,6 @@ impl DynamicForwarder {
 
     /// Main entry point for running dynamic port forwarding
     ///
-    /// **Implementation Note:**
-    /// This is currently a placeholder implementation. The full implementation
-    /// will include:
-    /// 1. SOCKS v4/v5 protocol parser
-    /// 2. SOCKS server with authentication support
-    /// 3. DNS resolution through remote connection
-    /// 4. Dynamic SSH channel creation per request
     pub async fn run(
         session_id: Uuid,
         spec: ForwardingType,

@@ -45,19 +45,28 @@ pub(super) fn parse_forwarding_option(
             if args.is_empty() {
                 anyhow::bail!("LocalForward requires a value at line {line_number}");
             }
-            host.local_forward.push(args.join(" "));
+            let value = args.join(" ");
+            host.local_forward.push(value.clone());
+            host.forwarding_directives
+                .push(crate::forwarding::ForwardingDirective::Local(value));
         }
         "remoteforward" => {
             if args.is_empty() {
                 anyhow::bail!("RemoteForward requires a value at line {line_number}");
             }
-            host.remote_forward.push(args.join(" "));
+            let value = args.join(" ");
+            host.remote_forward.push(value.clone());
+            host.forwarding_directives
+                .push(crate::forwarding::ForwardingDirective::Remote(value));
         }
         "dynamicforward" => {
             if args.is_empty() {
                 anyhow::bail!("DynamicForward requires a value at line {line_number}");
             }
-            host.dynamic_forward.push(args.join(" "));
+            let value = args.join(" ");
+            host.dynamic_forward.push(value.clone());
+            host.forwarding_directives
+                .push(crate::forwarding::ForwardingDirective::Dynamic(value));
         }
         "gatewayports" => {
             if args.is_empty() {
