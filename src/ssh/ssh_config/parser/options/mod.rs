@@ -29,9 +29,10 @@ mod security;
 mod support;
 mod ui;
 
+use super::diagnostic::{DiagnosticSource, escape_diagnostic_field};
 use crate::ssh::ssh_config::types::SshHostConfig;
 use anyhow::Result;
-use std::{collections::HashSet, path::Path};
+use std::collections::HashSet;
 
 /// Parse a configuration option for a host
 ///
@@ -41,17 +42,15 @@ pub fn parse_option(
     host: &mut SshHostConfig,
     accepted_keyword: &str,
     args: &[String],
-    source_path: Option<&Path>,
-    line_number: usize,
+    source: DiagnosticSource<'_>,
     reported_diagnostics: &mut HashSet<String>,
 ) -> Result<()> {
+    let line_number = source.number();
     let Some(spec) = support::keyword_spec(accepted_keyword) else {
         if reported_diagnostics.insert(format!("unknown:{accepted_keyword}")) {
-            let location = source_path.map_or_else(
-                || format!("line {line_number}"),
-                |path| format!("{}:{line_number}", path.display()),
-            );
-            crate::diagnosticln!("Unknown SSH config option '{accepted_keyword}' at {location}");
+            let keyword = escape_diagnostic_field(accepted_keyword);
+            let location = source.location();
+            crate::diagnosticln!("Unknown SSH config option '{keyword}' at {location}");
         }
         return Ok(());
     };
@@ -60,10 +59,7 @@ pub fn parse_option(
     if spec.support == support::KeywordSupport::Unimplemented
         && reported_diagnostics.insert(format!("unsupported:{keyword}"))
     {
-        let location = source_path.map_or_else(
-            || format!("line {line_number}"),
-            |path| format!("{}:{line_number}", path.display()),
-        );
+        let location = source.location();
         crate::diagnosticln!(
             "Unsupported SSH config option '{keyword}' at {location}; bssh parses this value for inspection but does not implement its runtime behavior"
         );

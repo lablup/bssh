@@ -25,6 +25,7 @@ use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::path::Path;
 
+use super::diagnostic::DiagnosticSource;
 use super::options;
 
 /// Parse SSH configuration content with Include and Match support
@@ -109,8 +110,7 @@ pub(crate) fn parse_cli_options(
             &mut overlay,
             &keyword,
             &args,
-            None,
-            option_number,
+            DiagnosticSource::CliOption { option_number },
             reported_diagnostics,
         )
         .with_context(|| format!("Invalid -o option #{option_number} ({keyword})"))?;
@@ -253,8 +253,10 @@ fn parse_lines<'a>(
                     &mut match_block.config,
                     &keyword,
                     &args,
-                    source_path,
-                    line_number,
+                    DiagnosticSource::Config {
+                        path: source_path,
+                        line_number,
+                    },
                     reported_diagnostics,
                 )
                 .with_context(|| format!("Error at line {line_number}: {line}"))?;
@@ -264,8 +266,10 @@ fn parse_lines<'a>(
                 config,
                 &keyword,
                 &args,
-                source_path,
-                line_number,
+                DiagnosticSource::Config {
+                    path: source_path,
+                    line_number,
+                },
                 reported_diagnostics,
             )
             .with_context(|| format!("Error at line {line_number}: {line}"))?;
@@ -283,8 +287,10 @@ fn parse_lines<'a>(
                 config,
                 &keyword,
                 &args,
-                source_path,
-                line_number,
+                DiagnosticSource::Config {
+                    path: source_path,
+                    line_number,
+                },
                 reported_diagnostics,
             )
             .with_context(|| format!("Error at line {line_number}: {line}"))?;
@@ -310,19 +316,11 @@ fn parse_option_first(
     target: &mut SshHostConfig,
     keyword: &str,
     args: &[String],
-    source_path: Option<&Path>,
-    line_number: usize,
+    source: DiagnosticSource<'_>,
     reported_diagnostics: &mut HashSet<String>,
 ) -> Result<()> {
     let mut parsed = SshHostConfig::default();
-    options::parse_option(
-        &mut parsed,
-        keyword,
-        args,
-        source_path,
-        line_number,
-        reported_diagnostics,
-    )?;
+    options::parse_option(&mut parsed, keyword, args, source, reported_diagnostics)?;
     merge_host_config(target, &parsed);
     Ok(())
 }

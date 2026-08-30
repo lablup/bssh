@@ -21,6 +21,7 @@
 //! - `tests`: Comprehensive test suite
 
 mod core;
+mod diagnostic;
 mod helpers;
 mod options;
 
