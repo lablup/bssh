@@ -17,7 +17,7 @@
 //! This module handles the Match directive which provides conditional configuration
 //! based on various criteria like hostname, username, and command execution results.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::collections::HashMap;
 
 use super::pattern::matches_host_pattern;
@@ -43,6 +43,10 @@ pub enum MatchCondition {
     Exec(String),
     /// Match all connections (always true)
     All,
+    /// Match the explicit final configuration pass.
+    Final,
+    /// Match the canonical/final pass without requesting it.
+    Canonical,
     /// Negation of one Match attribute.
     Negated(Box<MatchCondition>),
 }
@@ -94,6 +98,8 @@ pub struct MatchContext {
     pub local_user: String,
     /// Additional context variables for exec commands
     pub variables: HashMap<String, String>,
+    /// Whether this is OpenSSH's requested final configuration pass.
+    pub final_pass: bool,
 }
 
 impl MatchContext {
@@ -128,7 +134,13 @@ impl MatchContext {
             remote_user,
             local_user,
             variables,
+            final_pass: false,
         })
+    }
+
+    pub fn with_final_pass(mut self, final_pass: bool) -> Self {
+        self.final_pass = final_pass;
+        self
     }
 }
 
@@ -136,33 +148,25 @@ impl MatchCondition {
     /// Parse a Match directive line into conditions
     pub fn parse_match_line(line: &str, line_number: usize) -> Result<Vec<MatchCondition>> {
         let line = line.trim();
-
-        // Remove "Match" keyword (case-insensitive)
-        let conditions_str = if line.to_lowercase().starts_with("match ") {
-            &line[6..]
-        } else if let Some(pos) = line.find('=') {
-            // Match=conditions syntax
-            if line[..pos].trim().to_lowercase() == "match" {
-                line[pos + 1..].trim()
-            } else {
-                anyhow::bail!("Invalid Match directive at line {line_number}");
-            }
-        } else {
+        let boundary = line
+            .char_indices()
+            .find(|(_, ch)| ch.is_whitespace() || *ch == '=');
+        let Some((index, delimiter)) = boundary else {
             anyhow::bail!("Invalid Match directive at line {line_number}");
         };
-
-        if conditions_str.is_empty() {
+        if !line[..index].eq_ignore_ascii_case("match") {
+            anyhow::bail!("Invalid Match directive at line {line_number}");
+        }
+        let remainder = line[index + delimiter.len_utf8()..].trim_start();
+        let tokens = super::value::tokenize(remainder, line_number)?;
+        if tokens.is_empty() {
             anyhow::bail!("Match directive requires conditions at line {line_number}");
         }
-        let conditions_str = conditions_str
-            .find(" #")
-            .map_or(conditions_str, |comment| &conditions_str[..comment]);
-
-        // Parse conditions
         let mut conditions = Vec::new();
-        let mut parts = conditions_str.split_whitespace();
-
-        while let Some(token) = parts.next() {
+        let mut position = 0usize;
+        while position < tokens.len() {
+            let token = tokens[position].as_str();
+            position += 1;
             let (keyword, attached_pattern) = token
                 .split_once('=')
                 .map_or((token, None), |(keyword, value)| (keyword, Some(value)));
@@ -173,14 +177,14 @@ impl MatchCondition {
 
             match keyword_lower.as_str() {
                 "host" => {
-                    let patterns = collect_patterns(attached_pattern, &mut parts)?;
+                    let patterns = collect_patterns(attached_pattern, &tokens, &mut position);
                     if patterns.is_empty() {
                         anyhow::bail!("Match host requires patterns at line {line_number}");
                     }
                     push_condition(&mut conditions, MatchCondition::Host(patterns), negated);
                 }
                 "originalhost" => {
-                    let patterns = collect_patterns(attached_pattern, &mut parts)?;
+                    let patterns = collect_patterns(attached_pattern, &tokens, &mut position);
                     if patterns.is_empty() {
                         anyhow::bail!("Match originalhost requires patterns at line {line_number}");
                     }
@@ -191,14 +195,14 @@ impl MatchCondition {
                     );
                 }
                 "user" => {
-                    let patterns = collect_patterns(attached_pattern, &mut parts)?;
+                    let patterns = collect_patterns(attached_pattern, &tokens, &mut position);
                     if patterns.is_empty() {
                         anyhow::bail!("Match user requires patterns at line {line_number}");
                     }
                     push_condition(&mut conditions, MatchCondition::User(patterns), negated);
                 }
                 "localuser" => {
-                    let patterns = collect_patterns(attached_pattern, &mut parts)?;
+                    let patterns = collect_patterns(attached_pattern, &tokens, &mut position);
                     if patterns.is_empty() {
                         anyhow::bail!("Match localuser requires patterns at line {line_number}");
                     }
@@ -209,28 +213,27 @@ impl MatchCondition {
                     );
                 }
                 "exec" => {
-                    // Exec condition takes the rest of the line as command
-                    let remaining: Vec<&str> = parts.collect();
-                    if remaining.is_empty() {
-                        anyhow::bail!("Match exec requires a command at line {line_number}");
-                    }
-
-                    // Check if the command is quoted
-                    let exec_part = conditions_str
-                        [conditions_str.to_lowercase().find("exec").unwrap() + 4..]
-                        .trim();
-                    let command = if exec_part.starts_with('"') && exec_part.ends_with('"') {
-                        // Remove quotes
-                        exec_part[1..exec_part.len() - 1].to_string()
-                    } else {
-                        remaining.join(" ")
-                    };
-
+                    let command = attached_pattern
+                        .filter(|command| !command.is_empty())
+                        .map(str::to_string)
+                        .or_else(|| {
+                            let command = tokens.get(position).cloned();
+                            position += usize::from(command.is_some());
+                            command
+                        })
+                        .with_context(|| {
+                            format!("Match exec requires a command at line {line_number}")
+                        })?;
                     push_condition(&mut conditions, MatchCondition::Exec(command), negated);
-                    break; // Exec consumes the rest of the line
                 }
                 "all" => {
                     push_condition(&mut conditions, MatchCondition::All, negated);
+                }
+                "final" => {
+                    push_condition(&mut conditions, MatchCondition::Final, negated);
+                }
+                "canonical" => {
+                    push_condition(&mut conditions, MatchCondition::Canonical, negated);
                 }
                 _ => {
                     anyhow::bail!("Unknown Match condition '{keyword}' at line {line_number}");
@@ -271,6 +274,7 @@ impl MatchCondition {
                 // Always matches
                 Ok(true)
             }
+            MatchCondition::Final | MatchCondition::Canonical => Ok(context.final_pass),
             MatchCondition::Negated(condition) => Ok(!condition.matches(context)?),
         }
     }
@@ -287,8 +291,9 @@ fn push_condition(conditions: &mut Vec<MatchCondition>, condition: MatchConditio
 /// Collect patterns until the next keyword
 fn collect_patterns(
     attached: Option<&str>,
-    parts: &mut std::str::SplitWhitespace,
-) -> Result<Vec<String>> {
+    tokens: &[String],
+    position: &mut usize,
+) -> Vec<String> {
     let mut patterns: Vec<String> = attached
         .filter(|value| !value.is_empty())
         .map(|value| {
@@ -300,19 +305,16 @@ fn collect_patterns(
         })
         .unwrap_or_default();
 
-    // Peek at upcoming parts to collect patterns
-    let remaining: Vec<&str> = parts.clone().collect();
-
-    for part in remaining {
-        // Stop if we hit another Match keyword
+    while let Some(part) = tokens.get(*position) {
         let lower = part
+            .as_str()
             .split_once('=')
-            .map_or(part, |(keyword, _)| keyword)
+            .map_or(part.as_str(), |(keyword, _)| keyword)
             .trim_start_matches('!')
             .to_lowercase();
         if matches!(
             lower.as_str(),
-            "host" | "originalhost" | "user" | "localuser" | "exec" | "all"
+            "host" | "originalhost" | "user" | "localuser" | "exec" | "all" | "final" | "canonical"
         ) {
             break;
         }
@@ -322,11 +324,9 @@ fn collect_patterns(
                 .filter(|pattern| !pattern.is_empty())
                 .map(str::to_string),
         );
-        // Consume the part from the iterator
-        parts.next();
+        *position += 1;
     }
-
-    Ok(patterns)
+    patterns
 }
 
 #[cfg(test)]
@@ -352,6 +352,12 @@ mod tests {
         let conditions = MatchCondition::parse_match_line("Match all", 1).unwrap();
         assert_eq!(conditions.len(), 1);
         assert_eq!(conditions[0], MatchCondition::All);
+
+        let conditions = MatchCondition::parse_match_line("Match all\t# comment", 1).unwrap();
+        assert_eq!(conditions, [MatchCondition::All]);
+
+        let conditions = MatchCondition::parse_match_line("Match exec=\"test x = x\"", 1).unwrap();
+        assert_eq!(conditions, [MatchCondition::Exec("test x = x".to_string())]);
 
         // Test exec condition
         let conditions =

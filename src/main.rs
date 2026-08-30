@@ -62,6 +62,30 @@ async fn run() -> Result<()> {
         return run_pdsh_mode(&args).await;
     }
 
+    // Raw dispatch is required before Clap so SSH destinations named like
+    // bssh subcommands remain destinations. It also guarantees SSH-style
+    // error status and diagnostic routing for all `-G` parse failures.
+    if bssh::cli::SshDumpInvocation::requests_config_dump(&args) {
+        if let Some(path) = bssh::cli::SshDumpInvocation::diagnostic_file(&args)
+            && let Err(error) = bssh::utils::diagnostics::set_log_file(&path)
+        {
+            bssh::diagnosticln!("Error: {error:?}");
+            std::process::exit(255);
+        }
+        let invocation = match bssh::cli::SshDumpInvocation::from_argv(&args) {
+            Ok(invocation) => invocation,
+            Err(error) => {
+                bssh::diagnosticln!("Error: {error:?}");
+                std::process::exit(255);
+            }
+        };
+        if let Err(error) = handle_config_dump(&invocation).await {
+            bssh::diagnosticln!("Error: {error:?}");
+            std::process::exit(255);
+        }
+        return Ok(());
+    }
+
     // Standard bssh mode
     run_bssh_mode(&args).await
 }
@@ -282,12 +306,6 @@ async fn run_bssh_mode(args: &[String]) -> Result<()> {
 
     if let Some(path) = &cli.log_file {
         bssh::utils::diagnostics::set_log_file(path)?;
-    }
-
-    // `-G` uses the minimal diagnostic sink above, but remains before
-    // Backend.AI discovery, DNS, agents, prompts, proxies, and all networking.
-    if cli.print_config {
-        return handle_config_dump(&cli, args).await;
     }
 
     // Handle SSH query option (-Q)

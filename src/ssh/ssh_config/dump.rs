@@ -4,10 +4,8 @@
 // you may not use this file except in compliance with the License.
 //! OpenSSH-shaped resolved configuration rendering.
 
-use std::fmt::Write as _;
-use std::path::PathBuf;
-
 use anyhow::{Context, Result};
+use std::fmt::Write as _;
 
 use super::{IpQosPolicy, IpQosValue, RekeyDataLimit, RekeyLimit, RekeyTimeLimit, SshHostConfig};
 
@@ -120,6 +118,30 @@ pub fn render_resolved_config(original_host: &str, config: &SshHostConfig) -> Re
         "updatehostkeys",
         config.update_host_keys.as_deref().unwrap_or("yes"),
     )?;
+    output.line("canonicalizefallbacklocal", "yes")?;
+    output.line("canonicalizehostname", "false")?;
+    output.line(
+        "streamlocalbindunlink",
+        raw_option(config, "streamlocalbindunlink")
+            .as_deref()
+            .unwrap_or("no"),
+    )?;
+    output.line(
+        "tunnel",
+        raw_option(config, "tunnel").as_deref().unwrap_or("false"),
+    )?;
+    output.line(
+        "enableescapecommandline",
+        raw_option(config, "enableescapecommandline")
+            .as_deref()
+            .unwrap_or("no"),
+    )?;
+    output.line(
+        "warnweakcrypto",
+        raw_option(config, "warnweakcrypto")
+            .as_deref()
+            .unwrap_or("yes"),
+    )?;
 
     output.line(
         "connectionattempts",
@@ -143,6 +165,13 @@ pub fn render_resolved_config(original_host: &str, config: &SshHostConfig) -> Re
         config.server_alive_interval.unwrap_or(0),
     )?;
     output.line("requiredrsasize", config.required_rsa_size.unwrap_or(1024))?;
+    output.line("canonicalizemaxdots", 1)?;
+    output.line(
+        "obscurekeystroketiming",
+        raw_option(config, "obscurekeystroketiming")
+            .as_deref()
+            .unwrap_or("yes"),
+    )?;
 
     output.expanded("bindaddress", config.bind_address.as_deref(), &tokens)?;
     output.expanded("bindinterface", config.bind_interface.as_deref(), &tokens)?;
@@ -157,6 +186,18 @@ pub fn render_resolved_config(original_host: &str, config: &SshHostConfig) -> Re
     if let Some(value) = config.identity_agent.as_deref() {
         output.line("identityagent", tokens.expand_path(value)?)?;
     }
+    output.line(
+        "securitykeyprovider",
+        raw_option(config, "securitykeyprovider")
+            .as_deref()
+            .unwrap_or("$SSH_SK_PROVIDER"),
+    )?;
+    output.line(
+        "xauthlocation",
+        raw_option(config, "xauthlocation")
+            .as_deref()
+            .unwrap_or("/usr/bin/xauth"),
+    )?;
     output.expanded("localcommand", config.local_command.as_deref(), &tokens)?;
     output.expanded("remotecommand", config.remote_command.as_deref(), &tokens)?;
     output.expanded(
@@ -184,7 +225,11 @@ pub fn render_resolved_config(original_host: &str, config: &SshHostConfig) -> Re
     output.line("escapechar", config.escape_char.as_deref().unwrap_or("~"))?;
     output.line(
         "fingerprinthash",
-        config.fingerprint_hash.as_deref().unwrap_or("sha256"),
+        config
+            .fingerprint_hash
+            .as_deref()
+            .filter(|value| !value.eq_ignore_ascii_case("sha256"))
+            .unwrap_or("SHA256"),
     )?;
     output.line(
         "preferredauthentications",
@@ -203,11 +248,41 @@ pub fn render_resolved_config(original_host: &str, config: &SshHostConfig) -> Re
     )?;
     output.line(
         "casignaturealgorithms",
-        list_or(&config.ca_signature_algorithms, &pubkey_names(config)),
+        list_or(
+            &config.ca_signature_algorithms,
+            default_ca_signature_algorithms(),
+        ),
+    )?;
+    output.line("canonicaldomains", "none")?;
+    let revoked_host_keys = raw_option(config, "revokedhostkeys")
+        .map(|value| tokens.expand_path(&value))
+        .transpose()?
+        .unwrap_or_else(|| "none".to_string());
+    output.line("revokedhostkeys", revoked_host_keys)?;
+    output.args(
+        "logverbose",
+        &raw_option_args(config, "logverbose").unwrap_or_else(|| vec!["none".to_string()]),
+    )?;
+    output.args(
+        "channeltimeout",
+        &raw_option_args(config, "channeltimeout").unwrap_or_else(|| vec!["none".to_string()]),
+    )?;
+    output.line(
+        "tunneldevice",
+        raw_option(config, "tunneldevice")
+            .as_deref()
+            .unwrap_or("any:any"),
+    )?;
+    output.line("canonicalizepermittedcnames", "none")?;
+    output.line(
+        "streamlocalbindmask",
+        raw_option(config, "streamlocalbindmask")
+            .as_deref()
+            .unwrap_or("0177"),
     )?;
 
     for identity in identity_files(config) {
-        output.line("identityfile", identity.to_string_lossy())?;
+        output.line("identityfile", identity)?;
     }
     for certificate in &config.certificate_files {
         output.line("certificatefile", certificate.to_string_lossy())?;
@@ -218,17 +293,22 @@ pub fn render_resolved_config(original_host: &str, config: &SshHostConfig) -> Re
             "~/.ssh/known_hosts2".to_string(),
         ]
     });
-    output.line("userknownhostsfile", tokens.expand(&user_hosts.join(" "))?)?;
+    let user_hosts = user_hosts
+        .iter()
+        .map(|value| tokens.expand(value))
+        .collect::<Result<Vec<_>>>()?;
+    output.args("userknownhostsfile", &user_hosts)?;
     let global_hosts = config.global_known_hosts_file.clone().unwrap_or_else(|| {
         vec![
             "/etc/ssh/ssh_known_hosts".to_string(),
             "/etc/ssh/ssh_known_hosts2".to_string(),
         ]
     });
-    output.line(
-        "globalknownhostsfile",
-        tokens.expand(&global_hosts.join(" "))?,
-    )?;
+    let global_hosts = global_hosts
+        .iter()
+        .map(|value| tokens.expand(value))
+        .collect::<Result<Vec<_>>>()?;
+    output.args("globalknownhostsfile", &global_hosts)?;
     for value in &config.send_env {
         output.line("sendenv", value)?;
     }
@@ -237,23 +317,23 @@ pub fn render_resolved_config(original_host: &str, config: &SshHostConfig) -> Re
     for (name, value) in set_env {
         output.line("setenv", format!("{name}={}", tokens.expand(value)?))?;
     }
-    for value in &config.local_forward {
-        output.line("localforward", tokens.expand(value)?)?;
+    if !config.clear_all_forwardings.unwrap_or(false) {
+        for value in &config.local_forward {
+            output.args("localforward", &expanded_args(value, &tokens)?)?;
+        }
+        for value in &config.remote_forward {
+            output.args("remoteforward", &expanded_args(value, &tokens)?)?;
+        }
+        for value in &config.dynamic_forward {
+            output.args("dynamicforward", &expanded_args(value, &tokens)?)?;
+        }
     }
-    for value in &config.remote_forward {
-        output.line("remoteforward", tokens.expand(value)?)?;
-    }
-    for value in &config.dynamic_forward {
-        output.line("dynamicforward", tokens.expand(value)?)?;
-    }
-    output.line(
-        "permitremoteopen",
-        if config.permit_remote_open.is_empty() {
-            "any".to_string()
-        } else {
-            config.permit_remote_open.join(" ")
-        },
-    )?;
+    let permit_remote_open = if config.permit_remote_open.is_empty() {
+        vec!["any".to_string()]
+    } else {
+        config.permit_remote_open.clone()
+    };
+    output.args("permitremoteopen", &permit_remote_open)?;
     output.line(
         "addkeystoagent",
         config.add_keys_to_agent.as_deref().unwrap_or("no"),
@@ -262,15 +342,19 @@ pub fn render_resolved_config(original_host: &str, config: &SshHostConfig) -> Re
         "controlpersist",
         config.control_persist.as_deref().unwrap_or("no"),
     )?;
-    output.line("ipqos", format_ipqos(config.ipqos.unwrap_or_default()))?;
-    output.line(
+    output.args("ipqos", &format_ipqos(config.ipqos.unwrap_or_default()))?;
+    output.args(
         "rekeylimit",
-        format_rekey(config.rekey_limit.unwrap_or_default()),
+        &format_rekey(config.rekey_limit.unwrap_or_default()),
     )?;
 
     for (keyword, args) in &config.unimplemented_options {
         if !EMITTED_UNIMPLEMENTED.contains(&keyword.as_str()) {
-            output.line(keyword, tokens.expand(&args.join(" "))?)?;
+            let args = args
+                .iter()
+                .map(|value| tokens.expand(value))
+                .collect::<Result<Vec<_>>>()?;
+            output.args(keyword, &args)?;
         }
     }
     Ok(output.value)
@@ -305,6 +389,23 @@ const EMITTED_UNIMPLEMENTED: &[&str] = &[
     "stdinnull",
     "syslogfacility",
     "visualhostkey",
+    "canonicalizefallbacklocal",
+    "canonicalizehostname",
+    "canonicalizemaxdots",
+    "canonicaldomains",
+    "canonicalizepermittedcnames",
+    "channeltimeout",
+    "enableescapecommandline",
+    "logverbose",
+    "obscurekeystroketiming",
+    "revokedhostkeys",
+    "securitykeyprovider",
+    "streamlocalbindunlink",
+    "streamlocalbindmask",
+    "tunnel",
+    "tunneldevice",
+    "warnweakcrypto",
+    "xauthlocation",
 ];
 
 #[derive(Default)]
@@ -321,8 +422,35 @@ impl DumpWriter {
         {
             anyhow::bail!("Resolved SSH configuration contains an unsafe value");
         }
+        let value = super::value::encode(&value)?;
         writeln!(self.value, "{} {}", keyword.to_ascii_lowercase(), value)
             .context("Failed to format resolved SSH configuration")
+    }
+
+    fn args(&mut self, keyword: &str, values: &[String]) -> Result<()> {
+        if values.is_empty() {
+            anyhow::bail!("Resolved SSH configuration contains an empty argument list");
+        }
+        if keyword.is_empty()
+            || keyword.chars().any(|ch| !ch.is_ascii_alphanumeric())
+            || values
+                .iter()
+                .flat_map(|value| value.chars())
+                .any(char::is_control)
+        {
+            anyhow::bail!("Resolved SSH configuration contains an unsafe value");
+        }
+        let encoded = values
+            .iter()
+            .map(|value| super::value::encode(value))
+            .collect::<Result<Vec<_>>>()?;
+        writeln!(
+            self.value,
+            "{} {}",
+            keyword.to_ascii_lowercase(),
+            encoded.join(" ")
+        )
+        .context("Failed to format resolved SSH configuration")
     }
 
     fn bool(&mut self, keyword: &str, value: bool) -> Result<()> {
@@ -358,6 +486,14 @@ fn raw_option(config: &SshHostConfig, keyword: &str) -> Option<String> {
         .unimplemented_options
         .get(keyword)
         .map(|args| args.join(" "))
+}
+
+fn raw_option_args(config: &SshHostConfig, keyword: &str) -> Option<Vec<String>> {
+    config.unimplemented_options.get(keyword).cloned()
+}
+
+fn expanded_args(value: &str, tokens: &TokenContext) -> Result<Vec<String>> {
+    super::value::tokenize(&tokens.expand(value)?, 0)
 }
 
 fn list_or(values: &[String], default: &str) -> String {
@@ -429,31 +565,37 @@ fn pubkey_names(config: &SshHostConfig) -> String {
         .join(",")
 }
 
-fn identity_files(config: &SshHostConfig) -> Vec<PathBuf> {
-    if !config.identity_files.is_empty() {
-        return config.identity_files.clone();
-    }
-    let base = dirs::home_dir().unwrap_or_default().join(".ssh");
-    [
+fn identity_files(config: &SshHostConfig) -> Vec<String> {
+    let default_names = [
         "id_rsa",
         "id_ecdsa",
         "id_ecdsa_sk",
         "id_ed25519",
         "id_ed25519_sk",
-        "id_xmss",
-        "id_dsa",
-    ]
-    .into_iter()
-    .map(|name| base.join(name))
-    .collect()
+    ];
+    let is_expanded_default = dirs::home_dir().is_some_and(|home| {
+        config.identity_files.len() == default_names.len()
+            && config
+                .identity_files
+                .iter()
+                .zip(default_names)
+                .all(|(path, name)| path == &home.join(".ssh").join(name))
+    });
+    if !config.identity_files.is_empty() && !is_expanded_default {
+        return config
+            .identity_files
+            .iter()
+            .map(|path| path.to_string_lossy().into_owned())
+            .collect();
+    }
+    default_names
+        .into_iter()
+        .map(|name| format!("~/.ssh/{name}"))
+        .collect()
 }
 
-fn format_ipqos(policy: IpQosPolicy) -> String {
-    format!(
-        "{} {}",
-        qos_value(policy.interactive),
-        qos_value(policy.bulk)
-    )
+fn format_ipqos(policy: IpQosPolicy) -> Vec<String> {
+    vec![qos_value(policy.interactive), qos_value(policy.bulk)]
 }
 
 fn qos_value(value: IpQosValue) -> String {
@@ -486,7 +628,7 @@ fn qos_value(value: IpQosValue) -> String {
     }
 }
 
-fn format_rekey(limit: RekeyLimit) -> String {
+fn format_rekey(limit: RekeyLimit) -> Vec<String> {
     let data = match limit.data {
         RekeyDataLimit::Default => 0,
         RekeyDataLimit::Bytes(value) => value,
@@ -495,5 +637,9 @@ fn format_rekey(limit: RekeyLimit) -> String {
         RekeyTimeLimit::Default | RekeyTimeLimit::None => 0,
         RekeyTimeLimit::Seconds(value) => value,
     };
-    format!("{data} {time}")
+    vec![data.to_string(), time.to_string()]
+}
+
+fn default_ca_signature_algorithms() -> &'static str {
+    "ssh-ed25519,ecdsa-sha2-nistp256,ecdsa-sha2-nistp384,ecdsa-sha2-nistp521,sk-ssh-ed25519@openssh.com,sk-ecdsa-sha2-nistp256@openssh.com,webauthn-sk-ecdsa-sha2-nistp256@openssh.com,rsa-sha2-512,rsa-sha2-256"
 }

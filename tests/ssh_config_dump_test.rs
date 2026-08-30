@@ -3,11 +3,27 @@
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 
-use std::fs;
 use std::path::Path;
 use std::process::{Command, Output};
 
 use tempfile::tempdir;
+
+mod fs {
+    pub use std::fs::read_to_string;
+
+    pub fn write(
+        path: impl AsRef<std::path::Path>,
+        contents: impl AsRef<[u8]>,
+    ) -> std::io::Result<()> {
+        std::fs::write(&path, contents)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+        }
+        Ok(())
+    }
+}
 
 fn run(arguments: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_bssh"))
@@ -57,7 +73,10 @@ fn match_and_include_restore_parent_scope_for_destination() {
         .expect("include should be written");
     fs::write(
         &config,
-        "Host target\n  Include %h.conf\n  Port 2200\nMatch user=included originalhost=target # comment\n  IPQoS cs1\n",
+        format!(
+            "Host target\n  Include {}/%h.conf\n  Port 2200\nMatch user=included originalhost=target # comment\n  IPQoS cs1\n",
+            directory.path().display()
+        ),
     )
     .expect("config should be written");
 
@@ -100,7 +119,11 @@ fn explicit_log_receives_success_warnings_and_fatal_errors() {
     let root_config = directory.path().join("invalid.conf");
     let child_config = directory.path().join("invalid-child.conf");
     let error_log = directory.path().join("error.log");
-    fs::write(&root_config, "Include invalid-child.conf\n").expect("root config should be written");
+    fs::write(
+        &root_config,
+        format!("Include {}\n", child_config.display()),
+    )
+    .expect("root config should be written");
     fs::write(&child_config, "Junk yes\n").expect("child config should be written");
     let invalid = run(&[
         "-G",
@@ -225,4 +248,214 @@ fn inactive_include_scopes_validate_but_do_not_apply_values() {
             String::from_utf8_lossy(&output.stdout)
         );
     }
+}
+
+#[test]
+fn raw_dump_dispatch_treats_bssh_subcommand_names_as_destinations() {
+    for destination in ["list", "upload", "download", "ping"] {
+        let output = run(&["-GF", "none", destination]);
+        assert!(
+            output.status.success(),
+            "{destination}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains(&format!("host {destination}\n")));
+    }
+}
+
+#[test]
+fn normal_mode_stdio_forward_fails_closed_before_connecting() {
+    let output = run(&["-W", "localhost:22", "host"]);
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+}
+
+#[test]
+fn raw_dump_errors_use_status_255_and_post_destination_log_sink() {
+    for arguments in [
+        vec!["-GF", "none", "-Z", "host"],
+        vec!["-GF", "none", "host", "-Z", "value"],
+    ] {
+        let output = run(&arguments);
+        assert_eq!(output.status.code(), Some(255));
+    }
+
+    let directory = tempdir().unwrap();
+    let log = directory.path().join("argv-error.log");
+    let output = run(&["-GF", "none", "host", "-Z", "-E", path(&log)]);
+    assert_eq!(output.status.code(), Some(255));
+    assert!(output.stderr.is_empty());
+    assert!(
+        fs::read_to_string(log)
+            .unwrap()
+            .contains("Unknown option '-Z'")
+    );
+}
+
+#[test]
+fn stdio_forward_validates_ipv6_ports_and_services_without_dns() {
+    for target in ["[::1]:22", "host:ssh", "host:22"] {
+        let output = run(&["-GF", "none", "-W", target, "host"]);
+        assert!(
+            output.status.success(),
+            "{target}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    for target in ["::1:22", "host:0", "host:definitely-not-a-service"] {
+        let output = run(&["-GF", "none", "-W", target, "host"]);
+        assert_eq!(output.status.code(), Some(255), "{target}");
+    }
+}
+
+#[test]
+fn direct_algorithm_and_inverse_flags_have_openssh_priority() {
+    for arguments in [
+        [
+            "-GF",
+            "none",
+            "-o",
+            "Ciphers=aes256-ctr",
+            "-c",
+            "aes128-ctr",
+            "host",
+        ],
+        [
+            "-GF",
+            "none",
+            "-c",
+            "aes128-ctr",
+            "-o",
+            "Ciphers=aes256-ctr",
+            "host",
+        ],
+    ] {
+        let output = run(&arguments);
+        assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stdout).contains("ciphers aes128-ctr\n"));
+    }
+    for (flags, expected) in [("-GtT", "no"), ("-GTt", "yes")] {
+        let output = run(&["-F", "none", flags, "host"]);
+        assert!(output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains(&format!("requesttty {expected}\n"))
+        );
+    }
+}
+
+#[test]
+fn include_requires_an_exact_keyword_and_a_path() {
+    let directory = tempdir().unwrap();
+    for (name, content) in [
+        ("bare", "Include\n"),
+        ("prefix-space", "Included yes\n"),
+        ("prefix-equals", "Included=yes\n"),
+    ] {
+        let config = directory.path().join(name);
+        fs::write(&config, content).unwrap();
+        let output = run(&["-GF", path(&config), "host"]);
+        assert_eq!(output.status.code(), Some(255), "{name}");
+    }
+}
+
+#[test]
+fn match_exec_is_rejected_without_executing_its_command() {
+    let directory = tempdir().unwrap();
+    let config = directory.path().join("config");
+    let marker = directory.path().join("match-ran");
+    fs::write(
+        &config,
+        format!(
+            "Match exec=\"touch {}\"\n    User unsafe\n",
+            marker.display()
+        ),
+    )
+    .unwrap();
+
+    let output = run(&["-GF", path(&config), "host"]);
+    assert_eq!(output.status.code(), Some(255));
+    assert!(!marker.exists());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("side-effect-free -G"));
+}
+
+#[test]
+fn explicit_config_relative_includes_anchor_to_home_ssh() {
+    let directory = tempdir().unwrap();
+    let home = directory.path().join("home");
+    let ssh = home.join(".ssh");
+    let elsewhere = directory.path().join("elsewhere");
+    std::fs::create_dir_all(&ssh).unwrap();
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    fs::write(ssh.join("first.conf"), "Include nested.conf\n").unwrap();
+    fs::write(ssh.join("nested.conf"), "User anchored\n").unwrap();
+    fs::write(elsewhere.join("nested.conf"), "User wrong\n").unwrap();
+    let config = elsewhere.join("config");
+    fs::write(&config, "Include first.conf\n").unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_bssh"))
+        .env_remove("BSSH_PDSH_COMPAT")
+        .env_remove("RUST_LOG")
+        .env("HOME", &home)
+        .args(["-GF", path(&config), "host"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("user anchored\n"));
+}
+
+#[test]
+fn cli_hostname_and_user_drive_streaming_include_and_match_selection() {
+    let directory = tempdir().unwrap();
+    let home = directory.path().join("home");
+    let ssh = home.join(".ssh");
+    std::fs::create_dir_all(&ssh).unwrap();
+    fs::write(ssh.join("effective.example.conf"), "ConnectionAttempts 4\n").unwrap();
+    fs::write(ssh.join("user.conf"), "Port 2202\n").unwrap();
+    let config = directory.path().join("config");
+    fs::write(
+        &config,
+        "Include %h.conf\nMatch user cli-user\n    Include user.conf\n",
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_bssh"))
+        .env_remove("BSSH_PDSH_COMPAT")
+        .env_remove("RUST_LOG")
+        .env("HOME", &home)
+        .args([
+            "-GF",
+            path(&config),
+            "-o",
+            "HostName=effective.example",
+            "-l",
+            "cli-user",
+            "alias",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("hostname effective.example\n"));
+    assert!(stdout.contains("user cli-user\n"));
+    assert!(stdout.contains("connectionattempts 4\n"));
+    assert!(stdout.contains("port 2202\n"));
+}
+
+#[test]
+fn stdio_forward_clear_removes_rendered_explicit_forwards() {
+    let directory = tempdir().unwrap();
+    let config = directory.path().join("config");
+    fs::write(&config, "Host *\n    LocalForward 8080 localhost:80\n").unwrap();
+
+    let output = run(&["-GF", path(&config), "-W", "localhost:22", "host"]);
+    assert!(output.status.success());
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("localforward "));
 }

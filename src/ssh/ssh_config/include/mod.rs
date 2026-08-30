@@ -18,7 +18,6 @@
 //! from external files, supporting glob patterns and recursive includes.
 
 use anyhow::{Context, Result};
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use super::diagnostic::{escape_field, escape_path};
@@ -32,7 +31,7 @@ pub use resolver::{parse_include_line, resolve_include_pattern};
 pub use validation::{validate_glob_pattern, validate_include_path};
 
 /// Maximum include depth to prevent infinite recursion
-const MAX_INCLUDE_DEPTH: usize = 10;
+const MAX_INCLUDE_DEPTH: usize = 16;
 
 /// Maximum number of files that can be included (DoS prevention)
 const MAX_INCLUDED_FILES: usize = 100;
@@ -42,30 +41,33 @@ const MAX_INCLUDED_FILES: usize = 100;
 pub struct IncludeContext {
     /// Current recursion depth
     depth: usize,
-    /// Set of canonical paths already processed (cycle detection) - using string for efficiency
-    visited: HashSet<String>,
     /// Total number of files included so far
     file_count: usize,
-    /// Base directory for relative includes
-    pub base_dir: PathBuf,
-    /// LRU cache for canonicalized paths to avoid repeated filesystem operations
-    canonical_cache: std::collections::HashMap<PathBuf, PathBuf>,
+    /// Immutable OpenSSH origin for all nested relative Includes.
+    pub anchor: PathBuf,
 }
 
 impl IncludeContext {
     /// Create a new include context for the given config file
+    #[cfg_attr(not(test), allow(dead_code))]
     pub fn new(config_path: &Path) -> Self {
-        let base_dir = config_path
+        let anchor = config_path
             .parent()
             .unwrap_or_else(|| Path::new("/"))
             .to_path_buf();
 
         Self {
             depth: 0,
-            visited: HashSet::with_capacity(16), // Pre-allocate reasonable capacity
             file_count: 0,
-            base_dir,
-            canonical_cache: std::collections::HashMap::with_capacity(16),
+            anchor,
+        }
+    }
+
+    pub fn with_anchor(anchor: PathBuf) -> Self {
+        Self {
+            depth: 0,
+            file_count: 0,
+            anchor,
         }
     }
 
@@ -87,65 +89,18 @@ impl IncludeContext {
     }
 
     /// Enter a new include level
-    fn enter_include(&mut self, path: &Path) -> Result<(String, PathBuf)> {
+    fn enter_include(&mut self) -> Result<()> {
         self.can_include()?;
-
-        // Check cache first to avoid repeated canonicalization
-        let canonical = if let Some(cached) = self.canonical_cache.get(path) {
-            cached.clone()
-        } else if path.exists() {
-            // Canonicalize and cache the result
-            let canonical = path
-                .canonicalize()
-                .with_context(|| format!("Failed to canonicalize path: {}", escape_path(path)))?;
-            self.canonical_cache
-                .insert(path.to_path_buf(), canonical.clone());
-            canonical
-        } else {
-            // For non-existent files, try to at least make it absolute
-            if path.is_absolute() {
-                path.to_path_buf()
-            } else {
-                self.base_dir.join(path)
-            }
-        };
-
-        // Use string representation for more efficient cycle detection
-        let canonical_str = canonical.to_string_lossy().into_owned();
-
-        // Check for cycles
-        if self.visited.contains(&canonical_str) {
-            anyhow::bail!(
-                "Include cycle detected: {} has already been processed",
-                escape_path(path)
-            );
-        }
-
-        self.visited.insert(canonical_str.clone());
-        let previous_base_dir = self.base_dir.clone();
         self.depth += 1;
         self.file_count += 1;
-
-        // Update base directory for nested includes
-        if let Some(parent) = canonical.parent() {
-            self.base_dir = parent.to_path_buf();
-        }
-
-        // Clear cache if it gets too large to prevent unbounded memory growth
-        if self.canonical_cache.len() > 100 {
-            self.canonical_cache.clear();
-        }
-
-        Ok((canonical_str, previous_base_dir))
+        Ok(())
     }
 
     /// Exit an include level
-    fn exit_include(&mut self, canonical: &str, previous_base_dir: PathBuf) {
+    fn exit_include(&mut self) {
         if self.depth > 0 {
             self.depth -= 1;
         }
-        self.visited.remove(canonical);
-        self.base_dir = previous_base_dir;
     }
 }
 
@@ -175,25 +130,74 @@ pub async fn resolve_includes_for_host(
     content: &str,
     hostname: Option<&str>,
 ) -> Result<Vec<IncludedFile>> {
-    let mut context = IncludeContext::new(config_path);
+    let anchor = config_path
+        .parent()
+        .unwrap_or_else(|| Path::new("/"))
+        .to_path_buf();
+    resolve_includes_for_host_at(config_path, content, hostname, anchor).await
+}
 
-    // Mark the main file as visited to prevent cycles
-    let canonical = if config_path.exists() {
-        config_path.canonicalize().with_context(|| {
-            format!(
-                "Failed to canonicalize main config path: {}",
-                escape_path(config_path)
-            )
-        })?
-    } else {
-        config_path.to_path_buf()
-    };
-    context
-        .visited
-        .insert(canonical.to_string_lossy().into_owned());
+/// Resolve Includes relative to an immutable OpenSSH origin directory.
+pub(crate) async fn resolve_includes_for_host_at(
+    config_path: &Path,
+    content: &str,
+    hostname: Option<&str>,
+    anchor: PathBuf,
+) -> Result<Vec<IncludedFile>> {
+    resolve_includes_for_host_at_pass(config_path, content, hostname, anchor, None, None, false)
+        .await
+}
+
+pub(crate) async fn resolve_includes_for_host_at_pass(
+    config_path: &Path,
+    content: &str,
+    hostname: Option<&str>,
+    anchor: PathBuf,
+    effective_hostname: Option<&str>,
+    remote_user: Option<&str>,
+    final_pass: bool,
+) -> Result<Vec<IncludedFile>> {
+    let mut context = IncludeContext::with_anchor(anchor);
+    let mut expansion =
+        IncludeExpansionState::new(hostname, effective_hostname, remote_user, final_pass);
 
     // Process the main file with includes
-    process_file_with_includes(config_path, content, &mut context, hostname, "Host *", &[]).await
+    process_file_with_includes(
+        config_path,
+        content,
+        &mut context,
+        &mut expansion,
+        "Host *",
+        &[],
+        true,
+    )
+    .await
+}
+
+#[derive(Debug)]
+struct IncludeExpansionState {
+    original_hostname: Option<String>,
+    effective_hostname: Option<String>,
+    hostname_obtained: bool,
+    remote_user: Option<String>,
+    final_pass: bool,
+}
+
+impl IncludeExpansionState {
+    fn new(
+        hostname: Option<&str>,
+        effective_hostname: Option<&str>,
+        remote_user: Option<&str>,
+        final_pass: bool,
+    ) -> Self {
+        Self {
+            original_hostname: hostname.map(str::to_string),
+            effective_hostname: effective_hostname.or(hostname).map(str::to_string),
+            hostname_obtained: effective_hostname.is_some(),
+            remote_user: remote_user.map(str::to_string),
+            final_pass,
+        }
+    }
 }
 
 /// Process a file with Include directives, inserting included files at the correct positions
@@ -201,14 +205,16 @@ async fn process_file_with_includes(
     file_path: &Path,
     content: &str,
     context: &mut IncludeContext,
-    hostname: Option<&str>,
+    expansion: &mut IncludeExpansionState,
     inherited_scope: &str,
     scope_guards: &[String],
+    inherited_active: bool,
 ) -> Result<Vec<IncludedFile>> {
     let mut result = Vec::new();
     let mut current_content = String::new();
     let mut current_source_line = 1;
     let mut active_scope = inherited_scope.to_string();
+    let mut scope_active = inherited_active;
     let mut pending_scope_restore = false;
     let mut pending_initial_scope = context.depth > 0;
 
@@ -217,7 +223,7 @@ async fn process_file_with_includes(
         let trimmed = line.trim();
 
         // Check for Include directive
-        if let Some(patterns) = parse_include_line(trimmed) {
+        if let Some(patterns) = parse_include_line(trimmed)? {
             // Save current accumulated content as an IncludedFile (if not empty)
             if !current_content.is_empty() {
                 result.push(IncludedFile {
@@ -232,22 +238,27 @@ async fn process_file_with_includes(
 
             // Process each Include pattern
             for pattern in patterns {
-                let expanded_environment = expand_include_environment(pattern)?;
-                let expanded_pattern = hostname
+                let expanded_environment = expand_include_environment(&pattern)?;
+                let expanded_pattern = expansion
+                    .effective_hostname
+                    .as_deref()
                     .map_or_else(|| pattern.to_string(), |host| pattern.replace("%h", host));
                 let expanded_pattern = if expanded_environment == pattern {
                     expanded_pattern
                 } else {
-                    hostname.map_or(expanded_environment.clone(), |host| {
-                        expanded_environment.replace("%h", host)
-                    })
+                    expansion
+                        .effective_hostname
+                        .as_deref()
+                        .map_or(expanded_environment.clone(), |host| {
+                            expanded_environment.replace("%h", host)
+                        })
                 };
                 let resolved_files = resolve_include_pattern(&expanded_pattern, context)
                     .await
                     .with_context(|| {
                         format!(
                             "Failed to resolve Include pattern '{}' at line {} in {}",
-                            escape_field(pattern),
+                            escape_field(&pattern),
                             line_number,
                             escape_path(file_path)
                         )
@@ -255,10 +266,9 @@ async fn process_file_with_includes(
 
                 // Process each resolved file recursively
                 for include_path in resolved_files {
-                    let (canonical, previous_base_dir) =
-                        context.enter_include(&include_path).with_context(|| {
-                            format!("Failed to include file: {}", escape_path(&include_path))
-                        })?;
+                    context.enter_include().with_context(|| {
+                        format!("Failed to include file: {}", escape_path(&include_path))
+                    })?;
 
                     // Read with timeout to prevent hanging on network filesystems
                     let include_content = tokio::time::timeout(
@@ -286,16 +296,17 @@ async fn process_file_with_includes(
                         &include_path,
                         &include_content,
                         context,
-                        hostname,
+                        expansion,
                         &active_scope,
                         &child_guards,
+                        scope_active,
                     ))
                     .await?;
 
                     // Add all files from the included file to result
                     result.append(&mut included_files);
 
-                    context.exit_include(&canonical, previous_base_dir);
+                    context.exit_include();
                 }
             }
             pending_scope_restore = true;
@@ -334,6 +345,9 @@ async fn process_file_with_includes(
                 || lower.starts_with("match=")
             {
                 active_scope = trimmed.to_string();
+                scope_active = inherited_active && scope_matches(trimmed, expansion)?;
+            } else if scope_active {
+                update_expansion_state(trimmed, expansion)?;
             }
         }
     }
@@ -359,6 +373,76 @@ async fn process_file_with_includes(
     }
 
     Ok(result)
+}
+
+fn scope_matches(line: &str, state: &IncludeExpansionState) -> Result<bool> {
+    let Some(original_hostname) = state.original_hostname.as_deref() else {
+        return Ok(true);
+    };
+    let lower = line.trim_start().to_ascii_lowercase();
+    if lower.starts_with("host ") || lower.starts_with("host\t") || lower.starts_with("host=") {
+        let (_, patterns) = split_directive(line, 0)?;
+        return Ok(super::pattern::matches_host_pattern(
+            original_hostname,
+            &patterns,
+        ));
+    }
+    let conditions = super::match_directive::MatchCondition::parse_match_line(line, 0)?;
+    if conditions.iter().any(match_contains_exec) {
+        anyhow::bail!("Match exec cannot be evaluated in side-effect-free -G mode");
+    }
+    let context = super::match_directive::MatchContext::with_original_hostname(
+        state
+            .effective_hostname
+            .clone()
+            .unwrap_or_else(|| original_hostname.to_string()),
+        original_hostname.to_string(),
+        state.remote_user.clone(),
+    )?
+    .with_final_pass(state.final_pass);
+    let block = super::match_directive::MatchBlock {
+        conditions,
+        config: super::types::SshHostConfig::default(),
+        line_number: 0,
+    };
+    block.matches(&context)
+}
+
+fn match_contains_exec(condition: &super::match_directive::MatchCondition) -> bool {
+    match condition {
+        super::match_directive::MatchCondition::Exec(_) => true,
+        super::match_directive::MatchCondition::Negated(inner) => match_contains_exec(inner),
+        _ => false,
+    }
+}
+
+fn update_expansion_state(line: &str, state: &mut IncludeExpansionState) -> Result<()> {
+    let (keyword, args) = split_directive(line, 0)?;
+    if keyword == "hostname" && !state.hostname_obtained {
+        let value = args.first().context("HostName requires a value")?;
+        state.effective_hostname = Some(value.clone());
+        state.hostname_obtained = true;
+    } else if keyword == "user" && state.remote_user.is_none() {
+        state.remote_user = args.first().cloned();
+    }
+    Ok(())
+}
+
+fn split_directive(line: &str, line_number: usize) -> Result<(String, Vec<String>)> {
+    let line = line.trim();
+    let boundary = line
+        .char_indices()
+        .find(|(_, ch)| ch.is_whitespace() || *ch == '=');
+    let (keyword, remainder) = boundary.map_or((line, ""), |(index, delimiter)| {
+        (
+            &line[..index],
+            line[index + delimiter.len_utf8()..].trim_start(),
+        )
+    });
+    Ok((
+        keyword.to_ascii_lowercase(),
+        super::value::tokenize(remainder, line_number)?,
+    ))
 }
 
 fn expand_include_environment(pattern: &str) -> Result<String> {
@@ -411,8 +495,24 @@ pub fn combine_included_files(files: &[IncludedFile]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
     use tempfile::TempDir;
+
+    mod fs {
+        pub use std::fs::{Permissions, create_dir, create_dir_all, set_permissions};
+
+        pub fn write(
+            path: impl AsRef<std::path::Path>,
+            contents: impl AsRef<[u8]>,
+        ) -> std::io::Result<()> {
+            std::fs::write(&path, contents)?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
+            }
+            Ok(())
+        }
+    }
 
     #[tokio::test]
     async fn test_resolve_includes_simple() {
@@ -498,7 +598,8 @@ mod tests {
         assert!(
             err_chain.contains("cycle")
                 || err_chain.contains("already been processed")
-                || err_chain.contains("Include cycle"),
+                || err_chain.contains("Include cycle")
+                || err_chain.contains("depth"),
             "Expected cycle detection in error chain but got: {err_chain}"
         );
     }
@@ -712,5 +813,123 @@ mod tests {
         // Should have 1 file (main config only)
         assert_eq!(result.len(), 1);
         assert!(result[0].content.contains("Host example.com"));
+    }
+
+    #[tokio::test]
+    async fn nested_relative_includes_keep_the_origin_anchor() {
+        let temp_dir = TempDir::new().unwrap();
+        let anchor = temp_dir.path().join("anchor");
+        let elsewhere = temp_dir.path().join("elsewhere");
+        fs::create_dir_all(&anchor).unwrap();
+        fs::create_dir_all(&elsewhere).unwrap();
+        fs::write(anchor.join("first.conf"), "Include nested.conf\n").unwrap();
+        fs::write(
+            anchor.join("nested.conf"),
+            "Host target\n    User anchored\n",
+        )
+        .unwrap();
+        fs::write(
+            elsewhere.join("nested.conf"),
+            "Host target\n    User wrong\n",
+        )
+        .unwrap();
+        let main = elsewhere.join("config");
+        let content = "Include first.conf\n";
+        fs::write(&main, content).unwrap();
+
+        let files = resolve_includes_for_host_at(&main, content, Some("target"), anchor.clone())
+            .await
+            .unwrap();
+
+        assert!(
+            files
+                .iter()
+                .any(|file| file.path == anchor.join("nested.conf"))
+        );
+        assert!(
+            !files
+                .iter()
+                .any(|file| file.path == elsewhere.join("nested.conf"))
+        );
+    }
+
+    #[tokio::test]
+    async fn percent_h_uses_streaming_effective_hostname() {
+        let temp_dir = TempDir::new().unwrap();
+        let main = temp_dir.path().join("config");
+        let content = "Host alias\n    HostName effective.example\n    Include %h.conf\n";
+        fs::write(&main, content).unwrap();
+        fs::write(
+            temp_dir.path().join("effective.example.conf"),
+            "User effective\n",
+        )
+        .unwrap();
+        fs::write(temp_dir.path().join("alias.conf"), "User alias\n").unwrap();
+
+        let files = resolve_includes_for_host_at(
+            &main,
+            content,
+            Some("alias"),
+            temp_dir.path().to_path_buf(),
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            files
+                .iter()
+                .any(|file| file.path.ends_with("effective.example.conf"))
+        );
+        assert!(!files.iter().any(|file| file.path.ends_with("alias.conf")));
+    }
+
+    async fn resolve_include_chain(edge_count: usize) -> Result<Vec<IncludedFile>> {
+        let temp_dir = TempDir::new().unwrap();
+        let main = temp_dir.path().join("config");
+        let content = "Include level1.conf\n";
+        fs::write(&main, content).unwrap();
+        for level in 1..=edge_count {
+            let value = if level == edge_count {
+                "Host target\n".to_string()
+            } else {
+                format!("Include level{}.conf\n", level + 1)
+            };
+            fs::write(temp_dir.path().join(format!("level{level}.conf")), value).unwrap();
+        }
+        resolve_includes_for_host_at(
+            &main,
+            content,
+            Some("target"),
+            temp_dir.path().to_path_buf(),
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn include_depth_accepts_sixteen_edges_and_rejects_seventeen() {
+        assert!(resolve_include_chain(16).await.is_ok());
+        let error = resolve_include_chain(17).await.unwrap_err();
+        assert!(format!("{error:?}").contains("Maximum include depth (16)"));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn include_follows_safe_symlink_and_rejects_writable_target() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let temp_dir = TempDir::new().unwrap();
+        let main = temp_dir.path().join("config");
+        let target = temp_dir.path().join("target.conf");
+        let link = temp_dir.path().join("link.conf");
+        fs::write(&target, "Host target\n").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+        symlink(&target, &link).unwrap();
+        let content = format!("Include {}\n", link.display());
+        fs::write(&main, &content).unwrap();
+
+        assert!(resolve_includes(&main, &content).await.is_ok());
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o622)).unwrap();
+        let error = resolve_includes(&main, &content).await.unwrap_err();
+        assert!(format!("{error:?}").contains("Bad permissions"));
     }
 }

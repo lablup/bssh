@@ -8,26 +8,37 @@
 use std::io::Write as _;
 
 use anyhow::{Context, Result};
-use bssh::cli::{Cli, SshDumpInvocation};
+use bssh::cli::SshDumpInvocation;
 use bssh::ssh::ssh_config::{SshConfig, render_resolved_config};
 
 /// Resolve and print ssh_config without initializing any connection services.
-pub async fn handle_config_dump(cli: &Cli, args: &[String]) -> Result<()> {
-    let destination = cli
-        .destination
-        .as_deref()
-        .context("-G requires a destination")?;
-    let invocation = SshDumpInvocation::from_argv(args, destination)?;
+pub async fn handle_config_dump(invocation: &SshDumpInvocation) -> Result<()> {
     let mut config = match invocation.config_file.as_deref() {
         Some(path) if path.as_os_str() == "none" => SshConfig::new(),
-        Some(path) => SshConfig::load_from_file_for_host(path, &invocation.destination)
-            .await
-            .with_context(|| format!("Failed to load SSH config from {path:?}"))?,
-        None => SshConfig::load_default_for_host(&invocation.destination).await?,
+        Some(path) => SshConfig::load_from_file_for_host_with_options(
+            path,
+            &invocation.destination,
+            &invocation.overrides,
+        )
+        .await
+        .with_context(|| format!("Failed to load SSH config from {path:?}"))?,
+        None => {
+            SshConfig::load_default_for_host_with_options(
+                &invocation.destination,
+                &invocation.overrides,
+            )
+            .await?
+        }
     };
-    config
-        .apply_cli_options(&invocation.overrides)
-        .context("Failed to apply command-line SSH options")?;
+    if invocation
+        .config_file
+        .as_deref()
+        .is_some_and(|path| path.as_os_str() == "none")
+    {
+        config
+            .apply_cli_options(&invocation.overrides)
+            .context("Failed to apply command-line SSH options")?;
+    }
     if let Some(keyword) = config
         .hosts
         .iter()

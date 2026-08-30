@@ -19,7 +19,7 @@
 
 use super::match_directive::MatchContext;
 use super::pattern::matches_host_pattern;
-use super::types::{ConfigBlock, SshHostConfig};
+use super::types::{ConfigBlock, ConfigPass, SshHostConfig};
 use std::path::PathBuf;
 
 /// Find configuration for a specific hostname
@@ -37,7 +37,7 @@ pub(super) fn find_host_config_with_user(
     // Match host/user sees the effective HostName and remote user, as OpenSSH
     // does during its final configuration pass.
     let mut preliminary = SshHostConfig::default();
-    for host_config in hosts {
+    for host_config in hosts.iter().filter(|config| config.pass == ConfigPass::Any) {
         let current_hostname = preliminary
             .hostname
             .clone()
@@ -85,7 +85,7 @@ pub(super) fn find_host_config_with_user(
         }
     };
 
-    for host_config in hosts {
+    for host_config in hosts.iter().filter(|config| config.pass == ConfigPass::Any) {
         let should_apply = match &host_config.block_type {
             Some(ConfigBlock::Host(patterns)) => {
                 // For Host blocks, check pattern matching
@@ -122,7 +122,81 @@ pub(super) fn find_host_config_with_user(
         }
     }
 
+    if requests_final_pass(hosts) {
+        let final_hostname = merged_config
+            .hostname
+            .clone()
+            .unwrap_or_else(|| hostname.to_string());
+        let final_user = remote_user
+            .map(str::to_string)
+            .or_else(|| merged_config.user.clone())
+            .or_else(|| whoami::username().ok());
+        if MatchContext::with_original_hostname(final_hostname, hostname.to_string(), final_user)
+            .is_ok()
+        {
+            for host_config in hosts
+                .iter()
+                .filter(|config| config.pass == ConfigPass::FinalOnly)
+            {
+                let current_hostname = merged_config
+                    .hostname
+                    .clone()
+                    .unwrap_or_else(|| hostname.to_string());
+                let current_user = remote_user
+                    .map(str::to_string)
+                    .or_else(|| merged_config.user.clone())
+                    .or_else(|| whoami::username().ok());
+                let Ok(final_context) = MatchContext::with_original_hostname(
+                    current_hostname,
+                    hostname.to_string(),
+                    current_user,
+                ) else {
+                    break;
+                };
+                let final_context = final_context.with_final_pass(true);
+                let should_apply = match &host_config.block_type {
+                    Some(ConfigBlock::Host(patterns)) => matches_host_pattern(hostname, patterns),
+                    Some(ConfigBlock::Match(conditions)) => {
+                        conditions_match(conditions, &final_context)
+                    }
+                    None => matches_host_pattern(hostname, &host_config.host_patterns),
+                };
+                if should_apply && scopes_match(host_config, hostname, Some(&final_context)) {
+                    merge_host_config(&mut merged_config, host_config);
+                }
+            }
+        }
+    }
+
     merged_config
+}
+
+fn conditions_match(
+    conditions: &[super::match_directive::MatchCondition],
+    context: &MatchContext,
+) -> bool {
+    let block = super::match_directive::MatchBlock {
+        conditions: conditions.to_vec(),
+        config: SshHostConfig::default(),
+        line_number: 0,
+    };
+    block.matches(context).unwrap_or(false)
+}
+
+pub(super) fn requests_final_pass(hosts: &[SshHostConfig]) -> bool {
+    hosts.iter().any(|config| {
+        (match &config.block_type {
+            Some(ConfigBlock::Match(conditions)) => conditions.iter().any(requests_final),
+            _ => false,
+        }) || config.scope_guards.iter().any(|guard| match guard {
+            ConfigBlock::Match(conditions) => conditions.iter().any(requests_final),
+            ConfigBlock::Host(_) => false,
+        })
+    })
+}
+
+fn requests_final(condition: &super::match_directive::MatchCondition) -> bool {
+    matches!(condition, super::match_directive::MatchCondition::Final)
 }
 
 fn scopes_match(
@@ -169,9 +243,11 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
         base.port = overlay.port;
     }
     if !overlay.identity_files.is_empty() {
-        // For identity files, we append them
-        base.identity_files
-            .extend(overlay.identity_files.iter().cloned());
+        extend_for_pass(
+            &mut base.identity_files,
+            &overlay.identity_files,
+            overlay.pass,
+        );
     }
     // OpenSSH keeps the first obtained proxy directive. ProxyCommand and
     // ProxyJump compete for the same slot, so either one suppresses all later
@@ -256,7 +332,7 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
         base.resolved_macs = overlay.resolved_macs.clone();
     }
     if !overlay.send_env.is_empty() {
-        base.send_env.extend(overlay.send_env.iter().cloned());
+        extend_for_pass(&mut base.send_env, &overlay.send_env, overlay.pass);
     }
     for (name, value) in &overlay.set_env {
         base.set_env
@@ -264,20 +340,32 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
             .or_insert_with(|| value.clone());
     }
     if !overlay.local_forward.is_empty() {
-        base.local_forward
-            .extend(overlay.local_forward.iter().cloned());
+        extend_for_pass(
+            &mut base.local_forward,
+            &overlay.local_forward,
+            overlay.pass,
+        );
     }
     if !overlay.remote_forward.is_empty() {
-        base.remote_forward
-            .extend(overlay.remote_forward.iter().cloned());
+        extend_for_pass(
+            &mut base.remote_forward,
+            &overlay.remote_forward,
+            overlay.pass,
+        );
     }
     if !overlay.dynamic_forward.is_empty() {
-        base.dynamic_forward
-            .extend(overlay.dynamic_forward.iter().cloned());
+        extend_for_pass(
+            &mut base.dynamic_forward,
+            &overlay.dynamic_forward,
+            overlay.pass,
+        );
     }
     if !overlay.forwarding_directives.is_empty() {
-        base.forwarding_directives
-            .extend(overlay.forwarding_directives.iter().cloned());
+        extend_for_pass(
+            &mut base.forwarding_directives,
+            &overlay.forwarding_directives,
+            overlay.pass,
+        );
     }
     if base.request_tty.is_none() && overlay.request_tty.is_some() {
         base.request_tty = overlay.request_tty.clone();
@@ -464,6 +552,19 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
     }
     if base.fingerprint_hash.is_none() && overlay.fingerprint_hash.is_some() {
         base.fingerprint_hash = overlay.fingerprint_hash.clone();
+    }
+}
+
+fn extend_for_pass<T: Clone + PartialEq>(base: &mut Vec<T>, values: &[T], pass: ConfigPass) {
+    if pass == ConfigPass::FinalOnly {
+        let new_values = values
+            .iter()
+            .filter(|value| !base.contains(value))
+            .cloned()
+            .collect::<Vec<_>>();
+        base.extend(new_values);
+    } else {
+        base.extend(values.iter().cloned());
     }
 }
 

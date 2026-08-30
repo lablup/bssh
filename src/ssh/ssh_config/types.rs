@@ -31,9 +31,18 @@ pub enum ConfigBlock {
     Match(Vec<crate::ssh::ssh_config::match_directive::MatchCondition>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum ConfigPass {
+    #[default]
+    Any,
+    FinalOnly,
+}
+
 /// SSH configuration for a specific host or match block
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SshHostConfig {
+    /// Parsing pass in which this source block is eligible.
+    pub(crate) pass: ConfigPass,
     /// Parent Host/Match scopes active at an Include directive.
     pub(crate) scope_guards: Vec<ConfigBlock>,
     /// Block type (Host patterns or Match conditions)

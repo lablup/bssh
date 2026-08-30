@@ -45,6 +45,7 @@ mod security;
 #[cfg(test)]
 mod security_fix_tests;
 mod types;
+mod value;
 
 // Re-export public types
 pub use dump::render_resolved_config;
@@ -98,13 +99,13 @@ impl SshConfig {
         let mut config = Self::new();
         if let Some(home_dir) = dirs::home_dir() {
             let user_config = home_dir.join(".ssh").join("config");
-            if tokio::fs::try_exists(&user_config).await.unwrap_or(false) {
+            if path_exists(&user_config).await? {
                 config.append(Self::load_from_file(&user_config).await?);
             }
         }
 
         let system_config = Path::new("/etc/ssh/ssh_config");
-        if tokio::fs::try_exists(system_config).await.unwrap_or(false) {
+        if path_exists(system_config).await? {
             config.append(Self::load_from_file(system_config).await?);
         }
         Ok(config)
@@ -152,41 +153,113 @@ impl SshConfig {
 
     /// Load a file with host-dependent Include tokens resolved for `hostname`.
     pub async fn load_from_file_for_host<P: AsRef<Path>>(path: P, hostname: &str) -> Result<Self> {
+        Self::load_from_file_for_host_with_options(path, hostname, &[]).await
+    }
+
+    pub async fn load_from_file_for_host_with_options<P: AsRef<Path>>(
+        path: P,
+        hostname: &str,
+        options: &[String],
+    ) -> Result<Self> {
         let path = path.as_ref();
+        let anchor = dirs::home_dir()
+            .map(|home| home.join(".ssh"))
+            .or_else(|| path.parent().map(Path::to_path_buf))
+            .unwrap_or_else(|| PathBuf::from("/"));
+        let mut config = Self::new();
+        config.apply_cli_options(options)?;
+        let initial = config.find_host_config(hostname);
+        config
+            .append_file_for_host(
+                path,
+                hostname,
+                initial.hostname.as_deref(),
+                initial.user.as_deref(),
+                anchor,
+                false,
+            )
+            .await?;
+        Ok(config)
+    }
+
+    /// Load user and system configuration, in OpenSSH precedence order.
+    pub async fn load_default_for_host(hostname: &str) -> Result<Self> {
+        Self::load_default_for_host_with_options(hostname, &[]).await
+    }
+
+    pub async fn load_default_for_host_with_options(
+        hostname: &str,
+        options: &[String],
+    ) -> Result<Self> {
+        let mut config = Self::new();
+        config.apply_cli_options(options)?;
+        let initial = config.find_host_config(hostname);
+        let initial_hostname = initial.hostname;
+        let initial_user = initial.user;
+        if let Some(home_dir) = dirs::home_dir() {
+            let user_config = home_dir.join(".ssh").join("config");
+            if path_exists(&user_config).await? {
+                config
+                    .append_file_for_host(
+                        &user_config,
+                        hostname,
+                        initial_hostname.as_deref(),
+                        initial_user.as_deref(),
+                        home_dir.join(".ssh"),
+                        true,
+                    )
+                    .await?;
+            }
+        }
+        let system_config = Path::new("/etc/ssh/ssh_config");
+        if path_exists(system_config).await? {
+            let accumulated = config.find_host_config(hostname);
+            let accumulated_hostname = accumulated.hostname;
+            let accumulated_user = accumulated.user;
+            config
+                .append_file_for_host(
+                    system_config,
+                    hostname,
+                    accumulated_hostname.as_deref(),
+                    accumulated_user.as_deref(),
+                    PathBuf::from("/etc/ssh"),
+                    false,
+                )
+                .await?;
+        }
+        Ok(config)
+    }
+
+    async fn append_file_for_host(
+        &mut self,
+        path: &Path,
+        hostname: &str,
+        initial_hostname: Option<&str>,
+        initial_user: Option<&str>,
+        anchor: PathBuf,
+        check_top_permissions: bool,
+    ) -> Result<()> {
+        if check_top_permissions {
+            include::validate_include_path(path)?;
+        }
         let content = tokio::fs::read_to_string(path).await.with_context(|| {
             format!(
                 "Failed to read SSH config file: {}",
                 diagnostic::escape_path(path)
             )
         })?;
-        let mut reported_diagnostics = HashSet::new();
-        let hosts = parser::parse_from_file_for_host_with_diagnostics(
+        let hosts = parser::parse_from_file_for_host_at_with_diagnostics(
             path,
             &content,
             hostname,
-            &mut reported_diagnostics,
+            initial_hostname,
+            initial_user,
+            anchor,
+            &mut self.reported_diagnostics,
         )
         .await?;
-        Ok(Self {
-            hosts,
-            reported_diagnostics,
-        })
-    }
-
-    /// Load user and system configuration, in OpenSSH precedence order.
-    pub async fn load_default_for_host(hostname: &str) -> Result<Self> {
-        let mut config = Self::new();
-        if let Some(home_dir) = dirs::home_dir() {
-            let user_config = home_dir.join(".ssh").join("config");
-            if tokio::fs::try_exists(&user_config).await.unwrap_or(false) {
-                config.append(Self::load_from_file_for_host(&user_config, hostname).await?);
-            }
-        }
-        let system_config = Path::new("/etc/ssh/ssh_config");
-        if tokio::fs::try_exists(system_config).await.unwrap_or(false) {
-            config.append(Self::load_from_file_for_host(system_config, hostname).await?);
-        }
-        Ok(config)
+        self.hosts.extend(hosts);
+        Ok(())
     }
 
     fn append(&mut self, other: Self) {
@@ -378,10 +451,155 @@ impl SshConfig {
     }
 }
 
+async fn path_exists(path: &Path) -> Result<bool> {
+    match tokio::fs::metadata(path).await {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "Failed to inspect SSH config file: {}",
+                diagnostic::escape_path(path)
+            )
+        }),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    fn write_config(path: impl AsRef<Path>, content: &str) {
+        let path = path.as_ref();
+        std::fs::write(path, content).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn later_config_files_use_earlier_effective_include_context() {
+        let temp_dir = TempDir::new().unwrap();
+        let user_anchor = temp_dir.path().join("user");
+        let system_anchor = temp_dir.path().join("system");
+        std::fs::create_dir_all(&user_anchor).unwrap();
+        std::fs::create_dir_all(&system_anchor).unwrap();
+        let user = user_anchor.join("config");
+        let system = system_anchor.join("ssh_config");
+        write_config(
+            &user,
+            "Host alias\n    HostName effective.example\n    User selected\n",
+        );
+        write_config(
+            &system,
+            "Include %h.conf\nMatch user selected\n    Include selected.conf\n",
+        );
+        write_config(system_anchor.join("effective.example.conf"), "Port 2201\n");
+        write_config(
+            system_anchor.join("selected.conf"),
+            "ServerAliveInterval 9\n",
+        );
+
+        let mut config = SshConfig::new();
+        config
+            .append_file_for_host(&user, "alias", None, None, user_anchor, false)
+            .await
+            .unwrap();
+        let accumulated = config.find_host_config("alias");
+        config
+            .append_file_for_host(
+                &system,
+                "alias",
+                accumulated.hostname.as_deref(),
+                accumulated.user.as_deref(),
+                system_anchor,
+                false,
+            )
+            .await
+            .unwrap();
+
+        let resolved = config.find_host_config("alias");
+        assert_eq!(resolved.hostname.as_deref(), Some("effective.example"));
+        assert_eq!(resolved.user.as_deref(), Some("selected"));
+        assert_eq!(resolved.port, Some(2201));
+        assert_eq!(resolved.server_alive_interval, Some(9));
+    }
+
+    #[tokio::test]
+    async fn final_pass_reprocesses_percent_h_includes_and_preserves_first_values() {
+        #[cfg(unix)]
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp_dir = TempDir::new().unwrap();
+        let main = temp_dir.path().join("config");
+        let first_include = temp_dir.path().join("alias.conf");
+        let final_include = temp_dir.path().join("final.example.conf");
+        let content = "Host alias\n    Include %h.conf\nMatch final\n    HostName final.example\n";
+        std::fs::write(&main, content).unwrap();
+        std::fs::write(&first_include, "User first\n").unwrap();
+        std::fs::write(&final_include, "User second\nPort 2202\n").unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(&first_include, std::fs::Permissions::from_mode(0o600)).unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(&final_include, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let mut diagnostics = HashSet::new();
+
+        let hosts = parser::parse_from_file_for_host_at_with_diagnostics(
+            &main,
+            content,
+            "alias",
+            None,
+            None,
+            temp_dir.path().to_path_buf(),
+            &mut diagnostics,
+        )
+        .await
+        .unwrap();
+        let resolved = resolver::find_host_config(&hosts, "alias");
+
+        assert_eq!(resolved.user.as_deref(), Some("first"));
+        assert_eq!(resolved.hostname.as_deref(), Some("final.example"));
+        assert_eq!(resolved.port, Some(2202), "{hosts:#?}");
+    }
+
+    #[test]
+    fn canonical_only_activates_when_nonnegated_final_requests_second_pass() {
+        let without_final = SshConfig::parse("Match canonical\n    Port 2201\n").unwrap();
+        assert_eq!(without_final.find_host_config("host").port, None);
+
+        let with_final =
+            SshConfig::parse("Match canonical\n    Port 2201\nMatch final\n    User final-user\n")
+                .unwrap();
+        let resolved = with_final.find_host_config("host");
+        assert_eq!(resolved.port, Some(2201));
+        assert_eq!(resolved.user.as_deref(), Some("final-user"));
+    }
+
+    #[test]
+    fn final_pass_refreshes_user_and_hostname_before_each_match() {
+        let config = SshConfig::parse(
+            "Match final\n    User final-user\n    HostName final.example\nMatch user final-user host final.example\n    Port 2202\n",
+        )
+        .unwrap();
+        let resolved = config.find_host_config("alias");
+        assert_eq!(resolved.user.as_deref(), Some("final-user"));
+        assert_eq!(resolved.hostname.as_deref(), Some("final.example"));
+        assert_eq!(resolved.port, Some(2202));
+    }
+
+    #[test]
+    fn final_replay_does_not_duplicate_identical_additive_values() {
+        let config = SshConfig::parse(
+            "IdentityFile /tmp/key\nSendEnv LANG\nLocalForward 8080 localhost:80\nMatch final\n    User final\n",
+        )
+        .unwrap();
+        let resolved = config.find_host_config("host");
+        assert_eq!(resolved.identity_files.len(), 1);
+        assert_eq!(resolved.send_env, ["LANG"]);
+        assert_eq!(resolved.local_forward.len(), 1);
+    }
 
     #[test]
     fn test_parse_basic_host_config() {

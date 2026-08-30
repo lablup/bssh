@@ -17,6 +17,16 @@
 use super::core::*;
 use super::helpers::*;
 
+fn write_config(path: impl AsRef<std::path::Path>, contents: impl AsRef<[u8]>) {
+    let path = path.as_ref();
+    std::fs::write(path, contents).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+}
+
 #[test]
 fn test_parse_yes_no_values() {
     assert!(parse_yes_no("yes", 1).unwrap());
@@ -133,7 +143,7 @@ Host example.com
 
     assert_eq!(
         hosts[0].proxy_command,
-        Some("env SSH_SK_HELPER=\"/tmp/ssh-sk-helper\" nc %h %p".to_string())
+        Some("env SSH_SK_HELPER=/tmp/ssh-sk-helper nc %h %p".to_string())
     );
 }
 
@@ -148,7 +158,7 @@ fn equals_in_url_value_is_preserved_by_config_line_parser() {
         vec![
             "curl",
             "-s",
-            r#""https://api.example.com/keys?host=%H&format=ssh""#
+            "https://api.example.com/keys?host=%H&format=ssh"
         ]
     );
 }
@@ -316,7 +326,6 @@ fn test_parse_very_long_value() {
 #[tokio::test]
 async fn test_include_with_match_blocks() {
     use crate::ssh::ssh_config::types::ConfigBlock;
-    use std::fs;
     use tempfile::TempDir;
 
     let temp_dir = TempDir::new().unwrap();
@@ -331,7 +340,7 @@ Match host *.prod.example.com user admin
 Match localuser developer
     RequestTTY yes
 "#;
-    fs::write(&include_file, include_content).unwrap();
+    write_config(&include_file, include_content);
 
     // Create main config that includes the Match rules
     let main_config = temp_dir.path().join("config");
@@ -345,7 +354,7 @@ Host example.com
 "#,
         include_file.display()
     );
-    fs::write(&main_config, &main_content).unwrap();
+    write_config(&main_config, &main_content);
 
     // Parse the configuration
     let config = crate::ssh::ssh_config::SshConfig::load_from_file(&main_config)
@@ -385,26 +394,24 @@ Host example.com
 async fn test_nested_includes_with_match() {
     use crate::ssh::ssh_config::match_directive::MatchCondition;
     use crate::ssh::ssh_config::types::ConfigBlock;
-    use std::fs;
     use tempfile::TempDir;
 
     let temp_dir = TempDir::new().unwrap();
 
     // Create a deeply included file with Host config
     let deep_include = temp_dir.path().join("deep.conf");
-    fs::write(
+    write_config(
         &deep_include,
         r#"
 Host deep.example.com
     User deepuser
     Port 3333
 "#,
-    )
-    .unwrap();
+    );
 
     // Create a middle include with Match and Include
     let middle_include = temp_dir.path().join("middle.conf");
-    fs::write(
+    write_config(
         &middle_include,
         format!(
             r#"
@@ -416,12 +423,11 @@ Include {}
 "#,
             deep_include.display()
         ),
-    )
-    .unwrap();
+    );
 
     // Create main config
     let main_config = temp_dir.path().join("config");
-    fs::write(
+    write_config(
         &main_config,
         format!(
             r#"
@@ -435,8 +441,7 @@ Match all
 "#,
             middle_include.display()
         ),
-    )
-    .unwrap();
+    );
 
     // Parse the configuration
     let config = crate::ssh::ssh_config::SshConfig::load_from_file(&main_config)
@@ -1856,40 +1861,36 @@ Host proxy.example.com
 
 #[tokio::test]
 async fn test_includes_preserve_global_and_host_first_obtained_context() {
-    use std::fs;
     use tempfile::TempDir;
 
     let temp_dir = TempDir::new().unwrap();
     let nested = temp_dir.path().join("nested.conf");
-    fs::write(&nested, "Port 2200\nSetEnv ORDER=nested NESTED=yes\n").unwrap();
+    write_config(&nested, "Port 2200\nSetEnv ORDER=nested NESTED=yes\n");
 
     let global = temp_dir.path().join("global.conf");
-    fs::write(
+    write_config(
         &global,
         format!(
             "User include-first\nSetEnv ORDER=global GLOBAL=yes\nInclude {}\nPort 2300\nSetEnv ORDER=global-late\n",
             nested.display()
         ),
-    )
-    .unwrap();
+    );
 
     let host = temp_dir.path().join("host.conf");
-    fs::write(
+    write_config(
         &host,
         "HostName included.example.com\nSetEnv HOST_CONTEXT=yes\n",
-    )
-    .unwrap();
+    );
 
     let main = temp_dir.path().join("config");
-    fs::write(
+    write_config(
         &main,
         format!(
             "Include {}\nUser main-late\nSetEnv ORDER=main-late\n\nHost foo\n    HostKeyAlias caller-context\n    Include {}\n    HostName main-late.example.com\n",
             global.display(),
             host.display()
         ),
-    )
-    .unwrap();
+    );
 
     let config = crate::ssh::ssh_config::SshConfig::load_from_file(&main)
         .await
@@ -1915,18 +1916,16 @@ async fn test_includes_preserve_global_and_host_first_obtained_context() {
 
 #[tokio::test]
 async fn include_errors_use_structured_source_lines_not_source_comments() {
-    use std::fs;
     use tempfile::TempDir;
 
     let temp_dir = TempDir::new().unwrap();
     let included = temp_dir.path().join("included.conf");
-    fs::write(
+    write_config(
         &included,
         "# Source: /spoofed/config:9000\n# ordinary comment\nHost target\nConnectionAttempts 0\n",
-    )
-    .unwrap();
+    );
     let main = temp_dir.path().join("config");
-    fs::write(&main, format!("Include {}\n", included.display())).unwrap();
+    write_config(&main, format!("Include {}\n", included.display()));
 
     let error = crate::ssh::ssh_config::SshConfig::load_from_file(&main)
         .await

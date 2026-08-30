@@ -17,10 +17,12 @@
 //! This module contains the main parsing logic for SSH configurations,
 //! including the 2-pass parsing strategy for Include and Match directives.
 
-use crate::ssh::ssh_config::include::{IncludedFile, resolve_includes, resolve_includes_for_host};
+use crate::ssh::ssh_config::include::{
+    IncludedFile, resolve_includes, resolve_includes_for_host_at_pass,
+};
 use crate::ssh::ssh_config::match_directive::{MatchBlock, MatchCondition};
 use crate::ssh::ssh_config::resolver::merge_host_config;
-use crate::ssh::ssh_config::types::{ConfigBlock, SshHostConfig};
+use crate::ssh::ssh_config::types::{ConfigBlock, ConfigPass, SshHostConfig};
 use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::path::Path;
@@ -42,7 +44,7 @@ pub(crate) fn parse_with_diagnostics(
 ) -> Result<Vec<SshHostConfig>> {
     // For synchronous parsing without file path, we can't resolve includes
     // This maintains backward compatibility for tests and simple usage
-    parse_without_includes(content, reported_diagnostics)
+    parse_without_includes(content, reported_diagnostics).map(add_final_pass_configs)
 }
 
 /// Parse SSH configuration from a file with full Include support.
@@ -55,20 +57,73 @@ pub(crate) async fn parse_from_file_with_diagnostics(
     let included_files = resolve_includes(path, content)
         .await
         .with_context(|| format!("Failed to resolve includes for {}", escape_path(path)))?;
-    parse_included_files(&included_files, reported_diagnostics)
+    parse_included_files(&included_files, reported_diagnostics).map(add_final_pass_configs)
+}
+
+fn add_final_pass_configs(mut configs: Vec<SshHostConfig>) -> Vec<SshHostConfig> {
+    if !super::super::resolver::requests_final_pass(&configs) {
+        return configs;
+    }
+    let mut final_pass = configs.clone();
+    for config in &mut final_pass {
+        config.pass = ConfigPass::FinalOnly;
+    }
+    configs.extend(final_pass);
+    configs
 }
 
 /// Parse a config file while resolving host-dependent Include paths.
-pub(crate) async fn parse_from_file_for_host_with_diagnostics(
+pub(crate) async fn parse_from_file_for_host_at_with_diagnostics(
     path: &Path,
     content: &str,
     hostname: &str,
+    initial_hostname: Option<&str>,
+    initial_user: Option<&str>,
+    anchor: std::path::PathBuf,
     reported_diagnostics: &mut HashSet<String>,
 ) -> Result<Vec<SshHostConfig>> {
-    let included_files = resolve_includes_for_host(path, content, Some(hostname))
-        .await
-        .with_context(|| format!("Failed to resolve includes for {}", escape_path(path)))?;
-    parse_included_files(&included_files, reported_diagnostics)
+    let included_files = resolve_includes_for_host_at_pass(
+        path,
+        content,
+        Some(hostname),
+        anchor.clone(),
+        initial_hostname,
+        initial_user,
+        false,
+    )
+    .await
+    .with_context(|| format!("Failed to resolve includes for {}", escape_path(path)))?;
+    let first_pass = parse_included_files(&included_files, reported_diagnostics)?;
+    if !super::super::resolver::requests_final_pass(&first_pass) {
+        return Ok(first_pass);
+    }
+    let preliminary_source = add_final_pass_configs(first_pass.clone());
+    let preliminary = super::super::resolver::find_host_config(&preliminary_source, hostname);
+    let effective_hostname = initial_hostname.or(preliminary.hostname.as_deref());
+    let effective_user = initial_user.or(preliminary.user.as_deref());
+    let final_files = resolve_includes_for_host_at_pass(
+        path,
+        content,
+        Some(hostname),
+        anchor,
+        effective_hostname,
+        effective_user,
+        true,
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "Failed to resolve final-pass includes for {}",
+            escape_path(path)
+        )
+    })?;
+    let mut final_pass = parse_included_files(&final_files, reported_diagnostics)?;
+    for config in &mut final_pass {
+        config.pass = ConfigPass::FinalOnly;
+    }
+    let mut combined = first_pass;
+    combined.extend(final_pass);
+    Ok(combined)
 }
 
 /// Parse SSH configuration content without Include resolution
@@ -180,8 +235,8 @@ fn parse_lines<'a>(
         // Get lowercase version of line for keyword detection
         let lower_line = line.to_lowercase();
 
-        // Check for Include directive (should have been resolved in pass 1)
-        if lower_line.starts_with("include") {
+        // Check for exact Include directive (should have been resolved in pass 1).
+        if super::super::include::parse_include_line(line)?.is_some() {
             // In direct parsing mode, we skip Include directives
             tracing::debug!(
                 "Skipping Include directive at line {} (not in file mode)",
@@ -362,38 +417,13 @@ fn parse_option_first(
 
 /// Parse a Host directive line
 pub(super) fn parse_host_line(line: &str, line_number: usize) -> Result<Vec<String>> {
-    let line = line.trim();
-
-    // Support both "Host pattern" and "Host=pattern" syntax
-    let patterns_str = if let Some(pos) = line.find('=') {
-        // Host=pattern syntax
-        if line[..pos].trim().to_lowercase() != "host" {
-            anyhow::bail!("Invalid Host directive at line {line_number}");
-        }
-        line[pos + 1..].trim()
-    } else {
-        // Host pattern syntax
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.is_empty() || parts[0].to_lowercase() != "host" {
-            anyhow::bail!("Invalid Host directive at line {line_number}");
-        }
-        if parts.len() < 2 {
-            anyhow::bail!("Host directive requires at least one pattern at line {line_number}");
-        }
-        // Join all parts after "Host"
-        line[parts[0].len()..].trim()
-    };
-
-    if patterns_str.is_empty() {
+    let (keyword, patterns) = parse_config_line(line, line_number, 4096)?;
+    if keyword != "host" {
+        anyhow::bail!("Invalid Host directive at line {line_number}");
+    }
+    if patterns.is_empty() {
         anyhow::bail!("Host directive requires at least one pattern at line {line_number}");
     }
-
-    // Split into individual patterns
-    let patterns: Vec<String> = patterns_str
-        .split_whitespace()
-        .map(|s| s.to_string())
-        .collect();
-
     Ok(patterns)
 }
 
@@ -404,66 +434,48 @@ pub(super) fn parse_config_line(
     max_value_length: usize,
 ) -> Result<(String, Vec<String>)> {
     let line = line.trim();
-
-    // Determine if using equals syntax
-    let eq_pos = line.find('=');
-    let uses_equals_syntax = if let Some(pos) = eq_pos {
-        // Only an equals sign immediately following the option name selects
-        // Option=Value syntax. Values such as `ProxyCommand env FOO=bar`
-        // must stay in the ordinary whitespace-separated form.
-        let key_candidate = line[..pos].trim();
-        let equals_follows_option =
-            !key_candidate.is_empty() && !key_candidate.chars().any(char::is_whitespace);
-        // Host and Match never use equals syntax
-        equals_follows_option && !matches!(key_candidate.to_lowercase().as_str(), "host" | "match")
-    } else {
-        false
+    let boundary = line
+        .char_indices()
+        .find(|(_, ch)| ch.is_whitespace() || *ch == '=');
+    let (keyword, remainder, equals) = match boundary {
+        Some((index, delimiter)) => {
+            let mut remainder = line[index + delimiter.len_utf8()..].trim_start();
+            let mut equals = delimiter == '=';
+            if !equals && let Some(after_equals) = remainder.strip_prefix('=') {
+                remainder = after_equals.trim_start();
+                equals = true;
+            }
+            (&line[..index], remainder, equals)
+        }
+        None => (line, "", false),
     };
-
-    let (keyword, args) = if let Some(pos) = eq_pos.filter(|_| uses_equals_syntax) {
-        // Option=Value syntax
-        let key_part = line[..pos].trim();
-        let value_part = &line[pos + 1..];
-
-        if key_part.is_empty() {
-            return Ok((String::new(), vec![]));
-        }
-
-        let trimmed_value = value_part.trim();
-
-        // Security: Check value length
-        if trimmed_value.len() > max_value_length {
-            anyhow::bail!(
-                "Value at line {line_number} exceeds maximum length of {max_value_length} bytes"
-            );
-        }
-
-        let args = if trimmed_value.is_empty() {
-            vec![]
-        } else {
-            // Special handling for comma-separated options
-            match key_part.to_lowercase().as_str() {
-                "ciphers"
+    if keyword.is_empty() {
+        return Ok((String::new(), Vec::new()));
+    }
+    if remainder.len() > max_value_length {
+        anyhow::bail!(
+            "Value at line {line_number} exceeds maximum length of {max_value_length} bytes"
+        );
+    }
+    let keyword = keyword.to_ascii_lowercase();
+    let mut args = super::super::value::tokenize(remainder, line_number)?;
+    if equals
+        && matches!(
+            keyword.as_str(),
+            "ciphers"
                 | "macs"
                 | "hostkeyalgorithms"
                 | "kexalgorithms"
                 | "preferredauthentications"
-                | "protocol" => trimmed_value
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .collect(),
-                _ => vec![trimmed_value.to_string()],
-            }
-        };
-
-        (key_part.to_lowercase(), args)
-    } else {
-        // Option Value syntax (space-separated)
-        let mut parts = line.split_whitespace();
-        let keyword = parts.next().unwrap_or("").to_lowercase();
-        let args: Vec<String> = parts.map(|s| s.to_string()).collect();
-        (keyword, args)
-    };
-
+                | "protocol"
+        )
+    {
+        args = args
+            .iter()
+            .flat_map(|value| value.split(','))
+            .map(str::trim)
+            .map(str::to_string)
+            .collect();
+    }
     Ok((keyword, args))
 }

@@ -15,7 +15,7 @@
 //! Security validation for Include directive
 
 use anyhow::{Context, Result};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use super::super::diagnostic::{escape_field, escape_path};
 
@@ -52,102 +52,32 @@ pub fn validate_glob_pattern(pattern: &str) -> Result<()> {
     Ok(())
 }
 
-/// Check if a path is in an allowed directory
-#[cfg(not(test))]
-pub fn is_path_allowed(path: &Path) -> bool {
-    let allowed_prefixes = [
-        dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")),
-        PathBuf::from("/etc/ssh"),
-        PathBuf::from("/usr/local/etc/ssh"),
-        std::env::temp_dir(), // Allow temp directories for testing
-    ];
-
-    allowed_prefixes
-        .iter()
-        .any(|prefix| path.starts_with(prefix))
-}
-
 /// Validate an include file path for security
 pub fn validate_include_path(path: &Path) -> Result<()> {
-    // Check if file exists
-    if !path.exists() {
-        // Non-existent files are silently ignored per SSH spec
-        return Ok(());
-    }
-
-    // Get metadata without following symlinks
-    let metadata = std::fs::symlink_metadata(path)
-        .with_context(|| format!("Failed to get metadata for {}", escape_path(path)))?;
-
-    // Reject symbolic links for security
-    if metadata.is_symlink() {
-        anyhow::bail!(
-            "Include path {} is a symbolic link. Symlinks are not allowed for security reasons.",
-            escape_path(path)
-        );
-    }
+    // Follow symlinks and validate the opened target, as OpenSSH does via fstat.
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("Failed to get metadata for {}", escape_path(path)));
+        }
+    };
 
     // Check if it's a regular file
     if !metadata.is_file() {
         anyhow::bail!("Include path is not a regular file: {}", escape_path(path));
     }
 
-    // Canonicalize and verify the path doesn't escape expected directories
-    let canonical = path
-        .canonicalize()
-        .with_context(|| format!("Failed to canonicalize {}", escape_path(path)))?;
-
-    // Check for directory traversal attempts
-    let path_str = canonical.to_string_lossy();
-    if path_str.contains("../") || path_str.contains("..\\") {
-        anyhow::bail!(
-            "Include path {} contains directory traversal sequences",
-            escape_path(path)
-        );
-    }
-
-    // Restrict includes to safe directories
-    let safe_prefixes = [
-        dirs::home_dir().unwrap_or_else(|| PathBuf::from("/")),
-        PathBuf::from("/etc/ssh"),
-        PathBuf::from("/usr/local/etc/ssh"),
-        std::env::temp_dir(), // Allow temp directories for testing
-    ];
-
-    let is_safe = safe_prefixes
-        .iter()
-        .any(|prefix| canonical.starts_with(prefix));
-
-    if !is_safe {
-        tracing::warn!(
-            "Include path {} is outside of standard SSH config directories. This may be a security risk.",
-            escape_path(&canonical)
-        );
-    }
-
-    // Check file permissions (warn on world-writable or group-writable)
-    // Skip permission checks in test mode to allow temporary test files
-    #[cfg(all(unix, not(test)))]
+    #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
-
-        let permissions = metadata.permissions();
-        let mode = permissions.mode();
-
-        // Check if world-writable (other-write bit set)
-        if mode & 0o002 != 0 {
-            anyhow::bail!(
-                "SSH config file {} is world-writable. This is a security vulnerability.",
-                escape_path(path)
-            );
+        use std::os::unix::fs::MetadataExt;
+        let uid = unsafe { libc::getuid() };
+        if metadata.uid() != 0 && metadata.uid() != uid {
+            anyhow::bail!("Bad owner for SSH config file {}", escape_path(path));
         }
-
-        // Check if group-writable (group-write bit set)
-        if mode & 0o020 != 0 {
-            tracing::warn!(
-                "SSH config file {} is group-writable. This is a potential security risk.",
-                escape_path(path)
-            );
+        if metadata.mode() & 0o22 != 0 {
+            anyhow::bail!("Bad permissions for SSH config file {}", escape_path(path));
         }
     }
 

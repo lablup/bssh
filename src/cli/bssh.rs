@@ -292,20 +292,6 @@ pub struct Cli {
     pub ssh_config: Option<PathBuf>,
 
     #[arg(
-        short = 'G',
-        long = "print-config",
-        help = "Print the resolved SSH configuration and exit"
-    )]
-    pub print_config: bool,
-
-    #[arg(
-        short = 'W',
-        value_name = "host:port",
-        help = "Forward standard input/output to a host and port"
-    )]
-    pub stdio_forward: Option<String>,
-
-    #[arg(
         short = 'q',
         long = "quiet",
         conflicts_with = "verbose",
