@@ -1534,10 +1534,19 @@ impl Client {
         &self,
         plan: &ForwardingPlan,
     ) -> Result<(), super::Error> {
-        self.forwarding_runtime
+        let result = self
+            .forwarding_runtime
             .start(self, plan)
             .await
-            .map_err(|error| super::Error::PortForwardRequestFailed(format!("{error:#}")))
+            .map_err(|error| super::Error::PortForwardRequestFailed(format!("{error:#}")));
+        if result.is_err()
+            && let Err(disconnect_error) = self.disconnect().await
+        {
+            tracing::warn!(
+                "Forwarding setup failed and SSH teardown also failed: {disconnect_error}"
+            );
+        }
+        result
     }
 
     pub(crate) fn remote_forward_registry(&self) -> RemoteForwardRegistry {
