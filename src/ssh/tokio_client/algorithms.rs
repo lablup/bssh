@@ -293,7 +293,13 @@ mod tests {
         let defaults = russh::Preferred::DEFAULT.key.as_ref();
 
         let appended = resolve_host_keys(&[String::from("+ssh-rsa")]).unwrap();
-        assert_eq!(appended, defaults);
+        assert!(
+            defaults
+                .iter()
+                .all(|algorithm| algorithm.as_ref() != "ssh-rsa")
+        );
+        assert_eq!(&appended[..defaults.len()], defaults);
+        assert_eq!(appended.last().map(AsRef::as_ref), Some("ssh-rsa"));
         assert_eq!(
             appended
                 .iter()
@@ -331,7 +337,9 @@ mod tests {
         let defaults = public_key_names(russh::Preferred::DEFAULT.key.as_ref());
 
         let appended = resolve_pubkey_algorithms(&[String::from("+ssh-rsa")]).unwrap();
-        assert_eq!(appended, defaults);
+        assert!(!defaults.iter().any(|algorithm| algorithm == "ssh-rsa"));
+        assert_eq!(&appended[..defaults.len()], defaults);
+        assert_eq!(appended.last().map(String::as_str), Some("ssh-rsa"));
         assert_eq!(
             appended
                 .iter()

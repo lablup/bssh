@@ -44,7 +44,7 @@ use std::sync::Mutex as StdMutex;
 use std::{
     collections::HashMap,
     fs::{File, OpenOptions},
-    io,
+    io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::LazyLock,
 };
@@ -65,7 +65,7 @@ use tokio::sync::Mutex;
 /// synchronous file I/O today, a tokio mutex keeps the guard sound if an
 /// await point is ever introduced and parks contending tasks instead of
 /// blocking runtime worker threads.
-static KNOWN_HOSTS_LOCK: Mutex<()> = Mutex::const_new(());
+pub(super) static KNOWN_HOSTS_LOCK: Mutex<()> = Mutex::const_new(());
 
 /// Host keys accepted earlier in this process, keyed by normalized host and
 /// port.
@@ -115,7 +115,7 @@ impl CertAuthorityPolicy {
 
 /// The outcome of looking a host up in a known_hosts file.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum KnownHostLookup {
+pub(super) enum KnownHostLookup {
     /// One of the host's recorded keys is the offered key.
     Match,
     /// The host has recorded keys and none of them is the offered key.
@@ -175,7 +175,7 @@ fn probe_known_hosts_path(known_hosts_path: &str) -> Result<KnownHostsPathState,
     }
 }
 
-struct KnownHostsFileLock {
+pub(super) struct KnownHostsFileLock {
     file: File,
 }
 
@@ -197,7 +197,7 @@ fn known_hosts_lock_path(known_hosts_path: &str) -> PathBuf {
     }
 }
 
-fn acquire_known_hosts_file_lock(
+pub(super) fn acquire_known_hosts_file_lock(
     known_hosts_path: &str,
 ) -> Result<KnownHostsFileLock, super::Error> {
     let lock_path = known_hosts_lock_path(known_hosts_path);
@@ -491,7 +491,7 @@ fn marker_host_matches(
 /// patterns use only these two wildcards (no bracket classes), and matching
 /// is case-insensitive to agree with the hostname normalization elsewhere in
 /// this module.
-fn glob_match(text: &str, pattern: &str) -> bool {
+pub(super) fn glob_match(text: &str, pattern: &str) -> bool {
     if !pattern.contains(['*', '?']) {
         return text.eq_ignore_ascii_case(pattern);
     }
@@ -667,11 +667,12 @@ fn ensure_recordable_hostname(hostname: &str) -> Result<(), super::Error> {
 /// known_hosts `@revoked` marker line. A hostname that cannot be represented
 /// in a known_hosts entry is rejected outright, before anything is looked up
 /// or written.
-pub(super) async fn verify_accept_new(
+pub(super) async fn verify_accept_new_with_hash(
     hostname: &str,
     port: u16,
     server_public_key: &PublicKey,
     known_hosts_path: &str,
+    hash_known_hosts: bool,
 ) -> Result<bool, super::Error> {
     // OpenSSH lowercases the hostname before every known_hosts comparison;
     // russh's `match_hostname` is a plain byte compare. Normalizing once here
@@ -745,7 +746,13 @@ pub(super) async fn verify_accept_new(
         // empty; `learn_known_hosts_path` creates it on demand.
         Ok(KnownHostLookup::Unknown) => {
             verify_process_pin(hostname, port, Some(known_hosts_path), server_public_key).await?;
-            record_host_key(hostname, port, server_public_key, known_hosts_path);
+            record_host_key_with_hash(
+                hostname,
+                port,
+                server_public_key,
+                known_hosts_path,
+                hash_known_hosts,
+            );
             remember_process_pin(hostname, port, Some(known_hosts_path), server_public_key).await;
             Ok(true)
         }
@@ -901,12 +908,13 @@ pub(super) fn verify_known_hosts_files(
 
 /// Apply accept-new semantics across every configured read store and record a
 /// genuinely unknown key only into the explicitly selected user write store.
-pub(super) async fn verify_accept_new_files(
+pub(super) async fn verify_accept_new_files_with_hash(
     hostname: &str,
     port: u16,
     server_public_key: &PublicKey,
     known_hosts_paths: &[String],
     write_path: Option<&str>,
+    hash_known_hosts: bool,
 ) -> Result<bool, super::Error> {
     let hostname = hostname.to_ascii_lowercase();
     let hostname = hostname.as_str();
@@ -951,12 +959,178 @@ pub(super) async fn verify_accept_new_files(
         KnownHostsFilesLookup::Unknown => {
             verify_process_pin(hostname, port, trust_scope.as_deref(), server_public_key).await?;
             if let Some(path) = write_path {
-                record_host_key(hostname, port, server_public_key, path);
+                record_host_key_with_hash(
+                    hostname,
+                    port,
+                    server_public_key,
+                    path,
+                    hash_known_hosts,
+                );
             }
             remember_process_pin(hostname, port, trust_scope.as_deref(), server_public_key).await;
             Ok(true)
         }
     }
+}
+
+/// Preflight and, when needed, record several accept-new identities as one transaction.
+///
+/// This is used by CheckHostIP so a conflicting address can reject the connection
+/// before the hostname is persisted. All identities are rechecked while holding one
+/// process/file lock, and newly learned hostname/address rows replace the file atomically.
+pub(super) async fn verify_accept_new_identities_files_with_hash(
+    identities: &[(&str, u16)],
+    server_public_key: &PublicKey,
+    known_hosts_paths: &[String],
+    write_path: Option<&str>,
+    hash_known_hosts: bool,
+) -> Result<(), super::Error> {
+    let identities = identities
+        .iter()
+        .map(|(hostname, port)| (hostname.to_ascii_lowercase(), *port))
+        .collect::<Vec<_>>();
+    for (hostname, _) in &identities {
+        ensure_recordable_hostname(hostname)?;
+    }
+    let trust_scope = (!known_hosts_paths.is_empty()).then(|| known_hosts_paths.join("\0"));
+
+    for (hostname, port) in &identities {
+        reject_identity_conflict(hostname, *port, server_public_key, known_hosts_paths)?;
+        verify_process_pin(hostname, *port, trust_scope.as_deref(), server_public_key).await?;
+    }
+
+    let _guard = KNOWN_HOSTS_LOCK.lock().await;
+    let _file_lock = match write_path {
+        Some(path) => Some(acquire_known_hosts_file_lock(path)?),
+        None => None,
+    };
+
+    let mut unknown = Vec::new();
+    for (hostname, port) in &identities {
+        let matched =
+            reject_identity_conflict(hostname, *port, server_public_key, known_hosts_paths)?;
+        verify_process_pin(hostname, *port, trust_scope.as_deref(), server_public_key).await?;
+        if !matched {
+            unknown.push((hostname.as_str(), *port));
+        }
+    }
+
+    if let Some(path) = write_path
+        && !unknown.is_empty()
+        && let Err(error) =
+            record_host_identities_atomically(&unknown, server_public_key, path, hash_known_hosts)
+    {
+        tracing::warn!("Failed to record host identities in {path}: {error}");
+        eprintln!("Warning: failed to update the list of known hosts ({path}): {error}");
+    }
+    for (hostname, port) in unknown {
+        remember_process_pin(hostname, port, trust_scope.as_deref(), server_public_key).await;
+    }
+    Ok(())
+}
+
+/// Learn unknown identities in OpenSSH StrictHostKeyChecking=no mode.
+///
+/// Existing matches are left untouched and any conflicting identity suppresses
+/// the whole write. This keeps accept-all semantics without appending attacker-
+/// supplied replacement keys beside an existing pin.
+pub(super) async fn learn_accept_all_identities_files_with_hash(
+    identities: &[(&str, u16)],
+    server_public_key: &PublicKey,
+    known_hosts_paths: &[String],
+    write_path: Option<&str>,
+    hash_known_hosts: bool,
+) -> Result<(), super::Error> {
+    let Some(write_path) = write_path else {
+        return Ok(());
+    };
+    let identities = identities
+        .iter()
+        .map(|(hostname, port)| (hostname.to_ascii_lowercase(), *port))
+        .collect::<Vec<_>>();
+    for (hostname, _) in &identities {
+        ensure_recordable_hostname(hostname)?;
+    }
+
+    let _guard = KNOWN_HOSTS_LOCK.lock().await;
+    let _file_lock = acquire_known_hosts_file_lock(write_path)?;
+    let mut unknown = Vec::new();
+    let mut conflict = false;
+    for (hostname, port) in &identities {
+        match lookup_known_host_files(hostname, *port, server_public_key, known_hosts_paths)? {
+            KnownHostsFilesLookup::Match => {}
+            KnownHostsFilesLookup::Conflict { .. } => conflict = true,
+            KnownHostsFilesLookup::Unknown => unknown.push((hostname.as_str(), *port)),
+        }
+    }
+    if conflict || unknown.is_empty() {
+        return Ok(());
+    }
+    if let Err(error) =
+        record_host_identities_atomically(&unknown, server_public_key, write_path, hash_known_hosts)
+    {
+        tracing::warn!("Failed to record host identities in {write_path}: {error}");
+        eprintln!("Warning: failed to update the list of known hosts ({write_path}): {error}");
+    }
+    Ok(())
+}
+
+fn reject_identity_conflict(
+    hostname: &str,
+    port: u16,
+    server_public_key: &PublicKey,
+    known_hosts_paths: &[String],
+) -> Result<bool, super::Error> {
+    match lookup_known_host_files(hostname, port, server_public_key, known_hosts_paths)? {
+        KnownHostsFilesLookup::Match => Ok(true),
+        KnownHostsFilesLookup::Unknown => Ok(false),
+        KnownHostsFilesLookup::Conflict { path, line } => Err(map_known_hosts_error(
+            hostname,
+            port,
+            server_public_key,
+            &path,
+            russh::keys::Error::KeyChanged { line },
+        )),
+    }
+}
+
+fn record_host_identities_atomically(
+    identities: &[(&str, u16)],
+    server_public_key: &PublicKey,
+    known_hosts_path: &str,
+    hash_known_hosts: bool,
+) -> Result<(), String> {
+    let path = Path::new(known_hosts_path);
+    let mut contents = match std::fs::read(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return Err(format!("could not read {}: {error}", path.display())),
+    };
+    if !contents.is_empty() && !contents.ends_with(b"\n") {
+        contents.push(b'\n');
+    }
+    let key = server_public_key
+        .to_openssh()
+        .map_err(|error| format!("could not format host key: {error}"))?;
+    for (hostname, port) in identities {
+        let identity = known_hosts_entry_name(hostname, *port);
+        let host_field = if hash_known_hosts {
+            super::hostkey_rotation::hash_host_pattern(&identity)?
+        } else {
+            identity.clone()
+        };
+        writeln!(contents, "{host_field} {key}")
+            .map_err(|error| format!("could not build known_hosts update: {error}"))?;
+    }
+    super::hostkey_rotation::atomic_replace(path, &contents)?;
+    for (hostname, port) in identities {
+        eprintln!(
+            "Permanently added '{}' ({}) to the list of known hosts.",
+            known_hosts_entry_name(hostname, *port),
+            algorithm_display_name(server_public_key)
+        );
+    }
+    Ok(())
 }
 
 /// Convert a known_hosts check failure into the crate error type.
@@ -1003,11 +1177,12 @@ pub(super) fn map_known_hosts_error(
 /// host is accepted either way, so a failure to persist the key (read-only
 /// filesystem, permission problem) is reported as a warning instead of
 /// failing the connection.
-fn record_host_key(
+fn record_host_key_with_hash(
     hostname: &str,
     port: u16,
     server_public_key: &PublicKey,
     known_hosts_path: &str,
+    hash_known_hosts: bool,
 ) {
     let path = Path::new(known_hosts_path);
     // Only files and directories created by this recording get their
@@ -1023,9 +1198,13 @@ fn record_host_key(
     #[cfg(unix)]
     precreate_with_restrictive_permissions(path, dir_preexisted, file_preexisted);
 
-    if let Err(e) =
+    let record_result = if hash_known_hosts {
+        append_hashed_host_key(hostname, port, server_public_key, path)
+    } else {
         russh::keys::known_hosts::learn_known_hosts_path(hostname, port, server_public_key, path)
-    {
+            .map_err(|error| error.to_string())
+    };
+    if let Err(e) = record_result {
         tracing::warn!("Failed to record host key for '{hostname}' in {known_hosts_path}: {e}");
         eprintln!(
             "Warning: failed to add '{}' to the list of known hosts ({known_hosts_path}): {e}",
@@ -2685,5 +2864,354 @@ mod tests {
                 .await,
             Err(Error::HostKeyChanged { .. })
         ));
+    }
+}
+
+fn command_host_field_matches(host_field: &str, identity: &str) -> bool {
+    let mut positive = false;
+    for raw_pattern in host_field.split(',') {
+        let raw_pattern = raw_pattern.trim();
+        let (negated, pattern) = match raw_pattern.strip_prefix('!') {
+            Some(pattern) => (true, pattern),
+            None => (false, raw_pattern),
+        };
+        let matches = if pattern.starts_with("|1|") {
+            super::hostkey_rotation::host_pattern_matches(pattern, identity)
+        } else {
+            glob_match(identity, pattern)
+        };
+        if matches && negated {
+            return false;
+        }
+        positive |= matches;
+    }
+    positive
+}
+
+/// Parse bounded KnownHostsCommand output without creating a temporary trust file.
+pub(super) fn lookup_known_host_data(
+    data: &str,
+    hostname: &str,
+    port: u16,
+    server_public_key: &PublicKey,
+) -> Result<KnownHostLookup, super::Error> {
+    // OpenSSH canonicalizes hostnames before hashing them. Plain patterns are
+    // case-insensitive already, but hashed patterns compare their HMAC bytes,
+    // so use the same canonical identity for command-provided entries too.
+    let identity = known_hosts_entry_name(&hostname.to_ascii_lowercase(), port);
+    let mut recorded = Vec::new();
+    for (index, line) in data.lines().enumerate() {
+        let line_number = index + 1;
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let fields = trimmed.split_whitespace().collect::<Vec<_>>();
+        let (host_field, declared_algorithm, encoded_key) =
+            if fields.first().is_some_and(|field| field.starts_with('@')) {
+                if fields.first() != Some(&"@revoked") || fields.len() < 4 {
+                    continue;
+                }
+                (fields[1], fields[2], fields[3])
+            } else {
+                if fields.len() < 3 {
+                    if fields
+                        .first()
+                        .is_some_and(|host| command_host_field_matches(host, &identity))
+                    {
+                        return Err(super::Error::KnownHostsCommandFailed {
+                            reason: format!("malformed matching output line {line_number}"),
+                        });
+                    }
+                    continue;
+                }
+                (fields[0], fields[1], fields[2])
+            };
+        if !command_host_field_matches(host_field, &identity) {
+            continue;
+        }
+        let key = russh::keys::parse_public_key_base64(encoded_key).map_err(|error| {
+            super::Error::KnownHostsCommandFailed {
+                reason: format!("invalid key on output line {line_number}: {error}"),
+            }
+        })?;
+        validate_declared_key_algorithm(declared_algorithm, &key, line_number)?;
+        if fields.first() == Some(&"@revoked") && key == *server_public_key {
+            return Err(super::Error::HostKeyRevoked {
+                host: hostname.to_string(),
+                port,
+                line: line_number,
+            });
+        }
+        recorded.push((line_number, key));
+    }
+
+    if recorded.iter().any(|(_, key)| key == server_public_key) {
+        return Ok(KnownHostLookup::Match);
+    }
+    let offending = recorded
+        .iter()
+        .find(|(_, key)| key.algorithm() == server_public_key.algorithm())
+        .or_else(|| recorded.first());
+    Ok(match offending {
+        Some((line, _)) => KnownHostLookup::Conflict { line: *line },
+        None => KnownHostLookup::Unknown,
+    })
+}
+
+pub(super) fn known_host_algorithms_data(
+    data: &str,
+    hostname: &str,
+    port: u16,
+) -> Result<Vec<ssh_key::Algorithm>, super::Error> {
+    let identity = known_hosts_entry_name(&hostname.to_ascii_lowercase(), port);
+    let mut algorithms = Vec::new();
+    for (index, line) in data.lines().enumerate() {
+        let line_number = index + 1;
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let fields = trimmed.split_whitespace().collect::<Vec<_>>();
+        if fields.first().is_some_and(|field| field.starts_with('@')) {
+            continue;
+        }
+        if fields.len() < 3 || !command_host_field_matches(fields[0], &identity) {
+            continue;
+        }
+        let key = russh::keys::parse_public_key_base64(fields[2]).map_err(|error| {
+            super::Error::KnownHostsCommandFailed {
+                reason: format!("invalid key on ORDER output line {line_number}: {error}"),
+            }
+        })?;
+        validate_declared_key_algorithm(fields[1], &key, line_number)?;
+        let algorithm = key.algorithm();
+        if !algorithms.contains(&algorithm) {
+            algorithms.push(algorithm);
+        }
+    }
+    Ok(algorithms)
+}
+
+fn validate_declared_key_algorithm(
+    declared: &str,
+    key: &PublicKey,
+    line_number: usize,
+) -> Result<(), super::Error> {
+    let algorithm = key.algorithm();
+    let actual = algorithm.as_str();
+    if declared == actual {
+        Ok(())
+    } else {
+        Err(super::Error::KnownHostsCommandFailed {
+            reason: format!(
+                "key algorithm mismatch on output line {line_number}: declared '{declared}', decoded '{actual}'"
+            ),
+        })
+    }
+}
+
+#[cfg(test)]
+pub(super) async fn verify_accept_new(
+    hostname: &str,
+    port: u16,
+    server_public_key: &PublicKey,
+    known_hosts_path: &str,
+) -> Result<bool, super::Error> {
+    verify_accept_new_with_hash(hostname, port, server_public_key, known_hosts_path, false).await
+}
+
+#[cfg(test)]
+fn record_host_key(
+    hostname: &str,
+    port: u16,
+    server_public_key: &PublicKey,
+    known_hosts_path: &str,
+) {
+    record_host_key_with_hash(hostname, port, server_public_key, known_hosts_path, false);
+}
+
+fn append_hashed_host_key(
+    hostname: &str,
+    port: u16,
+    server_public_key: &PublicKey,
+    path: &Path,
+) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
+    }
+    let identity = known_hosts_entry_name(hostname, port);
+    let hashed = super::hostkey_rotation::hash_host_pattern(&identity)?;
+    let openssh = server_public_key
+        .to_openssh()
+        .map_err(|error| format!("could not format host key: {error}"))?;
+
+    let mut file = OpenOptions::new()
+        .read(true)
+        .append(true)
+        .create(true)
+        .open(path)
+        .map_err(|error| format!("could not open {}: {error}", path.display()))?;
+    let needs_newline = if file.seek(SeekFrom::End(-1)).is_ok() {
+        let mut last = [0_u8; 1];
+        file.read_exact(&mut last)
+            .map_err(|error| format!("could not inspect {}: {error}", path.display()))?;
+        last[0] != b'\n'
+    } else {
+        false
+    };
+    file.seek(SeekFrom::End(0))
+        .map_err(|error| format!("could not seek {}: {error}", path.display()))?;
+    if needs_newline {
+        file.write_all(b"\n")
+            .map_err(|error| format!("could not write {}: {error}", path.display()))?;
+    }
+    writeln!(file, "{hashed} {openssh}")
+        .map_err(|error| format!("could not write {}: {error}", path.display()))?;
+    file.flush()
+        .map_err(|error| format!("could not flush {}: {error}", path.display()))
+}
+
+#[cfg(test)]
+mod policy_extension_tests {
+    use super::*;
+    use russh::keys::{Algorithm, PrivateKey};
+    use tempfile::tempdir;
+
+    fn key() -> PublicKey {
+        PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)
+            .unwrap()
+            .public_key()
+            .clone()
+    }
+
+    #[tokio::test]
+    async fn hashed_accept_new_write_is_found_on_relookup() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("known_hosts");
+        let offered = key();
+
+        assert!(
+            verify_accept_new_with_hash(
+                "hash.example",
+                2222,
+                &offered,
+                &path.to_string_lossy(),
+                true,
+            )
+            .await
+            .unwrap()
+        );
+
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(contents.starts_with("|1|"));
+        assert!(!contents.contains("hash.example"));
+        assert!(
+            verify_known_hosts_file("hash.example", 2222, &offered, &path.to_string_lossy(),)
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn command_output_honors_wildcards_negation_and_revocation() {
+        let offered = key();
+        let openssh = offered.to_openssh().unwrap();
+        let wildcard = format!("*.example,!blocked.example {openssh}\n");
+        assert_eq!(
+            lookup_known_host_data(&wildcard, "node.example", 22, &offered).unwrap(),
+            KnownHostLookup::Match
+        );
+        assert_eq!(
+            lookup_known_host_data(&wildcard, "blocked.example", 22, &offered).unwrap(),
+            KnownHostLookup::Unknown
+        );
+
+        let revoked = format!("@revoked node.example {openssh}\n");
+        assert!(matches!(
+            lookup_known_host_data(&revoked, "node.example", 22, &offered),
+            Err(super::super::Error::HostKeyRevoked { .. })
+        ));
+    }
+
+    #[test]
+    fn command_output_canonicalizes_hashed_hostnames_and_aliases() {
+        let pinned = key();
+        let changed = key();
+        let hashed = super::super::hostkey_rotation::hash_host_pattern("node.example").unwrap();
+        let output = format!("{hashed} {}\n", pinned.to_openssh().unwrap());
+
+        assert_eq!(
+            lookup_known_host_data(&output, "Node.Example", 22, &pinned).unwrap(),
+            KnownHostLookup::Match
+        );
+        assert!(matches!(
+            lookup_known_host_data(&output, "NODE.EXAMPLE", 22, &changed).unwrap(),
+            KnownHostLookup::Conflict { .. }
+        ));
+        assert_eq!(
+            known_host_algorithms_data(&output, "Node.Example", 22).unwrap(),
+            [pinned.algorithm()]
+        );
+    }
+
+    #[test]
+    fn command_output_rejects_declared_algorithm_mismatch() {
+        let offered = key();
+        let encoded = offered.to_openssh().unwrap();
+        let blob = encoded.split_whitespace().nth(1).unwrap();
+        let malicious = format!("node.example ssh-rsa {blob}\n");
+
+        assert!(matches!(
+            lookup_known_host_data(&malicious, "node.example", 22, &offered),
+            Err(super::super::Error::KnownHostsCommandFailed { .. })
+        ));
+        assert!(matches!(
+            known_host_algorithms_data(&malicious, "node.example", 22),
+            Err(super::super::Error::KnownHostsCommandFailed { .. })
+        ));
+        assert!(matches!(
+            lookup_known_host_data("node.example ssh-ed25519\n", "node.example", 22, &offered),
+            Err(super::super::Error::KnownHostsCommandFailed { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn accept_all_learns_unknown_identity_without_replacing_conflict() {
+        for hash_known_hosts in [false, true] {
+            let directory = tempdir().unwrap();
+            let path = directory.path().join("known_hosts");
+            std::fs::write(&path, "something\n").unwrap();
+            let path_string = path.to_string_lossy().into_owned();
+            let paths = vec![path_string.clone()];
+            let offered = key();
+
+            learn_accept_all_identities_files_with_hash(
+                &[("node.example", 22)],
+                &offered,
+                &paths,
+                Some(&path_string),
+                hash_known_hosts,
+            )
+            .await
+            .unwrap();
+
+            let learned = std::fs::read_to_string(&path).unwrap();
+            assert_eq!(learned.lines().count(), 2);
+            assert!(learned.starts_with("something\n"));
+            assert!(verify_known_hosts_file("node.example", 22, &offered, &path_string).unwrap());
+
+            let changed = key();
+            learn_accept_all_identities_files_with_hash(
+                &[("node.example", 22)],
+                &changed,
+                &paths,
+                Some(&path_string),
+                hash_known_hosts,
+            )
+            .await
+            .unwrap();
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), learned);
+        }
     }
 }

@@ -201,6 +201,29 @@ Host test3
 }
 
 #[test]
+fn test_parse_known_hosts_command_environment_expansion() {
+    let config = r#"
+Host valid
+    KnownHostsCommand /usr/local/bin/fetch-host-key ${BSSH_HELPER_ROOT}/keys %H
+"#;
+    let parsed = SshConfig::parse(config).unwrap();
+    assert_eq!(
+        parsed.hosts[0].known_hosts_command.as_deref(),
+        Some("/usr/local/bin/fetch-host-key ${BSSH_HELPER_ROOT}/keys %H")
+    );
+
+    for command in [
+        "KnownHostsCommand /opt/${HELPER}/fetch %H",
+        "KnownHostsCommand /usr/bin/helper ${BROKEN",
+        "KnownHostsCommand /usr/bin/helper ${9BAD}",
+        "KnownHostsCommand /usr/bin/helper $(whoami)",
+    ] {
+        let config = format!("Host invalid\n    {command}\n");
+        assert!(SshConfig::parse(&config).is_err(), "accepted {command}");
+    }
+}
+
+#[test]
 fn test_parse_known_hosts_command_security() {
     // KnownHostsCommand with dangerous patterns should fail
     let dangerous_commands = vec![

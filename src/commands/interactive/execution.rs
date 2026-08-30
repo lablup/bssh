@@ -56,15 +56,17 @@ impl InteractiveCommand {
 
         // Connect to all selected nodes and get SSH channels
         let mut channels = Vec::new();
+        let mut clients = Vec::new();
         let mut connected_nodes = Vec::new();
 
         for node in nodes_to_connect {
             match self.connect_to_node_pty(node.clone()).await {
-                Ok(channel) => {
+                Ok((client, channel)) => {
                     if !ssh_compatible {
                         println!("✓ Connected to {}", node.to_string().green());
                     }
                     channels.push(channel);
+                    clients.push(client);
                     connected_nodes.push(node);
                 }
                 Err(e) => {
@@ -93,21 +95,32 @@ impl InteractiveCommand {
         let requested_remote_pty = !session_config.disable_pty;
         let mut pty_manager = PtyManager::new();
 
-        if self.single_node && channels.len() == 1 {
-            // Single PTY session
-            let session_id = pty_manager
-                .create_single_session(channels.into_iter().next().unwrap(), session_config.clone())
-                .await?;
+        let session_result: Result<()> = async {
+            if self.single_node && channels.len() == 1 {
+                // Single PTY session
+                let session_id = pty_manager
+                    .create_single_session(
+                        channels.into_iter().next().unwrap(),
+                        session_config.clone(),
+                    )
+                    .await?;
 
-            pty_manager.run_single_session(session_id).await?;
-        } else {
-            // Multiple PTY sessions with multiplexing
-            let session_ids = pty_manager
-                .create_multiplex_sessions(channels, session_config)
-                .await?;
+                pty_manager.run_single_session(session_id).await?;
+            } else {
+                // Multiple PTY sessions with multiplexing
+                let session_ids = pty_manager
+                    .create_multiplex_sessions(channels, session_config)
+                    .await?;
 
-            pty_manager.run_multiplex_sessions(session_ids).await?;
+                pty_manager.run_multiplex_sessions(session_ids).await?;
+            }
+            Ok(())
         }
+        .await;
+        for client in &clients {
+            client.flush_hostkey_updates().await;
+        }
+        session_result?;
 
         if requested_remote_pty {
             crate::pty::terminal::force_terminal_cleanup();

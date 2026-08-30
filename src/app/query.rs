@@ -36,8 +36,9 @@ pub fn handle_query(query: &str) {
             println!("ecdh-sha2-nistp256\necdh-sha2-nistp384\necdh-sha2-nistp521");
         }
         "key" | "key-plain" | "key-cert" | "key-sig" => {
-            println!("ssh-rsa\nssh-ed25519");
+            println!("ssh-ed25519");
             println!("ecdsa-sha2-nistp256\necdsa-sha2-nistp384\necdsa-sha2-nistp521");
+            println!("ssh-rsa");
         }
         "protocol-version" => {
             println!("2");

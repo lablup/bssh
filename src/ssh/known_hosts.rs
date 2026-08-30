@@ -96,7 +96,10 @@ pub fn get_check_method_for_target(
     remote_username: &str,
 ) -> ServerCheckMethod {
     if matches!(strict_mode, StrictHostKeyChecking::No) {
-        return ServerCheckMethod::NoCheck;
+        return wrap_host_key_alias(
+            ServerCheckMethod::NoCheck,
+            connection_config.host_key_alias.as_deref(),
+        );
     }
 
     let user_configured = connection_config.user_known_hosts_files.is_some();
@@ -281,6 +284,58 @@ impl FromStr for StrictHostKeyChecking {
             _ => Self::AcceptNew, // Default
         })
     }
+}
+
+/// Return all writable user known_hosts paths for proven host-key rotation.
+pub(crate) fn user_known_hosts_paths(
+    connection_config: &SshConnectionConfig,
+    hostname: &str,
+    port: u16,
+    remote_username: &str,
+) -> Vec<String> {
+    if connection_config.user_known_hosts_files.is_none()
+        && connection_config.global_known_hosts_files.is_none()
+    {
+        return get_default_known_hosts_path()
+            .map(|path| vec![path.to_string_lossy().into_owned()])
+            .unwrap_or_default();
+    }
+    expand_known_hosts_files(
+        connection_config.user_known_hosts_files.as_deref(),
+        hostname,
+        port,
+        remote_username,
+    )
+}
+
+/// Return every user and global known_hosts path used for read-only lookup.
+pub(crate) fn read_known_hosts_paths(
+    connection_config: &SshConnectionConfig,
+    hostname: &str,
+    port: u16,
+    remote_username: &str,
+) -> Vec<String> {
+    if connection_config.user_known_hosts_files.is_none()
+        && connection_config.global_known_hosts_files.is_none()
+    {
+        return get_default_known_hosts_path()
+            .map(|path| vec![path.to_string_lossy().into_owned()])
+            .unwrap_or_default();
+    }
+    expand_known_hosts_files(
+        connection_config.user_known_hosts_files.as_deref(),
+        hostname,
+        port,
+        remote_username,
+    )
+    .into_iter()
+    .chain(expand_known_hosts_files(
+        connection_config.global_known_hosts_files.as_deref(),
+        hostname,
+        port,
+        remote_username,
+    ))
+    .collect()
 }
 
 #[cfg(test)]

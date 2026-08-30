@@ -20,13 +20,15 @@ fn node() -> Node {
 
 #[test]
 fn environment_requests_are_sorted_removed_bounded_and_setenv_wins() {
-    let mut config = SshHostConfig::default();
-    config.send_env = vec![
-        "TEST_*".into(),
-        "-TEST_*".into(),
-        "TEST_A".into(),
-        "TEST_B".into(),
-    ];
+    let mut config = SshHostConfig {
+        send_env: vec![
+            "TEST_*".into(),
+            "-TEST_*".into(),
+            "TEST_A".into(),
+            "TEST_B".into(),
+        ],
+        ..Default::default()
+    };
     config.set_env.insert("TEST_A".into(), "configured".into());
     config
         .set_env
@@ -96,8 +98,10 @@ fn remote_command_conflicts_and_session_request_kinds_are_exact() {
 
 #[test]
 fn request_tty_obeys_cli_precedence_and_config_modes() {
-    let mut config = SshHostConfig::default();
-    config.request_tty = Some("force".into());
+    let mut config = SshHostConfig {
+        request_tty: Some("force".into()),
+        ..Default::default()
+    };
     assert!(
         !SessionPolicy::resolve(&config, &node(), None, CliTtyMode::Disable, true)
             .unwrap()
@@ -167,8 +171,10 @@ fn environment_name_value_and_request_count_bounds_are_enforced() {
     assert!(validate_environment(&"N".repeat(MAX_ENVIRONMENT_NAME_BYTES + 1), "value").is_err());
     assert!(validate_environment("NAME", &"v".repeat(MAX_ENVIRONMENT_VALUE_BYTES + 1)).is_err());
 
-    let mut config = SshHostConfig::default();
-    config.send_env = vec!["BAD=PATTERN".into()];
+    let mut config = SshHostConfig {
+        send_env: vec!["BAD=PATTERN".into()],
+        ..Default::default()
+    };
     assert!(
         SessionPolicy::resolve_with_environment(
             &config,

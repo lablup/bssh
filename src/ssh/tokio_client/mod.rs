@@ -23,8 +23,11 @@ pub mod connection;
 mod connection_tests;
 pub mod error;
 pub mod file_transfer;
+mod hostkey_rotation;
+mod known_hosts_command;
 mod proxy_command;
 mod session;
+mod sshfp;
 // `pub(crate)` so the client-facing error message builders in `ssh::client` can
 // reuse `known_hosts_entry_name` instead of duplicating the `[host]:port` rule.
 pub(crate) mod host_verification;
