@@ -175,12 +175,27 @@ pub enum Error {
     AgentConnectionFailed,
     #[error("Failed to request identities from SSH agent")]
     AgentRequestIdentitiesFailed,
-    #[error("SSH agent operation '{action}' timed out after {seconds} seconds")]
+    /// Timed out before russh requested an SSH signature, so another planned
+    /// authentication method may safely reuse the transport.
+    #[error("SSH agent setup operation '{action}' timed out after {seconds} seconds")]
     AgentOperationTimeout { action: &'static str, seconds: u64 },
+    /// Timed out after russh requested a signature. The transport may still
+    /// be waiting for `Msg::Signed` and must not be reused.
+    #[error("SSH agent signing operation '{action}' timed out after {seconds} seconds")]
+    AgentSignerTimeout { action: &'static str, seconds: u64 },
     #[error("SSH agent has no identities")]
     AgentNoIdentities,
     #[error("Permission denied (publickey). SSH agent identities were rejected")]
     AgentAuthenticationFailed,
+    /// A local certificate signer failed after russh requested a signature;
+    /// unlike key-loading errors, this is fatal to the current transport.
+    #[error(
+        "Local SSH certificate signing failed after the server requested a signature: {source}"
+    )]
+    LocalSignerFailed {
+        #[source]
+        source: russh::keys::Error,
+    },
     #[error("SFTP error occurred: {0}")]
     SftpError(#[from] russh_sftp::client::error::Error),
     #[error("I/O operation failed: {0}")]
@@ -248,8 +263,10 @@ impl Error {
                 | Self::AgentConnectionFailed
                 | Self::AgentRequestIdentitiesFailed
                 | Self::AgentOperationTimeout { .. }
+                | Self::AgentSignerTimeout { .. }
                 | Self::AgentNoIdentities
                 | Self::AgentAuthenticationFailed
+                | Self::LocalSignerFailed { .. }
                 | Self::SftpError(_)
                 | Self::IoError(_)
                 | Self::ChannelOpen { .. }

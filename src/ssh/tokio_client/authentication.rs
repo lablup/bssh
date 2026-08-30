@@ -537,7 +537,7 @@ fn certificate_policy_hashes(
 const AGENT_OPERATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[cfg(not(target_os = "windows"))]
-async fn bounded_agent_operation<T, F>(
+async fn bounded_agent_setup_operation<T, F>(
     action: &'static str,
     operation: F,
 ) -> Result<T, super::Error>
@@ -550,6 +550,57 @@ where
             action,
             seconds: AGENT_OPERATION_TIMEOUT.as_secs(),
         })?
+}
+
+#[cfg(not(target_os = "windows"))]
+async fn bounded_agent_signer_operation<T, F>(
+    action: &'static str,
+    operation: F,
+) -> Result<T, super::Error>
+where
+    F: std::future::Future<Output = Result<T, super::Error>>,
+{
+    tokio::time::timeout(AGENT_OPERATION_TIMEOUT, operation)
+        .await
+        .map_err(|_| super::Error::AgentSignerTimeout {
+            action,
+            seconds: AGENT_OPERATION_TIMEOUT.as_secs(),
+        })?
+}
+
+#[cfg(not(target_os = "windows"))]
+/// Starts the timeout only when russh has received a `SignRequest` and calls
+/// the wrapped signer. Waiting for the server to accept or reject the offered
+/// identity is deliberately outside this agent-operation bound.
+struct BoundedAgentSigner<'a, S> {
+    signer: &'a mut S,
+    action: &'static str,
+}
+
+#[cfg(not(target_os = "windows"))]
+impl<S> russh::Signer for BoundedAgentSigner<'_, S>
+where
+    S: russh::Signer<Error = russh::AgentAuthError> + Send,
+{
+    type Error = super::Error;
+
+    fn auth_sign(
+        &mut self,
+        key: &russh::keys::agent::AgentIdentity,
+        hash_alg: Option<russh::keys::ssh_key::HashAlg>,
+        to_sign: Vec<u8>,
+    ) -> impl std::future::Future<Output = Result<Vec<u8>, Self::Error>> + Send {
+        let action = self.action;
+        async move {
+            bounded_agent_signer_operation(action, async {
+                self.signer
+                    .auth_sign(key, hash_alg, to_sign)
+                    .await
+                    .map_err(super::Error::from)
+            })
+            .await
+        }
+    }
 }
 
 const AUTH_PROMPT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
@@ -741,42 +792,47 @@ impl russh::Signer for LocalPrivateKeySigner {
     ) -> impl std::future::Future<Output = Result<Vec<u8>, Self::Error>> + Send {
         let key = Arc::clone(&self.key);
         async move {
-            use russh::keys::ssh_encoding::Encode as _;
-
-            let signature = sign_local_private_key(key, hash_alg, &to_sign)?;
-            let mut signed = to_sign;
-            signature
-                .encode(&mut signed)
-                .map_err(|error| super::Error::KeyInvalid(error.into()))?;
-            Ok(signed)
+            let signature = sign_local_private_key(key, hash_alg, &to_sign);
+            complete_local_signature(to_sign, signature)
         }
     }
+}
+
+fn complete_local_signature(
+    mut to_sign: Vec<u8>,
+    signature: Result<Vec<u8>, russh::keys::Error>,
+) -> Result<Vec<u8>, super::Error> {
+    use russh::keys::ssh_encoding::Encode as _;
+
+    let signature = signature.map_err(|source| super::Error::LocalSignerFailed { source })?;
+    signature
+        .encode(&mut to_sign)
+        .map_err(|source| super::Error::LocalSignerFailed {
+            source: source.into(),
+        })?;
+    Ok(to_sign)
 }
 
 fn sign_local_private_key(
     key: Arc<russh::keys::PrivateKey>,
     hash_alg: Option<russh::keys::ssh_key::HashAlg>,
     data: &[u8],
-) -> Result<Vec<u8>, super::Error> {
+) -> Result<Vec<u8>, russh::keys::Error> {
     use russh::keys::ssh_encoding::Encode as _;
 
     let key = russh::keys::PrivateKeyWithHashAlg::new(key, hash_alg);
     let signature = match key.key_data() {
         russh::keys::ssh_key::private::KeypairData::Rsa(rsa_keypair) => {
             let russh::keys::ssh_key::Algorithm::Rsa { hash } = key.algorithm() else {
-                return Err(super::Error::AuthenticationPolicy(
-                    "RSA key did not retain its selected signature hash".to_string(),
-                ));
+                return Err(russh::keys::Error::InvalidParameters);
             };
             russh::keys::signature::Signer::try_sign(&(rsa_keypair, hash), data)
         }
         keypair => russh::keys::signature::Signer::try_sign(keypair, data),
     }
-    .map_err(|error| super::Error::KeyInvalid(russh::keys::Error::SshKey(error.into())))?;
+    .map_err(|error| russh::keys::Error::SshKey(error.into()))?;
     let mut encoded = Vec::new();
-    signature
-        .encode(&mut encoded)
-        .map_err(|error| super::Error::KeyInvalid(error.into()))?;
+    signature.encode(&mut encoded)?;
     Ok(encoded)
 }
 
@@ -896,13 +952,13 @@ async fn authenticate_agent_public_key_file<H: Handler>(
             public_key.algorithm()
         )));
     }
-    let mut agent = bounded_agent_operation("connect", async {
+    let mut agent = bounded_agent_setup_operation("connect", async {
         russh::keys::agent::client::AgentClient::connect_env()
             .await
             .map_err(|_| super::Error::AgentConnectionFailed)
     })
     .await?;
-    let identities = bounded_agent_operation("request identities", async {
+    let identities = bounded_agent_setup_operation("request identities", async {
         agent
             .request_identities()
             .await
@@ -924,13 +980,13 @@ async fn authenticate_agent_public_key_file<H: Handler>(
         policy_hashes(&matching_key.algorithm(), accepted)
     };
     for hash in hashes {
-        let result = bounded_agent_operation("sign public key", async {
-            handle
-                .authenticate_publickey_with(username, matching_key.clone(), hash, &mut agent)
-                .await
-                .map_err(super::Error::from)
-        })
-        .await?;
+        let mut signer = BoundedAgentSigner {
+            signer: &mut agent,
+            action: "sign public key",
+        };
+        let result = handle
+            .authenticate_publickey_with(username, matching_key.clone(), hash, &mut signer)
+            .await?;
         if result.success() {
             return Ok(());
         }
@@ -946,13 +1002,13 @@ async fn authenticate_agent_with_policy<H: Handler>(
 ) -> Result<(), super::Error> {
     use russh::keys::agent::AgentIdentity;
 
-    let mut agent = bounded_agent_operation("connect", async {
+    let mut agent = bounded_agent_setup_operation("connect", async {
         russh::keys::agent::client::AgentClient::connect_env()
             .await
             .map_err(|_| super::Error::AgentConnectionFailed)
     })
     .await?;
-    let identities = bounded_agent_operation("request identities", async {
+    let identities = bounded_agent_setup_operation("request identities", async {
         agent
             .request_identities()
             .await
@@ -972,13 +1028,13 @@ async fn authenticate_agent_with_policy<H: Handler>(
                     policy_hashes(&key.algorithm(), accepted)
                 };
                 for hash in hashes {
-                    let result = bounded_agent_operation("sign public key", async {
-                        handle
-                            .authenticate_publickey_with(username, key.clone(), hash, &mut agent)
-                            .await
-                            .map_err(super::Error::from)
-                    })
-                    .await?;
+                    let mut signer = BoundedAgentSigner {
+                        signer: &mut agent,
+                        action: "sign public key",
+                    };
+                    let result = handle
+                        .authenticate_publickey_with(username, key.clone(), hash, &mut signer)
+                        .await?;
                     if result.success() {
                         return Ok(());
                     }
@@ -993,18 +1049,18 @@ async fn authenticate_agent_with_policy<H: Handler>(
                     certificate_policy_hashes(&certificate.algorithm(), accepted)
                 };
                 for hash in hashes {
-                    let result = bounded_agent_operation("sign certificate", async {
-                        handle
-                            .authenticate_certificate_with(
-                                username,
-                                certificate.clone(),
-                                hash,
-                                &mut agent,
-                            )
-                            .await
-                            .map_err(super::Error::from)
-                    })
-                    .await?;
+                    let mut signer = BoundedAgentSigner {
+                        signer: &mut agent,
+                        action: "sign certificate",
+                    };
+                    let result = handle
+                        .authenticate_certificate_with(
+                            username,
+                            certificate.clone(),
+                            hash,
+                            &mut signer,
+                        )
+                        .await?;
                     if result.success() {
                         return Ok(());
                     }
@@ -1067,13 +1123,13 @@ async fn authenticate_agent_certificate_file<H: Handler>(
         )));
     }
 
-    let mut agent = bounded_agent_operation("connect", async {
+    let mut agent = bounded_agent_setup_operation("connect", async {
         russh::keys::agent::client::AgentClient::connect_env()
             .await
             .map_err(|_| super::Error::AgentConnectionFailed)
     })
     .await?;
-    let identities = bounded_agent_operation("request identities", async {
+    let identities = bounded_agent_setup_operation("request identities", async {
         agent
             .request_identities()
             .await
@@ -1094,13 +1150,13 @@ async fn authenticate_agent_certificate_file<H: Handler>(
         certificate_policy_hashes(&certificate.algorithm(), accepted)
     };
     for hash in hashes {
-        let result = bounded_agent_operation("sign certificate", async {
-            handle
-                .authenticate_certificate_with(username, certificate.clone(), hash, &mut signer)
-                .await
-                .map_err(super::Error::from)
-        })
-        .await?;
+        let mut bounded_signer = BoundedAgentSigner {
+            signer: &mut signer,
+            action: "sign certificate",
+        };
+        let result = handle
+            .authenticate_certificate_with(username, certificate.clone(), hash, &mut bounded_signer)
+            .await?;
         if result.success() {
             return Ok(());
         }
@@ -1156,8 +1212,9 @@ pub(crate) async fn authenticate<H: Handler>(
 }
 
 fn is_retryable_rejection(error: &super::Error) -> bool {
-    // A signer timeout or key error can leave russh waiting for `Msg::Signed`.
-    // Reusing that transport for the next planned method could then hang.
+    // Agent setup fails before russh requests a signature, so the plan may
+    // safely continue. Signer failures are intentionally absent: russh may be
+    // waiting for `Msg::Signed`, and reusing that transport could then hang.
     matches!(
         error,
         super::Error::KeyboardInteractiveAuthFailed
@@ -1169,6 +1226,7 @@ fn is_retryable_rejection(error: &super::Error) -> bool {
             | super::Error::PasswordWrong
             | super::Error::AgentConnectionFailed
             | super::Error::AgentRequestIdentitiesFailed
+            | super::Error::AgentOperationTimeout { .. }
             | super::Error::AgentNoIdentities
             | super::Error::AgentAuthenticationFailed
     )
@@ -1766,20 +1824,42 @@ mod policy_execution_tests {
 
     #[cfg(not(target_os = "windows"))]
     #[tokio::test(start_paused = true)]
-    async fn agent_operations_have_a_typed_timeout_bound() {
-        let error = bounded_agent_operation("request identities", async {
+    async fn agent_setup_operations_have_a_retryable_typed_timeout_bound() {
+        let error = bounded_agent_setup_operation("request identities", async {
             std::future::pending::<Result<(), super::super::Error>>().await
         })
         .await
         .unwrap_err();
 
         assert!(matches!(
-            error,
+            &error,
             super::super::Error::AgentOperationTimeout {
                 action: "request identities",
                 seconds: 5,
             }
         ));
+        assert!(is_retryable_rejection(&error));
+        assert!(error.is_ssh_client_failure());
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test(start_paused = true)]
+    async fn agent_signer_operations_have_a_fatal_typed_timeout_bound() {
+        let error = bounded_agent_signer_operation("sign certificate", async {
+            std::future::pending::<Result<(), super::super::Error>>().await
+        })
+        .await
+        .unwrap_err();
+
+        assert!(matches!(
+            &error,
+            super::super::Error::AgentSignerTimeout {
+                action: "sign certificate",
+                seconds: 5,
+            }
+        ));
+        assert!(!is_retryable_rejection(&error));
+        assert!(error.is_ssh_client_failure());
     }
 
     #[test]
@@ -1894,10 +1974,16 @@ mod policy_execution_tests {
     }
 
     #[test]
-    fn agent_signer_failures_are_fatal_before_reusing_the_transport() {
-        assert!(!is_retryable_rejection(
+    fn authentication_error_retryability_tracks_the_wire_state() {
+        assert!(is_retryable_rejection(
             &super::super::Error::AgentOperationTimeout {
                 action: "request identities",
+                seconds: 5,
+            }
+        ));
+        assert!(!is_retryable_rejection(
+            &super::super::Error::AgentSignerTimeout {
+                action: "sign public key",
                 seconds: 5,
             }
         ));
@@ -1908,6 +1994,32 @@ mod policy_execution_tests {
         ));
         assert!(!is_retryable_rejection(
             &super::super::Error::AgentAuthError(russh::AgentAuthError::Send(russh::SendError {},))
+        ));
+        assert!(is_retryable_rejection(&super::super::Error::KeyInvalid(
+            russh::keys::Error::KeyIsCorrupt
+        )));
+        assert!(!is_retryable_rejection(
+            &super::super::Error::LocalSignerFailed {
+                source: russh::keys::Error::KeyIsCorrupt,
+            }
+        ));
+    }
+
+    #[test]
+    fn local_certificate_signer_wraps_post_request_failures_as_fatal() {
+        let error = complete_local_signature(
+            b"signed-userauth-request".to_vec(),
+            Err(russh::keys::Error::KeyIsCorrupt),
+        )
+        .unwrap_err();
+
+        assert!(!is_retryable_rejection(&error));
+        assert!(error.is_ssh_client_failure());
+        assert!(matches!(
+            error,
+            super::super::Error::LocalSignerFailed {
+                source: russh::keys::Error::KeyIsCorrupt,
+            }
         ));
     }
 
