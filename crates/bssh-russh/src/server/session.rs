@@ -896,6 +896,7 @@ impl Session {
                 &self.common.config.as_ref().limits,
                 &mut self.common.packet_writer,
             )? && self.kex == SessionKexState::Idle
+                && matches!(enc.state, EncryptedState::Authenticated)
             {
                 debug!("starting rekeying");
                 if enc.exchange.take().is_some() {
@@ -1689,6 +1690,37 @@ mod tests {
         session.initiate_rekey().unwrap();
 
         assert!(session.kex.active());
+    }
+
+    #[test]
+    fn automatic_rekey_server_waits_until_authentication_completes() {
+        let mut session = authenticated_session();
+        Arc::get_mut(&mut session.common.config)
+            .expect("test session owns its config")
+            .limits = crate::Limits::new(
+            0,
+            0,
+            std::time::Duration::from_secs(3600),
+        );
+        let encrypted = session.common.encrypted.as_mut().unwrap();
+        encrypted.state = EncryptedState::WaitingAuthServiceRequest {
+            accepted: false,
+            sent: false,
+        };
+        encrypted.kex = KEXES.get(&crate::kex::CURVE25519).unwrap().make();
+
+        session.flush().unwrap();
+        assert!(
+            !session.kex.active(),
+            "a pre-authentication server write limit must not start rekeying"
+        );
+
+        session.common.encrypted.as_mut().unwrap().state = EncryptedState::Authenticated;
+        session.flush().unwrap();
+        assert!(
+            session.kex.active(),
+            "the same server write limit must start rekeying after authentication"
+        );
     }
 
     #[tokio::test]

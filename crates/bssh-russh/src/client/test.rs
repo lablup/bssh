@@ -226,7 +226,7 @@ mod tests {
         client_config.limits = crate::Limits::new(
             8 * 1024,
             8 * 1024,
-            std::time::Duration::from_millis(50),
+            std::time::Duration::from_secs(3600),
         );
         let kex_count = Arc::new(AtomicUsize::new(0));
 
@@ -247,14 +247,11 @@ mod tests {
                         Arc::new(client_key),
                         session.best_supported_rsa_hash().await.unwrap().flatten(),
                     ),
-                )
-                .await
-                .unwrap();
+            )
+            .await
+            .unwrap();
             assert!(authenticated.success());
-
-            while kex_count.load(Ordering::Relaxed) < 2 {
-                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
-            }
+            let kex_count_before_transfer = kex_count.load(Ordering::Relaxed);
 
             let mut channel = session.channel_open_session().await.unwrap();
             for round in 0_u8..6 {
@@ -271,6 +268,18 @@ mod tests {
                 }
                 assert!(echoed == payload, "echo mismatch in rekey round {round}");
             }
+
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while kex_count.load(Ordering::Relaxed) < kex_count_before_transfer + 2 {
+                    tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .expect("byte thresholds must complete repeated rekeys during transfer");
+            assert!(
+                kex_count.load(Ordering::Relaxed) >= kex_count_before_transfer + 2,
+                "six threshold-crossing rounds must observe repeated key exchanges"
+            );
 
             session
                 .disconnect(crate::Disconnect::ByApplication, "test complete", "")
