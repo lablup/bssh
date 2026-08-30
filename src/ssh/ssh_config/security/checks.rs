@@ -19,10 +19,13 @@ use anyhow::Result;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
+use super::super::diagnostic::escape_path;
+
 /// Validate security properties of identity files
 pub fn validate_identity_file_security(path: &Path, line_number: usize) -> Result<()> {
     // Check for sensitive system paths
     let path_str = path.to_string_lossy();
+    let escaped_path = escape_path(path);
 
     // Block access to critical system files
     let sensitive_patterns = [
@@ -44,7 +47,7 @@ pub fn validate_identity_file_security(path: &Path, line_number: usize) -> Resul
     for pattern in &sensitive_patterns {
         if path_str.contains(pattern) {
             anyhow::bail!(
-                "Security violation: Identity file path '{path_str}' at line {line_number} points to sensitive system location. \
+                "Security violation: Identity file path '{escaped_path}' at line {line_number} points to sensitive system location. \
                  Access to system files is not allowed for security reasons."
             );
         }
@@ -64,7 +67,7 @@ pub fn validate_identity_file_security(path: &Path, line_number: usize) -> Resul
             tracing::warn!(
                 "Security warning: Identity file '{}' at line {} is world-readable. \
                      Private SSH keys should not be readable by other users (chmod 600 recommended).",
-                path_str,
+                escaped_path,
                 line_number
             );
         }
@@ -74,7 +77,7 @@ pub fn validate_identity_file_security(path: &Path, line_number: usize) -> Resul
             tracing::warn!(
                 "Security warning: Identity file '{}' at line {} is group-readable. \
                      Private SSH keys should only be readable by the owner (chmod 600 recommended).",
-                path_str,
+                escaped_path,
                 line_number
             );
         }
@@ -82,7 +85,7 @@ pub fn validate_identity_file_security(path: &Path, line_number: usize) -> Resul
         // Check if file is world-writable (very dangerous)
         if mode & 0o002 != 0 {
             anyhow::bail!(
-                "Security violation: Identity file '{path_str}' at line {line_number} is world-writable. \
+                "Security violation: Identity file '{escaped_path}' at line {line_number} is world-writable. \
                      This is extremely dangerous and must be fixed immediately."
             );
         }
@@ -94,6 +97,7 @@ pub fn validate_identity_file_security(path: &Path, line_number: usize) -> Resul
 /// Validate security properties of known_hosts files
 pub fn validate_known_hosts_file_security(path: &Path, line_number: usize) -> Result<()> {
     let path_str = path.to_string_lossy();
+    let escaped_path = escape_path(path);
 
     // Block access to critical system files
     let sensitive_patterns = [
@@ -115,7 +119,7 @@ pub fn validate_known_hosts_file_security(path: &Path, line_number: usize) -> Re
     for pattern in &sensitive_patterns {
         if path_str.contains(pattern) {
             anyhow::bail!(
-                "Security violation: Known hosts file path '{path_str}' at line {line_number} points to sensitive system location. \
+                "Security violation: Known hosts file path '{escaped_path}' at line {line_number} points to sensitive system location. \
                  Access to system files is not allowed for security reasons."
             );
         }
@@ -134,7 +138,7 @@ pub fn validate_known_hosts_file_security(path: &Path, line_number: usize) -> Re
         tracing::warn!(
             "Security warning: Known hosts file '{}' at line {} is in an unusual location. \
              Ensure this is intentional and the file is trustworthy.",
-            path_str,
+            escaped_path,
             line_number
         );
     }
@@ -145,6 +149,7 @@ pub fn validate_known_hosts_file_security(path: &Path, line_number: usize) -> Re
 /// Validate security properties of certificate files
 pub fn validate_certificate_file_security(path: &Path, line_number: usize) -> Result<()> {
     let path_str = path.to_string_lossy();
+    let escaped_path = escape_path(path);
 
     // Block access to critical system files that should never be certificates
     let forbidden_patterns = [
@@ -191,7 +196,7 @@ pub fn validate_certificate_file_security(path: &Path, line_number: usize) -> Re
                 // Check if it's exactly the private key name without certificate suffix
                 if path_str.ends_with(pattern) || path_str.ends_with(&format!("{pattern}.pub")) {
                     anyhow::bail!(
-                        "Security violation: Certificate file path '{path_str}' at line {line_number} appears to be a private key or regular public key. \
+                        "Security violation: Certificate file path '{escaped_path}' at line {line_number} appears to be a private key or regular public key. \
                          SSH certificate files should end with '-cert.pub' or similar suffix. Use CertificateFile for certificates, not regular keys."
                     );
                 }
@@ -199,7 +204,7 @@ pub fn validate_certificate_file_security(path: &Path, line_number: usize) -> Re
             }
 
             anyhow::bail!(
-                "Security violation: Certificate file path '{path_str}' at line {line_number} points to forbidden system location. \
+                "Security violation: Certificate file path '{escaped_path}' at line {line_number} points to forbidden system location. \
                  System files and sensitive locations cannot be used as SSH certificates."
             );
         }
@@ -214,7 +219,7 @@ pub fn validate_certificate_file_security(path: &Path, line_number: usize) -> Re
         tracing::warn!(
             "Security warning: Certificate file '{}' at line {} has an unusual extension. \
              SSH certificates typically end with '.pub', '-cert.pub', '.pem', or '.crt'.",
-            path_str,
+            escaped_path,
             line_number
         );
     }
@@ -234,7 +239,7 @@ pub fn validate_certificate_file_security(path: &Path, line_number: usize) -> Re
         tracing::warn!(
             "Security warning: Certificate file '{}' at line {} is in an unusual location. \
              Ensure this is intentional and the file is a valid SSH certificate.",
-            path_str,
+            escaped_path,
             line_number
         );
     }
@@ -245,6 +250,7 @@ pub fn validate_certificate_file_security(path: &Path, line_number: usize) -> Re
 /// Validate security properties of general files
 pub fn validate_general_file_security(path: &Path, line_number: usize) -> Result<()> {
     let path_str = path.to_string_lossy();
+    let escaped_path = escape_path(path);
 
     // Block access to the most critical system files
     let forbidden_patterns = [
@@ -267,7 +273,7 @@ pub fn validate_general_file_security(path: &Path, line_number: usize) -> Result
     for pattern in &forbidden_patterns {
         if path_str.contains(pattern) {
             anyhow::bail!(
-                "Security violation: File path '{path_str}' at line {line_number} points to forbidden system location. \
+                "Security violation: File path '{escaped_path}' at line {line_number} points to forbidden system location. \
                  Access to this location is not allowed for security reasons."
             );
         }

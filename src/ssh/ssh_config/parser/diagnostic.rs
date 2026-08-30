@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{borrow::Cow, path::Path};
+use crate::ssh::ssh_config::diagnostic::escape_path;
+use std::path::Path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum DiagnosticSource<'a> {
@@ -38,7 +39,7 @@ impl DiagnosticSource<'_> {
             Self::Config {
                 path: Some(path),
                 line_number,
-            } => format!("{}:{line_number}", escape_diagnostic_path(path)),
+            } => format!("{}:{line_number}", escape_path(path)),
             Self::Config {
                 path: None,
                 line_number,
@@ -48,41 +49,9 @@ impl DiagnosticSource<'_> {
     }
 }
 
-pub(super) fn escape_diagnostic_field(value: &str) -> Cow<'_, str> {
-    if !value.chars().any(char::is_control) {
-        return Cow::Borrowed(value);
-    }
-
-    let mut escaped = String::with_capacity(value.len());
-    for character in value.chars() {
-        if character.is_control() {
-            escaped.extend(character.escape_default());
-        } else {
-            escaped.push(character);
-        }
-    }
-    Cow::Owned(escaped)
-}
-
-fn escape_diagnostic_path(path: &Path) -> String {
-    escape_diagnostic_field(&path.to_string_lossy()).into_owned()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn diagnostic_fields_escape_controls_but_preserve_printable_unicode() {
-        assert_eq!(
-            escape_diagnostic_field("경로/é/λ\r\n\t\u{1b}\u{7f}\u{85}"),
-            "경로/é/λ\\r\\n\\t\\u{1b}\\u{7f}\\u{85}"
-        );
-        assert!(matches!(
-            escape_diagnostic_field("경로/é/λ"),
-            Cow::Borrowed(_)
-        ));
-    }
 
     #[test]
     fn diagnostic_locations_distinguish_files_lines_and_cli_options() {

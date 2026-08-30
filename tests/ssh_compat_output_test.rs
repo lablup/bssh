@@ -208,6 +208,44 @@ fn config_diagnostics_escape_control_characters_in_paths_and_keywords() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn config_load_errors_escape_control_characters_in_nonexistent_paths() {
+    let directory = tempdir().expect("temporary directory should be created");
+    let missing = directory.path().join("missing\nFORGED-ERROR\u{1b}[31m");
+    let log = directory.path().join("bssh.log");
+
+    let output = bssh()
+        .arg("-E")
+        .arg(&log)
+        .arg("-F")
+        .arg(&missing)
+        .args(["127.0.0.1", "true"])
+        .output()
+        .expect("bssh should report the missing malicious SSH config path");
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+
+    let diagnostics = fs::read_to_string(log).expect("diagnostic log should exist");
+    let escaped_path = missing
+        .to_string_lossy()
+        .replace('\n', "\\n")
+        .replace('\u{1b}', "\\u{1b}");
+    assert!(
+        diagnostics.contains(&format!("Failed to canonicalize path: {escaped_path}")),
+        "escaped missing path is absent from diagnostic chain: {diagnostics:?}"
+    );
+    assert!(!diagnostics.contains('\u{1b}'));
+    assert!(
+        !diagnostics
+            .lines()
+            .any(|line| line.starts_with("FORGED-ERROR")),
+        "missing config path forged a separate error line: {diagnostics:?}"
+    );
+}
+
 #[test]
 fn connection_refused_is_actionable_and_exits_255() {
     let directory = tempdir().expect("temporary directory should be created");

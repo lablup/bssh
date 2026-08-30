@@ -29,7 +29,8 @@ mod security;
 mod support;
 mod ui;
 
-use super::diagnostic::{DiagnosticSource, escape_diagnostic_field};
+use super::diagnostic::DiagnosticSource;
+use crate::ssh::ssh_config::diagnostic::escape_field;
 use crate::ssh::ssh_config::types::SshHostConfig;
 use anyhow::Result;
 use std::collections::HashSet;
@@ -48,7 +49,7 @@ pub fn parse_option(
     let line_number = source.number();
     let Some(spec) = support::keyword_spec(accepted_keyword) else {
         if reported_diagnostics.insert(format!("unknown:{accepted_keyword}")) {
-            let keyword = escape_diagnostic_field(accepted_keyword);
+            let keyword = escape_field(accepted_keyword);
             let location = source.location();
             crate::diagnosticln!("Unknown SSH config option '{keyword}' at {location}");
         }

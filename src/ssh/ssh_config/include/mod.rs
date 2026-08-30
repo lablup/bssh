@@ -21,6 +21,8 @@ use anyhow::{Context, Result};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use super::diagnostic::{escape_field, escape_path};
+
 mod resolver;
 mod validation;
 
@@ -95,7 +97,7 @@ impl IncludeContext {
             // Canonicalize and cache the result
             let canonical = path
                 .canonicalize()
-                .with_context(|| format!("Failed to canonicalize path: {}", path.display()))?;
+                .with_context(|| format!("Failed to canonicalize path: {}", escape_path(path)))?;
             self.canonical_cache
                 .insert(path.to_path_buf(), canonical.clone());
             canonical
@@ -115,7 +117,7 @@ impl IncludeContext {
         if self.visited.contains(&canonical_str) {
             anyhow::bail!(
                 "Include cycle detected: {} has already been processed",
-                path.display()
+                escape_path(path)
             );
         }
 
@@ -166,7 +168,7 @@ pub async fn resolve_includes(config_path: &Path, content: &str) -> Result<Vec<I
         config_path.canonicalize().with_context(|| {
             format!(
                 "Failed to canonicalize main config path: {}",
-                config_path.display()
+                escape_path(config_path)
             )
         })?
     } else {
@@ -214,16 +216,16 @@ async fn process_file_with_includes(
                     .with_context(|| {
                         format!(
                             "Failed to resolve Include pattern '{}' at line {} in {}",
-                            pattern,
+                            escape_field(pattern),
                             line_number,
-                            file_path.display()
+                            escape_path(file_path)
                         )
                     })?;
 
                 // Process each resolved file recursively
                 for include_path in resolved_files {
                     context.enter_include(&include_path).with_context(|| {
-                        format!("Failed to include file: {}", include_path.display())
+                        format!("Failed to include file: {}", escape_path(&include_path))
                     })?;
 
                     // Read with timeout to prevent hanging on network filesystems
@@ -233,10 +235,16 @@ async fn process_file_with_includes(
                     )
                     .await
                     .map_err(|_| {
-                        anyhow::anyhow!("Timeout reading include file: {}", include_path.display())
+                        anyhow::anyhow!(
+                            "Timeout reading include file: {}",
+                            escape_path(&include_path)
+                        )
                     })?
                     .with_context(|| {
-                        format!("Failed to read include file: {}", include_path.display())
+                        format!(
+                            "Failed to read include file: {}",
+                            escape_path(&include_path)
+                        )
                     })?;
 
                     // Recursively process the included file (use Box::pin to avoid stack overflow)

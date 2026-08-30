@@ -24,6 +24,7 @@ use std::{
 };
 
 // Internal modules
+pub(crate) mod diagnostic;
 mod env_cache;
 mod include;
 #[cfg(test)]
@@ -65,13 +66,21 @@ impl SshConfig {
     /// Load SSH configuration from a file with Include support
     pub async fn load_from_file<P: AsRef<Path>>(path: P) -> Result<Self> {
         let path = path.as_ref();
-        let content = tokio::fs::read_to_string(path)
-            .await
-            .with_context(|| format!("Failed to read SSH config file: {}", path.display()))?;
+        let content = tokio::fs::read_to_string(path).await.with_context(|| {
+            format!(
+                "Failed to read SSH config file: {}",
+                diagnostic::escape_path(path)
+            )
+        })?;
 
         Self::parse_from_file_with_content(path, &content)
             .await
-            .with_context(|| format!("Failed to parse SSH config file: {}", path.display()))
+            .with_context(|| {
+                format!(
+                    "Failed to parse SSH config file: {}",
+                    diagnostic::escape_path(path)
+                )
+            })
     }
 
     /// Load SSH configuration from a file with caching

@@ -20,6 +20,7 @@
 use anyhow::Result;
 use std::path::PathBuf;
 
+use super::diagnostic::{escape_field, escape_path};
 use super::env_cache::GLOBAL_ENV_CACHE;
 
 /// Expand tilde and environment variables in a path (secure implementation)
@@ -59,8 +60,8 @@ pub(super) fn expand_path_internal(path: &str) -> Result<PathBuf> {
                 } else {
                     tracing::warn!(
                         "Environment variable expansion failed for '{}': {}. Using original path.",
-                        path_str,
-                        e
+                        escape_path(&path),
+                        escape_field(&e.to_string())
                     );
                     Ok(path)
                 }

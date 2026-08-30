@@ -27,6 +27,7 @@ use std::path::Path;
 
 use super::diagnostic::DiagnosticSource;
 use super::options;
+use crate::ssh::ssh_config::diagnostic::escape_path;
 
 /// Parse SSH configuration content with Include and Match support
 #[cfg(test)]
@@ -53,7 +54,7 @@ pub(crate) async fn parse_from_file_with_diagnostics(
     // Pass 1: Resolve all Include directives
     let included_files = resolve_includes(path, content)
         .await
-        .with_context(|| format!("Failed to resolve includes for {}", path.display()))?;
+        .with_context(|| format!("Failed to resolve includes for {}", escape_path(path)))?;
     parse_included_files(&included_files, reported_diagnostics)
 }
 
