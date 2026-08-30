@@ -710,6 +710,9 @@ impl Session {
                 }
             }
 
+            let rekey_timer =
+                future_or_pending(self.rekey_time_remaining(), tokio::time::sleep);
+            pin!(rekey_timer);
             tokio::select! {
                 r = &mut reading => {
                     let (stream_read, mut buffer, mut opening_cipher) = match r {
@@ -732,6 +735,7 @@ impl Session {
                         }
                         Some(_) => {
                             self.common.received_data = true;
+                            let kex_was_active = self.kex.active();
                             // TODO it'd be cleaner to just pass cipher to reply()
                             std::mem::swap(&mut opening_cipher, &mut self.common.remote_to_local);
 
@@ -742,9 +746,20 @@ impl Session {
                             buffer.seqn = pkt.seqn; // TODO reply changes seqn internall, find cleaner way
 
                             std::mem::swap(&mut opening_cipher, &mut self.common.remote_to_local);
+
+                            if kex_was_active && !self.kex.active() {
+                                buffer.bytes = 0;
+                            } else if self.read_rekey_limit_reached(buffer.bytes) {
+                                debug!("rekey limit reached after {} inbound bytes", buffer.bytes);
+                                self.initiate_rekey()?;
+                            }
                         }
                     }
                     reading.set(start_reading(stream_read, buffer, opening_cipher));
+                }
+                () = &mut rekey_timer => {
+                    debug!("rekey time limit reached");
+                    self.initiate_rekey()?;
                 }
                 () = &mut keepalive_timer => {
                     self.common.alive_timeouts = self.common.alive_timeouts.saturating_add(1);
@@ -889,6 +904,42 @@ impl Session {
             }
         }
         Ok(())
+    }
+
+    fn initiate_rekey(&mut self) -> Result<(), Error> {
+        if let Some(ref mut enc) = self.common.encrypted {
+            enc.rekey_wanted = true;
+            self.flush()?;
+        }
+        Ok(())
+    }
+
+    fn read_rekey_limit_reached(&self, read_bytes: usize) -> bool {
+        !self.kex.active()
+            && self
+                .common
+                .encrypted
+                .as_ref()
+                .is_some_and(|enc| matches!(enc.state, EncryptedState::Authenticated))
+            && read_bytes >= self.common.config.limits.rekey_read_limit
+    }
+
+    fn rekey_time_remaining(&self) -> Option<std::time::Duration> {
+        if self.kex.active() {
+            return None;
+        }
+
+        let enc = self.common.encrypted.as_ref()?;
+        if !matches!(enc.state, EncryptedState::Authenticated) {
+            return None;
+        }
+
+        let limit = self.common.config.limits.rekey_time_limit;
+        if limit == std::time::Duration::MAX {
+            return None;
+        }
+
+        Some(limit.saturating_sub(Instant::now().duration_since(enc.last_rekey)))
     }
 
     pub fn flush_pending(&mut self, channel: ChannelId) -> Result<usize, Error> {
@@ -1618,5 +1669,52 @@ mod tests {
         assert!(
             matches!(err, crate::Error::PacketSize(len) if len > crate::cipher::MAXIMUM_DECOMPRESSED_PACKET_LEN)
         );
+    }
+
+    #[test]
+    fn automatic_rekey_server_starts_at_inbound_read_limit() {
+        let mut session = authenticated_session();
+        session.common.encrypted.as_mut().unwrap().kex =
+            KEXES.get(&crate::kex::CURVE25519).unwrap().make();
+        Arc::get_mut(&mut session.common.config)
+            .expect("test session owns its config")
+            .limits = crate::Limits::new(
+            1 << 30,
+            16,
+            std::time::Duration::from_secs(3600),
+        );
+
+        assert!(!session.read_rekey_limit_reached(15));
+        assert!(session.read_rekey_limit_reached(16));
+        session.initiate_rekey().unwrap();
+
+        assert!(session.kex.active());
+    }
+
+    #[tokio::test]
+    async fn automatic_rekey_server_deadline_wakes_an_idle_authenticated_session() {
+        let mut session = authenticated_session();
+        session.common.encrypted.as_mut().unwrap().kex =
+            KEXES.get(&crate::kex::CURVE25519).unwrap().make();
+        Arc::get_mut(&mut session.common.config)
+            .expect("test session owns its config")
+            .limits = crate::Limits::new(
+            1 << 30,
+            1 << 30,
+            std::time::Duration::ZERO,
+        );
+
+        let remaining = session
+            .rekey_time_remaining()
+            .expect("authenticated sessions with a finite limit need a deadline");
+        tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            tokio::time::sleep(remaining),
+        )
+        .await
+        .expect("an expired rekey deadline must wake without transport activity");
+        session.initiate_rekey().unwrap();
+
+        assert!(session.kex.active());
     }
 }
