@@ -891,20 +891,43 @@ impl Session {
 
     /// Flush the session, i.e. encrypt the pending buffer.
     pub fn flush(&mut self) -> Result<(), Error> {
+        let mut start_rekey = false;
         if let Some(ref mut enc) = self.common.encrypted {
             if enc.flush(
                 &self.common.config.as_ref().limits,
                 &mut self.common.packet_writer,
             )? && self.kex == SessionKexState::Idle
-                && matches!(enc.state, EncryptedState::Authenticated)
+                && Self::automatic_rekey_eligible(&enc.state)
             {
                 debug!("starting rekeying");
                 if enc.exchange.take().is_some() {
-                    self.begin_rekey()?;
+                    // USERAUTH_SUCCESS was just flushed with the pre-authentication
+                    // compression state. If automatic rekeying is the first
+                    // post-authentication traffic, activate delayed server
+                    // compression before emitting KEXINIT, just as the next peer
+                    // packet would normally do.
+                    if matches!(enc.state, EncryptedState::InitCompression) {
+                        if enc.server_compression.is_deferred() {
+                            enc.server_compression
+                                .init_compress(self.common.packet_writer.compress());
+                        }
+                        enc.state = EncryptedState::Authenticated;
+                    }
+                    start_rekey = true;
                 }
             }
         }
+        if start_rekey {
+            self.begin_rekey()?;
+        }
         Ok(())
+    }
+
+    fn automatic_rekey_eligible(state: &EncryptedState) -> bool {
+        matches!(
+            state,
+            EncryptedState::InitCompression | EncryptedState::Authenticated
+        )
     }
 
     fn initiate_rekey(&mut self) -> Result<(), Error> {
@@ -921,7 +944,7 @@ impl Session {
                 .common
                 .encrypted
                 .as_ref()
-                .is_some_and(|enc| matches!(enc.state, EncryptedState::Authenticated))
+                .is_some_and(|enc| Self::automatic_rekey_eligible(&enc.state))
             && read_bytes >= self.common.config.limits.rekey_read_limit
     }
 
@@ -931,7 +954,7 @@ impl Session {
         }
 
         let enc = self.common.encrypted.as_ref()?;
-        if !matches!(enc.state, EncryptedState::Authenticated) {
+        if !Self::automatic_rekey_eligible(&enc.state) {
             return None;
         }
 
@@ -1556,8 +1579,11 @@ mod tests {
     use std::num::Wrapping;
     use std::sync::Arc;
 
+    use ssh_encoding::Encode;
+
     use super::*;
-    use crate::compression::{Compression, Decompress};
+    use crate::auth::{AuthRequest, MethodSet};
+    use crate::compression::{Compress, Compression, Decompress};
     use crate::kex::{KEXES, NONE, SessionKexState};
     use crate::session::{CommonSession, Encrypted, EncryptedState, Exchange};
     use crate::sshbuffer::{IncomingSshPacket, PacketWriter, SSHBuffer};
@@ -1567,6 +1593,24 @@ mod tests {
 
     impl crate::server::Handler for TestHandler {
         type Error = crate::Error;
+    }
+
+    struct AcceptNoneHandler;
+
+    impl crate::server::Handler for AcceptNoneHandler {
+        type Error = crate::Error;
+
+        async fn auth_none(&mut self, _user: &str) -> Result<Auth, Self::Error> {
+            Ok(Auth::Accept)
+        }
+    }
+
+    fn none_auth_request(user: &str) -> Vec<u8> {
+        let mut packet = vec![crate::msg::USERAUTH_REQUEST];
+        user.encode(&mut packet).unwrap();
+        "ssh-connection".encode(&mut packet).unwrap();
+        "none".encode(&mut packet).unwrap();
+        packet
     }
 
     fn authenticated_session() -> Session {
@@ -1708,6 +1752,7 @@ mod tests {
             sent: false,
         };
         encrypted.kex = KEXES.get(&crate::kex::CURVE25519).unwrap().make();
+        encrypted.server_compression = Compression::ZlibOpenSSH;
 
         session.flush().unwrap();
         assert!(
@@ -1715,12 +1760,71 @@ mod tests {
             "a pre-authentication server write limit must not start rekeying"
         );
 
-        session.common.encrypted.as_mut().unwrap().state = EncryptedState::Authenticated;
+        session.common.encrypted.as_mut().unwrap().state = EncryptedState::InitCompression;
         session.flush().unwrap();
         assert!(
             session.kex.active(),
-            "the same server write limit must start rekeying after authentication"
+            "the same server write limit must start rekeying after auth succeeds"
         );
+        assert!(
+            matches!(
+                session.common.encrypted.as_ref().unwrap().state,
+                EncryptedState::Authenticated
+            ),
+            "automatic rekey must complete the delayed-compression state transition"
+        );
+        assert!(
+            matches!(session.common.packet_writer.compress(), Compress::Zlib(_)),
+            "KEXINIT after auth success must use delayed server compression"
+        );
+    }
+
+    #[tokio::test]
+    async fn automatic_rekey_server_auth_success_arms_idle_deadline_before_next_packet() {
+        let mut session = authenticated_session();
+        Arc::get_mut(&mut session.common.config)
+            .expect("test session owns its config")
+            .limits = crate::Limits::new(1 << 30, 1 << 30, std::time::Duration::ZERO);
+        let encrypted = session.common.encrypted.as_mut().unwrap();
+        encrypted.state =
+            EncryptedState::WaitingAuthRequest(AuthRequest::server(MethodSet::server_supported()));
+        encrypted.kex = KEXES.get(&crate::kex::CURVE25519).unwrap().make();
+        encrypted.server_compression = Compression::ZlibOpenSSH;
+
+        session
+            .process_packet(&mut AcceptNoneHandler, &none_auth_request("idle-user"))
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            session.common.encrypted.as_ref().unwrap().state,
+            EncryptedState::InitCompression
+        ));
+        assert!(matches!(
+            session.common.packet_writer.compress(),
+            Compress::None
+        ));
+        let remaining = session
+            .rekey_time_remaining()
+            .expect("auth success must arm the finite rekey deadline before another peer packet");
+        tokio::time::timeout(
+            std::time::Duration::from_millis(50),
+            tokio::time::sleep(remaining),
+        )
+        .await
+        .expect("the idle post-authentication rekey deadline must wake");
+
+        session.initiate_rekey().unwrap();
+
+        assert!(session.kex.active());
+        assert!(matches!(
+            session.common.encrypted.as_ref().unwrap().state,
+            EncryptedState::Authenticated
+        ));
+        assert!(matches!(
+            session.common.packet_writer.compress(),
+            Compress::Zlib(_)
+        ));
     }
 
     #[tokio::test]
