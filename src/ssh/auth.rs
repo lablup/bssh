@@ -564,7 +564,7 @@ impl AuthContext {
 
         #[cfg(not(target_os = "windows"))]
         {
-            if agent_available && !self.policy.identities_only && !self.policy.identity_file_none {
+            if agent_available && !self.policy.identities_only {
                 methods.push(AuthMethod::with_agent_policy(accepted.clone()));
             }
         }
@@ -1413,7 +1413,7 @@ mod tests {
     #[cfg(not(target_os = "windows"))]
     #[tokio::test]
     #[serial]
-    async fn identity_file_none_suppresses_defaults_and_ambient_agent() {
+    async fn identity_file_none_suppresses_defaults_but_keeps_ambient_agent() {
         let home = TempDir::new().unwrap();
         let ssh_dir = home.path().join(".ssh");
         std::fs::create_dir(&ssh_dir).unwrap();
@@ -1441,6 +1441,6 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(method_names(auth), ["password"]);
+        assert_eq!(method_names(auth), ["agent", "password"]);
     }
 }

@@ -25,7 +25,7 @@ pub struct SshAuthenticationPolicy {
     pub cli_identity_files: Vec<PathBuf>,
     pub identity_files: Vec<PathBuf>,
     pub certificate_files: Vec<PathBuf>,
-    /// `IdentityFile none` suppresses implicit default and ambient-agent identities.
+    /// `IdentityFile none` suppresses implicit default identity files.
     pub identity_file_none: bool,
     pub identities_only: bool,
     pub preferred_authentications: Vec<String>,
