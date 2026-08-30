@@ -147,7 +147,7 @@ impl<S: AsyncRead + AsyncWrite + Send + Unpin + 'static, A: Agent + Send + Sync 
                 if let Ok(keys) = self.keys.0.read() {
                     msg::IDENTITIES_ANSWER.encode(writebuf)?;
                     (keys.len() as u32).encode(writebuf)?;
-                    for (k, _) in keys.iter() {
+                    for k in keys.keys() {
                         k.encode(writebuf)?;
                         "".encode(writebuf)?;
                     }

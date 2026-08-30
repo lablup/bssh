@@ -5,6 +5,9 @@
     clippy::panic
 )]
 #![allow(clippy::single_match, clippy::upper_case_acronyms)]
+// Preserve russh 0.63.1's public Handle API while this crate is maintained as
+// a narrow compatibility fork; changing these return types would be breaking.
+#![allow(clippy::result_unit_err)]
 #![allow(macro_expanded_macro_exports_accessed_by_absolute_paths)]
 // length checked
 // Copyright 2016 Pierre-Étienne Meunier
