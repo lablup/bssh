@@ -16,6 +16,7 @@
 // Module declarations
 pub mod address_family;
 pub(crate) mod algorithms;
+pub mod auth_policy;
 pub mod authentication;
 pub mod channel_manager;
 pub mod connection;
@@ -35,6 +36,7 @@ mod to_socket_addrs_with_hostname;
 
 // Re-export public API types for backward compatibility
 pub use address_family::AddressFamily;
+pub use auth_policy::SshAuthenticationPolicy;
 pub use authentication::{AuthKeyboardInteractive, AuthMethod, ServerCheckMethod};
 pub use channel_manager::{CommandExecutedResult, CommandOutput};
 pub use connection::{

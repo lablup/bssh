@@ -22,6 +22,7 @@
 //! Regression coverage for #246: `-4`/`-6` and the ssh_config `AddressFamily`
 //! keyword were parsed but never consumed on the connect path.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use super::address_family::AddressFamily;
@@ -673,4 +674,69 @@ fn configured_algorithms_reach_the_russh_transport_preferences() {
 fn connection_attempts_rejects_zero() {
     let error = SshConfig::parse("Host target\n    ConnectionAttempts 0\n").unwrap_err();
     assert!(format!("{error:#}").contains("at least 1"));
+}
+
+#[test]
+fn resolved_authentication_directives_reach_runtime_policy() {
+    let ssh_config = SshConfig::parse(
+        "Host target\n    IdentityFile ~/.ssh/config-key\n    CertificateFile ~/.ssh/config-key-cert.pub\n    IdentitiesOnly yes\n    PreferredAuthentications password,publickey\n    PubkeyAuthentication no\n    PasswordAuthentication yes\n    NumberOfPasswordPrompts 2\n    BatchMode yes\n    PubkeyAcceptedAlgorithms ssh-ed25519\n",
+    )
+    .unwrap();
+    let config = SshConnectionConfigResolver::new()
+        .with_ssh_config(Some(ssh_config))
+        .resolve_for_host("target");
+    let policy = config.auth_policy;
+
+    assert_eq!(policy.identity_files.len(), 1);
+    assert_eq!(policy.certificate_files.len(), 1);
+    assert!(policy.identities_only);
+    assert_eq!(policy.preferred_authentications, ["password", "publickey"]);
+    assert!(!policy.pubkey_authentication);
+    assert!(policy.password_authentication);
+    assert_eq!(policy.number_of_password_prompts, 2);
+    assert!(policy.batch_mode);
+    assert_eq!(policy.pubkey_accepted_algorithms.unwrap(), ["ssh-ed25519"]);
+}
+
+#[test]
+fn cli_identities_precede_ssh_config_identities() {
+    let ssh_config = SshConfig::parse("Host target\n    IdentityFile /config-key\n").unwrap();
+    let policy = SshConnectionConfigResolver::new()
+        .with_ssh_config(Some(ssh_config))
+        .with_cli_identity_files(vec![
+            PathBuf::from("/cli-first"),
+            PathBuf::from("/cli-second"),
+        ])
+        .resolve_for_host("target")
+        .auth_policy;
+
+    assert_eq!(
+        policy.cli_identity_files,
+        [PathBuf::from("/cli-first"), PathBuf::from("/cli-second")]
+    );
+    assert_eq!(policy.identity_files, [PathBuf::from("/config-key")]);
+}
+
+#[test]
+fn authentication_yes_no_defaults_and_overrides_are_preserved() {
+    let defaults = SshConnectionConfigResolver::new()
+        .resolve_for_host("target")
+        .auth_policy;
+    assert!(!defaults.identities_only);
+    assert!(defaults.pubkey_authentication);
+    assert!(defaults.password_authentication);
+    assert!(!defaults.batch_mode);
+
+    let ssh_config = SshConfig::parse(
+        "Host target\n    IdentitiesOnly no\n    PubkeyAuthentication yes\n    PasswordAuthentication no\n    BatchMode no\n",
+    )
+    .unwrap();
+    let policy = SshConnectionConfigResolver::new()
+        .with_ssh_config(Some(ssh_config))
+        .resolve_for_host("target")
+        .auth_policy;
+    assert!(!policy.identities_only);
+    assert!(policy.pubkey_authentication);
+    assert!(!policy.password_authentication);
+    assert!(!policy.batch_mode);
 }

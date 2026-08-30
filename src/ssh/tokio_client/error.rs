@@ -45,13 +45,18 @@ pub enum Error {
     KeyAuthFailed,
     #[error("Unable to load key, bad format or passphrase: {0}")]
     KeyInvalid(russh::keys::Error),
+    #[error("SSH authentication policy rejected the configured credential: {0}")]
+    AuthenticationPolicy(String),
+    #[error("SSH identity algorithm is excluded by PubkeyAcceptedAlgorithms: {0}")]
+    IdentityAlgorithmExcluded(String),
     #[error("Permission denied (password).")]
     PasswordWrong,
     #[error(
-        "Permission denied ({methods}).\nbssh: SSH agent: {agent_status}\nbssh: Default SSH keys: not found or not authorized\nbssh: Password authentication: {password_status}\nbssh: use -i/--identity, --password, or ssh-add to configure an authentication method"
+        "Permission denied ({methods}).\nbssh: SSH identities: {identity_status}\nbssh: SSH agent: {agent_status}\nbssh: Default SSH keys: not found or not authorized\nbssh: Password authentication: {password_status}\nbssh: use -i/--identity, --password, or ssh-add to configure an authentication method"
     )]
     AuthenticationExhausted {
-        methods: &'static str,
+        methods: String,
+        identity_status: String,
         agent_status: String,
         password_status: &'static str,
     },
@@ -92,6 +97,10 @@ pub enum Error {
         #[source]
         source: russh::Error,
     },
+    #[error("BatchMode prohibits passphrase or keychain prompting for key '{path}'")]
+    KeyPassphrasePromptDisabled { path: std::path::PathBuf },
+    #[error("Authentication {prompt} prompt timed out after {seconds} seconds")]
+    AuthenticationPromptTimeout { prompt: &'static str, seconds: u64 },
     #[error("ProxyCommand '{command}' contains unsupported token '{token}'")]
     InvalidProxyCommandToken { command: String, token: String },
     #[error("Failed to start ProxyCommand '{command}': {source}")]
@@ -166,10 +175,27 @@ pub enum Error {
     AgentConnectionFailed,
     #[error("Failed to request identities from SSH agent")]
     AgentRequestIdentitiesFailed,
+    /// Timed out before russh requested an SSH signature, so another planned
+    /// authentication method may safely reuse the transport.
+    #[error("SSH agent setup operation '{action}' timed out after {seconds} seconds")]
+    AgentOperationTimeout { action: &'static str, seconds: u64 },
+    /// Timed out after russh requested a signature. The transport may still
+    /// be waiting for `Msg::Signed` and must not be reused.
+    #[error("SSH agent signing operation '{action}' timed out after {seconds} seconds")]
+    AgentSignerTimeout { action: &'static str, seconds: u64 },
     #[error("SSH agent has no identities")]
     AgentNoIdentities,
     #[error("Permission denied (publickey). SSH agent identities were rejected")]
     AgentAuthenticationFailed,
+    /// A local certificate signer failed after russh requested a signature;
+    /// unlike key-loading errors, this is fatal to the current transport.
+    #[error(
+        "Local SSH certificate signing failed after the server requested a signature: {source}"
+    )]
+    LocalSignerFailed {
+        #[source]
+        source: russh::keys::Error,
+    },
     #[error("SFTP error occurred: {0}")]
     SftpError(#[from] russh_sftp::client::error::Error),
     #[error("I/O operation failed: {0}")]
@@ -208,6 +234,9 @@ impl Error {
                 | Self::KeyboardInteractiveNoResponseForPrompt(_)
                 | Self::KeyAuthFailed
                 | Self::KeyInvalid(_)
+                | Self::AuthenticationPolicy(_)
+                | Self::KeyPassphrasePromptDisabled { .. }
+                | Self::AuthenticationPromptTimeout { .. }
                 | Self::PasswordWrong
                 | Self::AuthenticationExhausted { .. }
                 | Self::AddressInvalid(_)
@@ -230,10 +259,14 @@ impl Error {
                 | Self::SendError(_)
                 | Self::TransportIntegrity { .. }
                 | Self::AgentAuthError(_)
+                | Self::IdentityAlgorithmExcluded(_)
                 | Self::AgentConnectionFailed
                 | Self::AgentRequestIdentitiesFailed
+                | Self::AgentOperationTimeout { .. }
+                | Self::AgentSignerTimeout { .. }
                 | Self::AgentNoIdentities
                 | Self::AgentAuthenticationFailed
+                | Self::LocalSignerFailed { .. }
                 | Self::SftpError(_)
                 | Self::IoError(_)
                 | Self::ChannelOpen { .. }
@@ -336,12 +369,14 @@ mod tests {
     #[test]
     fn authentication_exhaustion_lists_attempted_methods_and_remediation() {
         let error = Error::AuthenticationExhausted {
-            methods: "publickey",
+            methods: "publickey".to_string(),
+            identity_status: "attempted /tmp/missing-key".to_string(),
             agent_status: "not available".to_string(),
             password_status: "not available in non-interactive mode",
         };
 
         let rendered = error.to_string();
+        assert!(rendered.contains("bssh: SSH identities: attempted /tmp/missing-key"));
         assert!(rendered.starts_with("Permission denied (publickey).\n"));
         assert!(rendered.contains("bssh: SSH agent: not available"));
         assert!(rendered.contains("bssh: Default SSH keys: not found or not authorized"));

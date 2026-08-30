@@ -91,7 +91,7 @@ fn test_upload_command_with_options() {
     let cli = Cli::parse_from(args);
 
     assert_eq!(cli.hosts, Some(vec!["server1".to_string()]));
-    assert_eq!(cli.identity, Some(PathBuf::from("~/.ssh/custom_key")));
+    assert_eq!(cli.identity, vec![PathBuf::from("~/.ssh/custom_key")]);
     assert_eq!(cli.parallel, 5);
 
     if let Some(Commands::Upload {

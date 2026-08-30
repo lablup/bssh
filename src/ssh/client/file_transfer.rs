@@ -716,6 +716,7 @@ impl SshClient {
                 #[cfg(target_os = "macos")]
                 false,
                 pre_collected_password,
+                None,
             )
             .await?;
 
@@ -776,6 +777,7 @@ impl SshClient {
                 #[cfg(target_os = "macos")]
                 false,
                 pre_collected_password.clone(),
+                Some(ssh_connection_config),
             )
             .await?;
 

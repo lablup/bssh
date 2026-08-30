@@ -24,63 +24,15 @@
 //! - Authentication attempts use constant-time operations where possible
 //! - Error messages do not leak sensitive information
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::time::timeout;
 use zeroize::Zeroizing;
 
-use super::tokio_client::AuthMethod;
+use super::tokio_client::{AuthMethod, SshAuthenticationPolicy};
 use crate::security::Password;
-
-/// Maximum time to wait for password/passphrase input
-const AUTH_PROMPT_TIMEOUT: Duration = Duration::from_secs(30);
-
-/// Timeout for SSH agent operations (5 seconds)
-/// This prevents indefinite hangs if the agent is unresponsive (e.g., waiting for hardware token)
-#[cfg(not(target_os = "windows"))]
-const AGENT_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// Check if the SSH agent has any loaded identities.
-///
-/// This function queries the SSH agent to determine if it has any keys loaded.
-/// Returns `true` if the agent has at least one identity, `false` otherwise.
-/// If communication with the agent fails or times out, returns `false` to allow
-/// fallback to key files.
-///
-/// Note: Includes a 5-second timeout to prevent hanging if the agent is unresponsive.
-#[cfg(not(target_os = "windows"))]
-async fn agent_has_identities() -> bool {
-    use russh::keys::agent::client::AgentClient;
-
-    let result = timeout(AGENT_TIMEOUT, async {
-        let mut agent = AgentClient::connect_env().await?;
-        agent.request_identities().await
-    })
-    .await;
-
-    match result {
-        Ok(Ok(identities)) => {
-            let has_keys = !identities.is_empty();
-            if has_keys {
-                tracing::debug!("SSH agent has {} loaded identities", identities.len());
-            } else {
-                tracing::debug!("SSH agent is running but has no loaded identities");
-            }
-            has_keys
-        }
-        Ok(Err(e)) => {
-            tracing::warn!("Failed to communicate with SSH agent: {e}");
-            false
-        }
-        Err(_) => {
-            tracing::warn!("SSH agent operation timed out after {:?}", AGENT_TIMEOUT);
-            false
-        }
-    }
-}
 
 /// Maximum username length to prevent DoS attacks
 const MAX_USERNAME_LENGTH: usize = 256;
@@ -88,6 +40,12 @@ const MAX_USERNAME_LENGTH: usize = 256;
 /// Maximum hostname length per RFC 1035
 const MAX_HOSTNAME_LENGTH: usize = 253;
 
+struct PreparedIdentity {
+    path: PathBuf,
+    algorithm: Option<russh::keys::ssh_key::Algorithm>,
+    public_key: Option<russh::keys::ssh_key::public::KeyData>,
+    public_only: bool,
+}
 /// Context for determining SSH authentication method.
 ///
 /// This structure encapsulates all parameters needed to determine the appropriate
@@ -122,6 +80,10 @@ pub struct AuthContext {
     /// fallback path. Wrapped in `Arc` so cloning the context across tasks
     /// does not duplicate the underlying secret.
     pub password: Option<Arc<Password>>,
+    /// Resolved ssh_config authentication policy for this destination.
+    pub policy: SshAuthenticationPolicy,
+    /// Test seam for terminal availability; production leaves this unset.
+    prompt_available: Option<bool>,
 }
 
 impl AuthContext {
@@ -162,30 +124,18 @@ impl AuthContext {
             username,
             host,
             password: None,
+            policy: SshAuthenticationPolicy::default(),
+            prompt_available: None,
         })
     }
 
-    /// Set the SSH key file path with validation.
+    /// Set the preferred SSH key path without touching the filesystem.
     ///
-    /// # Security
-    /// - Paths are canonicalized to prevent path traversal attacks
-    /// - Symlinks are resolved to their actual targets
+    /// Loading, canonicalization, and validation are intentionally deferred to
+    /// the ordered authentication attempt so an unavailable `-i` entry cannot
+    /// prevent a later identity, agent, or password method from succeeding.
     pub fn with_key_path(mut self, key_path: Option<PathBuf>) -> Result<Self> {
-        if let Some(path) = key_path {
-            // Canonicalize path to prevent path traversal attacks
-            let canonical_path = path
-                .canonicalize()
-                .with_context(|| format!("Failed to resolve SSH key path: {path:?}"))?;
-
-            // Verify it's a file, not a directory
-            if !canonical_path.is_file() {
-                anyhow::bail!("SSH key path is not a file: {canonical_path:?}");
-            }
-
-            self.key_path = Some(canonical_path);
-        } else {
-            self.key_path = None;
-        }
+        self.key_path = key_path;
         Ok(self)
     }
 
@@ -229,6 +179,18 @@ impl AuthContext {
     /// per-node) does not duplicate the underlying secret material.
     pub fn with_pre_collected_password(mut self, password: Option<Arc<Password>>) -> Self {
         self.password = password;
+        self
+    }
+
+    /// Apply the concrete host's resolved ssh_config authentication policy.
+    pub fn with_policy(mut self, policy: SshAuthenticationPolicy) -> Self {
+        self.policy = policy;
+        self
+    }
+
+    #[cfg(test)]
+    fn with_prompt_available(mut self, available: bool) -> Self {
+        self.prompt_available = Some(available);
         self
     }
 
@@ -288,474 +250,407 @@ impl AuthContext {
         };
 
         anyhow::Error::new(crate::ssh::tokio_client::Error::AuthenticationExhausted {
-            methods: "publickey",
+            methods: "publickey".to_string(),
+            identity_status: "none selected by the resolved policy".to_string(),
             agent_status,
             password_status,
         })
     }
 
     async fn determine_method_internal(&self) -> Result<AuthMethod> {
-        // Priority 1: Password authentication (explicit request)
-        if self.use_password {
-            return self.password_auth().await;
-        }
-
-        // Priority 2: SSH agent (explicit request)
-        if self.use_agent
-            && let Some(auth) = self.agent_auth()?
-        {
-            return Ok(auth);
-        }
-
-        // Priority 3: Key file authentication (explicit -i flag)
-        if let Some(ref key_path) = self.key_path {
-            return self.key_file_auth(key_path).await;
-        }
-
-        // Priority 4: SSH agent auto-detection (like OpenSSH behavior)
-        // OpenSSH tries SSH agent first when available, as it can try all registered keys
-        #[cfg(not(target_os = "windows"))]
-        if !self.use_agent {
-            // Auto-detect SSH agent even without --use-agent flag
-            if let Some(auth) = self.agent_auth()? {
-                tracing::debug!(
-                    "Using SSH agent (auto-detected) - agent will try all registered keys"
-                );
-                return Ok(auth);
-            }
-        }
-
-        // Priority 5: Default key locations
-        match self.default_key_auth().await {
-            Ok(auth) => Ok(auth),
-            Err(_) => {
-                // Priority 6: Fallback to password authentication
-                // Check if we're in an interactive terminal
-                if std::io::stdin().is_terminal() {
-                    // If allow_password_fallback is set (interactive mode), skip consent prompt
-                    // Otherwise, ask for explicit user consent for security
-                    let should_attempt_password = if self.allow_password_fallback {
-                        tracing::info!(
-                            "SSH key authentication failed, falling back to password authentication"
-                        );
-
-                        // SECURITY: Add rate limiting before password fallback to prevent rapid attempts
-                        const FALLBACK_DELAY: Duration = Duration::from_secs(1);
-                        tokio::time::sleep(FALLBACK_DELAY).await;
-                        true
-                    } else {
-                        self.prompt_password_fallback_consent().await?
-                    };
-
-                    if should_attempt_password {
-                        tracing::debug!("Attempting password authentication fallback");
-
-                        // SECURITY: Audit log the password fallback attempt
-                        tracing::warn!(
-                            "Password authentication fallback attempted for {}@{} after key auth failure",
-                            self.username,
-                            self.host
-                        );
-
-                        self.password_auth().await
-                    } else {
-                        // User declined password fallback
-                        Err(self.authentication_exhausted_error("declined by user"))
-                    }
-                } else {
-                    // Non-interactive environment - cannot prompt for password
-                    Err(self
-                        .authentication_exhausted_error("not available in non-interactive mode"))
-                }
-            }
-        }
-    }
-
-    /// Prompt user for consent to fall back to password authentication.
-    ///
-    /// Returns true if user consents, false otherwise.
-    async fn prompt_password_fallback_consent(&self) -> Result<bool> {
-        use std::io::{self, Write};
-
-        tracing::info!(
-            "All SSH key-based authentication methods failed for {}@{}",
-            self.username,
-            self.host
-        );
-
-        // SECURITY: Add rate limiting before password fallback to prevent rapid attempts
-        // This helps prevent brute-force attacks and gives servers time to process
-        const FALLBACK_DELAY: Duration = Duration::from_secs(1);
-        tokio::time::sleep(FALLBACK_DELAY).await;
-
-        // Run consent prompt in blocking task
-        let consent_future = tokio::task::spawn_blocking({
-            let username = self.username.clone();
-            let host = self.host.clone();
-            move || -> Result<bool> {
-                println!("\n⚠️  SSH key authentication failed for {username}@{host}");
-                println!("Would you like to try password authentication? (yes/no): ");
-                io::stdout().flush()?;
-
-                let mut response = String::new();
-                io::stdin().read_line(&mut response)?;
-                let response = response.trim().to_lowercase();
-
-                Ok(response == "yes" || response == "y")
-            }
-        });
-
-        // Use a shorter timeout for consent prompt
-        const CONSENT_TIMEOUT: Duration = Duration::from_secs(30);
-        timeout(CONSENT_TIMEOUT, consent_future)
-            .await
-            .context("Consent prompt timed out after 30 seconds")?
-            .context("Consent prompt task failed")?
-    }
-
-    /// Build an `AuthMethod` from the pre-collected password.
-    ///
-    /// `AuthMethod::with_password` internally wraps the value in `Zeroizing`,
-    /// so the borrowed slice from `Password::as_str()` is only used to build
-    /// a securely-stored copy; no plaintext is retained outside the secrets
-    /// machinery.
-    async fn password_auth(&self) -> Result<AuthMethod> {
-        tracing::debug!("Using password authentication");
-
-        // Priority 1: Use the pre-collected password if the dispatcher provided one.
-        // This is the expected path for `--password`: the dispatcher prompts once
-        // before any per-node connection task starts (and before the indicatif
-        // progress UI is initialized), then shares the same value with every node.
-        if let Some(ref password) = self.password {
-            return Ok(AuthMethod::with_password(password.as_str()));
-        }
-
-        // Priority 2: Fallback prompt (only reached when no pre-collected password
-        // is available — e.g., the OpenSSH-style "all key-based methods failed,
-        // prompt for password" path triggered by `determine_method` itself, never
-        // by an explicit `--password` flag if the dispatcher behaves correctly).
-        //
-        // This branch keeps the historical behavior so the password-fallback
-        // path (interactive only) still works; it is the only remaining caller
-        // that legitimately needs an in-task prompt.
-        let prompt_future = tokio::task::spawn_blocking({
-            let username = self.username.clone();
-            let host = self.host.clone();
-            move || -> Result<Zeroizing<String>> {
-                let password = Zeroizing::new(
-                    rpassword::prompt_password(format!("Enter password for {username}@{host}: "))
-                        .with_context(|| "Failed to read password")?,
-                );
-                Ok(password)
-            }
-        });
-
-        let password = timeout(AUTH_PROMPT_TIMEOUT, prompt_future)
-            .await
-            .context("Password prompt timed out")?
-            .context("Password prompt task failed")??;
-
-        Ok(AuthMethod::with_password(&password))
-    }
-
-    /// Attempt SSH agent authentication with identity check.
-    ///
-    /// This function verifies that the SSH agent has loaded identities before
-    /// returning `AuthMethod::Agent`. If the agent is running but has no identities,
-    /// it returns `None` to allow fallback to key file authentication.
-    ///
-    /// This matches OpenSSH behavior where `ssh` tries agent first, then falls back
-    /// to key files when the agent returns an empty identity list.
-    #[cfg(not(target_os = "windows"))]
-    fn agent_auth(&self) -> Result<Option<AuthMethod>> {
-        // Atomic check to prevent TOCTOU race condition
-        match std::env::var_os("SSH_AUTH_SOCK") {
-            Some(socket_path) => {
-                // Verify the socket actually exists
-                let path = std::path::Path::new(&socket_path);
-                if path.exists() {
-                    // Check if agent has any identities using blocking call
-                    // We use a synchronous check here since this is called from sync context
-                    let has_identities = std::thread::spawn(|| {
-                        tokio::runtime::Builder::new_current_thread()
-                            .enable_all()
-                            .build()
-                            .map(|rt| rt.block_on(agent_has_identities()))
-                            .unwrap_or(false)
-                    })
-                    .join()
-                    .unwrap_or(false);
-
-                    if has_identities {
-                        tracing::debug!("Using SSH agent for authentication");
-                        Ok(Some(AuthMethod::Agent))
-                    } else {
-                        tracing::debug!(
-                            "SSH agent is running but has no loaded identities, falling back to key files"
-                        );
-                        Ok(None)
-                    }
-                } else {
-                    tracing::debug!("SSH_AUTH_SOCK points to non-existent socket");
-                    Ok(None)
-                }
-            }
-            None => {
-                tracing::debug!(
-                    "SSH agent requested but SSH_AUTH_SOCK environment variable not set"
-                );
-                Ok(None)
-            }
-        }
-    }
-
-    /// Attempt SSH agent authentication (Windows - not supported).
-    #[cfg(target_os = "windows")]
-    fn agent_auth(&self) -> Result<Option<AuthMethod>> {
-        anyhow::bail!("SSH agent authentication is not supported on Windows");
-    }
-
-    /// Check if a key file is encrypted by examining its contents.
-    ///
-    /// This is a separate function to avoid reading the file multiple times.
-    fn is_key_encrypted(key_contents: &str) -> bool {
-        key_contents.contains("ENCRYPTED")
-            || key_contents.contains("Proc-Type: 4,ENCRYPTED")
-            || key_contents.contains("DEK-Info:") // OpenSSL encrypted format
-    }
-
-    /// Attempt authentication with a specific key file.
-    async fn key_file_auth(&self, key_path: &Path) -> Result<AuthMethod> {
-        tracing::debug!("Authenticating with key: {:?}", key_path);
-
-        // Read key file once
-        let key_contents = tokio::fs::read_to_string(key_path)
-            .await
-            .with_context(|| format!("Failed to read SSH key file: {key_path:?}"))?;
-
-        let passphrase = if Self::is_key_encrypted(&key_contents) {
-            tracing::debug!("Detected encrypted SSH key");
-
-            // Try to retrieve passphrase from Keychain first (macOS only)
-            #[cfg(target_os = "macos")]
-            let keychain_passphrase = if self.use_keychain {
-                tracing::debug!("Attempting to retrieve passphrase from Keychain");
-                match super::keychain_macos::retrieve_passphrase(key_path).await {
-                    Ok(Some(pass)) => {
-                        tracing::info!("Successfully retrieved passphrase from Keychain");
-                        Some(pass)
-                    }
-                    Ok(None) => {
-                        tracing::debug!("No passphrase found in Keychain");
-                        None
-                    }
-                    Err(err) => {
-                        tracing::warn!("Failed to retrieve passphrase from Keychain: {err}");
-                        None
-                    }
-                }
-            } else {
-                None
-            };
-
-            #[cfg(not(target_os = "macos"))]
-            let keychain_passphrase: Option<Zeroizing<String>> = None;
-
-            // If we got passphrase from Keychain, use it; otherwise prompt
-            if let Some(pass) = keychain_passphrase {
-                Some(pass)
-            } else {
-                tracing::debug!("Prompting for passphrase");
-
-                // Run passphrase prompt with timeout
-                let key_path_str = key_path.display().to_string();
-                let prompt_future =
-                    tokio::task::spawn_blocking(move || -> Result<Zeroizing<String>> {
-                        // Use Zeroizing for passphrase security
-                        let pass = Zeroizing::new(
-                            rpassword::prompt_password(format!(
-                                "Enter passphrase for key {key_path_str}: "
-                            ))
-                            .with_context(|| "Failed to read passphrase")?,
-                        );
-                        Ok(pass)
-                    });
-
-                let pass = timeout(AUTH_PROMPT_TIMEOUT, prompt_future)
-                    .await
-                    .context("Passphrase prompt timed out")?
-                    .context("Passphrase prompt task failed")??;
-
-                // Store passphrase in Keychain if enabled (macOS only)
-                #[cfg(target_os = "macos")]
-                if self.use_keychain {
-                    tracing::debug!("Storing passphrase in Keychain");
-                    if let Err(err) = super::keychain_macos::store_passphrase(key_path, &pass).await
-                    {
-                        tracing::warn!("Failed to store passphrase in Keychain: {err}");
-                        // Continue even if storage fails - the passphrase was entered successfully
-                    } else {
-                        tracing::info!("Successfully stored passphrase in Keychain");
-                    }
-                }
-
-                Some(pass)
-            }
+        let publickey_methods = if self.policy.method_enabled("publickey") {
+            self.publickey_methods().await?
+        } else {
+            Vec::new()
+        };
+        let password_method = if self.policy.method_enabled("password") {
+            self.password_method().await?
         } else {
             None
         };
 
-        // Clear key_contents from memory (though String doesn't have zeroize)
-        drop(key_contents);
-
-        Ok(AuthMethod::with_key_file(
-            key_path,
-            passphrase.as_ref().map(|p| p.as_str()),
-        ))
-    }
-
-    /// Attempt authentication with default key locations.
-    async fn default_key_auth(&self) -> Result<AuthMethod> {
-        // Use dirs crate for reliable home directory detection
-        let home_dir = dirs::home_dir()
-            .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
-
-        let ssh_dir = home_dir.join(".ssh");
-
-        // Validate SSH directory exists and is actually a directory
-        if !ssh_dir.is_dir() {
-            anyhow::bail!(
-                "SSH directory not found: {ssh_dir:?}\n\
-                Please ensure ~/.ssh directory exists with proper permissions."
-            );
+        let mut methods = Vec::new();
+        let mut publickey_added = false;
+        let mut password_added = false;
+        for preferred in &self.policy.preferred_authentications {
+            match preferred.to_ascii_lowercase().as_str() {
+                "publickey" if !publickey_added => {
+                    methods.extend(publickey_methods.iter().cloned());
+                    publickey_added = true;
+                }
+                "password" if !password_added => {
+                    methods.extend(password_method.iter().cloned());
+                    password_added = true;
+                }
+                _ => {}
+            }
         }
 
-        // Try common key files in order of preference
-        let default_keys = [
-            ssh_dir.join("id_ed25519"),
-            ssh_dir.join("id_rsa"),
-            ssh_dir.join("id_ecdsa"),
-            ssh_dir.join("id_dsa"),
-        ];
+        if methods.is_empty() {
+            let password_status = if self.policy.batch_mode {
+                "disabled by BatchMode"
+            } else if !self.policy.password_authentication {
+                "disabled by PasswordAuthentication"
+            } else {
+                "not available in non-interactive mode"
+            };
+            return Err(self.authentication_exhausted_error(password_status));
+        }
 
-        for default_key in &default_keys {
-            if default_key.exists() && default_key.is_file() {
-                // Canonicalize to prevent symlink attacks
-                let canonical_key = default_key
-                    .canonicalize()
-                    .with_context(|| format!("Failed to resolve key path: {default_key:?}"))?;
+        Ok(AuthMethod::with_methods(methods))
+    }
 
-                tracing::debug!("Using default key: {:?}", canonical_key);
+    fn prompt_available(&self) -> bool {
+        self.prompt_available
+            .unwrap_or_else(|| std::io::stdin().is_terminal())
+    }
 
-                // Read key file once
-                let key_contents = tokio::fs::read_to_string(&canonical_key)
-                    .await
-                    .with_context(|| format!("Failed to read SSH key file: {canonical_key:?}"))?;
+    async fn password_method(&self) -> Result<Option<AuthMethod>> {
+        if self.policy.batch_mode {
+            return Ok(None);
+        }
+        if self.use_password {
+            if let Some(password) = &self.password {
+                return Ok(Some(AuthMethod::with_password(password.as_str())));
+            }
+            if !self.prompt_available() {
+                return Ok(None);
+            }
+            return Ok(Some(AuthMethod::with_password_prompt(
+                self.policy.number_of_password_prompts,
+            )));
+        }
+        if !self.prompt_available() {
+            return Ok(None);
+        }
+        Ok(Some(AuthMethod::with_password_prompt(
+            self.policy.number_of_password_prompts,
+        )))
+    }
 
-                let passphrase = if Self::is_key_encrypted(&key_contents) {
-                    tracing::debug!("Detected encrypted SSH key");
+    async fn prepare_identity(
+        &self,
+        path: &Path,
+        required: bool,
+    ) -> Result<Option<PreparedIdentity>> {
+        let unresolved = |path: PathBuf| PreparedIdentity {
+            path,
+            algorithm: None,
+            public_key: None,
+            public_only: false,
+        };
+        let canonical_path = match path.canonicalize() {
+            Ok(path) if path.is_file() => path,
+            Ok(_) | Err(_) if required => {
+                tracing::warn!(
+                    "Identity file '{}' is not accessible; later authentication methods will still be tried",
+                    path.display()
+                );
+                return Ok(Some(unresolved(path.to_path_buf())));
+            }
+            _ => return Ok(None),
+        };
 
-                    // Try to retrieve passphrase from Keychain first (macOS only)
-                    #[cfg(target_os = "macos")]
-                    let keychain_passphrase = if self.use_keychain {
-                        tracing::debug!("Attempting to retrieve passphrase from Keychain");
-                        match super::keychain_macos::retrieve_passphrase(&canonical_key).await {
-                            Ok(Some(pass)) => {
-                                tracing::info!("Successfully retrieved passphrase from Keychain");
-                                Some(pass)
-                            }
-                            Ok(None) => {
-                                tracing::debug!("No passphrase found in Keychain");
-                                None
-                            }
-                            Err(err) => {
-                                tracing::warn!(
-                                    "Failed to retrieve passphrase from Keychain: {err}"
-                                );
-                                None
-                            }
-                        }
-                    } else {
-                        None
-                    };
+        if let Ok(public_key) = russh::keys::load_public_key(&canonical_path) {
+            return Ok(Some(PreparedIdentity {
+                path: canonical_path,
+                algorithm: Some(public_key.algorithm()),
+                public_key: Some(public_key.key_data().clone()),
+                public_only: true,
+            }));
+        }
 
-                    #[cfg(not(target_os = "macos"))]
-                    let keychain_passphrase: Option<Zeroizing<String>> = None;
+        let key_contents = match tokio::fs::read_to_string(&canonical_path).await {
+            Ok(contents) => Zeroizing::new(contents),
+            Err(error) if required => {
+                tracing::warn!(
+                    "Identity file '{}' could not be read ({error}); later authentication methods will still be tried",
+                    canonical_path.display()
+                );
+                return Ok(Some(unresolved(canonical_path)));
+            }
+            Err(_) => return Ok(None),
+        };
+        let metadata = russh::keys::PrivateKey::from_openssh(key_contents.as_bytes())
+            .map(|key| (key.algorithm(), key.public_key().key_data().clone()))
+            .or_else(|_| {
+                russh::keys::load_secret_key(&canonical_path, None)
+                    .map(|key| (key.algorithm(), key.public_key().key_data().clone()))
+            });
+        let (algorithm, public_key) = match metadata {
+            Ok((algorithm, public_key)) => (Some(algorithm), Some(public_key)),
+            Err(_) => {
+                let mut companion = canonical_path.as_os_str().to_os_string();
+                companion.push(".pub");
+                match russh::keys::load_public_key(PathBuf::from(companion)) {
+                    Ok(public_key) => (
+                        Some(public_key.algorithm()),
+                        Some(public_key.key_data().clone()),
+                    ),
+                    Err(_) => (None, None),
+                }
+            }
+        };
 
-                    // If we got passphrase from Keychain, use it; otherwise prompt
-                    if let Some(pass) = keychain_passphrase {
-                        Some(pass)
-                    } else {
-                        tracing::debug!("Prompting for passphrase");
+        Ok(Some(PreparedIdentity {
+            path: canonical_path,
+            algorithm,
+            public_key,
+            public_only: false,
+        }))
+    }
 
-                        let key_path_str = canonical_key.display().to_string();
-                        let prompt_future =
-                            tokio::task::spawn_blocking(move || -> Result<Zeroizing<String>> {
-                                let pass = Zeroizing::new(
-                                    rpassword::prompt_password(format!(
-                                        "Enter passphrase for key {key_path_str}: "
-                                    ))
-                                    .with_context(|| "Failed to read passphrase")?,
-                                );
-                                Ok(pass)
-                            });
+    async fn publickey_methods(&self) -> Result<Vec<AuthMethod>> {
+        let mut configured = Vec::new();
+        if let Some(path) = self.key_path.as_deref()
+            && let Some(identity) = self.prepare_identity(path, true).await?
+        {
+            configured.push(identity);
+        }
+        for path in &self.policy.cli_identity_files {
+            if let Some(identity) = self.prepare_identity(path, true).await?
+                && !configured
+                    .iter()
+                    .any(|candidate: &PreparedIdentity| candidate.path == identity.path)
+            {
+                configured.push(identity);
+            }
+        }
+        let explicit_identity_count = configured.len();
+        for path in &self.policy.identity_files {
+            if let Some(identity) = self.prepare_identity(path, false).await?
+                && !configured
+                    .iter()
+                    .any(|candidate: &PreparedIdentity| candidate.path == identity.path)
+            {
+                configured.push(identity);
+            }
+        }
 
-                        let pass = timeout(AUTH_PROMPT_TIMEOUT, prompt_future)
-                            .await
-                            .context("Passphrase prompt timed out")?
-                            .context("Passphrase prompt task failed")??;
+        let mut defaults = Vec::new();
+        if !self.policy.identities_only && !self.policy.identity_file_none {
+            for path in self.default_key_paths() {
+                if let Some(identity) = self.prepare_identity(&path, false).await?
+                    && !configured
+                        .iter()
+                        .chain(defaults.iter())
+                        .any(|candidate: &PreparedIdentity| candidate.path == identity.path)
+                {
+                    defaults.push(identity);
+                }
+            }
+        }
 
-                        // Store passphrase in Keychain if enabled (macOS only)
-                        #[cfg(target_os = "macos")]
-                        if self.use_keychain {
-                            tracing::debug!("Storing passphrase in Keychain");
-                            if let Err(err) =
-                                super::keychain_macos::store_passphrase(&canonical_key, &pass).await
-                            {
-                                tracing::warn!("Failed to store passphrase in Keychain: {err}");
-                                // Continue even if storage fails - the passphrase was entered successfully
-                            } else {
-                                tracing::info!("Successfully stored passphrase in Keychain");
-                            }
-                        }
-
-                        Some(pass)
-                    }
-                } else {
-                    None
-                };
-
-                // Clear key_contents from memory
-                drop(key_contents);
-
-                return Ok(AuthMethod::with_key_file(
-                    &canonical_key,
-                    passphrase.as_ref().map(|p| p.as_str()),
+        let all_identities = configured.iter().chain(defaults.iter()).collect::<Vec<_>>();
+        let mut certificates_by_identity = vec![Vec::<PathBuf>::new(); all_identities.len()];
+        let accepted = self
+            .policy
+            .pubkey_accepted_algorithms
+            .clone()
+            .unwrap_or_default();
+        #[cfg(target_os = "macos")]
+        let use_keychain = self.use_keychain;
+        #[cfg(not(target_os = "macos"))]
+        let use_keychain = false;
+        #[cfg(not(target_os = "windows"))]
+        let agent_available = self.use_agent || std::env::var_os("SSH_AUTH_SOCK").is_some();
+        #[cfg(target_os = "windows")]
+        let agent_available = false;
+        let mut explicit_certificates = Vec::new();
+        for certificate_path in &self.policy.certificate_files {
+            let certificate =
+                russh::keys::load_openssh_certificate(certificate_path).map_err(|error| {
+                    anyhow::Error::new(crate::ssh::tokio_client::Error::AuthenticationPolicy(
+                        format!(
+                            "unable to load certificate '{}': {error}",
+                            certificate_path.display()
+                        ),
+                    ))
+                })?;
+            if certificate.cert_type() != russh::keys::ssh_key::certificate::CertType::User {
+                return Err(anyhow::Error::new(
+                    crate::ssh::tokio_client::Error::AuthenticationPolicy(format!(
+                        "certificate '{}' is not a user certificate",
+                        certificate_path.display()
+                    )),
+                ));
+            }
+            let index = all_identities
+                .iter()
+                .position(|identity| identity.public_key.as_ref() == Some(certificate.public_key()))
+                .or_else(|| {
+                    let mut unknown = all_identities
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, identity)| identity.public_key.is_none());
+                    let candidate = unknown.next().map(|(index, _)| index);
+                    candidate.filter(|_| unknown.next().is_none())
+                });
+            let Some(index) = index else {
+                if crate::ssh::tokio_client::authentication::certificate_allowed(
+                    &certificate,
+                    &accepted,
+                ) {
+                    #[cfg(not(target_os = "windows"))]
+                    explicit_certificates.push(AuthMethod::with_agent_certificate_file(
+                        certificate_path,
+                        accepted.clone(),
+                    ));
+                }
+                continue;
+            };
+            if crate::ssh::tokio_client::authentication::local_certificate_allowed(
+                &certificate,
+                &accepted,
+            ) {
+                let identity = all_identities[index];
+                #[cfg(not(target_os = "windows"))]
+                if identity.public_only {
+                    explicit_certificates.push(AuthMethod::with_agent_certificate_file(
+                        certificate_path,
+                        accepted.clone(),
+                    ));
+                    continue;
+                }
+                explicit_certificates.push(AuthMethod::with_configured_certificate_file(
+                    &identity.path,
+                    certificate_path,
+                    accepted.clone(),
+                    !self.policy.batch_mode,
+                    use_keychain,
                 ));
             }
         }
 
-        // Provide helpful error message without exposing system paths
-        anyhow::bail!(
-            "SSH authentication failed: No authentication method available.\n\
-             \n\
-             Tried:\n\
-             - SSH agent: {}\n\
-             - Default SSH keys: Not found\n\
-             \n\
-             Solutions:\n\
-             - Use --password for password authentication\n\
-             - Start SSH agent and add keys with 'ssh-add'\n\
-             - Specify a key file with -i/--identity\n\
-             - Create a default SSH key with 'ssh-keygen'",
-            if cfg!(target_os = "windows") {
-                "Not supported on Windows"
-            } else if std::env::var_os("SSH_AUTH_SOCK").is_some() {
-                "Available but no identities"
-            } else {
-                "Not available (SSH_AUTH_SOCK not set)"
+        // OpenSSH automatically considers a certificate stored next to an
+        // identity as either `<identity>-cert.pub` or a certificate-valued
+        // `<identity>.pub`. Plain public-key companions are ignored here.
+        for (index, identity) in all_identities.iter().enumerate() {
+            for certificate_path in Self::automatic_certificate_paths(&identity.path) {
+                if self.policy.certificate_files.contains(&certificate_path)
+                    || certificates_by_identity[index].contains(&certificate_path)
+                {
+                    continue;
+                }
+                let Ok(certificate) = russh::keys::load_openssh_certificate(&certificate_path)
+                else {
+                    continue;
+                };
+                if certificate.cert_type() == russh::keys::ssh_key::certificate::CertType::User
+                    && identity.public_key.as_ref() == Some(certificate.public_key())
+                    && crate::ssh::tokio_client::authentication::local_certificate_allowed(
+                        &certificate,
+                        &accepted,
+                    )
+                {
+                    certificates_by_identity[index].push(certificate_path);
+                }
             }
-        )
+        }
+
+        // OpenSSH places every explicitly configured CertificateFile before
+        // IdentityFile and ambient-agent candidates, preserving declaration order.
+        let mut methods = explicit_certificates;
+        self.append_identity_methods(
+            &mut methods,
+            &configured[..explicit_identity_count],
+            &certificates_by_identity[..explicit_identity_count],
+        );
+        self.append_identity_methods(
+            &mut methods,
+            &configured[explicit_identity_count..],
+            &certificates_by_identity[explicit_identity_count..configured.len()],
+        );
+
+        #[cfg(not(target_os = "windows"))]
+        {
+            if agent_available && !self.policy.identities_only {
+                methods.push(AuthMethod::with_agent_policy(accepted.clone()));
+            }
+        }
+
+        self.append_identity_methods(
+            &mut methods,
+            &defaults,
+            &certificates_by_identity[configured.len()..],
+        );
+        Ok(methods)
+    }
+
+    fn automatic_certificate_paths(identity_path: &Path) -> [PathBuf; 2] {
+        let mut certificate = identity_path.as_os_str().to_os_string();
+        certificate.push("-cert.pub");
+        let mut public = identity_path.as_os_str().to_os_string();
+        public.push(".pub");
+        [PathBuf::from(certificate), PathBuf::from(public)]
+    }
+
+    fn append_identity_methods(
+        &self,
+        methods: &mut Vec<AuthMethod>,
+        identities: &[PreparedIdentity],
+        certificates: &[Vec<PathBuf>],
+    ) {
+        let accepted = self
+            .policy
+            .pubkey_accepted_algorithms
+            .clone()
+            .unwrap_or_default();
+        #[cfg(target_os = "macos")]
+        let use_keychain = self.use_keychain;
+        #[cfg(not(target_os = "macos"))]
+        let use_keychain = false;
+        let allow_passphrase_prompt = !self.policy.batch_mode;
+
+        for (identity, certificate_paths) in identities.iter().zip(certificates) {
+            #[cfg(not(target_os = "windows"))]
+            if identity.public_only {
+                if self.use_agent || std::env::var_os("SSH_AUTH_SOCK").is_some() {
+                    for certificate_path in certificate_paths {
+                        methods.push(AuthMethod::with_agent_certificate_file(
+                            certificate_path,
+                            accepted.clone(),
+                        ));
+                    }
+                    methods.push(AuthMethod::with_agent_public_key_file(
+                        &identity.path,
+                        accepted.clone(),
+                    ));
+                }
+                continue;
+            }
+
+            for certificate_path in certificate_paths {
+                methods.push(AuthMethod::with_configured_certificate_file(
+                    &identity.path,
+                    certificate_path,
+                    accepted.clone(),
+                    allow_passphrase_prompt,
+                    use_keychain,
+                ));
+            }
+            if identity.algorithm.as_ref().is_none_or(|algorithm| {
+                crate::ssh::tokio_client::authentication::public_key_allowed(algorithm, &accepted)
+            }) {
+                methods.push(AuthMethod::with_configured_key_file(
+                    &identity.path,
+                    accepted.clone(),
+                    allow_passphrase_prompt,
+                    use_keychain,
+                ));
+            }
+        }
+    }
+
+    fn default_key_paths(&self) -> Vec<PathBuf> {
+        let Some(home_dir) = dirs::home_dir() else {
+            return Vec::new();
+        };
+        let ssh_dir = home_dir.join(".ssh");
+        ["id_ed25519", "id_rsa", "id_ecdsa", "id_dsa"]
+            .into_iter()
+            .map(|name| ssh_dir.join(name))
+            .collect()
     }
 }
 
@@ -763,8 +658,19 @@ impl AuthContext {
 mod tests {
     use super::*;
     use crate::test_helpers::EnvGuard;
+    use russh::keys::ssh_key::LineEnding;
     use serial_test::serial;
     use tempfile::TempDir;
+
+    fn write_test_key(path: &Path) -> russh::keys::PrivateKey {
+        let key = russh::keys::PrivateKey::random(
+            &mut rand::rng(),
+            russh::keys::ssh_key::Algorithm::Ed25519,
+        )
+        .unwrap();
+        std::fs::write(path, key.to_openssh(LineEnding::LF).unwrap().as_bytes()).unwrap();
+        key
+    }
 
     #[tokio::test]
     async fn test_auth_context_creation() {
@@ -794,7 +700,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_password_auth_uses_pre_collected_password() {
-        // Verifies that when a pre-collected password is provided, password_auth()
+        // Verifies that when a pre-collected password is provided, password_method()
         // returns immediately with AuthMethod::Password(...) instead of prompting.
         // Critically, this means it never blocks on stdin — even in a non-interactive
         // test environment.
@@ -804,7 +710,11 @@ mod tests {
             .with_password(true)
             .with_pre_collected_password(Some(password));
 
-        let auth = ctx.password_auth().await.expect("should not prompt");
+        let auth = ctx
+            .password_method()
+            .await
+            .expect("should not prompt")
+            .expect("password method");
 
         match auth {
             AuthMethod::Password(stored) => {
@@ -844,22 +754,18 @@ mod tests {
             .unwrap()
             .with_key_path(Some(key_path.clone()))
             .unwrap();
-
-        // Should be canonicalized
-        assert!(ctx.key_path.is_some());
-        assert!(ctx.key_path.unwrap().is_absolute());
+        assert_eq!(ctx.key_path.as_deref(), Some(key_path.as_path()));
     }
 
     #[tokio::test]
-    async fn test_auth_context_with_invalid_key_path() {
+    async fn test_auth_context_defers_invalid_key_path_failure_to_attempt_time() {
         let temp_dir = TempDir::new().unwrap();
-
-        // Test with directory instead of file
-        let result = AuthContext::new("user".to_string(), "host".to_string())
+        let key_path = temp_dir.path().join("missing-key");
+        let ctx = AuthContext::new("user".to_string(), "host".to_string())
             .unwrap()
-            .with_key_path(Some(temp_dir.path().to_path_buf()));
-
-        assert!(result.is_err());
+            .with_key_path(Some(key_path.clone()))
+            .unwrap();
+        assert_eq!(ctx.key_path.as_deref(), Some(key_path.as_path()));
     }
 
     #[tokio::test]
@@ -881,58 +787,30 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_is_key_encrypted() {
-        assert!(AuthContext::is_key_encrypted(
-            "-----BEGIN ENCRYPTED PRIVATE KEY-----"
-        ));
-        assert!(AuthContext::is_key_encrypted("Proc-Type: 4,ENCRYPTED"));
-        assert!(AuthContext::is_key_encrypted("DEK-Info: AES-128-CBC"));
-        assert!(!AuthContext::is_key_encrypted(
-            "-----BEGIN PRIVATE KEY-----"
-        ));
-        assert!(!AuthContext::is_key_encrypted("ssh-rsa AAAAB3..."));
-    }
-
-    #[tokio::test]
     async fn test_determine_method_with_key_file() {
         let temp_dir = TempDir::new().unwrap();
         let key_path = temp_dir.path().join("test_key");
-        std::fs::write(
-            &key_path,
-            "-----BEGIN PRIVATE KEY-----\nfake key content\n-----END PRIVATE KEY-----",
-        )
-        .unwrap();
+        write_test_key(&key_path);
 
         let ctx = AuthContext::new("user".to_string(), "host".to_string())
             .unwrap()
             .with_key_path(Some(key_path.clone()))
-            .unwrap();
+            .unwrap()
+            .with_policy(SshAuthenticationPolicy {
+                identities_only: true,
+                preferred_authentications: vec!["publickey".into()],
+                ..SshAuthenticationPolicy::default()
+            });
 
         let auth = ctx.determine_method().await.unwrap();
 
         match auth {
-            AuthMethod::PrivateKeyFile { key_file_path, .. } => {
+            AuthMethod::PrivateKeyFileWithPolicy { key_file_path, .. } => {
                 // Path should be canonicalized
                 assert!(key_file_path.is_absolute());
             }
-            _ => panic!("Expected PrivateKeyFile auth method"),
+            _ => panic!("Expected policy-aware private-key auth method"),
         }
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    #[tokio::test]
-    #[serial]
-    async fn test_agent_auth_with_invalid_socket() {
-        // Set SSH_AUTH_SOCK to non-existent path; guard restores prior value on drop.
-        let _sock = EnvGuard::set("SSH_AUTH_SOCK", "/tmp/nonexistent-ssh-agent.sock");
-
-        let ctx = AuthContext::new("user".to_string(), "host".to_string())
-            .unwrap()
-            .with_agent(true);
-
-        // Should return None since socket doesn't exist
-        let auth = ctx.agent_auth().unwrap();
-        assert!(auth.is_none());
     }
 
     #[tokio::test]
@@ -970,5 +848,599 @@ mod tests {
         // Error message should mention authentication failure
         let error_msg = result.unwrap_err().to_string();
         assert!(error_msg.contains("authentication"));
+    }
+    fn write_user_certificate(
+        path: &Path,
+        subject: &russh::keys::PrivateKey,
+        ca: &russh::keys::PrivateKey,
+    ) {
+        let mut builder = russh::keys::ssh_key::certificate::Builder::new_with_random_nonce(
+            &mut rand::rng(),
+            subject.public_key(),
+            0,
+            u64::MAX,
+        )
+        .unwrap();
+        builder.key_id("issue-296").unwrap();
+        builder
+            .cert_type(russh::keys::ssh_key::certificate::CertType::User)
+            .unwrap();
+        builder.valid_principal("user").unwrap();
+        std::fs::write(path, builder.sign(ca).unwrap().to_openssh().unwrap()).unwrap();
+    }
+
+    fn method_names(auth: AuthMethod) -> Vec<String> {
+        let methods = match auth {
+            AuthMethod::Methods(methods) => methods,
+            method => vec![method],
+        };
+        methods
+            .into_iter()
+            .map(|method| match method {
+                AuthMethod::Password(_) => "password".to_string(),
+                AuthMethod::PasswordPrompt { attempts } => format!("password-prompt:{attempts}"),
+                AuthMethod::PrivateKeyFileWithPolicy { key_file_path, .. } => format!(
+                    "key:{}",
+                    key_file_path.file_name().unwrap().to_string_lossy()
+                ),
+                AuthMethod::OpenSshCertificateFile {
+                    certificate_file_path,
+                    ..
+                } => format!(
+                    "cert:{}",
+                    certificate_file_path.file_name().unwrap().to_string_lossy()
+                ),
+                #[cfg(not(target_os = "windows"))]
+                AuthMethod::AgentWithPolicy { .. } => "agent".to_string(),
+                #[cfg(not(target_os = "windows"))]
+                AuthMethod::AgentPublicKeyFile { key_file_path, .. } => format!(
+                    "agent-key:{}",
+                    key_file_path.file_name().unwrap().to_string_lossy()
+                ),
+                #[cfg(not(target_os = "windows"))]
+                AuthMethod::AgentCertificateFile {
+                    certificate_file_path,
+                    ..
+                } => format!(
+                    "agent-cert:{}",
+                    certificate_file_path.file_name().unwrap().to_string_lossy()
+                ),
+                other => format!("unexpected:{other:?}"),
+            })
+            .collect()
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    #[serial]
+    async fn policy_orders_explicit_credentials_before_ssh_config_candidates() {
+        let home = TempDir::new().unwrap();
+        std::fs::create_dir(home.path().join(".ssh")).unwrap();
+        let _home = EnvGuard::set("HOME", home.path());
+        let _socket = EnvGuard::set("SSH_AUTH_SOCK", home.path().join("agent.sock"));
+        let cli_key = home.path().join("cli-key");
+        let cli_second = home.path().join("cli-second");
+        let config_key = home.path().join("config-key");
+        write_test_key(&cli_key);
+        write_test_key(&cli_second);
+        write_test_key(&config_key);
+        let policy = SshAuthenticationPolicy {
+            cli_identity_files: vec![cli_key.clone(), cli_second],
+            identity_files: vec![config_key],
+            preferred_authentications: vec!["password".into(), "publickey".into()],
+            pubkey_accepted_algorithms: Some(vec!["ssh-ed25519".into()]),
+            ..SshAuthenticationPolicy::default()
+        };
+        let password = Arc::new(Password::new("secret".to_string()).unwrap());
+        let auth = AuthContext::new("user".into(), "host".into())
+            .unwrap()
+            .with_key_path(Some(cli_key))
+            .unwrap()
+            .with_agent(true)
+            .with_password(true)
+            .with_pre_collected_password(Some(password))
+            .with_policy(policy)
+            .determine_method()
+            .await
+            .unwrap();
+        assert_eq!(
+            method_names(auth),
+            [
+                "password",
+                "key:cli-key",
+                "key:cli-second",
+                "key:config-key",
+                "agent",
+            ]
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    #[serial]
+    async fn identities_only_blocks_agent_and_default_keys() {
+        let home = TempDir::new().unwrap();
+        let ssh_dir = home.path().join(".ssh");
+        std::fs::create_dir(&ssh_dir).unwrap();
+        let _home = EnvGuard::set("HOME", home.path());
+        let _socket = EnvGuard::set("SSH_AUTH_SOCK", home.path().join("agent.sock"));
+        let configured = home.path().join("configured-key");
+        write_test_key(&configured);
+        write_test_key(&ssh_dir.join("id_ed25519"));
+        let policy = SshAuthenticationPolicy {
+            identity_files: vec![configured],
+            identities_only: true,
+            preferred_authentications: vec!["publickey".into()],
+            ..SshAuthenticationPolicy::default()
+        };
+        let auth = AuthContext::new("user".into(), "host".into())
+            .unwrap()
+            .with_agent(true)
+            .with_policy(policy)
+            .determine_method()
+            .await
+            .unwrap();
+        assert_eq!(method_names(auth), ["key:configured-key"]);
+    }
+
+    #[tokio::test]
+    async fn disabled_and_unpreferred_methods_are_never_planned() {
+        let home = TempDir::new().unwrap();
+        let key_path = home.path().join("identity");
+        write_test_key(&key_path);
+        let password = Arc::new(Password::new("secret".to_string()).unwrap());
+        let policy = SshAuthenticationPolicy {
+            identity_files: vec![key_path],
+            identities_only: true,
+            preferred_authentications: vec!["password".into(), "publickey".into()],
+            pubkey_authentication: false,
+            ..SshAuthenticationPolicy::default()
+        };
+        let auth = AuthContext::new("user".into(), "host".into())
+            .unwrap()
+            .with_password(true)
+            .with_pre_collected_password(Some(password))
+            .with_policy(policy)
+            .determine_method()
+            .await
+            .unwrap();
+        assert_eq!(method_names(auth), ["password"]);
+
+        let policy = SshAuthenticationPolicy {
+            preferred_authentications: vec!["publickey".into()],
+            pubkey_authentication: false,
+            ..SshAuthenticationPolicy::default()
+        };
+        let error = AuthContext::new("user".into(), "host".into())
+            .unwrap()
+            .with_prompt_available(true)
+            .with_policy(policy)
+            .determine_method()
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("Permission denied"));
+    }
+
+    #[tokio::test]
+    async fn batch_mode_never_plans_password_or_passphrase_prompts() {
+        let password_policy = SshAuthenticationPolicy {
+            preferred_authentications: vec!["password".into()],
+            pubkey_authentication: false,
+            batch_mode: true,
+            ..SshAuthenticationPolicy::default()
+        };
+        let password = Arc::new(Password::new("already-collected".to_string()).unwrap());
+        let error = AuthContext::new("user".into(), "host".into())
+            .unwrap()
+            .with_password(true)
+            .with_pre_collected_password(Some(password))
+            .with_prompt_available(true)
+            .with_policy(password_policy)
+            .determine_method()
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("BatchMode"));
+
+        let home = TempDir::new().unwrap();
+        let encrypted_key = home.path().join("encrypted-key");
+        let key = russh::keys::PrivateKey::random(
+            &mut rand::rng(),
+            russh::keys::ssh_key::Algorithm::Ed25519,
+        )
+        .unwrap();
+        let encrypted = key.encrypt(&mut rand::rng(), "secret").unwrap();
+        std::fs::write(
+            &encrypted_key,
+            encrypted.to_openssh(LineEnding::LF).unwrap().as_bytes(),
+        )
+        .unwrap();
+        let key_policy = SshAuthenticationPolicy {
+            identities_only: true,
+            preferred_authentications: vec!["publickey".into()],
+            batch_mode: true,
+            ..SshAuthenticationPolicy::default()
+        };
+        let auth = AuthContext::new("user".into(), "host".into())
+            .unwrap()
+            .with_key_path(Some(encrypted_key))
+            .unwrap()
+            .with_prompt_available(true)
+            .with_policy(key_policy)
+            .determine_method()
+            .await
+            .unwrap();
+        assert!(matches!(
+            auth,
+            AuthMethod::PrivateKeyFileWithPolicy {
+                allow_passphrase_prompt: false,
+                ..
+            }
+        ));
+    }
+
+    #[tokio::test]
+    async fn later_invalid_keys_and_password_prompt_stay_lazy_and_ordered() {
+        let home = TempDir::new().unwrap();
+        let first_key = home.path().join("first-key");
+        let encrypted_key = home.path().join("encrypted-key");
+        let malformed_key = home.path().join("malformed-key");
+        write_test_key(&first_key);
+        let encrypted = russh::keys::PrivateKey::random(
+            &mut rand::rng(),
+            russh::keys::ssh_key::Algorithm::Ed25519,
+        )
+        .unwrap()
+        .encrypt(&mut rand::rng(), "secret")
+        .unwrap();
+        std::fs::write(
+            &encrypted_key,
+            encrypted.to_openssh(LineEnding::LF).unwrap().as_bytes(),
+        )
+        .unwrap();
+        std::fs::write(&malformed_key, "not an SSH private key").unwrap();
+
+        let policy = SshAuthenticationPolicy {
+            cli_identity_files: vec![first_key.clone(), encrypted_key, malformed_key],
+            identities_only: true,
+            preferred_authentications: vec!["publickey".into(), "password".into()],
+            ..SshAuthenticationPolicy::default()
+        };
+        let auth = AuthContext::new("user".into(), "host".into())
+            .unwrap()
+            .with_key_path(Some(first_key))
+            .unwrap()
+            .with_password(true)
+            .with_prompt_available(true)
+            .with_policy(policy)
+            .determine_method()
+            .await
+            .unwrap();
+
+        assert_eq!(
+            method_names(auth),
+            [
+                "key:first-key",
+                "key:encrypted-key",
+                "key:malformed-key",
+                "password-prompt:3",
+            ]
+        );
+    }
+    #[tokio::test]
+    async fn number_of_password_prompts_is_the_exact_attempt_bound() {
+        let policy = SshAuthenticationPolicy {
+            preferred_authentications: vec!["password".into()],
+            pubkey_authentication: false,
+            number_of_password_prompts: 2,
+            ..SshAuthenticationPolicy::default()
+        };
+        let auth = AuthContext::new("user".into(), "host".into())
+            .unwrap()
+            .with_prompt_available(true)
+            .with_policy(policy)
+            .determine_method()
+            .await
+            .unwrap();
+        assert_eq!(method_names(auth), ["password-prompt:2"]);
+    }
+
+    #[tokio::test]
+    async fn matching_user_certificate_precedes_plain_key() {
+        let home = TempDir::new().unwrap();
+        let key_path = home.path().join("user-key");
+        let certificate_path = home.path().join("user-cert.pub");
+        let subject = write_test_key(&key_path);
+        let ca = russh::keys::PrivateKey::random(
+            &mut rand::rng(),
+            russh::keys::ssh_key::Algorithm::Ed25519,
+        )
+        .unwrap();
+        write_user_certificate(&certificate_path, &subject, &ca);
+        let policy = SshAuthenticationPolicy {
+            identity_files: vec![key_path],
+            certificate_files: vec![certificate_path],
+            identities_only: true,
+            preferred_authentications: vec!["publickey".into()],
+            pubkey_accepted_algorithms: Some(vec![
+                "ssh-ed25519-cert-v01@openssh.com".into(),
+                "ssh-ed25519".into(),
+            ]),
+            ..SshAuthenticationPolicy::default()
+        };
+        let auth = AuthContext::new("user".into(), "host".into())
+            .unwrap()
+            .with_policy(policy)
+            .determine_method()
+            .await
+            .unwrap();
+        assert_eq!(method_names(auth), ["cert:user-cert.pub", "key:user-key"]);
+    }
+
+    #[tokio::test]
+    async fn automatic_certificate_companion_precedes_plain_identity() {
+        let home = TempDir::new().unwrap();
+        let key_path = home.path().join("automatic-key");
+        let certificate_path = AuthContext::automatic_certificate_paths(&key_path)[1].clone();
+        let subject = write_test_key(&key_path);
+        let ca = russh::keys::PrivateKey::random(
+            &mut rand::rng(),
+            russh::keys::ssh_key::Algorithm::Ed25519,
+        )
+        .unwrap();
+        write_user_certificate(&certificate_path, &subject, &ca);
+        let policy = SshAuthenticationPolicy {
+            identity_files: vec![key_path],
+            identities_only: true,
+            preferred_authentications: vec!["publickey".into()],
+            ..SshAuthenticationPolicy::default()
+        };
+
+        let auth = AuthContext::new("user".into(), "host".into())
+            .unwrap()
+            .with_policy(policy)
+            .determine_method()
+            .await
+            .unwrap();
+
+        assert_eq!(
+            method_names(auth),
+            ["cert:automatic-key.pub", "key:automatic-key"]
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    #[serial]
+    async fn identities_only_allows_only_a_listed_agent_public_identity() {
+        let home = TempDir::new().unwrap();
+        std::fs::create_dir(home.path().join(".ssh")).unwrap();
+        let _home = EnvGuard::set("HOME", home.path());
+        let socket_path = home.path().join("agent.sock");
+        std::fs::write(&socket_path, []).unwrap();
+        let _socket = EnvGuard::set("SSH_AUTH_SOCK", &socket_path);
+        let private_path = home.path().join("listed-key");
+        let public_path = home.path().join("listed-key.pub");
+        let key = write_test_key(&private_path);
+        std::fs::write(&public_path, key.public_key().to_openssh().unwrap()).unwrap();
+        let policy = SshAuthenticationPolicy {
+            identity_files: vec![public_path],
+            identities_only: true,
+            preferred_authentications: vec!["publickey".into()],
+            ..SshAuthenticationPolicy::default()
+        };
+
+        let auth = AuthContext::new("user".into(), "host".into())
+            .unwrap()
+            .with_agent(true)
+            .with_policy(policy)
+            .determine_method()
+            .await
+            .unwrap();
+
+        assert_eq!(method_names(auth), ["agent-key:listed-key.pub"]);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    #[serial]
+    async fn certificate_file_can_pair_with_an_allowed_agent_identity() {
+        let home = TempDir::new().unwrap();
+        std::fs::create_dir(home.path().join(".ssh")).unwrap();
+        let _home = EnvGuard::set("HOME", home.path());
+        let socket_path = home.path().join("agent.sock");
+        std::fs::write(&socket_path, []).unwrap();
+        let _socket = EnvGuard::set("SSH_AUTH_SOCK", &socket_path);
+        let key_path = home.path().join("agent-key");
+        let certificate_path = home.path().join("agent-cert.pub");
+        let subject = write_test_key(&key_path);
+        let ca = russh::keys::PrivateKey::random(
+            &mut rand::rng(),
+            russh::keys::ssh_key::Algorithm::Ed25519,
+        )
+        .unwrap();
+        write_user_certificate(&certificate_path, &subject, &ca);
+        let policy = SshAuthenticationPolicy {
+            certificate_files: vec![certificate_path],
+            identities_only: true,
+            preferred_authentications: vec!["publickey".into()],
+            ..SshAuthenticationPolicy::default()
+        };
+
+        let auth = AuthContext::new("user".into(), "host".into())
+            .unwrap()
+            .with_policy(policy)
+            .determine_method()
+            .await
+            .unwrap();
+
+        assert_eq!(method_names(auth), ["agent-cert:agent-cert.pub"]);
+    }
+
+    #[tokio::test]
+    #[serial]
+    async fn mismatched_local_certificate_remains_a_retryable_agent_candidate() {
+        let home = TempDir::new().unwrap();
+        let _socket = EnvGuard::remove("SSH_AUTH_SOCK");
+        let key_path = home.path().join("configured-key");
+        write_test_key(&key_path);
+        let other_key_path = home.path().join("other-key");
+        let other_subject = write_test_key(&other_key_path);
+        let ca = russh::keys::PrivateKey::random(
+            &mut rand::rng(),
+            russh::keys::ssh_key::Algorithm::Ed25519,
+        )
+        .unwrap();
+        let certificate_path = home.path().join("mismatch-cert.pub");
+        write_user_certificate(&certificate_path, &other_subject, &ca);
+        let policy = SshAuthenticationPolicy {
+            identity_files: vec![key_path],
+            certificate_files: vec![certificate_path],
+            identities_only: true,
+            preferred_authentications: vec!["publickey".into()],
+            ..SshAuthenticationPolicy::default()
+        };
+        let auth = AuthContext::new("user".into(), "host".into())
+            .unwrap()
+            .with_policy(policy)
+            .determine_method()
+            .await
+            .unwrap();
+        assert_eq!(
+            method_names(auth),
+            ["agent-cert:mismatch-cert.pub", "key:configured-key"]
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_and_malformed_cli_identities_leave_later_keys_reachable() {
+        let home = TempDir::new().unwrap();
+        let missing = home.path().join("missing-key");
+        let malformed = home.path().join("malformed-key");
+        let valid = home.path().join("valid-key");
+        std::fs::write(&malformed, "not an SSH private key").unwrap();
+        write_test_key(&valid);
+        let policy = SshAuthenticationPolicy {
+            cli_identity_files: vec![missing, malformed, valid],
+            identities_only: true,
+            preferred_authentications: vec!["publickey".into()],
+            ..SshAuthenticationPolicy::default()
+        };
+
+        let auth = AuthContext::new("user".into(), "host".into())
+            .unwrap()
+            .with_policy(policy)
+            .determine_method()
+            .await
+            .unwrap();
+
+        assert_eq!(
+            method_names(auth),
+            ["key:missing-key", "key:malformed-key", "key:valid-key"]
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    #[serial]
+    async fn identities_only_public_identity_keeps_matching_agent_certificate_first() {
+        let home = TempDir::new().unwrap();
+        let private_path = home.path().join("listed-key");
+        let public_path = home.path().join("listed-key.pub");
+        let certificate_path = home.path().join("listed-cert.pub");
+        let subject = write_test_key(&private_path);
+        std::fs::write(&public_path, subject.public_key().to_openssh().unwrap()).unwrap();
+        let ca = russh::keys::PrivateKey::random(
+            &mut rand::rng(),
+            russh::keys::ssh_key::Algorithm::Ed25519,
+        )
+        .unwrap();
+        write_user_certificate(&certificate_path, &subject, &ca);
+        let policy = SshAuthenticationPolicy {
+            identity_files: vec![public_path],
+            certificate_files: vec![certificate_path],
+            identities_only: true,
+            preferred_authentications: vec!["publickey".into()],
+            ..SshAuthenticationPolicy::default()
+        };
+
+        let auth = AuthContext::new("user".into(), "host".into())
+            .unwrap()
+            .with_agent(true)
+            .with_policy(policy)
+            .determine_method()
+            .await
+            .unwrap();
+
+        assert_eq!(
+            method_names(auth),
+            ["agent-cert:listed-cert.pub", "agent-key:listed-key.pub"]
+        );
+    }
+
+    #[tokio::test]
+    async fn encrypted_rsa_companion_is_filtered_before_any_passphrase_prompt() {
+        let home = TempDir::new().unwrap();
+        let rsa_path = home.path().join("encrypted-rsa");
+        crate::keygen::generate_rsa(&rsa_path, 2048, None).unwrap();
+        let rsa = russh::keys::load_secret_key(&rsa_path, None).unwrap();
+        let encrypted = rsa.encrypt(&mut rand::rng(), "secret").unwrap();
+        std::fs::write(
+            &rsa_path,
+            encrypted.to_openssh(LineEnding::LF).unwrap().as_bytes(),
+        )
+        .unwrap();
+        let ed25519_path = home.path().join("valid-ed25519");
+        write_test_key(&ed25519_path);
+        let policy = SshAuthenticationPolicy {
+            cli_identity_files: vec![rsa_path, ed25519_path],
+            identities_only: true,
+            preferred_authentications: vec!["publickey".into()],
+            pubkey_accepted_algorithms: Some(vec!["ssh-ed25519".into()]),
+            ..SshAuthenticationPolicy::default()
+        };
+
+        let auth = AuthContext::new("user".into(), "host".into())
+            .unwrap()
+            .with_prompt_available(true)
+            .with_policy(policy)
+            .determine_method()
+            .await
+            .unwrap();
+
+        assert_eq!(method_names(auth), ["key:valid-ed25519"]);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    #[serial]
+    async fn identity_file_none_suppresses_defaults_but_keeps_ambient_agent() {
+        let home = TempDir::new().unwrap();
+        let ssh_dir = home.path().join(".ssh");
+        std::fs::create_dir(&ssh_dir).unwrap();
+        write_test_key(&ssh_dir.join("id_ed25519"));
+        let _home = EnvGuard::set("HOME", home.path());
+        let _socket = EnvGuard::set("SSH_AUTH_SOCK", home.path().join("agent.sock"));
+        let ssh_config = crate::ssh::SshConfig::parse(
+            "Host target\n    IdentityFile none\n    IdentitiesOnly no\n",
+        )
+        .unwrap();
+        let resolved = crate::ssh::tokio_client::SshConnectionConfigResolver::new()
+            .with_ssh_config(Some(ssh_config))
+            .resolve_for_host("target");
+        assert!(resolved.auth_policy.identity_file_none);
+        assert!(resolved.auth_policy.identity_files.is_empty());
+        let password = Arc::new(Password::new("secret".to_string()).unwrap());
+
+        let auth = AuthContext::new("user".into(), "target".into())
+            .unwrap()
+            .with_agent(true)
+            .with_password(true)
+            .with_pre_collected_password(Some(password))
+            .with_policy(resolved.auth_policy)
+            .determine_method()
+            .await
+            .unwrap();
+
+        assert_eq!(method_names(auth), ["agent", "password"]);
     }
 }

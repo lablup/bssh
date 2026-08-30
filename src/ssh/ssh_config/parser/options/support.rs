@@ -33,7 +33,7 @@ pub(super) const ACCEPTED_KEYWORDS: &[(&str, &str, KeywordSupport)] = &[
     ("user", "user", Runtime(NodeResolution)),
     ("port", "port", Runtime(NodeResolution)),
     ("identityfile", "identityfile", Runtime(Authentication)),
-    ("identitiesonly", "identitiesonly", Delegated(296)),
+    ("identitiesonly", "identitiesonly", Runtime(Authentication)),
     ("addkeystoagent", "addkeystoagent", Unimplemented),
     ("identityagent", "identityagent", Unimplemented),
     (
@@ -46,16 +46,20 @@ pub(super) const ACCEPTED_KEYWORDS: &[(&str, &str, KeywordSupport)] = &[
         "pubkeyacceptedalgorithms",
         Runtime(Authentication),
     ),
-    ("certificatefile", "certificatefile", Delegated(296)),
+    (
+        "certificatefile",
+        "certificatefile",
+        Runtime(Authentication),
+    ),
     (
         "pubkeyauthentication",
         "pubkeyauthentication",
-        Delegated(296),
+        Runtime(Authentication),
     ),
     (
         "passwordauthentication",
         "passwordauthentication",
-        Delegated(296),
+        Runtime(Authentication),
     ),
     (
         "kbdinteractiveauthentication",
@@ -75,7 +79,7 @@ pub(super) const ACCEPTED_KEYWORDS: &[(&str, &str, KeywordSupport)] = &[
     (
         "preferredauthentications",
         "preferredauthentications",
-        Delegated(296),
+        Runtime(Authentication),
     ),
     (
         "hostbasedauthentication",
@@ -95,7 +99,7 @@ pub(super) const ACCEPTED_KEYWORDS: &[(&str, &str, KeywordSupport)] = &[
     (
         "numberofpasswordprompts",
         "numberofpasswordprompts",
-        Delegated(296),
+        Runtime(Authentication),
     ),
     ("enablesshkeysign", "enablesshkeysign", Unimplemented),
     ("usekeychain", "usekeychain", Unimplemented),
@@ -179,7 +183,7 @@ pub(super) const ACCEPTED_KEYWORDS: &[(&str, &str, KeywordSupport)] = &[
         "connectionattempts",
         Runtime(Transport),
     ),
-    ("batchmode", "batchmode", Delegated(296)),
+    ("batchmode", "batchmode", Runtime(Authentication)),
     ("compression", "compression", Runtime(Transport)),
     ("tcpkeepalive", "tcpkeepalive", Runtime(Transport)),
     ("addressfamily", "addressfamily", Runtime(Transport)),
@@ -280,7 +284,13 @@ mod tests {
             ("user", NodeResolution),
             ("port", NodeResolution),
             ("identityfile", Authentication),
+            ("identitiesonly", Authentication),
             ("pubkeyacceptedalgorithms", Authentication),
+            ("certificatefile", Authentication),
+            ("pubkeyauthentication", Authentication),
+            ("passwordauthentication", Authentication),
+            ("preferredauthentications", Authentication),
+            ("numberofpasswordprompts", Authentication),
             ("stricthostkeychecking", HostVerification),
             ("userknownhostsfile", HostVerification),
             ("globalknownhostsfile", HostVerification),
@@ -296,6 +306,7 @@ mod tests {
             ("serveraliveinterval", Transport),
             ("serveralivecountmax", Transport),
             ("connectionattempts", Transport),
+            ("batchmode", Authentication),
             ("compression", Transport),
             ("tcpkeepalive", Transport),
             ("addressfamily", Transport),
@@ -330,13 +341,6 @@ mod tests {
     #[test]
     fn first_wave_delegations_match_the_split_issue_dag() {
         let expected = HashMap::from([
-            ("identitiesonly", 296),
-            ("certificatefile", 296),
-            ("preferredauthentications", 296),
-            ("pubkeyauthentication", 296),
-            ("passwordauthentication", 296),
-            ("numberofpasswordprompts", 296),
-            ("batchmode", 296),
             ("localforward", 298),
             ("remoteforward", 298),
             ("dynamicforward", 298),
