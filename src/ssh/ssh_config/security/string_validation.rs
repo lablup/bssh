@@ -139,7 +139,7 @@ fn validate_control_path_specific(value: &str, line_number: usize) -> Result<()>
         if chars[i] == '%' && i + 1 < chars.len() {
             let next_char = chars[i + 1];
             match next_char {
-                'h' | 'p' | 'r' | 'u' | 'L' | 'l' | 'n' | 'd' | '%' => {
+                'C' | 'd' | 'h' | 'i' | 'k' | 'L' | 'l' | 'n' | 'p' | 'r' | 'u' | '%' => {
                     // These are legitimate SSH substitution tokens
                     i += 2; // Skip both % and the token character
                 }
@@ -147,7 +147,7 @@ fn validate_control_path_specific(value: &str, line_number: usize) -> Result<()>
                     // Unknown substitution pattern - potentially dangerous
                     anyhow::bail!(
                         "Security violation: ControlPath contains unknown substitution pattern '%{next_char}' at line {line_number}. \
-                         Only %h, %p, %r, %u, %L, %l, %n, %d, and %% are allowed."
+                         Only OpenSSH ControlPath tokens are allowed."
                     );
                 }
             }
@@ -316,7 +316,7 @@ pub fn validate_control_path(path: &str, line_number: usize) -> Result<()> {
         if chars[i] == '%' && i + 1 < chars.len() {
             let next_char = chars[i + 1];
             match next_char {
-                'h' | 'p' | 'r' | 'u' | 'L' | 'l' | 'n' | 'd' | '%' => {
+                'C' | 'd' | 'h' | 'i' | 'k' | 'L' | 'l' | 'n' | 'p' | 'r' | 'u' | '%' => {
                     // These are legitimate SSH substitution tokens
                     i += 2; // Skip both % and the token character
                 }
@@ -324,7 +324,7 @@ pub fn validate_control_path(path: &str, line_number: usize) -> Result<()> {
                     // Unknown substitution pattern - potentially dangerous
                     anyhow::bail!(
                         "Security violation: ControlPath contains unknown substitution pattern '%{next_char}' at line {line_number}. \
-                         Only %h, %p, %r, %u, %L, %l, %n, %d, and %% are allowed."
+                         Only OpenSSH ControlPath tokens are allowed."
                     );
                 }
             }

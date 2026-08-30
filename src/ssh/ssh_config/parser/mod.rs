@@ -32,7 +32,8 @@ mod tests;
 #[cfg(test)]
 pub(super) use core::parse;
 pub(super) use core::{
-    parse_cli_options, parse_from_file_with_diagnostics, parse_with_diagnostics,
+    parse_cli_options, parse_from_file_for_host_with_diagnostics, parse_from_file_with_diagnostics,
+    parse_with_diagnostics,
 };
 
 // Re-export helper functions that might be used elsewhere

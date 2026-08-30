@@ -320,6 +320,8 @@ impl PdshCli {
             cipher: None,
             macs: None,
             ssh_config: None,
+            print_config: false,
+            stdio_forward: None,
             quiet: false,
             force_tty: false,
             no_tty: false,

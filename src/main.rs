@@ -27,6 +27,7 @@ mod app;
 
 use app::{
     cache::handle_cache_stats,
+    config_dump::handle_config_dump,
     dispatcher::dispatch_command,
     initialization::{AppContext, initialize_app},
     query::handle_query,
@@ -281,6 +282,12 @@ async fn run_bssh_mode(args: &[String]) -> Result<()> {
 
     if let Some(path) = &cli.log_file {
         bssh::utils::diagnostics::set_log_file(path)?;
+    }
+
+    // `-G` uses the minimal diagnostic sink above, but remains before
+    // Backend.AI discovery, DNS, agents, prompts, proxies, and all networking.
+    if cli.print_config {
+        return handle_config_dump(&cli, args).await;
     }
 
     // Handle SSH query option (-Q)

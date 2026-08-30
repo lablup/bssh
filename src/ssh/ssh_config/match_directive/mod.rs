@@ -20,7 +20,7 @@
 use anyhow::Result;
 use std::collections::HashMap;
 
-use super::pattern::matches_pattern;
+use super::pattern::matches_host_pattern;
 
 mod exec;
 
@@ -33,6 +33,8 @@ pub use exec::{execute_match_command, expand_variables, validate_exec_command};
 pub enum MatchCondition {
     /// Match by hostname pattern
     Host(Vec<String>),
+    /// Match by the destination name as written on the command line.
+    OriginalHost(Vec<String>),
     /// Match by remote username
     User(Vec<String>),
     /// Match by local username
@@ -41,6 +43,8 @@ pub enum MatchCondition {
     Exec(String),
     /// Match all connections (always true)
     All,
+    /// Negation of one Match attribute.
+    Negated(Box<MatchCondition>),
 }
 
 /// A Match block with its conditions and configuration
@@ -82,6 +86,8 @@ impl MatchBlock {
 pub struct MatchContext {
     /// The hostname being connected to
     pub hostname: String,
+    /// The destination name before applying `HostName`.
+    pub original_hostname: String,
     /// The remote username (if specified)
     pub remote_user: Option<String>,
     /// The local username
@@ -93,6 +99,15 @@ pub struct MatchContext {
 impl MatchContext {
     /// Create a new match context
     pub fn new(hostname: String, remote_user: Option<String>) -> Result<Self> {
+        Self::with_original_hostname(hostname.clone(), hostname, remote_user)
+    }
+
+    /// Create a context whose effective and original host names differ.
+    pub fn with_original_hostname(
+        hostname: String,
+        original_hostname: String,
+        remote_user: Option<String>,
+    ) -> Result<Self> {
         // Get local username
         let local_user = whoami::username().unwrap_or_else(|_| "user".to_string());
 
@@ -109,6 +124,7 @@ impl MatchContext {
 
         Ok(Self {
             hostname,
+            original_hostname,
             remote_user,
             local_user,
             variables,
@@ -138,35 +154,59 @@ impl MatchCondition {
         if conditions_str.is_empty() {
             anyhow::bail!("Match directive requires conditions at line {line_number}");
         }
+        let conditions_str = conditions_str
+            .find(" #")
+            .map_or(conditions_str, |comment| &conditions_str[..comment]);
 
         // Parse conditions
         let mut conditions = Vec::new();
         let mut parts = conditions_str.split_whitespace();
 
-        while let Some(keyword) = parts.next() {
+        while let Some(token) = parts.next() {
+            let (keyword, attached_pattern) = token
+                .split_once('=')
+                .map_or((token, None), |(keyword, value)| (keyword, Some(value)));
+            let (negated, keyword) = keyword
+                .strip_prefix('!')
+                .map_or((false, keyword), |keyword| (true, keyword));
             let keyword_lower = keyword.to_lowercase();
 
             match keyword_lower.as_str() {
                 "host" => {
-                    let patterns = collect_patterns(&mut parts)?;
+                    let patterns = collect_patterns(attached_pattern, &mut parts)?;
                     if patterns.is_empty() {
                         anyhow::bail!("Match host requires patterns at line {line_number}");
                     }
-                    conditions.push(MatchCondition::Host(patterns));
+                    push_condition(&mut conditions, MatchCondition::Host(patterns), negated);
+                }
+                "originalhost" => {
+                    let patterns = collect_patterns(attached_pattern, &mut parts)?;
+                    if patterns.is_empty() {
+                        anyhow::bail!("Match originalhost requires patterns at line {line_number}");
+                    }
+                    push_condition(
+                        &mut conditions,
+                        MatchCondition::OriginalHost(patterns),
+                        negated,
+                    );
                 }
                 "user" => {
-                    let patterns = collect_patterns(&mut parts)?;
+                    let patterns = collect_patterns(attached_pattern, &mut parts)?;
                     if patterns.is_empty() {
                         anyhow::bail!("Match user requires patterns at line {line_number}");
                     }
-                    conditions.push(MatchCondition::User(patterns));
+                    push_condition(&mut conditions, MatchCondition::User(patterns), negated);
                 }
                 "localuser" => {
-                    let patterns = collect_patterns(&mut parts)?;
+                    let patterns = collect_patterns(attached_pattern, &mut parts)?;
                     if patterns.is_empty() {
                         anyhow::bail!("Match localuser requires patterns at line {line_number}");
                     }
-                    conditions.push(MatchCondition::LocalUser(patterns));
+                    push_condition(
+                        &mut conditions,
+                        MatchCondition::LocalUser(patterns),
+                        negated,
+                    );
                 }
                 "exec" => {
                     // Exec condition takes the rest of the line as command
@@ -186,11 +226,11 @@ impl MatchCondition {
                         remaining.join(" ")
                     };
 
-                    conditions.push(MatchCondition::Exec(command));
+                    push_condition(&mut conditions, MatchCondition::Exec(command), negated);
                     break; // Exec consumes the rest of the line
                 }
                 "all" => {
-                    conditions.push(MatchCondition::All);
+                    push_condition(&mut conditions, MatchCondition::All, negated);
                 }
                 _ => {
                     anyhow::bail!("Unknown Match condition '{keyword}' at line {line_number}");
@@ -208,34 +248,20 @@ impl MatchCondition {
     /// Check if this condition matches the given context
     pub fn matches(&self, context: &MatchContext) -> Result<bool> {
         match self {
-            MatchCondition::Host(patterns) => {
-                // Check if hostname matches any of the patterns
-                for pattern in patterns {
-                    if matches_pattern(&context.hostname, pattern) {
-                        return Ok(true);
-                    }
-                }
-                Ok(false)
+            MatchCondition::Host(patterns) => Ok(matches_host_pattern(&context.hostname, patterns)),
+            MatchCondition::OriginalHost(patterns) => {
+                Ok(matches_host_pattern(&context.original_hostname, patterns))
             }
             MatchCondition::User(patterns) => {
                 // Check if remote username matches any of the patterns
                 if let Some(ref user) = context.remote_user {
-                    for pattern in patterns {
-                        if matches_pattern(user, pattern) {
-                            return Ok(true);
-                        }
-                    }
+                    return Ok(matches_host_pattern(user, patterns));
                 }
                 Ok(false)
             }
             MatchCondition::LocalUser(patterns) => {
                 // Check if local username matches any of the patterns
-                for pattern in patterns {
-                    if matches_pattern(&context.local_user, pattern) {
-                        return Ok(true);
-                    }
-                }
-                Ok(false)
+                Ok(matches_host_pattern(&context.local_user, patterns))
             }
             MatchCondition::Exec(command) => {
                 // Execute the command and check exit status
@@ -245,28 +271,57 @@ impl MatchCondition {
                 // Always matches
                 Ok(true)
             }
+            MatchCondition::Negated(condition) => Ok(!condition.matches(context)?),
         }
     }
 }
 
+fn push_condition(conditions: &mut Vec<MatchCondition>, condition: MatchCondition, negated: bool) {
+    conditions.push(if negated {
+        MatchCondition::Negated(Box::new(condition))
+    } else {
+        condition
+    });
+}
+
 /// Collect patterns until the next keyword
-fn collect_patterns(parts: &mut std::str::SplitWhitespace) -> Result<Vec<String>> {
-    let mut patterns = Vec::new();
+fn collect_patterns(
+    attached: Option<&str>,
+    parts: &mut std::str::SplitWhitespace,
+) -> Result<Vec<String>> {
+    let mut patterns: Vec<String> = attached
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            value
+                .split(',')
+                .filter(|part| !part.is_empty())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
 
     // Peek at upcoming parts to collect patterns
     let remaining: Vec<&str> = parts.clone().collect();
 
     for part in remaining {
         // Stop if we hit another Match keyword
-        let lower = part.to_lowercase();
+        let lower = part
+            .split_once('=')
+            .map_or(part, |(keyword, _)| keyword)
+            .trim_start_matches('!')
+            .to_lowercase();
         if matches!(
             lower.as_str(),
-            "host" | "user" | "localuser" | "exec" | "all"
+            "host" | "originalhost" | "user" | "localuser" | "exec" | "all"
         ) {
             break;
         }
 
-        patterns.push(part.to_string());
+        patterns.extend(
+            part.split(',')
+                .filter(|pattern| !pattern.is_empty())
+                .map(str::to_string),
+        );
         // Consume the part from the iterator
         parts.next();
     }
@@ -387,20 +442,20 @@ mod tests {
 
     #[test]
     fn test_match_host_with_negation() {
-        // Test negation pattern: !*.internal.com matches hosts that DON'T match *.internal.com
+        // A negated pattern vetoes a positive wildcard match.
         let context_internal =
             MatchContext::new("web.internal.com".to_string(), Some("testuser".to_string()))
                 .unwrap();
         let context_external = MatchContext::new("web.example.com".to_string(), None).unwrap();
 
         // Negation pattern should NOT match internal hosts
-        let condition = MatchCondition::Host(vec!["!*.internal.com".to_string()]);
+        let condition = MatchCondition::Host(vec!["*".to_string(), "!*.internal.com".to_string()]);
         assert!(!condition.matches(&context_internal).unwrap());
         // But SHOULD match external hosts
         assert!(condition.matches(&context_external).unwrap());
 
         // Test wildcard negation
-        let condition = MatchCondition::Host(vec!["!db*.example.com".to_string()]);
+        let condition = MatchCondition::Host(vec!["*".to_string(), "!db*.example.com".to_string()]);
         let context_db = MatchContext::new("db1.example.com".to_string(), None).unwrap();
         let context_web = MatchContext::new("web.example.com".to_string(), None).unwrap();
 
@@ -408,7 +463,8 @@ mod tests {
         assert!(condition.matches(&context_web).unwrap());
 
         // Test exact negation
-        let condition = MatchCondition::Host(vec!["!production.example.com".to_string()]);
+        let condition =
+            MatchCondition::Host(vec!["*".to_string(), "!production.example.com".to_string()]);
         let context_prod = MatchContext::new("production.example.com".to_string(), None).unwrap();
         let context_staging = MatchContext::new("staging.example.com".to_string(), None).unwrap();
 
@@ -443,7 +499,8 @@ mod tests {
         }
 
         // Test negation
-        let condition = MatchCondition::LocalUser(vec!["!nonexistent*".to_string()]);
+        let condition =
+            MatchCondition::LocalUser(vec!["*".to_string(), "!nonexistent*".to_string()]);
         assert!(condition.matches(&context).unwrap());
     }
 

@@ -1894,41 +1894,22 @@ async fn test_includes_preserve_global_and_host_first_obtained_context() {
     let config = crate::ssh::ssh_config::SshConfig::load_from_file(&main)
         .await
         .unwrap();
-    assert_eq!(
-        config.hosts.len(),
-        2,
-        "Include must not create block boundaries"
-    );
-
-    let global_block = &config.hosts[0];
-    assert_eq!(global_block.host_patterns, ["*"]);
-    assert_eq!(global_block.user.as_deref(), Some("include-first"));
-    assert_eq!(global_block.port, Some(2200));
-    assert_eq!(
-        global_block.set_env.get("ORDER").map(String::as_str),
-        Some("global")
-    );
-    assert_eq!(
-        global_block.set_env.get("NESTED").map(String::as_str),
-        Some("yes")
-    );
-
-    let host_block = &config.hosts[1];
-    assert_eq!(host_block.host_patterns, ["foo"]);
-    assert_eq!(host_block.host_key_alias.as_deref(), Some("caller-context"));
-    assert_eq!(host_block.hostname.as_deref(), Some("included.example.com"));
-    assert_eq!(
-        host_block.set_env.get("HOST_CONTEXT").map(String::as_str),
-        Some("yes")
-    );
-
     let effective = config.find_host_config("foo");
     assert_eq!(effective.user.as_deref(), Some("include-first"));
     assert_eq!(effective.port, Some(2200));
     assert_eq!(effective.hostname.as_deref(), Some("included.example.com"));
+    assert_eq!(effective.host_key_alias.as_deref(), Some("caller-context"));
     assert_eq!(
         effective.set_env.get("ORDER").map(String::as_str),
         Some("global")
+    );
+    assert_eq!(
+        effective.set_env.get("NESTED").map(String::as_str),
+        Some("yes")
+    );
+    assert_eq!(
+        effective.set_env.get("HOST_CONTEXT").map(String::as_str),
+        Some("yes")
     );
 }
 

@@ -17,7 +17,7 @@
 //! This module contains the main parsing logic for SSH configurations,
 //! including the 2-pass parsing strategy for Include and Match directives.
 
-use crate::ssh::ssh_config::include::{IncludedFile, resolve_includes};
+use crate::ssh::ssh_config::include::{IncludedFile, resolve_includes, resolve_includes_for_host};
 use crate::ssh::ssh_config::match_directive::{MatchBlock, MatchCondition};
 use crate::ssh::ssh_config::resolver::merge_host_config;
 use crate::ssh::ssh_config::types::{ConfigBlock, SshHostConfig};
@@ -58,6 +58,19 @@ pub(crate) async fn parse_from_file_with_diagnostics(
     parse_included_files(&included_files, reported_diagnostics)
 }
 
+/// Parse a config file while resolving host-dependent Include paths.
+pub(crate) async fn parse_from_file_for_host_with_diagnostics(
+    path: &Path,
+    content: &str,
+    hostname: &str,
+    reported_diagnostics: &mut HashSet<String>,
+) -> Result<Vec<SshHostConfig>> {
+    let included_files = resolve_includes_for_host(path, content, Some(hostname))
+        .await
+        .with_context(|| format!("Failed to resolve includes for {}", escape_path(path)))?;
+    parse_included_files(&included_files, reported_diagnostics)
+}
+
 /// Parse SSH configuration content without Include resolution
 pub(super) fn parse_without_includes(
     content: &str,
@@ -67,7 +80,7 @@ pub(super) fn parse_without_includes(
         content
             .lines()
             .enumerate()
-            .map(|(index, line)| (None, index + 1, line)),
+            .map(|(index, line)| (None, index + 1, line, &[][..])),
         reported_diagnostics,
     )
 }
@@ -131,6 +144,7 @@ fn parse_included_files(
                     Some(file.path.as_path()),
                     file.source_line_start + index,
                     line,
+                    file.scope_guards.as_slice(),
                 )
             })
         }),
@@ -139,7 +153,7 @@ fn parse_included_files(
 }
 
 fn parse_lines<'a>(
-    lines: impl IntoIterator<Item = (Option<&'a Path>, usize, &'a str)>,
+    lines: impl IntoIterator<Item = (Option<&'a Path>, usize, &'a str, &'a [String])>,
     reported_diagnostics: &mut HashSet<String>,
 ) -> Result<Vec<SshHostConfig>> {
     // Security: Set reasonable limits to prevent DoS attacks
@@ -150,7 +164,7 @@ fn parse_lines<'a>(
     let mut current_config: Option<SshHostConfig> = None;
     let mut current_match: Option<MatchBlock> = None;
     let mut in_match_block = false;
-    for (source_path, line_number, line) in lines {
+    for (source_path, line_number, line, scope_guards) in lines {
         // Security: Check line length to prevent DoS
         if line.len() > MAX_LINE_LENGTH {
             anyhow::bail!("Line {line_number} exceeds maximum length of {MAX_LINE_LENGTH} bytes");
@@ -200,6 +214,7 @@ fn parse_lines<'a>(
             // Create config for this Match block
             let config = SshHostConfig {
                 block_type: Some(ConfigBlock::Match(conditions)),
+                scope_guards: parse_scope_guards(scope_guards, line_number)?,
                 ..Default::default()
             };
             match_block.config = config;
@@ -231,6 +246,7 @@ fn parse_lines<'a>(
             let config = SshHostConfig {
                 host_patterns: patterns.clone(),
                 block_type: Some(ConfigBlock::Host(patterns)),
+                scope_guards: parse_scope_guards(scope_guards, line_number)?,
                 ..Default::default()
             };
 
@@ -279,11 +295,15 @@ fn parse_lines<'a>(
             // global defaults. Model that region as the first `Host *` block
             // so the resolver's first-obtained merge semantics apply without
             // losing the original directive order.
-            let config = current_config.get_or_insert_with(|| SshHostConfig {
-                host_patterns: vec!["*".to_string()],
-                block_type: Some(ConfigBlock::Host(vec!["*".to_string()])),
-                ..Default::default()
-            });
+            if current_config.is_none() {
+                current_config = Some(SshHostConfig {
+                    host_patterns: vec!["*".to_string()],
+                    block_type: Some(ConfigBlock::Host(vec!["*".to_string()])),
+                    scope_guards: parse_scope_guards(scope_guards, line_number)?,
+                    ..Default::default()
+                });
+            }
+            let config = current_config.as_mut().expect("config was initialized");
             parse_option_first(
                 config,
                 &keyword,
@@ -307,6 +327,20 @@ fn parse_lines<'a>(
     }
 
     Ok(configs)
+}
+
+fn parse_scope_guards(scopes: &[String], line_number: usize) -> Result<Vec<ConfigBlock>> {
+    scopes
+        .iter()
+        .map(|scope| {
+            let lower = scope.trim().to_ascii_lowercase();
+            if lower.starts_with("host ") || lower.starts_with("host=") {
+                parse_host_line(scope, line_number).map(ConfigBlock::Host)
+            } else {
+                MatchCondition::parse_match_line(scope, line_number).map(ConfigBlock::Match)
+            }
+        })
+        .collect()
 }
 
 /// Parse one directive independently, then merge it into its surrounding

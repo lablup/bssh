@@ -48,6 +48,9 @@ pub fn parse_option(
 ) -> Result<()> {
     let line_number = source.number();
     let Some(spec) = support::keyword_spec(accepted_keyword) else {
+        host.unknown_options
+            .entry(accepted_keyword.to_string())
+            .or_insert_with(|| args.to_vec());
         if reported_diagnostics.insert(format!("unknown:{accepted_keyword}")) {
             let keyword = escape_field(accepted_keyword);
             let location = source.location();
@@ -57,13 +60,18 @@ pub fn parse_option(
     };
     let keyword = spec.canonical;
 
-    if spec.support == support::KeywordSupport::Unimplemented
-        && reported_diagnostics.insert(format!("unsupported:{keyword}"))
-    {
-        let location = source.location();
-        crate::diagnosticln!(
-            "Unsupported SSH config option '{keyword}' at {location}; bssh parses this value for inspection but does not implement its runtime behavior"
-        );
+    if spec.support == support::KeywordSupport::Unimplemented {
+        if !args.is_empty() {
+            host.unimplemented_options
+                .entry(keyword.to_string())
+                .or_insert_with(|| args.to_vec());
+        }
+        if reported_diagnostics.insert(format!("unsupported:{keyword}")) {
+            let location = source.location();
+            crate::diagnosticln!(
+                "Unsupported SSH config option '{keyword}' at {location}; bssh parses this value for inspection but does not implement its runtime behavior"
+            );
+        }
     }
 
     match keyword {
@@ -178,7 +186,8 @@ pub fn parse_option(
         | "userknownhostsfile2"
         | "useroaming"
         | "usersh"
-        | "useprivilegedport" => Ok(()),
+        | "useprivilegedport"
+        | "tunneldevice" => Ok(()),
         _ => unreachable!("accepted keyword is missing a parser: {keyword}"),
     }
 }

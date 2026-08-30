@@ -87,7 +87,7 @@ impl IncludeContext {
     }
 
     /// Enter a new include level
-    fn enter_include(&mut self, path: &Path) -> Result<()> {
+    fn enter_include(&mut self, path: &Path) -> Result<(String, PathBuf)> {
         self.can_include()?;
 
         // Check cache first to avoid repeated canonicalization
@@ -121,7 +121,8 @@ impl IncludeContext {
             );
         }
 
-        self.visited.insert(canonical_str);
+        self.visited.insert(canonical_str.clone());
+        let previous_base_dir = self.base_dir.clone();
         self.depth += 1;
         self.file_count += 1;
 
@@ -135,14 +136,16 @@ impl IncludeContext {
             self.canonical_cache.clear();
         }
 
-        Ok(())
+        Ok((canonical_str, previous_base_dir))
     }
 
     /// Exit an include level
-    fn exit_include(&mut self) {
+    fn exit_include(&mut self, canonical: &str, previous_base_dir: PathBuf) {
         if self.depth > 0 {
             self.depth -= 1;
         }
+        self.visited.remove(canonical);
+        self.base_dir = previous_base_dir;
     }
 }
 
@@ -156,11 +159,22 @@ pub struct IncludedFile {
     pub content: String,
     /// One-based line number of the first content line in the source file.
     pub source_line_start: usize,
+    /// Host/Match scopes that guarded entry into this included file.
+    pub scope_guards: Vec<String>,
 }
 
 /// Resolve Include directives and collect all configuration files
 /// Processes files in the order they appear, inserting included files at Include directive locations
 pub async fn resolve_includes(config_path: &Path, content: &str) -> Result<Vec<IncludedFile>> {
+    resolve_includes_for_host(config_path, content, None).await
+}
+
+/// Resolve Includes with `%h` bound to the destination being inspected.
+pub async fn resolve_includes_for_host(
+    config_path: &Path,
+    content: &str,
+    hostname: Option<&str>,
+) -> Result<Vec<IncludedFile>> {
     let mut context = IncludeContext::new(config_path);
 
     // Mark the main file as visited to prevent cycles
@@ -179,7 +193,7 @@ pub async fn resolve_includes(config_path: &Path, content: &str) -> Result<Vec<I
         .insert(canonical.to_string_lossy().into_owned());
 
     // Process the main file with includes
-    process_file_with_includes(config_path, content, &mut context).await
+    process_file_with_includes(config_path, content, &mut context, hostname, "Host *", &[]).await
 }
 
 /// Process a file with Include directives, inserting included files at the correct positions
@@ -187,10 +201,16 @@ async fn process_file_with_includes(
     file_path: &Path,
     content: &str,
     context: &mut IncludeContext,
+    hostname: Option<&str>,
+    inherited_scope: &str,
+    scope_guards: &[String],
 ) -> Result<Vec<IncludedFile>> {
     let mut result = Vec::new();
     let mut current_content = String::new();
     let mut current_source_line = 1;
+    let mut active_scope = inherited_scope.to_string();
+    let mut pending_scope_restore = false;
+    let mut pending_initial_scope = context.depth > 0;
 
     for (line_number, line) in content.lines().enumerate() {
         let line_number = line_number + 1; // 1-indexed for error messages
@@ -204,6 +224,7 @@ async fn process_file_with_includes(
                     path: file_path.to_path_buf(),
                     content: current_content.clone(),
                     source_line_start: current_source_line,
+                    scope_guards: scope_guards.to_vec(),
                 });
                 current_content.clear();
             }
@@ -211,7 +232,17 @@ async fn process_file_with_includes(
 
             // Process each Include pattern
             for pattern in patterns {
-                let resolved_files = resolve_include_pattern(pattern, context)
+                let expanded_environment = expand_include_environment(pattern)?;
+                let expanded_pattern = hostname
+                    .map_or_else(|| pattern.to_string(), |host| pattern.replace("%h", host));
+                let expanded_pattern = if expanded_environment == pattern {
+                    expanded_pattern
+                } else {
+                    hostname.map_or(expanded_environment.clone(), |host| {
+                        expanded_environment.replace("%h", host)
+                    })
+                };
+                let resolved_files = resolve_include_pattern(&expanded_pattern, context)
                     .await
                     .with_context(|| {
                         format!(
@@ -224,9 +255,10 @@ async fn process_file_with_includes(
 
                 // Process each resolved file recursively
                 for include_path in resolved_files {
-                    context.enter_include(&include_path).with_context(|| {
-                        format!("Failed to include file: {}", escape_path(&include_path))
-                    })?;
+                    let (canonical, previous_base_dir) =
+                        context.enter_include(&include_path).with_context(|| {
+                            format!("Failed to include file: {}", escape_path(&include_path))
+                        })?;
 
                     // Read with timeout to prevent hanging on network filesystems
                     let include_content = tokio::time::timeout(
@@ -247,24 +279,62 @@ async fn process_file_with_includes(
                         )
                     })?;
 
+                    let mut child_guards = scope_guards.to_vec();
+                    child_guards.push(active_scope.clone());
                     // Recursively process the included file (use Box::pin to avoid stack overflow)
                     let mut included_files = Box::pin(process_file_with_includes(
                         &include_path,
                         &include_content,
                         context,
+                        hostname,
+                        &active_scope,
+                        &child_guards,
                     ))
                     .await?;
 
                     // Add all files from the included file to result
                     result.append(&mut included_files);
 
-                    context.exit_include();
+                    context.exit_include(&canonical, previous_base_dir);
                 }
             }
+            pending_scope_restore = true;
         } else {
+            if pending_initial_scope && !trimmed.is_empty() && !trimmed.starts_with('#') {
+                let lower = trimmed.to_ascii_lowercase();
+                let starts_new_scope = lower.starts_with("host ")
+                    || lower.starts_with("host=")
+                    || lower.starts_with("match ")
+                    || lower.starts_with("match=");
+                if !starts_new_scope {
+                    current_content.push_str(inherited_scope);
+                    current_content.push('\n');
+                }
+                pending_initial_scope = false;
+            }
+            if pending_scope_restore && !trimmed.is_empty() && !trimmed.starts_with('#') {
+                let lower = trimmed.to_ascii_lowercase();
+                let starts_new_scope = lower.starts_with("host ")
+                    || lower.starts_with("host=")
+                    || lower.starts_with("match ")
+                    || lower.starts_with("match=");
+                if !starts_new_scope {
+                    current_content.push_str(&active_scope);
+                    current_content.push('\n');
+                }
+                pending_scope_restore = false;
+            }
             // Regular line - add to current content
             current_content.push_str(line);
             current_content.push('\n');
+            let lower = trimmed.to_ascii_lowercase();
+            if lower.starts_with("host ")
+                || lower.starts_with("host=")
+                || lower.starts_with("match ")
+                || lower.starts_with("match=")
+            {
+                active_scope = trimmed.to_string();
+            }
         }
     }
 
@@ -274,6 +344,7 @@ async fn process_file_with_includes(
             path: file_path.to_path_buf(),
             content: current_content,
             source_line_start: current_source_line,
+            scope_guards: scope_guards.to_vec(),
         });
     }
 
@@ -283,10 +354,40 @@ async fn process_file_with_includes(
             path: file_path.to_path_buf(),
             content: content.to_string(),
             source_line_start: 1,
+            scope_guards: scope_guards.to_vec(),
         });
     }
 
     Ok(result)
+}
+
+fn expand_include_environment(pattern: &str) -> Result<String> {
+    let mut output = String::with_capacity(pattern.len());
+    let mut remaining = pattern;
+    while let Some(start) = remaining.find("${") {
+        output.push_str(&remaining[..start]);
+        let variable = &remaining[start + 2..];
+        let end = variable
+            .find('}')
+            .context("Include environment variable is missing closing '}'")?;
+        let name = &variable[..end];
+        if name.is_empty()
+            || !name
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        {
+            anyhow::bail!("Include contains an invalid environment variable name");
+        }
+        let value = std::env::var(name)
+            .with_context(|| format!("Include environment variable ${{{name}}} is not set"))?;
+        if value.chars().any(|ch| matches!(ch, '\0' | '\r' | '\n')) {
+            anyhow::bail!("Include environment variable contains a control character");
+        }
+        output.push_str(&value);
+        remaining = &variable[end + 1..];
+    }
+    output.push_str(remaining);
+    Ok(output)
 }
 
 /// Combine multiple included files into a single configuration string

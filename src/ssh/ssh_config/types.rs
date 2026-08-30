@@ -14,7 +14,7 @@
 
 //! Core data structures for SSH configuration
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::path::PathBuf;
 
@@ -34,6 +34,8 @@ pub enum ConfigBlock {
 /// SSH configuration for a specific host or match block
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SshHostConfig {
+    /// Parent Host/Match scopes active at an Include directive.
+    pub(crate) scope_guards: Vec<ConfigBlock>,
     /// Block type (Host patterns or Match conditions)
     pub block_type: Option<ConfigBlock>,
     /// Host patterns (for backward compatibility and Host blocks)
@@ -146,6 +148,11 @@ pub struct SshHostConfig {
     pub resolved_pubkey_accepted_algorithms: Option<Vec<String>>,
     pub required_rsa_size: Option<u32>,
     pub fingerprint_hash: Option<String>, // md5/sha256
+    /// Canonical values for accepted keywords whose runtime behavior is not
+    /// implemented. Retaining them makes `-G` an honest inspection surface.
+    pub unimplemented_options: BTreeMap<String, Vec<String>>,
+    /// Unknown keywords retained so strict inspection modes can reject them.
+    pub unknown_options: BTreeMap<String, Vec<String>>,
 }
 
 impl fmt::Display for SshHostConfig {

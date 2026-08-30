@@ -33,17 +33,57 @@ pub(super) fn find_host_config_with_user(
     hostname: &str,
     remote_user: Option<&str>,
 ) -> SshHostConfig {
+    // Host blocks match the destination as written. Resolve those first so
+    // Match host/user sees the effective HostName and remote user, as OpenSSH
+    // does during its final configuration pass.
+    let mut preliminary = SshHostConfig::default();
+    for host_config in hosts {
+        let current_hostname = preliminary
+            .hostname
+            .clone()
+            .unwrap_or_else(|| hostname.to_string());
+        let current_user = remote_user
+            .map(str::to_string)
+            .or_else(|| preliminary.user.clone())
+            .or_else(|| whoami::username().ok());
+        let preliminary_context = MatchContext::with_original_hostname(
+            current_hostname,
+            hostname.to_string(),
+            current_user,
+        )
+        .ok();
+        let is_host_match = match &host_config.block_type {
+            Some(ConfigBlock::Host(patterns)) => matches_host_pattern(hostname, patterns),
+            Some(ConfigBlock::Match(_)) => false,
+            None => matches_host_pattern(hostname, &host_config.host_patterns),
+        } && scopes_match(host_config, hostname, preliminary_context.as_ref());
+        if is_host_match {
+            merge_host_config(&mut preliminary, host_config);
+        }
+    }
+
+    let effective_hostname = preliminary
+        .hostname
+        .clone()
+        .unwrap_or_else(|| hostname.to_string());
+    let effective_user = remote_user
+        .map(str::to_string)
+        .or_else(|| preliminary.user.clone())
+        .or_else(|| whoami::username().ok());
     let mut merged_config = SshHostConfig::default();
 
     // Create match context for evaluating Match blocks
-    let match_context =
-        match MatchContext::new(hostname.to_string(), remote_user.map(|s| s.to_string())) {
-            Ok(ctx) => Some(ctx),
-            Err(e) => {
-                tracing::warn!("Failed to create match context: {}", e);
-                None
-            }
-        };
+    let match_context = match MatchContext::with_original_hostname(
+        effective_hostname,
+        hostname.to_string(),
+        effective_user,
+    ) {
+        Ok(ctx) => Some(ctx),
+        Err(e) => {
+            tracing::warn!("Failed to create match context: {}", e);
+            None
+        }
+    };
 
     for host_config in hosts {
         let should_apply = match &host_config.block_type {
@@ -77,7 +117,7 @@ pub(super) fn find_host_config_with_user(
             }
         };
 
-        if should_apply {
+        if should_apply && scopes_match(host_config, hostname, match_context.as_ref()) {
             merge_host_config(&mut merged_config, host_config);
         }
     }
@@ -85,8 +125,36 @@ pub(super) fn find_host_config_with_user(
     merged_config
 }
 
+fn scopes_match(
+    config: &SshHostConfig,
+    original_hostname: &str,
+    context: Option<&MatchContext>,
+) -> bool {
+    config.scope_guards.iter().all(|guard| match guard {
+        ConfigBlock::Host(patterns) => matches_host_pattern(original_hostname, patterns),
+        ConfigBlock::Match(conditions) => context.is_some_and(|context| {
+            let block = super::match_directive::MatchBlock {
+                conditions: conditions.clone(),
+                config: SshHostConfig::default(),
+                line_number: 0,
+            };
+            block.matches(context).unwrap_or(false)
+        }),
+    })
+}
+
 /// Merge a matching block using OpenSSH's first-obtained-value rule.
 pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfig) {
+    for (keyword, value) in &overlay.unimplemented_options {
+        base.unimplemented_options
+            .entry(keyword.clone())
+            .or_insert_with(|| value.clone());
+    }
+    for (keyword, value) in &overlay.unknown_options {
+        base.unknown_options
+            .entry(keyword.clone())
+            .or_insert_with(|| value.clone());
+    }
     // Blocks are visited in source order, so scalar values only fill empty slots.
     if base.host_patterns.is_empty() && !overlay.host_patterns.is_empty() {
         base.host_patterns = overlay.host_patterns.clone();

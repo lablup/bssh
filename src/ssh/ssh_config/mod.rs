@@ -25,6 +25,9 @@ use std::{
 
 // Internal modules
 pub(crate) mod diagnostic;
+mod dump;
+#[cfg(test)]
+mod dump_tests;
 mod env_cache;
 mod include;
 #[cfg(test)]
@@ -44,6 +47,7 @@ mod security_fix_tests;
 mod types;
 
 // Re-export public types
+pub use dump::render_resolved_config;
 pub use ip_qos::{IpQosParseError, IpQosPolicy, IpQosValue};
 pub use rekey::{
     RUSSH_REKEY_BYTE_CEILING, RekeyDataLimit, RekeyLimit, RekeyLimitParseError, RekeyTimeLimit,
@@ -91,22 +95,19 @@ impl SshConfig {
 
     /// Load SSH configuration from the default locations
     pub async fn load_default() -> Result<Self> {
-        // Try user-specific SSH config first
+        let mut config = Self::new();
         if let Some(home_dir) = dirs::home_dir() {
             let user_config = home_dir.join(".ssh").join("config");
             if tokio::fs::try_exists(&user_config).await.unwrap_or(false) {
-                return Self::load_from_file(&user_config).await;
+                config.append(Self::load_from_file(&user_config).await?);
             }
         }
 
-        // Try system-wide SSH config
         let system_config = Path::new("/etc/ssh/ssh_config");
         if tokio::fs::try_exists(system_config).await.unwrap_or(false) {
-            return Self::load_from_file(system_config).await;
+            config.append(Self::load_from_file(system_config).await?);
         }
-
-        // Return empty config if no files found
-        Ok(Self::new())
+        Ok(config)
     }
 
     /// Load SSH configuration from the default locations with caching
@@ -149,9 +150,62 @@ impl SshConfig {
         })
     }
 
+    /// Load a file with host-dependent Include tokens resolved for `hostname`.
+    pub async fn load_from_file_for_host<P: AsRef<Path>>(path: P, hostname: &str) -> Result<Self> {
+        let path = path.as_ref();
+        let content = tokio::fs::read_to_string(path).await.with_context(|| {
+            format!(
+                "Failed to read SSH config file: {}",
+                diagnostic::escape_path(path)
+            )
+        })?;
+        let mut reported_diagnostics = HashSet::new();
+        let hosts = parser::parse_from_file_for_host_with_diagnostics(
+            path,
+            &content,
+            hostname,
+            &mut reported_diagnostics,
+        )
+        .await?;
+        Ok(Self {
+            hosts,
+            reported_diagnostics,
+        })
+    }
+
+    /// Load user and system configuration, in OpenSSH precedence order.
+    pub async fn load_default_for_host(hostname: &str) -> Result<Self> {
+        let mut config = Self::new();
+        if let Some(home_dir) = dirs::home_dir() {
+            let user_config = home_dir.join(".ssh").join("config");
+            if tokio::fs::try_exists(&user_config).await.unwrap_or(false) {
+                config.append(Self::load_from_file_for_host(&user_config, hostname).await?);
+            }
+        }
+        let system_config = Path::new("/etc/ssh/ssh_config");
+        if tokio::fs::try_exists(system_config).await.unwrap_or(false) {
+            config.append(Self::load_from_file_for_host(system_config, hostname).await?);
+        }
+        Ok(config)
+    }
+
+    fn append(&mut self, other: Self) {
+        self.hosts.extend(other.hosts);
+        self.reported_diagnostics.extend(other.reported_diagnostics);
+    }
+
     /// Find configuration for a specific hostname
     pub fn find_host_config(&self, hostname: &str) -> SshHostConfig {
         resolver::find_host_config(&self.hosts, hostname)
+    }
+
+    /// Find configuration for a destination with an explicit remote user.
+    pub fn find_host_config_with_user(
+        &self,
+        hostname: &str,
+        remote_user: Option<&str>,
+    ) -> SshHostConfig {
+        resolver::find_host_config_with_user(&self.hosts, hostname, remote_user)
     }
 
     /// Get the effective hostname (resolves HostName directive)
