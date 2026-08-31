@@ -101,10 +101,9 @@ fn scoped_second_pass_width(argument: &str, next: Option<&String>) -> Option<usi
             .split_once('=')
             .map_or((long, false), |(name, _)| (name, true));
         return match name {
-            "subsystem" | "stdin-null" => Some(1),
-            "cipher" | "macs" | "stdio-forward" | "ssh-config" | "option" => {
-                Some(usize::from(!attached && next.is_some()) + 1)
-            }
+            "subsystem" | "stdin-null" | "control-master" => Some(1),
+            "cipher" | "macs" | "stdio-forward" | "ssh-config" | "option" | "control-command"
+            | "control-path" => Some(usize::from(!attached && next.is_some()) + 1),
             _ => None,
         };
     }
@@ -113,8 +112,8 @@ fn scoped_second_pass_width(argument: &str, next: Option<&String>) -> Option<usi
         .filter(|value| !value.is_empty())?;
     for (position, short) in shorts.char_indices() {
         match short {
-            's' | 'n' => {}
-            'c' | 'm' | 'W' | 'F' | 'o' => {
+            's' | 'n' | 'M' => {}
+            'c' | 'm' | 'W' | 'F' | 'o' | 'O' => {
                 let attached = position + short.len_utf8() < shorts.len();
                 return Some(usize::from(!attached && next.is_some()) + 1);
             }

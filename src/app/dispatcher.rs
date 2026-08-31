@@ -32,6 +32,11 @@ use bssh::{
     ssh::{
         CliTtyMode, SessionPolicy, SessionRequest, SshClient,
         client::ConnectionConfig,
+        control::{
+            AttachOutcome, ControlCommand, ControlPathContext, ControlPolicy, ControlResponseKind,
+            SessionOpenRequest, attach_session, connect_control_socket, expand_control_path,
+            remove_stale_control_socket, send_control_command, start_control_master,
+        },
         tokio_client::{AddressFamily, ProxyMode, SshConnectionConfigResolver},
     },
 };
@@ -77,6 +82,277 @@ fn build_ssh_connection_config_resolver(
             cli.dynamic_forwards.clone(),
         )
         .with_stdio_forward(cli.stdio_forward.is_some())
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedControlInvocation {
+    policy: ControlPolicy,
+    path: PathBuf,
+    session_policy: SessionPolicy,
+    session_request: SessionOpenRequest,
+    forwarding_directives: Vec<bssh::forwarding::ForwardingDirective>,
+    address_family: AddressFamily,
+    jump_spec: Option<String>,
+}
+
+fn resolve_control_invocation(
+    cli: &Cli,
+    ctx: &AppContext,
+    command: &str,
+) -> Result<Option<ResolvedControlInvocation>> {
+    if !cli.is_ssh_mode() || ctx.nodes.len() != 1 {
+        anyhow::ensure!(
+            cli.control_command.is_none(),
+            "-O requires exactly one SSH destination"
+        );
+        return Ok(None);
+    }
+    anyhow::ensure!(
+        cli.stdio_forward.is_none() || (cli.control_master == 0 && cli.control_command.is_none()),
+        "-W cannot be combined with connection multiplexing"
+    );
+    let node = ctx
+        .nodes
+        .first()
+        .context("Connection multiplexing requires an SSH destination")?;
+    let effective = ctx.ssh_config.find_host_config(node.config_host());
+    let policy = ControlPolicy::from_raw(
+        effective.control_master.as_deref(),
+        effective.control_path.as_deref(),
+        effective.control_persist.as_deref(),
+    )?;
+    let Some(template) = policy.path.as_deref() else {
+        anyhow::ensure!(
+            cli.control_command.is_none(),
+            "-O requires ControlPath (use --control-path or -o ControlPath=...)"
+        );
+        return Ok(None);
+    };
+    let resolver = build_ssh_connection_config_resolver(
+        cli,
+        ctx,
+        ctx.cluster_name.as_deref().or(cli.cluster.as_deref()),
+    );
+    let resolved_connection = resolver.resolve_for_host(node.config_host());
+    let jump_spec =
+        session_policy_jump_spec(resolved_connection.proxy_mode.as_ref()).map(str::to_string);
+    let local_host = whoami::hostname().unwrap_or_else(|_| "localhost".to_string());
+    let home = dirs::home_dir().unwrap_or_default();
+    let mut path_context = ControlPathContext::new(
+        local_host,
+        home,
+        node.host.clone(),
+        node.port,
+        node.username.clone(),
+    );
+    if let Some(ProxyMode::Jump(jump)) = resolved_connection.proxy_mode.as_ref() {
+        path_context = path_context.with_jump_host(jump);
+    }
+    let path = expand_control_path(template, &path_context)?;
+    let session_policy = SessionPolicy::resolve_with_jump_spec(
+        &effective,
+        node,
+        (!command.is_empty()).then_some(command),
+        cli_tty_mode(cli),
+        std::io::stdin().is_terminal(),
+        jump_spec.as_deref(),
+    )?;
+    let mut remote_policy = session_policy.clone();
+    remote_policy.local_command = None;
+    let terminal = remote_policy
+        .request_pty
+        .then(|| std::env::var("TERM").unwrap_or_else(|_| "xterm".to_string()));
+    let session_request = SessionOpenRequest::new(remote_policy, terminal)?;
+    Ok(Some(ResolvedControlInvocation {
+        policy,
+        path,
+        session_policy,
+        session_request,
+        forwarding_directives: resolved_connection.forwarding_plan.directives.clone(),
+        address_family: resolved_connection.address_family,
+        jump_spec,
+    }))
+}
+
+async fn try_existing_control_master(
+    cli: &Cli,
+    control: &ResolvedControlInvocation,
+) -> Result<Option<i32>> {
+    if let Some(command) = cli.control_command.as_deref() {
+        let command = command.parse::<ControlCommand>()?;
+        let forwards = if matches!(command, ControlCommand::Forward | ControlCommand::Cancel) {
+            control.forwarding_directives.clone()
+        } else {
+            Vec::new()
+        };
+        let response =
+            send_control_command(&control.path, command, forwards, control.address_family).await?;
+        match response {
+            ControlResponseKind::Alive { pid } => {
+                println!("Master running (pid={pid})");
+            }
+            ControlResponseKind::Ok => {}
+            response => anyhow::bail!("unexpected control command response: {response:?}"),
+        }
+        return Ok(Some(EXIT_SUCCESS));
+    }
+    if !control.policy.master.tries_existing() {
+        return Ok(None);
+    }
+    match attach_session(
+        &control.path,
+        control.session_request.clone(),
+        &control.session_policy,
+    )
+    .await?
+    {
+        AttachOutcome::NoMaster => Ok(None),
+        AttachOutcome::ExitStatus(status) => Ok(Some(i32::try_from(status).unwrap_or(255))),
+    }
+}
+
+async fn execute_initial_control_session(
+    client: &bssh::ssh::tokio_client::Client,
+    policy: &SessionPolicy,
+) -> Result<u32> {
+    policy.run_local_command().await?;
+    if matches!(policy.request, SessionRequest::None) {
+        return Ok(0);
+    }
+    let (sender, mut receiver) = tokio::sync::mpsc::channel(128);
+    let output = tokio::spawn(async move {
+        use tokio::io::AsyncWriteExt as _;
+
+        let mut stdout = tokio::io::stdout();
+        let mut stderr = tokio::io::stderr();
+        let mut stdout_open = true;
+        let mut stderr_open = true;
+        while let Some(event) = receiver.recv().await {
+            match event {
+                bssh::ssh::tokio_client::CommandOutput::StdOut(bytes) if stdout_open => {
+                    if stdout.write_all(&bytes).await.is_err() {
+                        stdout_open = false;
+                    } else {
+                        stdout.flush().await.ok();
+                    }
+                }
+                bssh::ssh::tokio_client::CommandOutput::StdErr(bytes) if stderr_open => {
+                    if stderr.write_all(&bytes).await.is_err() {
+                        stderr_open = false;
+                    } else {
+                        stderr.flush().await.ok();
+                    }
+                }
+                _ => {}
+            }
+        }
+    });
+    let result = if policy.stdin_null {
+        client.execute_session_streaming(policy, sender).await
+    } else {
+        client
+            .execute_session_streaming_with_stdin(policy, sender)
+            .await
+    };
+    output.await.context("Control-master output task failed")?;
+    result.map_err(anyhow::Error::from)
+}
+
+async fn prepare_control_socket_for_master(path: &Path) -> Result<()> {
+    match connect_control_socket(path).await {
+        Ok(_) => anyhow::bail!(
+            "A control master is already running at '{}'",
+            path.display()
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::ConnectionRefused => {
+            anyhow::ensure!(
+                remove_stale_control_socket(path)?,
+                "Refusing to remove stale ControlPath '{}': it is not an owned Unix socket",
+                path.display()
+            );
+            Ok(())
+        }
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "Could not inspect existing ControlPath '{}'",
+                path.display()
+            )
+        }),
+    }
+}
+
+async fn handle_control_master(
+    cli: &Cli,
+    ctx: &AppContext,
+    control: &ResolvedControlInvocation,
+    ssh_password: Option<Arc<Password>>,
+) -> Result<i32> {
+    anyhow::ensure!(
+        control.policy.master.creates_master(),
+        "internal error: non-master control policy reached master startup"
+    );
+    prepare_control_socket_for_master(&control.path).await?;
+    let node = ctx
+        .nodes
+        .first()
+        .context("Connection multiplexing requires an SSH destination")?;
+    let effective_cluster_name = ctx.cluster_name.as_deref().or(cli.cluster.as_deref());
+    let resolver = build_ssh_connection_config_resolver(cli, ctx, effective_cluster_name);
+    let resolved_connection = resolver.resolve_for_host(node.config_host());
+    let key_path = determine_ssh_key_path(
+        cli,
+        &ctx.config,
+        &ctx.ssh_config,
+        Some(node.config_host()),
+        effective_cluster_name,
+    );
+    #[cfg(target_os = "macos")]
+    let use_keychain = determine_use_keychain(&ctx.ssh_config, Some(node.config_host()));
+    let connection = ConnectionConfig {
+        key_path: key_path.as_deref(),
+        strict_mode: Some(ctx.strict_mode),
+        use_agent: cli.use_agent,
+        use_password: cli.password,
+        #[cfg(target_os = "macos")]
+        use_keychain,
+        timeout_seconds: cli.timeout,
+        connect_timeout_seconds: Some(cli.connect_timeout),
+        jump_hosts_spec: control.jump_spec.as_deref(),
+        ssh_connection_config: Some(&resolved_connection),
+        ssh_connection_config_resolver: Some(&resolver),
+        session_policy: Some(&control.session_policy),
+        ssh_password,
+    };
+    let mut ssh_client = SshClient::new(node.host.clone(), node.port, node.username.clone());
+    let client = ssh_client.connect_authenticated(&connection).await?;
+    let master = match start_control_master(
+        &control.path,
+        client.clone(),
+        control.policy.master.requires_confirmation(),
+    ) {
+        Ok(master) => master,
+        Err(error) => {
+            let _ = client.disconnect().await;
+            return Err(error);
+        }
+    };
+    let initial_request_was_none = matches!(control.session_policy.request, SessionRequest::None);
+    let status = match execute_initial_control_session(&client, &control.session_policy).await {
+        Ok(status) => status,
+        Err(error) => {
+            if let Err(shutdown_error) = master.shutdown_immediately().await {
+                tracing::warn!(
+                    "Initial control-master session failed and teardown also failed: {shutdown_error:#}"
+                );
+            }
+            return Err(error);
+        }
+    };
+    master
+        .finish_after_initial(control.policy.persist, initial_request_was_none)
+        .await?;
+    Ok(i32::try_from(status).unwrap_or(255))
 }
 
 /// Decide whether `-S` (sudo-password) is meaningful for the given dispatch path.
@@ -204,6 +480,16 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<i32> {
             "Warning: --password has no effect for the `{}` subcommand and will be ignored",
             subcommand_name(&cli.command)
         );
+    }
+
+    // A passenger must attach before any key selection, password prompt, or
+    // network authentication. This is the invariant that guarantees repeated
+    // invocations reuse the master's one authenticated transport.
+    let control = resolve_control_invocation(cli, ctx, &command)?;
+    if let Some(control) = control.as_ref()
+        && let Some(exit_code) = try_existing_control_master(cli, control).await?
+    {
+        return Ok(exit_code);
     }
 
     // Calculate hostname for SSH config integration before deciding whether an
@@ -389,6 +675,11 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<i32> {
             unreachable!("CacheStats should be handled before dispatch")
         }
         None => {
+            if let Some(control) = control.as_ref()
+                && control.policy.master.creates_master()
+            {
+                return handle_control_master(cli, ctx, control, ssh_password).await;
+            }
             // Execute command (auto-exec or interactive shell). This path owns
             // its own exit code strategy (`ExitCodeStrategy`, selected by
             // `--require-all-success` / `--check-all-nodes`) and exits the

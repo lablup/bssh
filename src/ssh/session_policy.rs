@@ -49,7 +49,7 @@ pub enum SessionPurpose {
     Bulk,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SessionRequest {
     Exec(String),
     Shell,
@@ -57,7 +57,7 @@ pub enum SessionRequest {
     None,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SessionPolicy {
     pub environment: Vec<(String, String)>,
     pub local_command: Option<String>,

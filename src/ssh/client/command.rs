@@ -32,6 +32,48 @@ use tokio::sync::mpsc::Sender;
 const DEFAULT_COMMAND_TIMEOUT_SECS: u64 = 300;
 
 impl SshClient {
+    /// Establish an authenticated SSH transport without closing it after one operation.
+    ///
+    /// Connection multiplexing keeps the returned client in the control master and
+    /// opens one channel per attached invocation. Callers own the transport lifetime
+    /// and must invoke [`crate::ssh::tokio_client::Client::disconnect`] exactly once
+    /// when the master terminates.
+    pub async fn connect_authenticated(
+        &mut self,
+        config: &ConnectionConfig<'_>,
+    ) -> Result<crate::ssh::tokio_client::Client> {
+        let auth_method = self
+            .determine_auth_method(
+                config.key_path,
+                config.use_agent,
+                config.use_password,
+                #[cfg(target_os = "macos")]
+                config.use_keychain,
+                config.ssh_password.clone(),
+                config.ssh_connection_config,
+            )
+            .await?;
+        let strict_mode = config
+            .strict_mode
+            .unwrap_or(StrictHostKeyChecking::AcceptNew);
+        self.establish_connection(
+            &auth_method,
+            strict_mode,
+            config.jump_hosts_spec,
+            config.key_path,
+            config.use_agent,
+            config.use_password,
+            config.connect_timeout_seconds,
+            config.ssh_connection_config,
+            config.ssh_connection_config_resolver,
+            config.ssh_password.clone(),
+            config
+                .session_policy
+                .map_or(crate::ssh::SessionPurpose::Bulk, |policy| policy.purpose()),
+        )
+        .await
+    }
+
     async fn finish_with_disconnect<T>(
         &self,
         client: &crate::ssh::tokio_client::Client,
@@ -167,41 +209,8 @@ impl SshClient {
     ) -> Result<CommandResult> {
         tracing::debug!("Connecting to {}:{}", self.host, self.port);
 
-        // Determine authentication method based on parameters
-        let auth_method = self
-            .determine_auth_method(
-                config.key_path,
-                config.use_agent,
-                config.use_password,
-                #[cfg(target_os = "macos")]
-                config.use_keychain,
-                config.ssh_password.clone(),
-                config.ssh_connection_config,
-            )
-            .await?;
-
-        let strict_mode = config
-            .strict_mode
-            .unwrap_or(StrictHostKeyChecking::AcceptNew);
-
-        // Create client connection - either direct or through jump hosts
-        let client = self
-            .establish_connection(
-                &auth_method,
-                strict_mode,
-                config.jump_hosts_spec,
-                config.key_path,
-                config.use_agent,
-                config.use_password,
-                config.connect_timeout_seconds,
-                config.ssh_connection_config,
-                config.ssh_connection_config_resolver,
-                config.ssh_password.clone(),
-                config
-                    .session_policy
-                    .map_or(crate::ssh::SessionPurpose::Bulk, |policy| policy.purpose()),
-            )
-            .await?;
+        // Create client connection - either direct or through jump hosts.
+        let client = self.connect_authenticated(config).await?;
 
         tracing::debug!("Connected and authenticated successfully");
         let operation = async {

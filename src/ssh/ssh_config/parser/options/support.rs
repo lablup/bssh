@@ -15,6 +15,7 @@ pub(super) enum RuntimeConsumer {
     Proxy,
     Session,
     Forwarding,
+    Multiplexing,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -25,7 +26,8 @@ pub(super) struct KeywordSpec {
 
 use KeywordSupport::{Runtime, Unimplemented};
 use RuntimeConsumer::{
-    Authentication, Forwarding, HostVerification, NodeResolution, Proxy, Session, Transport,
+    Authentication, Forwarding, HostVerification, Multiplexing, NodeResolution, Proxy, Session,
+    Transport,
 };
 
 pub(super) const ACCEPTED_KEYWORDS: &[(&str, &str, KeywordSupport)] = &[
@@ -198,9 +200,9 @@ pub(super) const ACCEPTED_KEYWORDS: &[(&str, &str, KeywordSupport)] = &[
     ("proxyjump", "proxyjump", Runtime(Proxy)),
     ("proxycommand", "proxycommand", Runtime(Proxy)),
     ("proxyusefdpass", "proxyusefdpass", Runtime(Proxy)),
-    ("controlmaster", "controlmaster", Unimplemented),
-    ("controlpath", "controlpath", Unimplemented),
-    ("controlpersist", "controlpersist", Unimplemented),
+    ("controlmaster", "controlmaster", Runtime(Multiplexing)),
+    ("controlpath", "controlpath", Runtime(Multiplexing)),
+    ("controlpersist", "controlpersist", Runtime(Multiplexing)),
     ("sendenv", "sendenv", Runtime(Session)),
     ("setenv", "setenv", Runtime(Session)),
     ("requesttty", "requesttty", Runtime(Session)),
@@ -299,8 +301,8 @@ mod tests {
     use std::collections::HashSet;
 
     const ACCEPTED_SPELLING_COUNT: usize = 107;
-    const RUNTIME_SPELLING_COUNT: usize = 51;
-    const UNIMPLEMENTED_SPELLING_COUNT: usize = 56;
+    const RUNTIME_SPELLING_COUNT: usize = 54;
+    const UNIMPLEMENTED_SPELLING_COUNT: usize = 53;
 
     #[test]
     fn accepted_keywords_and_aliases_have_one_consistent_classification() {
@@ -384,6 +386,9 @@ mod tests {
             ("proxyjump", Proxy),
             ("proxycommand", Proxy),
             ("proxyusefdpass", Proxy),
+            ("controlmaster", Multiplexing),
+            ("controlpath", Multiplexing),
+            ("controlpersist", Multiplexing),
             ("sendenv", Session),
             ("setenv", Session),
             ("requesttty", Session),
@@ -432,9 +437,6 @@ mod tests {
             "forwardx11timeout",
             "forwardx11trusted",
             "connecttimeout",
-            "controlmaster",
-            "controlpath",
-            "controlpersist",
             "escapechar",
             "loglevel",
             "syslogfacility",

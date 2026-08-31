@@ -325,9 +325,10 @@ impl RemoteForwarder {
             Self::cancel_request(&ssh_client, &address, allocated_port, request_timeout).await;
         registry.unregister(&target).await;
         if let Err(error) = cancel_result {
-            tracing::warn!(
-                "Failed to cancel remote forwarding {address}:{allocated_port}: {error}"
-            );
+            let message =
+                format!("Failed to cancel remote forwarding {address}:{allocated_port}: {error}");
+            send_status(ForwardingStatus::Failed(message.clone()));
+            anyhow::bail!(message);
         }
         send_status(ForwardingStatus::Stopped);
         Ok(())

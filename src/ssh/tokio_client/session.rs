@@ -44,9 +44,23 @@ impl Client {
             .await
     }
 
-    async fn execute_session_streaming_with_input<R>(
+    pub(crate) async fn execute_session_streaming_with_input<R>(
         &self,
         policy: &SessionPolicy,
+        sender: Sender<CommandOutput>,
+        input: R,
+    ) -> Result<u32, super::Error>
+    where
+        R: AsyncRead + Unpin,
+    {
+        self.execute_session_streaming_with_input_and_terminal(policy, None, sender, input)
+            .await
+    }
+
+    pub(crate) async fn execute_session_streaming_with_input_and_terminal<R>(
+        &self,
+        policy: &SessionPolicy,
+        terminal: Option<&str>,
         sender: Sender<CommandOutput>,
         input: R,
     ) -> Result<u32, super::Error>
@@ -56,7 +70,7 @@ impl Client {
         if matches!(policy.request, SessionRequest::None) {
             return Ok(0);
         }
-        let channel = self.open_policy_channel(policy).await?;
+        let channel = self.open_policy_channel(policy, terminal).await?;
         self.drain_policy_channel_with_input(channel, sender, input)
             .await
     }
@@ -83,6 +97,7 @@ impl Client {
     async fn open_policy_channel(
         &self,
         policy: &SessionPolicy,
+        terminal: Option<&str>,
     ) -> Result<Channel<Msg>, super::Error> {
         let channel = self
             .connection_handle
@@ -91,9 +106,17 @@ impl Client {
             .map_err(|source| self.session_error_or(super::Error::ChannelOpen { source }))?;
 
         if policy.request_pty {
-            let terminal = std::env::var("TERM").unwrap_or_else(|_| "xterm".to_string());
+            let inherited_terminal;
+            let terminal = match terminal {
+                Some(terminal) => terminal,
+                None => {
+                    inherited_terminal =
+                        std::env::var("TERM").unwrap_or_else(|_| "xterm".to_string());
+                    &inherited_terminal
+                }
+            };
             channel
-                .request_pty(true, &terminal, 80, 24, 0, 0, &[])
+                .request_pty(true, terminal, 80, 24, 0, 0, &[])
                 .await
                 .map_err(|source| {
                     self.session_error_or(super::Error::CommandExecution {

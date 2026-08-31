@@ -265,6 +265,7 @@ fn validate_local_executable_command(
 /// # Returns
 /// * `Ok(())` if the path is safe
 /// * `Err(anyhow::Error)` if the path contains dangerous patterns
+#[cfg(test)]
 pub fn validate_control_path(path: &str, line_number: usize) -> Result<()> {
     // ControlPath "none" is a special case to disable control path
     if path == "none" {

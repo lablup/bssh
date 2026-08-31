@@ -47,7 +47,7 @@ pub(crate) fn format_host_port(host: &str, port: u16) -> String {
 }
 
 /// One forwarding directive in the order OpenSSH obtained it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ForwardingDirective {
     Local(String),
     Remote(String),
@@ -109,7 +109,7 @@ impl ForwardingPlan {
 }
 
 /// Port forwarding specification types
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ForwardingType {
     /// Local port forwarding (-L)
     /// Format: [bind_address:]port:host:hostport
@@ -138,7 +138,7 @@ pub enum ForwardingType {
 }
 
 /// SOCKS protocol version for dynamic forwarding
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SocksVersion {
     V4,
     V5,

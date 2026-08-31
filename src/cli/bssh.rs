@@ -270,6 +270,31 @@ pub struct Cli {
     pub ssh_options: Vec<String>,
 
     #[arg(
+        short = 'M',
+        long = "control-master",
+        action = clap::ArgAction::Count,
+        help = "Enable SSH connection sharing; repeat to require confirmation"
+    )]
+    pub control_master: u8,
+
+    #[arg(
+        short = 'O',
+        long = "control-command",
+        value_name = "command",
+        value_parser = ["check", "forward", "cancel", "exit", "stop"],
+        conflicts_with = "stdio_forward",
+        help = "Send a control command to an existing connection master"
+    )]
+    pub control_command: Option<String>,
+
+    #[arg(
+        long = "control-path",
+        value_name = "path",
+        help = "Path template for the connection-sharing control socket"
+    )]
+    pub control_path: Option<PathBuf>,
+
+    #[arg(
         short = 'c',
         long = "cipher",
         value_name = "cipher_spec",
@@ -677,8 +702,21 @@ impl Cli {
                 + usize::from(self.cipher.is_some())
                 + usize::from(self.macs.is_some())
                 + usize::from(self.subsystem)
-                + usize::from(self.stdin_null),
+                + usize::from(self.stdin_null)
+                + usize::from(self.control_master > 0)
+                + usize::from(self.control_path.is_some()),
         );
+        if self.control_master > 0 {
+            let mode = if self.control_master == 1 {
+                "yes"
+            } else {
+                "ask"
+            };
+            options.push(format!("ControlMaster={mode}"));
+        }
+        if let Some(path) = &self.control_path {
+            options.push(format!("ControlPath={}", path.display()));
+        }
         if let Some(cipher) = &self.cipher {
             options.push(format!("Ciphers={cipher}"));
         }
@@ -944,6 +982,40 @@ mod tests {
                 "Ciphers=aes256-ctr"
             ]
         );
+    }
+
+    #[test]
+    fn multiplex_flags_preserve_openssh_priority_and_repetition() {
+        let once = Cli::try_parse_from([
+            "bssh",
+            "-M",
+            "--control-path",
+            "/tmp/bssh-%C",
+            "-o",
+            "ControlMaster=no",
+            "target",
+        ])
+        .unwrap();
+        assert_eq!(once.control_master, 1);
+        assert_eq!(
+            once.ssh_config_overrides(),
+            [
+                "ControlMaster=yes",
+                "ControlPath=/tmp/bssh-%C",
+                "ControlMaster=no"
+            ]
+        );
+
+        let repeated =
+            Cli::try_parse_from(["bssh", "-MM", "-Ocheck", "--control-path=/tmp/c", "target"])
+                .unwrap();
+        assert_eq!(repeated.control_master, 2);
+        assert_eq!(repeated.control_command.as_deref(), Some("check"));
+        assert_eq!(repeated.ssh_config_overrides()[0], "ControlMaster=ask");
+
+        let repeated_more = Cli::try_parse_from(["bssh", "-MMM", "target"]).unwrap();
+        assert_eq!(repeated_more.control_master, 3);
+        assert_eq!(repeated_more.ssh_config_overrides()[0], "ControlMaster=ask");
     }
 
     #[test]
