@@ -209,7 +209,7 @@ impl SshConfig {
             .unwrap_or_else(|| PathBuf::from("/"));
         let mut config = Self::new();
         config.apply_cli_options(options)?;
-        let initial = config.find_host_config(hostname);
+        let initial = resolver::find_host_config_first_pass(&config.hosts, hostname);
         config
             .append_file_for_host(path, hostname, &initial, anchor, false)
             .await?;
@@ -223,7 +223,7 @@ impl SshConfig {
     ) -> Result<Self> {
         let mut config = Self::new();
         config.apply_cli_options(options)?;
-        let initial = config.find_host_config(hostname);
+        let initial = resolver::find_host_config_first_pass(&config.hosts, hostname);
         let user_source = if let Some(home_dir) = dirs::home_dir() {
             let path = home_dir.join(".ssh").join("config");
             path_exists(&path)
@@ -663,6 +663,72 @@ mod tests {
         let resolved = config.find_host_config("target");
         assert_eq!(resolved.port, Some(2202));
         assert_eq!(resolved.server_alive_interval, Some(9));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn cli_canonicalization_does_not_fix_hostname_before_explicit_file() {
+        use sha1::{Digest as _, Sha1};
+
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config");
+        let local_host = whoami::hostname().unwrap_or_else(|_| "localhost".to_string());
+        let mut digest = Sha1::new();
+        for value in [
+            local_host.as_str(),
+            "effective.example",
+            "2207",
+            "deploy",
+            "cli-jump",
+        ] {
+            digest.update(value.as_bytes());
+        }
+        let connection_hash = digest
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        write_config(
+            &config_path,
+            &format!(
+                concat!(
+                    "Host *\n",
+                    "    HostName effective.example\n",
+                    "Match exec=\"test %h = effective.example && test %p = 2207 && ",
+                    "test %k = cli-key && test %j = cli-jump && test %C = {}\"\n",
+                    "    Include {}/%h-%p-%k-%j-%C.conf\n"
+                ),
+                connection_hash,
+                temp_dir.path().display()
+            ),
+        );
+        write_config(
+            temp_dir.path().join(format!(
+                "effective.example-2207-cli-key-cli-jump-{connection_hash}.conf"
+            )),
+            "ServerAliveInterval 17\n",
+        );
+
+        let config = SshConfig::load_explicit_for_config_dump_with_options(
+            &config_path,
+            "alias",
+            &[
+                "CanonicalizeHostname=yes".to_string(),
+                "User=deploy".to_string(),
+                "Port=2207".to_string(),
+                "HostKeyAlias=cli-key".to_string(),
+                "ProxyJump=cli-jump".to_string(),
+            ],
+        )
+        .await
+        .unwrap();
+        let resolved = config.find_host_config("alias");
+        assert_eq!(resolved.hostname.as_deref(), Some("effective.example"));
+        assert_eq!(resolved.user.as_deref(), Some("deploy"));
+        assert_eq!(resolved.port, Some(2207));
+        assert_eq!(resolved.host_key_alias.as_deref(), Some("cli-key"));
+        assert_eq!(resolved.proxy_jump.as_deref(), Some("cli-jump"));
+        assert_eq!(resolved.server_alive_interval, Some(17));
     }
 
     #[cfg(unix)]
