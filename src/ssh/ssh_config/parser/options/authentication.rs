@@ -280,7 +280,10 @@ pub(super) fn parse_authentication_option(
                     }
 
                     // Security: Validate algorithm name contains only safe characters
-                    // Allow alphanumeric, hyphens, dots, underscores, @ and +
+                    // OpenSSH permits +, -, and ^ list modifiers, and glob
+                    // patterns for the removal form. Resolution against the
+                    // supported key-signature set is deliberately deferred to
+                    // the -G renderer; these values do not alter runtime auth.
                     if !trimmed.chars().all(|c| {
                         c.is_ascii_alphanumeric()
                             || c == '-'
@@ -288,6 +291,9 @@ pub(super) fn parse_authentication_option(
                             || c == '_'
                             || c == '@'
                             || c == '+'
+                            || c == '^'
+                            || c == '*'
+                            || c == '?'
                     }) {
                         anyhow::bail!(
                             "HostbasedAcceptedAlgorithms at line {line_number} contains invalid characters in algorithm name '{trimmed}'. \

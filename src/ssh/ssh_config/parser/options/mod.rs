@@ -228,30 +228,25 @@ fn validate_retained_option(keyword: &str, args: &[String], line_number: usize) 
     match keyword {
         "canonicalizefallbacklocal" => {
             boolean()?;
-            if !matches!(args[0].to_ascii_lowercase().as_str(), "yes" | "true") {
-                anyhow::bail!(
-                    "{keyword} non-default behavior is unavailable in no-network -G mode"
-                );
-            }
         }
         "canonicalizehostname" => {
             one()?;
-            if !matches!(args[0].to_ascii_lowercase().as_str(), "no" | "false") {
-                anyhow::bail!("{keyword} requires DNS and is unavailable in no-network -G mode");
+            if !matches!(
+                args[0].to_ascii_lowercase().as_str(),
+                "yes" | "no" | "always" | "true" | "false"
+            ) {
+                anyhow::bail!("Invalid canonicalizehostname at line {line_number}");
             }
         }
         "canonicalizemaxdots" => {
             one()?;
-            if args[0] != "1" {
-                anyhow::bail!("{keyword} is only accepted at its default in no-network -G mode");
-            }
+            args[0].parse::<u32>().map_err(|_| {
+                anyhow::anyhow!("Invalid canonicalizemaxdots at line {line_number}")
+            })?;
         }
         "canonicaldomains" | "canonicalizepermittedcnames" => {
-            one()?;
-            if !args[0].eq_ignore_ascii_case("none") {
-                anyhow::bail!(
-                    "{keyword} requires canonicalization and is unavailable in no-network -G mode"
-                );
+            if args.is_empty() {
+                anyhow::bail!("{keyword} requires at least one value at line {line_number}");
             }
         }
         "enableescapecommandline" | "streamlocalbindunlink" | "warnweakcrypto" => boolean()?,
@@ -335,16 +330,21 @@ Host *
         assert!(SshConfig::parse("Host *\nStreamLocalBindMask 0777\n").is_ok());
         assert!(SshConfig::parse("Host *\nTunnelDevice 1:any\n").is_ok());
         assert!(SshConfig::parse("Host *\nObscureKeystrokeTiming interval:1\n").is_ok());
+        assert!(SshConfig::parse("Host *\nCanonicalizeFallbackLocal no\n").is_ok());
+        assert!(SshConfig::parse("Host *\nCanonicalizeHostname yes\n").is_ok());
+        assert!(SshConfig::parse("Host *\nCanonicalizeMaxDots 2\n").is_ok());
+        assert!(SshConfig::parse("Host *\nCanonicalDomains example.com\n").is_ok());
+        assert!(SshConfig::parse("Host *\nCanonicalizePermittedCNAMEs *.a:*.b\n").is_ok());
     }
 
     #[test]
-    fn rejects_invalid_or_network_dependent_retained_values() {
+    fn rejects_invalid_retained_values() {
         for option in [
-            "CanonicalizeFallbackLocal no",
-            "CanonicalizeHostname yes",
-            "CanonicalizeMaxDots 2",
-            "CanonicalDomains example.com",
-            "CanonicalizePermittedCNAMEs *.a:*.b",
+            "CanonicalizeFallbackLocal maybe",
+            "CanonicalizeHostname maybe",
+            "CanonicalizeMaxDots nope",
+            "CanonicalDomains",
+            "CanonicalizePermittedCNAMEs",
             "ChannelTimeout",
             "EnableEscapeCommandline maybe",
             "LogVerbose",

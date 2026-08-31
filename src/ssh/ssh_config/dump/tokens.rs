@@ -117,6 +117,37 @@ impl TokenContext {
         Ok(output)
     }
 
+    pub(super) fn expand_percent(&self, value: &str) -> Result<String> {
+        let mut output = String::with_capacity(value.len());
+        let mut chars = value.chars();
+        while let Some(ch) = chars.next() {
+            if ch != '%' {
+                output.push(ch);
+                continue;
+            }
+            let token = chars
+                .next()
+                .context("Incomplete '%' token in SSH configuration")?;
+            let replacement = match token {
+                '%' => "%",
+                'C' => &self.connection_hash,
+                'd' => &self.local_home,
+                'h' => &self.effective_host,
+                'i' => &self.local_uid,
+                'k' => &self.host_key_alias,
+                'L' => &self.local_host_short,
+                'l' => &self.local_host,
+                'n' => &self.original_host,
+                'p' => &self.port,
+                'r' => &self.remote_user,
+                'u' => &self.local_user,
+                _ => anyhow::bail!("Unsupported SSH percent token: %{token}"),
+            };
+            output.push_str(replacement);
+        }
+        Ok(output)
+    }
+
     pub(super) fn expand_path(&self, value: &str) -> Result<String> {
         let value = if value == "~" {
             format!("{}/", self.local_home)
@@ -126,6 +157,20 @@ impl TokenContext {
             value.to_string()
         };
         self.expand(&value)
+    }
+
+    pub(super) fn expand_for_dump(&self, value: &str) -> Result<String> {
+        self.expand(value)
+            .map(|value| Self::escape_for_dump(&value))
+    }
+
+    pub(super) fn expand_path_for_dump(&self, value: &str) -> Result<String> {
+        self.expand_path(value)
+            .map(|value| Self::escape_for_dump(&value))
+    }
+
+    pub(super) fn escape_for_dump(value: &str) -> String {
+        value.replace('$', "$$")
     }
 }
 

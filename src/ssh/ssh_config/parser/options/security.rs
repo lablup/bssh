@@ -409,7 +409,9 @@ pub(super) fn parse_security_option(
                     }
 
                     // Security: Validate algorithm name contains only safe characters
-                    // Allow alphanumeric, hyphens, dots, underscores, @ and +
+                    // OpenSSH permits +, -, and ^ list modifiers, and glob
+                    // patterns for the removal form. The -G renderer resolves
+                    // this policy independently from runtime authentication.
                     if !trimmed.chars().all(|c| {
                         c.is_ascii_alphanumeric()
                             || c == '-'
@@ -417,6 +419,9 @@ pub(super) fn parse_security_option(
                             || c == '_'
                             || c == '@'
                             || c == '+'
+                            || c == '^'
+                            || c == '*'
+                            || c == '?'
                     }) {
                         anyhow::bail!(
                             "CASignatureAlgorithms at line {line_number} contains invalid characters in algorithm name '{trimmed}'. \

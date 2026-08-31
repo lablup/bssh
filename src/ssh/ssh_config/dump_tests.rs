@@ -13,8 +13,14 @@ Host target
     KexAlgorithms -*sha1
     IPQoS af21 cs1
     RekeyLimit 16M 2h
-    SetEnv ZETA=%h ALPHA=value
+    SetEnv ZETA=%h ALPHA=value LITERAL=$${NOT_EXPANDED}
     ForwardAgent /tmp/%h-agent
+    IdentityAgent /tmp/$${LITERAL}-agent
+    BindAddress %h
+    BindInterface %h
+    ProxyJump %h
+    UserKnownHostsFile /tmp/%h
+    GlobalKnownHostsFile /tmp/%h
     TunnelDevice 1:2
 "#;
     let config = SshConfig::parse(source).expect("source config should parse");
@@ -28,6 +34,14 @@ Host target
     assert!(first.contains("ipqos af21 cs1\n"));
     assert!(first.contains("rekeylimit 16777216 7200\n"));
     assert!(first.contains("tunneldevice 1:2\n"));
+    assert!(first.contains("setenv LITERAL=$${NOT_EXPANDED}\n"));
+    assert!(first.contains("identityagent /tmp/$${LITERAL}-agent\n"));
+    assert!(first.contains("bindaddress %h\n"));
+    assert!(first.contains("bindinterface %h\n"));
+    assert!(first.contains("proxyjump %h\n"));
+    assert!(first.contains("userknownhostsfile /tmp/final.example\n"));
+    assert!(first.contains("globalknownhostsfile /tmp/%h\n"));
+    assert!(first.contains("setenv ZETA=%h\n"));
     assert!(!first.contains("ciphers +"));
     assert!(!first.contains("kexalgorithms -"));
 }
@@ -44,6 +58,23 @@ fn renderer_rejects_line_injection() {
     config.hostname = Some("safe.example\u{7}".to_string());
     let error = render_resolved_config("target", &config).expect_err("control must be rejected");
     assert!(error.to_string().contains("unsafe value"));
+}
+
+#[test]
+fn command_tokens_expand_only_at_the_openssh_dump_stages() {
+    let config = SshConfig::parse(
+        "LocalCommand echo %h\nRemoteCommand echo %h ${HOME}\nKnownHostsCommand echo %h\nProxyCommand echo %h ${HOME}\n",
+    )
+    .unwrap();
+    let first = render_resolved_config("target", &config.find_host_config("target")).unwrap();
+    assert!(first.contains(r#"localcommand "echo %h""#));
+    assert!(first.contains(r#"remotecommand "echo target ${HOME}""#));
+    assert!(first.contains(r#"knownhostscommand "echo %h""#));
+    assert!(first.contains(r#"proxycommand "echo %h ${HOME}""#));
+
+    let reparsed = SshConfig::parse(&first).unwrap();
+    let second = render_resolved_config("target", &reparsed.find_host_config("target")).unwrap();
+    assert_eq!(first, second);
 }
 
 #[test]
@@ -84,17 +115,15 @@ Host target
 fn forwarding_arguments_are_serialized_individually() {
     let source = r#"
 Host target
-    LocalForward /tmp/local /tmp/destination
+    LocalForward "/tmp/local socket#one" "/tmp/destination 'quoted'"
     RemoteForward 2200 localhost:22
     DynamicForward localhost:1080
 "#;
     let config = SshConfig::parse(source).unwrap();
     let first = render_resolved_config("target", &config.find_host_config("target")).unwrap();
-    assert!(
-        first
-            .lines()
-            .any(|line| line == "localforward /tmp/local /tmp/destination")
-    );
+    assert!(first.lines().any(
+        |line| line == r#"localforward "/tmp/local socket#one" "/tmp/destination \'quoted\'""#
+    ));
     assert!(
         first
             .lines()
@@ -106,6 +135,40 @@ Host target
             .any(|line| line == "dynamicforward localhost:1080")
     );
 
+    let reparsed = SshConfig::parse(&first).unwrap();
+    let second = render_resolved_config("target", &reparsed.find_host_config("target")).unwrap();
+    assert_eq!(first, second);
+}
+
+#[test]
+fn final_pass_forward_dedup_keeps_the_first_argument_boundaries() {
+    let config = SshConfig::parse(
+        "Host target\n    LocalForward \"a b\" c\nMatch final\n    LocalForward a \"b c\"\n",
+    )
+    .unwrap();
+    let output = render_resolved_config("target", &config.find_host_config("target")).unwrap();
+    assert_eq!(
+        output
+            .lines()
+            .filter(|line| line.starts_with("localforward "))
+            .collect::<Vec<_>>(),
+        [r#"localforward "a b" c"#]
+    );
+}
+
+#[test]
+fn configured_canonicalization_values_render_and_round_trip() {
+    let config = SshConfig::parse(
+        "CanonicalizeHostname yes\nCanonicalizeFallbackLocal no\nCanonicalizeMaxDots 4\nCanonicalDomains one.example two.example\nCanonicalizePermittedCNAMEs a:b c:d\nMatch canonical\n    Port 2201\n",
+    )
+    .unwrap();
+    let first = render_resolved_config("target", &config.find_host_config("target")).unwrap();
+    assert!(first.contains("canonicalizehostname yes\n"));
+    assert!(first.contains("canonicalizefallbacklocal no\n"));
+    assert!(first.contains("canonicalizemaxdots 4\n"));
+    assert!(first.contains("canonicaldomains one.example two.example\n"));
+    assert!(first.contains("canonicalizepermittedcnames a:b c:d\n"));
+    assert!(first.contains("port 2201\n"));
     let reparsed = SshConfig::parse(&first).unwrap();
     let second = render_resolved_config("target", &reparsed.find_host_config("target")).unwrap();
     assert_eq!(first, second);
@@ -152,4 +215,81 @@ fn default_dump_has_the_audited_full_keyword_shape() {
         .find(|line| line.starts_with("casignaturealgorithms "))
         .unwrap();
     assert!(!ca.contains("-cert-"));
+
+    let hostbased = output
+        .lines()
+        .find(|line| line.starts_with("hostbasedacceptedalgorithms "))
+        .unwrap();
+    assert!(hostbased.contains("ssh-ed25519-cert-v01@openssh.com"));
+    assert!(hostbased.contains("rsa-sha2-256"));
+    assert!(!hostbased.contains("ssh-rsa,"));
+}
+
+#[test]
+fn signature_algorithm_modifiers_resolve_against_independent_defaults() {
+    let cases = [
+        (
+            "HostbasedAcceptedAlgorithms +ssh-rsa\n",
+            "hostbasedacceptedalgorithms",
+            ",rsa-sha2-256,ssh-rsa",
+        ),
+        (
+            "HostbasedAcceptedAlgorithms -*cert*\n",
+            "hostbasedacceptedalgorithms",
+            "ssh-ed25519,ecdsa-sha2-nistp256",
+        ),
+        (
+            "HostbasedAcceptedAlgorithms ^ssh-rsa\n",
+            "hostbasedacceptedalgorithms",
+            "ssh-rsa,ssh-ed25519-cert-v01@openssh.com",
+        ),
+        (
+            "CASignatureAlgorithms +ssh-rsa\n",
+            "casignaturealgorithms",
+            ",rsa-sha2-256,ssh-rsa",
+        ),
+        (
+            "CASignatureAlgorithms -ecdsa-*\n",
+            "casignaturealgorithms",
+            "ssh-ed25519,sk-ssh-ed25519@openssh.com",
+        ),
+        (
+            "CASignatureAlgorithms ^ssh-rsa\n",
+            "casignaturealgorithms",
+            "ssh-rsa,ssh-ed25519",
+        ),
+    ];
+
+    for (source, keyword, expected_fragment) in cases {
+        let parsed = SshConfig::parse(source).unwrap();
+        let output = render_resolved_config("host", &parsed.find_host_config("host")).unwrap();
+        let line = output
+            .lines()
+            .find(|line| line.starts_with(keyword))
+            .unwrap();
+        assert!(
+            line.contains(expected_fragment),
+            "expected {expected_fragment:?} in {line:?}"
+        );
+        assert!(!line.contains(" +") && !line.contains(" -") && !line.contains(" ^"));
+    }
+}
+
+#[test]
+fn signature_algorithm_policy_rejects_unknown_names_and_empty_results() {
+    let unknown = SshConfig::parse("CASignatureAlgorithms +not-a-real-key\n").unwrap();
+    let error = render_resolved_config("host", &unknown.find_host_config("host")).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("unsupported signature algorithm")
+    );
+
+    let empty = SshConfig::parse("HostbasedAcceptedAlgorithms -*\n").unwrap();
+    let error = render_resolved_config("host", &empty.find_host_config("host")).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("removed all supported algorithms")
+    );
 }

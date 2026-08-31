@@ -16,6 +16,7 @@
 
 use anyhow::{Context, Result};
 use std::path::Path;
+use tokio::io::AsyncReadExt as _;
 
 use super::super::diagnostic::{escape_field, escape_path};
 
@@ -52,19 +53,7 @@ pub fn validate_glob_pattern(pattern: &str) -> Result<()> {
     Ok(())
 }
 
-/// Validate an include file path for security
-pub fn validate_include_path(path: &Path) -> Result<()> {
-    // Follow symlinks and validate the opened target, as OpenSSH does via fstat.
-    let metadata = match std::fs::metadata(path) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => {
-            return Err(error)
-                .with_context(|| format!("Failed to get metadata for {}", escape_path(path)));
-        }
-    };
-
-    // Check if it's a regular file
+fn validate_opened_metadata(path: &Path, metadata: &std::fs::Metadata) -> Result<()> {
     if !metadata.is_file() {
         anyhow::bail!("Include path is not a regular file: {}", escape_path(path));
     }
@@ -82,6 +71,56 @@ pub fn validate_include_path(path: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Open, validate with `fstat`, and read from the same handle.
+pub(crate) async fn read_config_file(
+    path: &Path,
+    check_permissions: bool,
+    missing_ok: bool,
+) -> Result<Option<String>> {
+    read_config_file_with_hook(path, check_permissions, missing_ok, || {}).await
+}
+
+async fn read_config_file_with_hook<F>(
+    path: &Path,
+    check_permissions: bool,
+    missing_ok: bool,
+    after_open: F,
+) -> Result<Option<String>>
+where
+    F: FnOnce(),
+{
+    let mut file = match tokio::fs::File::open(path).await {
+        Ok(file) => file,
+        Err(error) if missing_ok && error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(None);
+        }
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("Failed to open SSH config file: {}", escape_path(path)));
+        }
+    };
+    after_open();
+    let metadata = file.metadata().await.with_context(|| {
+        format!(
+            "Failed to inspect opened SSH config file: {}",
+            escape_path(path)
+        )
+    })?;
+    if check_permissions {
+        validate_opened_metadata(path, &metadata)?;
+    } else if !metadata.is_file() {
+        anyhow::bail!(
+            "SSH config path is not a regular file: {}",
+            escape_path(path)
+        );
+    }
+    let mut content = String::new();
+    file.read_to_string(&mut content)
+        .await
+        .with_context(|| format!("Failed to read SSH config file: {}", escape_path(path)))?;
+    Ok(Some(content))
 }
 
 #[cfg(test)]
@@ -122,5 +161,30 @@ mod tests {
         assert!(validate_glob_pattern("config.d/[0-9][0-9]-*.conf").is_ok());
         // Path with ../ is allowed in pattern validation (checked later by is_path_allowed)
         assert!(validate_glob_pattern("../../../etc/passwd").is_ok());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn symlink_swap_after_open_reads_and_checks_the_opened_target() {
+        use std::os::unix::fs::{PermissionsExt as _, symlink};
+
+        let directory = tempfile::tempdir().unwrap();
+        let safe = directory.path().join("safe.conf");
+        let unsafe_file = directory.path().join("unsafe.conf");
+        let link = directory.path().join("config");
+        std::fs::write(&safe, "User safe\n").unwrap();
+        std::fs::write(&unsafe_file, "User unsafe\n").unwrap();
+        std::fs::set_permissions(&safe, std::fs::Permissions::from_mode(0o600)).unwrap();
+        std::fs::set_permissions(&unsafe_file, std::fs::Permissions::from_mode(0o622)).unwrap();
+        symlink(&safe, &link).unwrap();
+
+        let content = read_config_file_with_hook(&link, true, false, || {
+            std::fs::remove_file(&link).unwrap();
+            symlink(&unsafe_file, &link).unwrap();
+        })
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(content, "User safe\n");
     }
 }

@@ -40,17 +40,7 @@ pub(super) fn parse_environment_option(
             if args.is_empty() {
                 anyhow::bail!("SetEnv requires at least one name=value pair at line {line_number}");
             }
-            // SetEnv can have multiple name=value pairs
-            // If we have a single arg (from equals syntax), it might contain multiple pairs
-            let pairs: Vec<&str> = if args.len() == 1 && args[0].contains('=') {
-                // Single arg from equals syntax - might have multiple name=value pairs
-                args[0].split_whitespace().collect()
-            } else {
-                // Multiple args from space syntax - convert to &str references
-                args.iter().map(String::as_str).collect()
-            };
-
-            for pair in pairs {
+            for pair in args {
                 if let Some(eq_pos) = pair.find('=') {
                     let name = pair[..eq_pos].to_string();
                     let value = pair[eq_pos + 1..].to_string();
@@ -115,6 +105,12 @@ mod tests {
 
         parse_environment_option(&mut config, "setenv", &["EMPTY=".into()], 8).unwrap();
         assert_eq!(config.set_env.get("EMPTY").map(String::as_str), Some(""));
+
+        parse_environment_option(&mut config, "setenv", &["SPACED=a b#c".into()], 9).unwrap();
+        assert_eq!(
+            config.set_env.get("SPACED").map(String::as_str),
+            Some("a b#c")
+        );
     }
 
     #[test]

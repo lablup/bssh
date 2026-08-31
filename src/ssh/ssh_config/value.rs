@@ -50,7 +50,7 @@ pub(super) fn tokenize(input: &str, line_number: usize) -> Result<Vec<String>> {
     Ok(result)
 }
 
-pub(super) fn encode(value: &str) -> Result<String> {
+pub(crate) fn encode(value: &str) -> Result<String> {
     if value.chars().any(|ch| matches!(ch, '\0' | '\r' | '\n')) {
         anyhow::bail!("Resolved SSH configuration contains an unsafe value");
     }

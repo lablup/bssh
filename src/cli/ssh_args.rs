@@ -19,6 +19,11 @@ pub struct SshDumpInvocation {
     pub config_file: Option<PathBuf>,
     pub log_file: Option<PathBuf>,
     pub overrides: Vec<String>,
+    /// `-W` requests OpenSSH's implicit forwarding policy after config merge.
+    pub stdio_forward: bool,
+    /// Terminal SSH options take priority over `-G` after raw argv parsing.
+    pub version: bool,
+    pub query: Option<String>,
 }
 
 impl SshDumpInvocation {
@@ -36,6 +41,7 @@ impl SshDumpInvocation {
     }
 
     pub fn from_argv(args: &[String]) -> Result<Self> {
+        let dump_requested = scan_for_dump_flag(args);
         let mut overrides = Vec::new();
         let mut priority_overrides = Vec::new();
         let mut config_file = None;
@@ -45,8 +51,10 @@ impl SshDumpInvocation {
         let mut options_terminated = false;
         let mut stdio_forward = false;
         let mut saw_dump = false;
+        let mut version = false;
+        let mut query = None;
 
-        while index < args.len() {
+        'arguments: while index < args.len() {
             let argument = &args[index];
             if argument == "--" {
                 if destination.is_some() {
@@ -56,7 +64,9 @@ impl SshDumpInvocation {
                 index += 1;
                 continue;
             }
-            if !argument.starts_with('-') && destination.is_none() {
+            if destination.is_none()
+                && (options_terminated || !argument.starts_with('-') || argument == "-")
+            {
                 add_destination_overrides(argument, &mut overrides)?;
                 destination = Some(argument.clone());
                 index += 1;
@@ -82,6 +92,7 @@ impl SshDumpInvocation {
                         &mut log_file,
                         &mut overrides,
                         &mut priority_overrides,
+                        &mut query,
                     )?;
                     stdio_forward |= value_name == "stdio-forward";
                     index += consumed;
@@ -154,8 +165,12 @@ impl SshDumpInvocation {
                             &mut log_file,
                             &mut overrides,
                             &mut priority_overrides,
+                            &mut query,
                         )?;
                         stdio_forward |= name == "stdio-forward";
+                        if name == "query" {
+                            break 'arguments;
+                        }
                         index += consumed;
                         break;
                     }
@@ -222,7 +237,11 @@ impl SshDumpInvocation {
                                 "ForwardX11Trusted=yes",
                             );
                         }
-                        'q' | 'v' | 'V' | 'y' => {}
+                        'V' => {
+                            version = true;
+                            break 'arguments;
+                        }
+                        'q' | 'v' | 'y' => {}
                         _ => anyhow::bail!("Unknown option '-{short}'"),
                     }
                 }
@@ -230,28 +249,20 @@ impl SshDumpInvocation {
             index += 1;
         }
 
-        if !saw_dump {
+        if !saw_dump && !dump_requested {
             anyhow::bail!("Resolved configuration invocation is missing -G");
         }
-        let destination = destination.context("-G requires a destination")?;
+        let terminal = version || query.is_some();
+        let destination = if terminal {
+            destination.unwrap_or_default()
+        } else {
+            destination.context("-G requires a destination")?
+        };
         let destination = destination.strip_prefix("ssh://").unwrap_or(&destination);
-        let parsed = crate::node::parse_node_spec(destination)
+        let parsed = (!destination.is_empty())
+            .then(|| parse_dump_destination(destination))
+            .transpose()
             .context("Invalid destination for resolved configuration")?;
-        if stdio_forward {
-            for (keyword, implicit) in [
-                ("clearallforwardings", "ClearAllForwardings=yes"),
-                ("exitonforwardfailure", "ExitOnForwardFailure=yes"),
-            ] {
-                if !overrides.iter().any(|option| {
-                    option
-                        .split_once('=')
-                        .is_some_and(|(key, _)| key.eq_ignore_ascii_case(keyword))
-                }) {
-                    overrides.push(implicit.to_string());
-                }
-            }
-        }
-
         let mut all_overrides = priority_overrides
             .into_iter()
             .map(|(_, value)| value)
@@ -259,25 +270,43 @@ impl SshDumpInvocation {
         all_overrides.extend(overrides);
 
         Ok(Self {
-            destination: parsed.host.to_string(),
+            destination: parsed
+                .map_or_else(String::new, |destination| destination.host.to_string()),
             config_file,
             log_file,
             overrides: all_overrides,
+            stdio_forward,
+            version,
+            query,
         })
     }
 }
 
 fn add_destination_overrides(destination: &str, overrides: &mut Vec<String>) -> Result<()> {
     let destination = destination.strip_prefix("ssh://").unwrap_or(destination);
-    let parsed = crate::node::parse_node_spec(destination)
+    let parsed = parse_dump_destination(destination)
         .context("Invalid destination for resolved configuration")?;
     if let Some(user) = parsed.user {
-        overrides.push(format!("User={}", literal_user(user)?));
+        overrides.push(config_option("User", &literal_user(user)?)?);
     }
     if let Some(port) = parsed.port {
         overrides.push(format!("Port={port}"));
     }
     Ok(())
+}
+
+fn parse_dump_destination(destination: &str) -> Result<crate::node::NodeSpec<'_>> {
+    let (user, host) = destination
+        .split_once('@')
+        .map_or((None, destination), |(user, host)| (Some(user), host));
+    if host.parse::<std::net::Ipv6Addr>().is_ok() {
+        return Ok(crate::node::NodeSpec {
+            user,
+            host,
+            port: None,
+        });
+    }
+    crate::node::parse_node_spec(destination)
 }
 
 fn value_for<'a>(
@@ -301,29 +330,34 @@ fn apply_value(
     log_file: &mut Option<PathBuf>,
     overrides: &mut Vec<String>,
     priority_overrides: &mut Vec<(&'static str, String)>,
+    query: &mut Option<String>,
 ) -> Result<()> {
     let option = match name {
         "option" => value.to_string(),
-        "login" => format!("User={}", literal_user(value)?),
+        "login" => config_option("User", &literal_user(value)?)?,
         "port" => {
             value
                 .parse::<u16>()
                 .with_context(|| format!("Invalid port '{value}'"))?;
             format!("Port={value}")
         }
-        "identity" => format!("IdentityFile={value}"),
-        "jump-host" => format!("ProxyJump={value}"),
+        "identity" => config_option("IdentityFile", value)?,
+        "jump-host" => config_option("ProxyJump", value)?,
         "cipher" => {
-            set_priority(priority_overrides, "ciphers", format!("Ciphers={value}"));
+            set_priority(
+                priority_overrides,
+                "ciphers",
+                config_option("Ciphers", value)?,
+            );
             return Ok(());
         }
         "macs" => {
-            set_priority(priority_overrides, "macs", format!("MACs={value}"));
+            set_priority(priority_overrides, "macs", config_option("MACs", value)?);
             return Ok(());
         }
-        "local-forward" => format!("LocalForward={value}"),
-        "remote-forward" => format!("RemoteForward={value}"),
-        "dynamic-forward" => format!("DynamicForward={value}"),
+        "local-forward" => config_option("LocalForward", value)?,
+        "remote-forward" => config_option("RemoteForward", value)?,
+        "dynamic-forward" => config_option("DynamicForward", value)?,
         "stdio-forward" => {
             validate_stdio_forward(value)?;
             return Ok(());
@@ -332,12 +366,15 @@ fn apply_value(
             *log_file = Some(PathBuf::from(value));
             return Ok(());
         }
-        "query" => return Ok(()),
-        "bind-interface" => format!("BindInterface={value}"),
-        "bind-address" => format!("BindAddress={value}"),
-        "escape-char" => format!("EscapeChar={value}"),
-        "control-path" => format!("ControlPath={value}"),
-        "tunnel-device" => format!("TunnelDevice={value}"),
+        "query" => {
+            *query = Some(value.to_string());
+            return Ok(());
+        }
+        "bind-interface" => config_option("BindInterface", value)?,
+        "bind-address" => config_option("BindAddress", value)?,
+        "escape-char" => config_option("EscapeChar", value)?,
+        "control-path" => config_option("ControlPath", value)?,
+        "tunnel-device" => config_option("TunnelDevice", value)?,
         "pkcs11-provider" | "control-command" | "tag" => {
             anyhow::bail!("Option '-{name}' is not supported with -G")
         }
@@ -349,6 +386,13 @@ fn apply_value(
     };
     overrides.push(option);
     Ok(())
+}
+
+fn config_option(keyword: &str, value: &str) -> Result<String> {
+    Ok(format!(
+        "{keyword}={}",
+        crate::ssh::ssh_config::encode_config_value(value)?
+    ))
 }
 
 fn set_priority(
@@ -417,18 +461,11 @@ fn service_exists(_name: &str) -> bool {
 fn scan_for_dump_flag(args: &[String]) -> bool {
     let mut index = 1usize;
     let mut destination_seen = false;
+    let mut saw_dump = false;
     while index < args.len() {
         let argument = &args[index];
         if argument == "--" {
-            if destination_seen {
-                break;
-            }
-            index += 1;
-            if index < args.len() {
-                destination_seen = true;
-            }
-            index += 1;
-            continue;
+            break;
         }
         if !argument.starts_with('-') || argument == "-" {
             if destination_seen {
@@ -443,7 +480,7 @@ fn scan_for_dump_flag(args: &[String]) -> bool {
                 .split_once('=')
                 .map_or((long, false), |(name, _)| (name, true));
             if name == "print-config" {
-                return true;
+                saw_dump = true;
             }
             if long_takes_value(name) && !attached {
                 index += 1;
@@ -451,7 +488,7 @@ fn scan_for_dump_flag(args: &[String]) -> bool {
         } else if let Some(shorts) = argument.strip_prefix('-') {
             for (position, short) in shorts.char_indices() {
                 if short == 'G' {
-                    return true;
+                    saw_dump = true;
                 }
                 if short_takes_value(short) {
                     if position + short.len_utf8() == shorts.len() {
@@ -463,7 +500,7 @@ fn scan_for_dump_flag(args: &[String]) -> bool {
         }
         index += 1;
     }
-    false
+    saw_dump
 }
 
 fn scan_diagnostic_file(args: &[String]) -> Option<PathBuf> {
@@ -473,12 +510,7 @@ fn scan_diagnostic_file(args: &[String]) -> Option<PathBuf> {
     while index < args.len() {
         let argument = &args[index];
         if argument == "--" {
-            if destination_seen {
-                break;
-            }
-            index += 2;
-            destination_seen = true;
-            continue;
+            break;
         }
         if !argument.starts_with('-') || argument == "-" {
             if destination_seen {
@@ -503,6 +535,9 @@ fn scan_diagnostic_file(args: &[String]) -> Option<PathBuf> {
             }
         } else if let Some(shorts) = argument.strip_prefix('-') {
             for (position, short) in shorts.char_indices() {
+                if matches!(short, 'V' | 'Q') {
+                    return result;
+                }
                 if !short_takes_value(short) {
                     continue;
                 }
@@ -639,16 +674,17 @@ mod tests {
     fn stdio_forward_implicit_clear_is_overridden_by_explicit_option() {
         let implicit = args(&["bssh", "-GF", "none", "-W", "a:1", "host"]);
         let parsed = SshDumpInvocation::from_argv(&implicit).unwrap();
-        assert!(
-            parsed
-                .overrides
-                .contains(&"ClearAllForwardings=yes".to_string())
-        );
-        assert!(
-            parsed
-                .overrides
-                .contains(&"ExitOnForwardFailure=yes".to_string())
-        );
+        assert!(parsed.stdio_forward);
+        assert!(!parsed.overrides.iter().any(|option| {
+            option
+                .to_ascii_lowercase()
+                .starts_with("clearallforwardings=")
+        }));
+        assert!(!parsed.overrides.iter().any(|option| {
+            option
+                .to_ascii_lowercase()
+                .starts_with("exitonforwardfailure=")
+        }));
 
         let explicit = args(&[
             "bssh",
@@ -661,10 +697,11 @@ mod tests {
             "host",
         ]);
         let parsed = SshDumpInvocation::from_argv(&explicit).unwrap();
+        assert!(parsed.stdio_forward);
         assert!(
-            !parsed
+            parsed
                 .overrides
-                .contains(&"ClearAllForwardings=yes".to_string())
+                .contains(&"ClearAllForwardings=no".to_string())
         );
     }
 
@@ -735,6 +772,41 @@ mod tests {
     }
 
     #[test]
+    fn direct_values_are_serialized_before_overlay_tokenization() {
+        let parsed = SshDumpInvocation::from_argv(&args(&[
+            "bssh",
+            "-GF",
+            "none",
+            "-i",
+            "/tmp/a b#c",
+            "-S/tmp/control path#socket",
+            "host",
+        ]))
+        .unwrap();
+        assert!(
+            parsed
+                .overrides
+                .contains(&r#"IdentityFile="/tmp/a b#c""#.to_string())
+        );
+        assert!(
+            parsed
+                .overrides
+                .contains(&r#"ControlPath="/tmp/control path#socket""#.to_string())
+        );
+    }
+
+    #[test]
+    fn config_dump_accepts_unbracketed_ipv6_destinations() {
+        let parsed = SshDumpInvocation::from_argv(&args(&["bssh", "-GF", "none", "::1"])).unwrap();
+        assert_eq!(parsed.destination, "::1");
+
+        let parsed =
+            SshDumpInvocation::from_argv(&args(&["bssh", "-GF", "none", "deploy@::1"])).unwrap();
+        assert_eq!(parsed.destination, "::1");
+        assert!(parsed.overrides.contains(&"User=deploy".to_string()));
+    }
+
+    #[test]
     fn direct_algorithms_override_o_and_inverse_flags_use_last_value() {
         for argv in [
             args(&["bssh", "-G", "-o", "Ciphers=first", "-c", "last", "host"]),
@@ -789,5 +861,35 @@ mod tests {
             "-E/tmp/contains/G",
             "host"
         ])));
+        assert!(!SshDumpInvocation::requests_config_dump(&args(&[
+            "bssh", "--", "host", "-G"
+        ])));
+        assert_eq!(
+            SshDumpInvocation::diagnostic_file(&args(&["bssh", "--", "host", "-E/tmp/remote-log"])),
+            None
+        );
+        let terminated =
+            SshDumpInvocation::from_argv(&args(&["bssh", "-G", "--", "-alias"])).unwrap();
+        assert_eq!(terminated.destination, "-alias");
+        assert!(SshDumpInvocation::from_argv(&args(&["bssh", "-G", "-"])).is_ok());
+    }
+
+    #[test]
+    fn terminal_version_and_query_options_preempt_config_dump() {
+        for argv in [
+            args(&["bssh", "-VG", "host"]),
+            args(&["bssh", "-GV", "host"]),
+            args(&["bssh", "-GQ", "cipher", "host"]),
+            args(&["bssh", "-Qcipher", "-G", "host"]),
+        ] {
+            assert!(SshDumpInvocation::requests_config_dump(&argv), "{argv:?}");
+        }
+        let version = SshDumpInvocation::from_argv(&args(&["bssh", "-VG"])).unwrap();
+        assert!(version.version);
+        let query = SshDumpInvocation::from_argv(&args(&["bssh", "-GQ", "cipher"])).unwrap();
+        assert_eq!(query.query.as_deref(), Some("cipher"));
+        assert!(SshDumpInvocation::from_argv(&args(&["bssh", "-VG", "-Z"])).is_ok());
+        assert!(SshDumpInvocation::from_argv(&args(&["bssh", "-GQ", "cipher", "-Z"])).is_ok());
+        assert!(SshDumpInvocation::from_argv(&args(&["bssh", "-Z", "-VG"])).is_err());
     }
 }

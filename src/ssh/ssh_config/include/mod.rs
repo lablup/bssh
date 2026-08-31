@@ -27,8 +27,9 @@ mod validation;
 
 // Re-export submodule items
 pub use resolver::{parse_include_line, resolve_include_pattern};
+pub(crate) use validation::read_config_file;
 #[allow(unused_imports)]
-pub use validation::{validate_glob_pattern, validate_include_path};
+pub use validation::validate_glob_pattern;
 
 /// Maximum include depth to prevent infinite recursion
 const MAX_INCLUDE_DEPTH: usize = 16;
@@ -45,6 +46,8 @@ pub struct IncludeContext {
     file_count: usize,
     /// Immutable OpenSSH origin for all nested relative Includes.
     pub anchor: PathBuf,
+    /// Whether this source has OpenSSH's USERCONF tilde-expansion flag.
+    allow_tilde: bool,
 }
 
 impl IncludeContext {
@@ -60,14 +63,16 @@ impl IncludeContext {
             depth: 0,
             file_count: 0,
             anchor,
+            allow_tilde: true,
         }
     }
 
-    pub fn with_anchor(anchor: PathBuf) -> Self {
+    pub fn with_anchor(anchor: PathBuf, allow_tilde: bool) -> Self {
         Self {
             depth: 0,
             file_count: 0,
             anchor,
+            allow_tilde,
         }
     }
 
@@ -112,8 +117,18 @@ pub struct IncludedFile {
     pub path: PathBuf,
     /// File content
     pub content: String,
-    /// One-based line number of the first content line in the source file.
-    pub source_line_start: usize,
+    /// One-based source line for every line in `content`.
+    ///
+    /// Include expansion may inject a synthetic scope directive between physical
+    /// source lines. Keeping the mapping explicitly prevents those directives
+    /// from shifting diagnostics for the lines that follow them.
+    pub source_lines: Vec<usize>,
+    /// Per-line Match results evaluated during this configuration pass.
+    pub precomputed_matches: Vec<Option<bool>>,
+    /// Per-line record of whether Match parsing requested a final pass.
+    pub precomputed_final_requests: Vec<Option<bool>>,
+    /// Cumulative state of the parent scope at the Include site.
+    pub precomputed_scope_active: Option<bool>,
     /// Host/Match scopes that guarded entry into this included file.
     pub scope_guards: Vec<String>,
 }
@@ -144,10 +159,20 @@ pub(crate) async fn resolve_includes_for_host_at(
     hostname: Option<&str>,
     anchor: PathBuf,
 ) -> Result<Vec<IncludedFile>> {
-    resolve_includes_for_host_at_pass(config_path, content, hostname, anchor, None, None, false)
-        .await
+    resolve_includes_for_host_at_pass(
+        config_path,
+        content,
+        hostname,
+        anchor,
+        None,
+        None,
+        false,
+        true,
+    )
+    .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn resolve_includes_for_host_at_pass(
     config_path: &Path,
     content: &str,
@@ -156,8 +181,9 @@ pub(crate) async fn resolve_includes_for_host_at_pass(
     effective_hostname: Option<&str>,
     remote_user: Option<&str>,
     final_pass: bool,
+    allow_tilde: bool,
 ) -> Result<Vec<IncludedFile>> {
-    let mut context = IncludeContext::with_anchor(anchor);
+    let mut context = IncludeContext::with_anchor(anchor, allow_tilde);
     let mut expansion =
         IncludeExpansionState::new(hostname, effective_hostname, remote_user, final_pass);
 
@@ -170,6 +196,8 @@ pub(crate) async fn resolve_includes_for_host_at_pass(
         "Host *",
         &[],
         true,
+        None,
+        None,
     )
     .await
 }
@@ -180,6 +208,7 @@ struct IncludeExpansionState {
     effective_hostname: Option<String>,
     hostname_obtained: bool,
     remote_user: Option<String>,
+    config: super::types::SshHostConfig,
     final_pass: bool,
 }
 
@@ -195,12 +224,14 @@ impl IncludeExpansionState {
             effective_hostname: effective_hostname.or(hostname).map(str::to_string),
             hostname_obtained: effective_hostname.is_some(),
             remote_user: remote_user.map(str::to_string),
+            config: super::types::SshHostConfig::default(),
             final_pass,
         }
     }
 }
 
 /// Process a file with Include directives, inserting included files at the correct positions
+#[allow(clippy::too_many_arguments)]
 async fn process_file_with_includes(
     file_path: &Path,
     content: &str,
@@ -209,12 +240,18 @@ async fn process_file_with_includes(
     inherited_scope: &str,
     scope_guards: &[String],
     inherited_active: bool,
+    inherited_match_result: Option<bool>,
+    inherited_final_request: Option<bool>,
 ) -> Result<Vec<IncludedFile>> {
     let mut result = Vec::new();
     let mut current_content = String::new();
-    let mut current_source_line = 1;
+    let mut current_source_lines = Vec::new();
+    let mut current_precomputed_matches = Vec::new();
+    let mut current_precomputed_final_requests = Vec::new();
     let mut active_scope = inherited_scope.to_string();
     let mut scope_active = inherited_active;
+    let mut active_match_result = inherited_match_result;
+    let mut active_final_request = inherited_final_request;
     let mut pending_scope_restore = false;
     let mut pending_initial_scope = context.depth > 0;
 
@@ -229,30 +266,25 @@ async fn process_file_with_includes(
                 result.push(IncludedFile {
                     path: file_path.to_path_buf(),
                     content: current_content.clone(),
-                    source_line_start: current_source_line,
+                    source_lines: current_source_lines.clone(),
+                    precomputed_matches: current_precomputed_matches.clone(),
+                    precomputed_final_requests: current_precomputed_final_requests.clone(),
+                    precomputed_scope_active: expansion
+                        .original_hostname
+                        .as_ref()
+                        .map(|_| inherited_active),
                     scope_guards: scope_guards.to_vec(),
                 });
                 current_content.clear();
+                current_source_lines.clear();
+                current_precomputed_matches.clear();
+                current_precomputed_final_requests.clear();
             }
-            current_source_line = line_number + 1;
 
             // Process each Include pattern
             for pattern in patterns {
                 let expanded_environment = expand_include_environment(&pattern)?;
-                let expanded_pattern = expansion
-                    .effective_hostname
-                    .as_deref()
-                    .map_or_else(|| pattern.to_string(), |host| pattern.replace("%h", host));
-                let expanded_pattern = if expanded_environment == pattern {
-                    expanded_pattern
-                } else {
-                    expansion
-                        .effective_hostname
-                        .as_deref()
-                        .map_or(expanded_environment.clone(), |host| {
-                            expanded_environment.replace("%h", host)
-                        })
-                };
+                let expanded_pattern = expand_include_percent(&expanded_environment, expansion)?;
                 let resolved_files = resolve_include_pattern(&expanded_pattern, context)
                     .await
                     .with_context(|| {
@@ -273,7 +305,7 @@ async fn process_file_with_includes(
                     // Read with timeout to prevent hanging on network filesystems
                     let include_content = tokio::time::timeout(
                         std::time::Duration::from_secs(5),
-                        tokio::fs::read_to_string(&include_path),
+                        validation::read_config_file(&include_path, true, true),
                     )
                     .await
                     .map_err(|_| {
@@ -288,6 +320,10 @@ async fn process_file_with_includes(
                             escape_path(&include_path)
                         )
                     })?;
+                    let Some(include_content) = include_content else {
+                        context.exit_include();
+                        continue;
+                    };
 
                     let mut child_guards = scope_guards.to_vec();
                     child_guards.push(active_scope.clone());
@@ -300,6 +336,8 @@ async fn process_file_with_includes(
                         &active_scope,
                         &child_guards,
                         scope_active,
+                        active_match_result,
+                        active_final_request,
                     ))
                     .await?;
 
@@ -320,6 +358,9 @@ async fn process_file_with_includes(
                 if !starts_new_scope {
                     current_content.push_str(inherited_scope);
                     current_content.push('\n');
+                    current_source_lines.push(line_number);
+                    current_precomputed_matches.push(inherited_match_result);
+                    current_precomputed_final_requests.push(inherited_final_request);
                 }
                 pending_initial_scope = false;
             }
@@ -332,23 +373,44 @@ async fn process_file_with_includes(
                 if !starts_new_scope {
                     current_content.push_str(&active_scope);
                     current_content.push('\n');
+                    current_source_lines.push(line_number);
+                    current_precomputed_matches.push(active_match_result);
+                    current_precomputed_final_requests.push(active_final_request);
                 }
                 pending_scope_restore = false;
             }
             // Regular line - add to current content
             current_content.push_str(line);
             current_content.push('\n');
+            current_source_lines.push(line_number);
             let lower = trimmed.to_ascii_lowercase();
+            let mut precomputed_match = None;
+            let mut precomputed_final_request = None;
             if lower.starts_with("host ")
                 || lower.starts_with("host=")
                 || lower.starts_with("match ")
                 || lower.starts_with("match=")
             {
                 active_scope = trimmed.to_string();
-                scope_active = inherited_active && scope_matches(trimmed, expansion)?;
+                let is_match = lower.starts_with("match ") || lower.starts_with("match=");
+                let evaluation = if inherited_active {
+                    scope_evaluation(trimmed, expansion)?
+                } else {
+                    ScopeEvaluation::default()
+                };
+                let matched = inherited_active && evaluation.matched;
+                scope_active = matched;
+                let can_precompute = expansion.original_hostname.is_some();
+                active_match_result = (is_match && can_precompute).then_some(matched);
+                active_final_request =
+                    (is_match && can_precompute).then_some(evaluation.requests_final);
+                precomputed_match = active_match_result;
+                precomputed_final_request = active_final_request;
             } else if scope_active {
                 update_expansion_state(trimmed, expansion)?;
             }
+            current_precomputed_matches.push(precomputed_match);
+            current_precomputed_final_requests.push(precomputed_final_request);
         }
     }
 
@@ -357,7 +419,13 @@ async fn process_file_with_includes(
         result.push(IncludedFile {
             path: file_path.to_path_buf(),
             content: current_content,
-            source_line_start: current_source_line,
+            source_lines: current_source_lines,
+            precomputed_matches: current_precomputed_matches,
+            precomputed_final_requests: current_precomputed_final_requests,
+            precomputed_scope_active: expansion
+                .original_hostname
+                .as_ref()
+                .map(|_| inherited_active),
             scope_guards: scope_guards.to_vec(),
         });
     }
@@ -367,7 +435,13 @@ async fn process_file_with_includes(
         result.push(IncludedFile {
             path: file_path.to_path_buf(),
             content: content.to_string(),
-            source_line_start: 1,
+            source_lines: (1..=content.lines().count()).collect(),
+            precomputed_matches: vec![None; content.lines().count()],
+            precomputed_final_requests: vec![None; content.lines().count()],
+            precomputed_scope_active: expansion
+                .original_hostname
+                .as_ref()
+                .map(|_| inherited_active),
             scope_guards: scope_guards.to_vec(),
         });
     }
@@ -375,22 +449,28 @@ async fn process_file_with_includes(
     Ok(result)
 }
 
-fn scope_matches(line: &str, state: &IncludeExpansionState) -> Result<bool> {
+#[derive(Debug, Clone, Copy, Default)]
+struct ScopeEvaluation {
+    matched: bool,
+    requests_final: bool,
+}
+
+fn scope_evaluation(line: &str, state: &IncludeExpansionState) -> Result<ScopeEvaluation> {
     let Some(original_hostname) = state.original_hostname.as_deref() else {
-        return Ok(true);
+        return Ok(ScopeEvaluation {
+            matched: true,
+            requests_final: false,
+        });
     };
     let lower = line.trim_start().to_ascii_lowercase();
     if lower.starts_with("host ") || lower.starts_with("host\t") || lower.starts_with("host=") {
         let (_, patterns) = split_directive(line, 0)?;
-        return Ok(super::pattern::matches_host_pattern(
-            original_hostname,
-            &patterns,
-        ));
+        return Ok(ScopeEvaluation {
+            matched: super::pattern::matches_host_pattern(original_hostname, &patterns),
+            requests_final: false,
+        });
     }
     let conditions = super::match_directive::MatchCondition::parse_match_line(line, 0)?;
-    if conditions.iter().any(match_contains_exec) {
-        anyhow::bail!("Match exec cannot be evaluated in side-effect-free -G mode");
-    }
     let context = super::match_directive::MatchContext::with_original_hostname(
         state
             .effective_hostname
@@ -399,33 +479,82 @@ fn scope_matches(line: &str, state: &IncludeExpansionState) -> Result<bool> {
         original_hostname.to_string(),
         state.remote_user.clone(),
     )?
-    .with_final_pass(state.final_pass);
+    .with_config(&state.config)
+    .with_final_pass(state.final_pass)
+    .with_trusted_shell_exec();
     let block = super::match_directive::MatchBlock {
         conditions,
         config: super::types::SshHostConfig::default(),
         line_number: 0,
     };
-    block.matches(&context)
-}
-
-fn match_contains_exec(condition: &super::match_directive::MatchCondition) -> bool {
-    match condition {
-        super::match_directive::MatchCondition::Exec(_) => true,
-        super::match_directive::MatchCondition::Negated(inner) => match_contains_exec(inner),
-        _ => false,
-    }
+    let evaluation = block.evaluate(&context)?;
+    Ok(ScopeEvaluation {
+        matched: evaluation.matched,
+        requests_final: evaluation.requests_final,
+    })
 }
 
 fn update_expansion_state(line: &str, state: &mut IncludeExpansionState) -> Result<()> {
     let (keyword, args) = split_directive(line, 0)?;
     if keyword == "hostname" && !state.hostname_obtained {
         let value = args.first().context("HostName requires a value")?;
-        state.effective_hostname = Some(value.clone());
+        state.effective_hostname = Some(state.original_hostname.as_deref().map_or_else(
+            || value.clone(),
+            |original| super::resolver::expand_hostname_value(value, original),
+        ));
         state.hostname_obtained = true;
     } else if keyword == "user" && state.remote_user.is_none() {
         state.remote_user = args.first().cloned();
+        state.config.user = state.remote_user.clone();
+    } else if keyword == "port" && state.config.port.is_none() {
+        state.config.port = Some(
+            args.first()
+                .context("Port requires a value")?
+                .parse()
+                .context("Invalid Port value")?,
+        );
+    } else if keyword == "hostkeyalias" && state.config.host_key_alias.is_none() {
+        state.config.host_key_alias = args.first().cloned();
+    } else if keyword == "proxyjump" && state.config.proxy_jump.is_none() {
+        state.config.proxy_jump = args.first().cloned();
     }
     Ok(())
+}
+
+fn expand_include_percent(pattern: &str, state: &IncludeExpansionState) -> Result<String> {
+    let Some(original) = state.original_hostname.as_deref() else {
+        return Ok(pattern.to_string());
+    };
+    let context = super::match_directive::MatchContext::with_original_hostname(
+        state
+            .effective_hostname
+            .clone()
+            .unwrap_or_else(|| original.to_string()),
+        original.to_string(),
+        state.remote_user.clone(),
+    )?
+    .with_config(&state.config);
+    let mut output = String::with_capacity(pattern.len());
+    let mut chars = pattern.chars();
+    while let Some(character) = chars.next() {
+        if character != '%' {
+            output.push(character);
+            continue;
+        }
+        let token = chars
+            .next()
+            .context("Incomplete '%' token in Include path")?;
+        if token == '%' {
+            output.push('%');
+            continue;
+        }
+        let value = context
+            .variables
+            .get(&token.to_string())
+            .with_context(|| format!("Unsupported Include percent token: %{token}"))?;
+        output.push_str(value);
+    }
+    Ok(output)
 }
 
 fn split_directive(line: &str, line_number: usize) -> Result<(String, Vec<String>)> {
@@ -881,6 +1010,25 @@ mod tests {
                 .any(|file| file.path.ends_with("effective.example.conf"))
         );
         assert!(!files.iter().any(|file| file.path.ends_with("alias.conf")));
+    }
+
+    #[test]
+    fn include_percent_tokens_use_current_streaming_context() {
+        let mut state = IncludeExpansionState::new(
+            Some("alias"),
+            Some("effective.example"),
+            Some("deploy"),
+            false,
+        );
+        state.config.port = Some(2200);
+        state.config.host_key_alias = Some("key-alias".to_string());
+        state.config.proxy_jump = Some("jump".to_string());
+        let expanded = expand_include_percent("%h-%n-%r-%p-%k-%j-%%", &state).unwrap();
+        assert_eq!(
+            expanded,
+            "effective.example-alias-deploy-2200-key-alias-jump-%"
+        );
+        assert!(expand_include_percent("%Z", &state).is_err());
     }
 
     async fn resolve_include_chain(edge_count: usize) -> Result<Vec<IncludedFile>> {

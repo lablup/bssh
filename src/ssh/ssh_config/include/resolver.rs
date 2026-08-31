@@ -19,7 +19,7 @@ use std::path::PathBuf;
 
 use super::super::diagnostic::{escape_field, escape_path};
 use super::super::path::expand_path_internal;
-use super::validation::{validate_glob_pattern, validate_include_path};
+use super::validation::validate_glob_pattern;
 use crate::ssh::ssh_config::include::IncludeContext;
 
 /// Parse an Include directive line
@@ -52,6 +52,10 @@ pub async fn resolve_include_pattern(
 ) -> Result<Vec<PathBuf>> {
     // Validate pattern for security before expansion
     validate_glob_pattern(pattern)?;
+
+    if pattern.starts_with('~') && !context.allow_tilde {
+        anyhow::bail!("Tilde expansion is not permitted in system SSH config Includes");
+    }
 
     // Expand environment variables and tilde
     let expanded = expand_path_internal(pattern)?;
@@ -93,23 +97,7 @@ pub async fn resolve_include_pattern(
         }
 
         match entry {
-            Ok(path) => {
-                // Follow symlinks, then validate the target like OpenSSH's fstat path.
-                match std::fs::metadata(&path) {
-                    Ok(metadata) => {
-                        if metadata.is_file() {
-                            validate_include_path(&path)?;
-                            files.push(path);
-                        }
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-                    Err(error) => {
-                        return Err(error).with_context(|| {
-                            format!("Failed to get metadata for {}", escape_path(&path))
-                        });
-                    }
-                }
-            }
+            Ok(path) => files.push(path),
             Err(error) => {
                 return Err(error).with_context(|| {
                     format!(
@@ -236,6 +224,24 @@ mod tests {
                 .to_str()
                 .unwrap()
                 .contains("03-third")
+        );
+    }
+
+    #[tokio::test]
+    async fn system_source_rejects_tilde_include_while_user_source_accepts_it() {
+        let anchor = tempfile::tempdir().unwrap();
+        let system = IncludeContext::with_anchor(anchor.path().to_path_buf(), false);
+        assert!(
+            resolve_include_pattern("~/.ssh/config", &system)
+                .await
+                .is_err()
+        );
+
+        let user = IncludeContext::with_anchor(anchor.path().to_path_buf(), true);
+        assert!(
+            resolve_include_pattern("~/.ssh/definitely-missing", &user)
+                .await
+                .is_ok()
         );
     }
 

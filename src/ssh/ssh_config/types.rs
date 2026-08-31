@@ -43,6 +43,23 @@ pub(crate) enum ConfigPass {
 pub struct SshHostConfig {
     /// Parsing pass in which this source block is eligible.
     pub(crate) pass: ConfigPass,
+    /// Match result already evaluated while expanding Includes for this pass.
+    ///
+    /// File-backed parsing must evaluate `Match exec` while streaming so it
+    /// can decide which Includes and context-changing directives are active.
+    /// Reusing that result prevents the resolver from executing the command a
+    /// second time for the same pass. In-memory parsing leaves this unset.
+    pub(crate) precomputed_match: Option<bool>,
+    /// Whether this Match block contains a positive `final` criterion.
+    ///
+    /// This differs from `precomputed_match`: during pass one, `final` is
+    /// false but parsing a positive `final` requests the second pass even when
+    /// an earlier runtime predicate does not match.
+    pub(crate) precomputed_requests_final: Option<bool>,
+    /// Whether all parent scopes at an Include site were active when the file
+    /// was expanded. This similarly prevents re-evaluating an outer
+    /// `Match exec` when the included blocks are resolved.
+    pub(crate) precomputed_scope_active: Option<bool>,
     /// Parent Host/Match scopes active at an Include directive.
     pub(crate) scope_guards: Vec<ConfigBlock>,
     /// Block type (Host patterns or Match conditions)
@@ -93,6 +110,10 @@ pub struct SshHostConfig {
     pub local_forward: Vec<String>,
     pub remote_forward: Vec<String>,
     pub dynamic_forward: Vec<String>,
+    /// Original argument boundaries retained for a reparse-safe `-G` dump.
+    pub(crate) local_forward_args: Vec<Vec<String>>,
+    pub(crate) remote_forward_args: Vec<Vec<String>>,
+    pub(crate) dynamic_forward_args: Vec<Vec<String>>,
     /// Local, remote, and dynamic directives in source order.
     pub forwarding_directives: Vec<ForwardingDirective>,
     pub request_tty: Option<String>,

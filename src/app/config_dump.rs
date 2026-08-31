@@ -47,7 +47,11 @@ pub async fn handle_config_dump(invocation: &SshDumpInvocation) -> Result<()> {
     {
         anyhow::bail!("Unknown SSH config option '{keyword}'");
     }
-    let resolved = config.find_host_config(&invocation.destination);
+    let mut resolved = config.find_host_config(&invocation.destination);
+    if invocation.stdio_forward {
+        resolved.clear_all_forwardings.get_or_insert(true);
+        resolved.exit_on_forward_failure.get_or_insert(true);
+    }
     let rendered = render_resolved_config(&invocation.destination, &resolved)?;
     std::io::stdout()
         .write_all(rendered.as_bytes())

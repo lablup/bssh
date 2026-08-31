@@ -61,7 +61,19 @@ pub(crate) async fn parse_from_file_with_diagnostics(
 }
 
 fn add_final_pass_configs(mut configs: Vec<SshHostConfig>) -> Vec<SshHostConfig> {
-    if !super::super::resolver::requests_final_pass(&configs) {
+    let canonicalization_present = configs.iter().any(|config| {
+        config
+            .unimplemented_options
+            .get("canonicalizehostname")
+            .and_then(|values| values.first())
+            .is_some_and(|value| {
+                matches!(
+                    value.to_ascii_lowercase().as_str(),
+                    "yes" | "true" | "always"
+                )
+            })
+    });
+    if !super::super::resolver::requests_final_pass(&configs) && !canonicalization_present {
         return configs;
     }
     let mut final_pass = configs.clone();
@@ -73,6 +85,7 @@ fn add_final_pass_configs(mut configs: Vec<SshHostConfig>) -> Vec<SshHostConfig>
 }
 
 /// Parse a config file while resolving host-dependent Include paths.
+#[cfg(test)]
 pub(crate) async fn parse_from_file_for_host_at_with_diagnostics(
     path: &Path,
     content: &str,
@@ -82,48 +95,77 @@ pub(crate) async fn parse_from_file_for_host_at_with_diagnostics(
     anchor: std::path::PathBuf,
     reported_diagnostics: &mut HashSet<String>,
 ) -> Result<Vec<SshHostConfig>> {
+    let first_pass = parse_from_file_for_host_pass_at_with_diagnostics(
+        path,
+        content,
+        hostname,
+        initial_hostname,
+        initial_user,
+        anchor.clone(),
+        false,
+        true,
+        reported_diagnostics,
+    )
+    .await?;
+    if !super::super::resolver::requests_final_pass_for_host(&first_pass, hostname) {
+        return Ok(first_pass);
+    }
+    let preliminary = super::super::resolver::find_host_config(&first_pass, hostname);
+    let final_pass = parse_from_file_for_host_pass_at_with_diagnostics(
+        path,
+        content,
+        hostname,
+        preliminary.hostname.as_deref(),
+        preliminary.user.as_deref(),
+        anchor,
+        true,
+        true,
+        reported_diagnostics,
+    )
+    .await?;
+    let mut combined = first_pass;
+    combined.extend(final_pass);
+    Ok(combined)
+}
+
+/// Parse one OpenSSH configuration pass for a single top-level source.
+///
+/// Callers that combine user and system files must run every source for pass
+/// one before invoking this function for the final pass on any source.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn parse_from_file_for_host_pass_at_with_diagnostics(
+    path: &Path,
+    content: &str,
+    hostname: &str,
+    initial_hostname: Option<&str>,
+    initial_user: Option<&str>,
+    anchor: std::path::PathBuf,
+    final_pass: bool,
+    allow_tilde: bool,
+    reported_diagnostics: &mut HashSet<String>,
+) -> Result<Vec<SshHostConfig>> {
     let included_files = resolve_includes_for_host_at_pass(
         path,
         content,
         Some(hostname),
-        anchor.clone(),
+        anchor,
         initial_hostname,
         initial_user,
-        false,
-    )
-    .await
-    .with_context(|| format!("Failed to resolve includes for {}", escape_path(path)))?;
-    let first_pass = parse_included_files(&included_files, reported_diagnostics)?;
-    if !super::super::resolver::requests_final_pass(&first_pass) {
-        return Ok(first_pass);
-    }
-    let preliminary_source = add_final_pass_configs(first_pass.clone());
-    let preliminary = super::super::resolver::find_host_config(&preliminary_source, hostname);
-    let effective_hostname = initial_hostname.or(preliminary.hostname.as_deref());
-    let effective_user = initial_user.or(preliminary.user.as_deref());
-    let final_files = resolve_includes_for_host_at_pass(
-        path,
-        content,
-        Some(hostname),
-        anchor,
-        effective_hostname,
-        effective_user,
-        true,
+        final_pass,
+        allow_tilde,
     )
     .await
     .with_context(|| {
-        format!(
-            "Failed to resolve final-pass includes for {}",
-            escape_path(path)
-        )
+        let pass = if final_pass { "final-pass " } else { "" };
+        format!("Failed to resolve {pass}includes for {}", escape_path(path))
     })?;
-    let mut final_pass = parse_included_files(&final_files, reported_diagnostics)?;
-    for config in &mut final_pass {
-        config.pass = ConfigPass::FinalOnly;
+    let mut configs = parse_included_files(&included_files, reported_diagnostics)?;
+    if final_pass {
+        for config in &mut configs {
+            config.pass = ConfigPass::FinalOnly;
+        }
     }
-    let mut combined = first_pass;
-    combined.extend(final_pass);
-    Ok(combined)
+    Ok(configs)
 }
 
 /// Parse SSH configuration content without Include resolution
@@ -135,7 +177,7 @@ pub(super) fn parse_without_includes(
         content
             .lines()
             .enumerate()
-            .map(|(index, line)| (None, index + 1, line, &[][..])),
+            .map(|(index, line)| (None, index + 1, line, &[][..], None, None, None)),
         reported_diagnostics,
     )
 }
@@ -197,9 +239,15 @@ fn parse_included_files(
             file.content.lines().enumerate().map(move |(index, line)| {
                 (
                     Some(file.path.as_path()),
-                    file.source_line_start + index,
+                    file.source_lines.get(index).copied().unwrap_or(index + 1),
                     line,
                     file.scope_guards.as_slice(),
+                    file.precomputed_scope_active,
+                    file.precomputed_matches.get(index).copied().flatten(),
+                    file.precomputed_final_requests
+                        .get(index)
+                        .copied()
+                        .flatten(),
                 )
             })
         }),
@@ -208,7 +256,17 @@ fn parse_included_files(
 }
 
 fn parse_lines<'a>(
-    lines: impl IntoIterator<Item = (Option<&'a Path>, usize, &'a str, &'a [String])>,
+    lines: impl IntoIterator<
+        Item = (
+            Option<&'a Path>,
+            usize,
+            &'a str,
+            &'a [String],
+            Option<bool>,
+            Option<bool>,
+            Option<bool>,
+        ),
+    >,
     reported_diagnostics: &mut HashSet<String>,
 ) -> Result<Vec<SshHostConfig>> {
     // Security: Set reasonable limits to prevent DoS attacks
@@ -219,7 +277,16 @@ fn parse_lines<'a>(
     let mut current_config: Option<SshHostConfig> = None;
     let mut current_match: Option<MatchBlock> = None;
     let mut in_match_block = false;
-    for (source_path, line_number, line, scope_guards) in lines {
+    for (
+        source_path,
+        line_number,
+        line,
+        scope_guards,
+        precomputed_scope_active,
+        precomputed_match,
+        precomputed_requests_final,
+    ) in lines
+    {
         // Security: Check line length to prevent DoS
         if line.len() > MAX_LINE_LENGTH {
             anyhow::bail!("Line {line_number} exceeds maximum length of {MAX_LINE_LENGTH} bytes");
@@ -269,6 +336,9 @@ fn parse_lines<'a>(
             // Create config for this Match block
             let config = SshHostConfig {
                 block_type: Some(ConfigBlock::Match(conditions)),
+                precomputed_match,
+                precomputed_requests_final,
+                precomputed_scope_active,
                 scope_guards: parse_scope_guards(scope_guards, line_number)?,
                 ..Default::default()
             };
@@ -301,6 +371,7 @@ fn parse_lines<'a>(
             let config = SshHostConfig {
                 host_patterns: patterns.clone(),
                 block_type: Some(ConfigBlock::Host(patterns)),
+                precomputed_scope_active,
                 scope_guards: parse_scope_guards(scope_guards, line_number)?,
                 ..Default::default()
             };
@@ -354,6 +425,7 @@ fn parse_lines<'a>(
                 current_config = Some(SshHostConfig {
                     host_patterns: vec!["*".to_string()],
                     block_type: Some(ConfigBlock::Host(vec!["*".to_string()])),
+                    precomputed_scope_active,
                     scope_guards: parse_scope_guards(scope_guards, line_number)?,
                     ..Default::default()
                 });

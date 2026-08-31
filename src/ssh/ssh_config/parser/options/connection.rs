@@ -115,51 +115,10 @@ pub(super) fn parse_connection_option(
             if args.is_empty() {
                 anyhow::bail!("BindInterface requires a value at line {line_number}");
             }
-            // Security: Validate network interface name to prevent injection attacks
             let interface = &args[0];
             if interface.is_empty() {
                 anyhow::bail!("BindInterface cannot be empty at line {line_number}");
             }
-            // Network interface names on Linux/macOS are typically:
-            // - eth0, eth1, etc. (Linux)
-            // - en0, en1, etc. (macOS)
-            // - lo, lo0 (loopback)
-            // - wlan0, wlp3s0, etc. (wireless)
-            // - docker0, br0, tun0, tap0, etc. (virtual interfaces)
-            // - bond0, team0, etc. (bonded interfaces)
-            // - vlan interfaces like eth0.100
-            // Maximum length is typically 15 characters on Linux (IFNAMSIZ - 1)
-            if interface.len() > 15 {
-                anyhow::bail!(
-                    "BindInterface '{interface}' at line {line_number} exceeds maximum interface name length of 15 characters"
-                );
-            }
-
-            // Only allow alphanumeric, dots, hyphens, underscores, and colons (for aliases like eth0:1)
-            if !interface
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' || c == ':')
-            {
-                anyhow::bail!(
-                    "BindInterface '{interface}' at line {line_number} contains invalid characters. \
-                     Network interface names can only contain alphanumeric characters, dots, hyphens, underscores, and colons"
-                );
-            }
-
-            // Additional validation: interface name shouldn't start with a dot or hyphen
-            if interface.starts_with('.') || interface.starts_with('-') {
-                anyhow::bail!(
-                    "BindInterface '{interface}' at line {line_number} cannot start with a dot or hyphen"
-                );
-            }
-
-            // Prevent potential path traversal or command injection
-            if interface.contains("..") || interface.contains("/") || interface.contains("\\") {
-                anyhow::bail!(
-                    "BindInterface '{interface}' at line {line_number} contains dangerous characters that could be used for injection attacks"
-                );
-            }
-
             host.bind_interface = Some(interface.clone());
         }
         "ipqos" => {

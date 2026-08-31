@@ -30,9 +30,9 @@ mod tests;
 
 // Re-export public items from core module
 #[cfg(test)]
-pub(super) use core::parse;
+pub(super) use core::{parse, parse_from_file_for_host_at_with_diagnostics};
 pub(super) use core::{
-    parse_cli_options, parse_from_file_for_host_at_with_diagnostics,
+    parse_cli_options, parse_from_file_for_host_pass_at_with_diagnostics,
     parse_from_file_with_diagnostics, parse_with_diagnostics,
 };
 

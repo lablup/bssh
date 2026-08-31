@@ -16,6 +16,22 @@
 
 use bssh::diagnosticln as eprintln;
 
+pub fn is_supported_query(query: &str) -> bool {
+    matches!(
+        query,
+        "cipher"
+            | "cipher-auth"
+            | "mac"
+            | "kex"
+            | "key"
+            | "key-plain"
+            | "key-cert"
+            | "key-sig"
+            | "protocol-version"
+            | "help"
+    )
+}
+
 /// Handle SSH query options (-Q)
 pub fn handle_query(query: &str) {
     match query {

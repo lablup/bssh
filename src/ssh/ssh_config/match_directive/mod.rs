@@ -18,6 +18,7 @@
 //! based on various criteria like hostname, username, and command execution results.
 
 use anyhow::{Context, Result};
+use sha1::{Digest, Sha1};
 use std::collections::HashMap;
 
 use super::pattern::matches_host_pattern;
@@ -75,14 +76,38 @@ impl MatchBlock {
 
     /// Check if all conditions match for the given context
     pub fn matches(&self, context: &MatchContext) -> Result<bool> {
-        // All conditions must match (AND logic)
+        Ok(self.evaluate(context)?.matched)
+    }
+
+    /// Evaluate conditions in source order and carry the separately parsed
+    /// positive-`final` request bit.
+    pub(crate) fn evaluate(&self, context: &MatchContext) -> Result<MatchEvaluation> {
+        // OpenSSH records a positive `final` attribute while parsing the whole
+        // Match line, even when an earlier runtime predicate is false. A
+        // negated `!final` never requests the extra pass.
+        let requests_final = self
+            .conditions
+            .iter()
+            .any(MatchCondition::requests_final_pass);
         for condition in &self.conditions {
             if !condition.matches(context)? {
-                return Ok(false);
+                return Ok(MatchEvaluation {
+                    matched: false,
+                    requests_final,
+                });
             }
         }
-        Ok(true)
+        Ok(MatchEvaluation {
+            matched: true,
+            requests_final,
+        })
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MatchEvaluation {
+    pub(crate) matched: bool,
+    pub(crate) requests_final: bool,
 }
 
 /// Context for evaluating Match conditions
@@ -100,6 +125,16 @@ pub struct MatchContext {
     pub variables: HashMap<String, String>,
     /// Whether this is OpenSSH's requested final configuration pass.
     pub final_pass: bool,
+    /// Host-aware `-G` preprocessing is the only path authorized to use
+    /// OpenSSH-compatible shell evaluation for trusted configuration.
+    exec_policy: ExecPolicy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum ExecPolicy {
+    #[default]
+    Direct,
+    TrustedShell,
 }
 
 impl MatchContext {
@@ -114,17 +149,35 @@ impl MatchContext {
         original_hostname: String,
         remote_user: Option<String>,
     ) -> Result<Self> {
-        // Get local username
         let local_user = whoami::username().unwrap_or_else(|_| "user".to_string());
+        let remote_user = remote_user.or_else(|| Some(local_user.clone()));
+        let local_host = whoami::hostname().unwrap_or_else(|_| "localhost".to_string());
+        let local_host_short = local_host
+            .split('.')
+            .next()
+            .unwrap_or(&local_host)
+            .to_string();
+        let local_home = dirs::home_dir()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .into_owned();
 
         let mut variables = HashMap::new();
         variables.insert("h".to_string(), hostname.clone());
         variables.insert("host".to_string(), hostname.clone());
-        variables.insert("l".to_string(), local_user.clone());
+        variables.insert("n".to_string(), original_hostname.clone());
+        variables.insert("u".to_string(), local_user.clone());
+        variables.insert("l".to_string(), local_host.clone());
+        variables.insert("L".to_string(), local_host_short);
+        variables.insert("d".to_string(), local_home);
+        variables.insert("i".to_string(), local_uid());
+        variables.insert("p".to_string(), "22".to_string());
+        variables.insert("k".to_string(), original_hostname.clone());
+        variables.insert("j".to_string(), String::new());
         variables.insert("localuser".to_string(), local_user.clone());
 
         if let Some(ref user) = remote_user {
-            variables.insert("u".to_string(), user.clone());
+            variables.insert("r".to_string(), user.clone());
             variables.insert("user".to_string(), user.clone());
         }
 
@@ -135,6 +188,7 @@ impl MatchContext {
             local_user,
             variables,
             final_pass: false,
+            exec_policy: ExecPolicy::Direct,
         })
     }
 
@@ -142,6 +196,50 @@ impl MatchContext {
         self.final_pass = final_pass;
         self
     }
+
+    pub(super) fn with_trusted_shell_exec(mut self) -> Self {
+        self.exec_policy = ExecPolicy::TrustedShell;
+        self
+    }
+
+    pub(super) fn with_config(mut self, config: &super::types::SshHostConfig) -> Self {
+        let port = config.port.unwrap_or(22).to_string();
+        let key_alias = config
+            .host_key_alias
+            .clone()
+            .unwrap_or_else(|| self.original_hostname.clone());
+        let jump = config.proxy_jump.clone().unwrap_or_default();
+        self.variables.insert("p".to_string(), port.clone());
+        self.variables.insert("k".to_string(), key_alias);
+        self.variables.insert("j".to_string(), jump.clone());
+
+        let mut digest = Sha1::new();
+        digest.update(self.variables["l"].as_bytes());
+        digest.update(self.hostname.as_bytes());
+        digest.update(port.as_bytes());
+        digest.update(self.variables["r"].as_bytes());
+        digest.update(jump.as_bytes());
+        self.variables.insert(
+            "C".to_string(),
+            digest
+                .finalize()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect(),
+        );
+        self
+    }
+}
+
+#[cfg(unix)]
+fn local_uid() -> String {
+    // SAFETY: getuid has no arguments, dereferences no pointers, and cannot fail.
+    unsafe { libc::getuid() }.to_string()
+}
+
+#[cfg(not(unix))]
+fn local_uid() -> String {
+    "0".to_string()
 }
 
 impl MatchCondition {
@@ -244,6 +342,13 @@ impl MatchCondition {
         if conditions.is_empty() {
             anyhow::bail!("Match directive requires at least one condition at line {line_number}");
         }
+        if conditions.iter().any(|condition| {
+            matches!(condition, MatchCondition::All)
+                || matches!(condition, MatchCondition::Negated(inner) if matches!(inner.as_ref(), MatchCondition::All))
+        }) && (conditions.len() != 1 || !matches!(conditions[0], MatchCondition::All))
+        {
+            anyhow::bail!("Match all must appear alone and non-negated at line {line_number}");
+        }
 
         Ok(conditions)
     }
@@ -266,10 +371,10 @@ impl MatchCondition {
                 // Check if local username matches any of the patterns
                 Ok(matches_host_pattern(&context.local_user, patterns))
             }
-            MatchCondition::Exec(command) => {
-                // Execute the command and check exit status
-                execute_match_command(command, context)
-            }
+            MatchCondition::Exec(command) => match context.exec_policy {
+                ExecPolicy::Direct => exec::execute_match_command_direct(command, context),
+                ExecPolicy::TrustedShell => execute_match_command(command, context),
+            },
             MatchCondition::All => {
                 // Always matches
                 Ok(true)
@@ -277,6 +382,10 @@ impl MatchCondition {
             MatchCondition::Final | MatchCondition::Canonical => Ok(context.final_pass),
             MatchCondition::Negated(condition) => Ok(!condition.matches(context)?),
         }
+    }
+
+    pub(crate) fn requests_final_pass(&self) -> bool {
+        matches!(self, MatchCondition::Final)
     }
 }
 
@@ -421,6 +530,13 @@ mod tests {
     }
 
     #[test]
+    fn match_all_must_be_standalone_and_non_negated() {
+        assert!(MatchCondition::parse_match_line("Match all", 1).is_ok());
+        assert!(MatchCondition::parse_match_line("Match all user deploy", 1).is_err());
+        assert!(MatchCondition::parse_match_line("Match !all", 1).is_err());
+    }
+
+    #[test]
     fn test_match_block() {
         let mut block = MatchBlock::new(10);
         block
@@ -558,5 +674,47 @@ mod tests {
         // Should match only if both All (always true) AND Host pattern match
         assert!(block2.matches(&context_match).unwrap());
         assert!(!block2.matches(&context_nomatch).unwrap());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn trusted_shell_policy_is_explicit_and_negated_exec_is_preserved() {
+        let direct = MatchContext::new("example.com".to_string(), None).unwrap();
+        let shell = direct.clone().with_trusted_shell_exec();
+        let shell_expression = MatchCondition::Exec("false || true".to_string());
+        assert!(shell_expression.matches(&direct).is_err());
+        assert!(shell_expression.matches(&shell).unwrap());
+
+        let negated_false =
+            MatchCondition::Negated(Box::new(MatchCondition::Exec("false".to_string())));
+        let negated_true =
+            MatchCondition::Negated(Box::new(MatchCondition::Exec("true".to_string())));
+        assert!(negated_false.matches(&shell).unwrap());
+        assert!(!negated_true.matches(&shell).unwrap());
+    }
+
+    #[test]
+    fn only_positive_final_requests_the_second_pass() {
+        let context = MatchContext::new("example.com".to_string(), None).unwrap();
+        let positive_after_false = MatchBlock {
+            conditions: vec![
+                MatchCondition::Host(vec!["no-match".to_string()]),
+                MatchCondition::Final,
+            ],
+            config: super::super::types::SshHostConfig::default(),
+            line_number: 1,
+        };
+        let evaluation = positive_after_false.evaluate(&context).unwrap();
+        assert!(!evaluation.matched);
+        assert!(evaluation.requests_final);
+
+        let negated = MatchBlock {
+            conditions: vec![MatchCondition::Negated(Box::new(MatchCondition::Final))],
+            config: super::super::types::SshHostConfig::default(),
+            line_number: 1,
+        };
+        let evaluation = negated.evaluate(&context).unwrap();
+        assert!(evaluation.matched);
+        assert!(!evaluation.requests_final);
     }
 }

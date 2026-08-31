@@ -85,6 +85,12 @@ fn canonical_unimplemented_and_unknown_diagnostics_use_real_source_and_log_file(
         "# Source: /spoofed/config:9000\nChallengeResponseAuthentication no\nKbdInteractiveAuthentication yes\nSecurityKeyProvider /usr/lib/ssh/ssh-sk-helper\nDefinitelyUnknownOption yes\n",
     )
     .expect("included ssh config should be written");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        fs::set_permissions(&included, fs::Permissions::from_mode(0o600))
+            .expect("included ssh config permissions should be safe");
+    }
     fs::write(
         &config,
         format!("Host *\n    Include {}\n", included.display()),

@@ -52,6 +52,7 @@ pub(super) fn parse_forwarding_option(
             }
             let value = args.join(" ");
             host.local_forward.push(value.clone());
+            host.local_forward_args.push(args.to_vec());
             host.forwarding_directives
                 .push(crate::forwarding::ForwardingDirective::Local(value));
         }
@@ -61,6 +62,7 @@ pub(super) fn parse_forwarding_option(
             }
             let value = args.join(" ");
             host.remote_forward.push(value.clone());
+            host.remote_forward_args.push(args.to_vec());
             host.forwarding_directives
                 .push(crate::forwarding::ForwardingDirective::Remote(value));
         }
@@ -70,6 +72,7 @@ pub(super) fn parse_forwarding_option(
             }
             let value = args.join(" ");
             host.dynamic_forward.push(value.clone());
+            host.dynamic_forward_args.push(args.to_vec());
             host.forwarding_directives
                 .push(crate::forwarding::ForwardingDirective::Dynamic(value));
         }

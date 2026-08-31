@@ -190,6 +190,74 @@ fn stdio_forward_sets_clear_all_forwardings_unless_explicitly_overridden() {
     ]);
     assert!(explicit.status.success());
     assert!(String::from_utf8_lossy(&explicit.stdout).contains("clearallforwardings no\n"));
+
+    let directory = tempdir().unwrap();
+    let config = directory.path().join("config");
+    fs::write(
+        &config,
+        "Host *\n    ClearAllForwardings no\n    ExitOnForwardFailure no\n",
+    )
+    .unwrap();
+    let from_file = run(&["-GF", path(&config), "-W", "localhost:9", "host"]);
+    assert!(from_file.status.success());
+    let stdout = String::from_utf8_lossy(&from_file.stdout);
+    assert!(stdout.contains("clearallforwardings no\n"));
+    assert!(stdout.contains("exitonforwardfailure no\n"));
+}
+
+#[test]
+fn direct_argv_values_keep_spaces_hashes_and_quotes() {
+    let output = run(&[
+        "-GF",
+        "none",
+        "-i",
+        "/tmp/a b#c",
+        "-S",
+        "/tmp/control 'quoted' #socket",
+        "-B",
+        "a b#c",
+        "host",
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains(r#"identityfile "/tmp/a b#c""#));
+    assert!(stdout.contains(r#"controlpath "/tmp/control \'quoted\' #socket""#));
+    assert!(stdout.contains(r#"bindinterface "a b#c""#));
+}
+
+#[test]
+fn unbracketed_ipv6_destination_matches_ssh_config_dump_shape() {
+    let output = run(&["-GF", "none", "deploy@::1"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("host ::1\n"));
+    assert!(stdout.contains("hostname ::1\n"));
+    assert!(stdout.contains("user deploy\n"));
+}
+
+#[test]
+fn terminal_version_and_query_preempt_config_dump_without_destination() {
+    let version = run(&["-VG", "-Z"]);
+    assert!(version.status.success());
+    assert!(String::from_utf8_lossy(&version.stderr).starts_with("bssh_"));
+    assert!(version.stdout.is_empty());
+
+    let query = run(&["-GQ", "cipher", "-Z"]);
+    assert!(query.status.success());
+    assert!(!query.stdout.is_empty());
+    assert!(query.stderr.is_empty());
+
+    let invalid = run(&["-GQ", "definitely-invalid"]);
+    assert_eq!(invalid.status.code(), Some(255));
+    assert!(String::from_utf8_lossy(&invalid.stderr).contains("Unsupported query"));
 }
 
 #[test]
@@ -359,23 +427,29 @@ fn include_requires_an_exact_keyword_and_a_path() {
 }
 
 #[test]
-fn match_exec_is_rejected_without_executing_its_command() {
+#[cfg(unix)]
+fn match_exec_uses_trusted_shell_without_leaking_output() {
     let directory = tempdir().unwrap();
     let config = directory.path().join("config");
-    let marker = directory.path().join("match-ran");
     fs::write(
         &config,
-        format!(
-            "Match exec=\"touch {}\"\n    User unsafe\n",
-            marker.display()
+        concat!(
+            "Match exec=\"dd if=/dev/zero bs=1024 count=128; ",
+            "dd if=/dev/zero bs=1024 count=128 >&2; false || true\"\n",
+            "    User shell-selected\n"
         ),
     )
     .unwrap();
 
     let output = run(&["-GF", path(&config), "host"]);
-    assert_eq!(output.status.code(), Some(255));
-    assert!(!marker.exists());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("side-effect-free -G"));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stderr.is_empty());
+    assert!(!output.stdout.contains(&0));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("user shell-selected\n"));
 }
 
 #[test]

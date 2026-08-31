@@ -30,7 +30,7 @@ use app::{
     config_dump::handle_config_dump,
     dispatcher::dispatch_command,
     initialization::{AppContext, initialize_app},
-    query::handle_query,
+    query::{handle_query, is_supported_query},
     utils::show_usage,
 };
 
@@ -79,6 +79,18 @@ async fn run() -> Result<()> {
                 std::process::exit(255);
             }
         };
+        if invocation.version {
+            eprintln!("bssh_{}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        if let Some(query) = invocation.query.as_deref() {
+            if !is_supported_query(query) {
+                bssh::diagnosticln!("Unsupported query \"{query}\"");
+                std::process::exit(255);
+            }
+            handle_query(query);
+            return Ok(());
+        }
         if let Err(error) = handle_config_dump(&invocation).await {
             bssh::diagnosticln!("Error: {error:?}");
             std::process::exit(255);
