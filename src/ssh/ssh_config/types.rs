@@ -70,6 +70,8 @@ pub struct SshHostConfig {
     pub user: Option<String>,
     pub port: Option<u16>,
     pub identity_files: Vec<PathBuf>,
+    /// Original IdentityFile arguments retained for OpenSSH-shaped `-G` output.
+    pub(crate) identity_file_args: Vec<String>,
     pub proxy_jump: Option<String>,
     pub proxy_command: Option<String>,
     /// ProxyUseFdpass option - specifies whether ProxyCommand will pass a file descriptor
@@ -129,6 +131,8 @@ pub struct SshHostConfig {
     pub control_persist: Option<String>,
     // Certificate authentication and advanced port forwarding
     pub certificate_files: Vec<PathBuf>,
+    /// Original CertificateFile arguments retained for `-G` output.
+    pub(crate) certificate_file_args: Vec<String>,
     pub ca_signature_algorithms: Vec<String>,
     pub gateway_ports: Option<String>,
     pub exit_on_forward_failure: Option<bool>,

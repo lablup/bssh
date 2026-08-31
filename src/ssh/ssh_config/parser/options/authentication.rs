@@ -37,6 +37,7 @@ pub(super) fn parse_authentication_option(
             let path = secure_validate_path(&args[0], "identity", line_number)
                 .with_context(|| format!("Invalid IdentityFile path at line {line_number}"))?;
             host.identity_files.push(path);
+            host.identity_file_args.push(args[0].clone());
         }
         "identitiesonly" => {
             if args.is_empty() {
@@ -195,6 +196,7 @@ pub(super) fn parse_authentication_option(
             let path = secure_validate_path(&args[0], "certificate", line_number)
                 .with_context(|| format!("Invalid CertificateFile path at line {line_number}"))?;
             host.certificate_files.push(path);
+            host.certificate_file_args.push(args[0].clone());
         }
         "pubkeyauthentication" => {
             if args.is_empty() {

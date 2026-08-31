@@ -13,7 +13,7 @@ Host target
     KexAlgorithms -*sha1
     IPQoS af21 cs1
     RekeyLimit 16M 2h
-    SetEnv ZETA=%h ALPHA=value LITERAL=$${NOT_EXPANDED}
+    SetEnv ZETA=%h ALPHA=value JUMP=%j ENV_HOME=${HOME} LITERAL=$${NOT_EXPANDED}
     ForwardAgent /tmp/%h-agent
     IdentityAgent /tmp/$${LITERAL}-agent
     BindAddress %h
@@ -41,9 +41,39 @@ Host target
     assert!(first.contains("proxyjump %h\n"));
     assert!(first.contains("userknownhostsfile /tmp/final.example\n"));
     assert!(first.contains("globalknownhostsfile /tmp/%h\n"));
-    assert!(first.contains("setenv ZETA=%h\n"));
+    assert!(first.contains("setenv ZETA=final.example\n"));
+    assert!(first.contains("setenv JUMP=final.example\n"));
+    assert!(first.contains(&format!(
+        "setenv ENV_HOME={}\n",
+        dirs::home_dir().unwrap().display()
+    )));
     assert!(!first.contains("ciphers +"));
     assert!(!first.contains("kexalgorithms -"));
+}
+
+#[test]
+fn path_keywords_follow_openssh_dump_expansion_categories() {
+    let source = r#"
+Host target
+    HostName final.example
+    IdentityFile ~/.ssh/%h-key
+    CertificateFile ~/.ssh/%h-cert.pub
+    UserKnownHostsFile ~/.ssh/%h-known-hosts
+"#;
+    let config = SshConfig::parse(source).unwrap();
+    let first = render_resolved_config("target", &config.find_host_config("target")).unwrap();
+    let home = dirs::home_dir().unwrap();
+
+    assert!(first.contains("identityfile ~/.ssh/%h-key\n"));
+    assert!(first.contains("certificatefile ~/.ssh/%h-cert.pub\n"));
+    assert!(first.contains(&format!(
+        "userknownhostsfile {}/.ssh/final.example-known-hosts\n",
+        home.display()
+    )));
+
+    let reparsed = SshConfig::parse(&first).unwrap();
+    let second = render_resolved_config("target", &reparsed.find_host_config("target")).unwrap();
+    assert_eq!(first, second);
 }
 
 #[test]

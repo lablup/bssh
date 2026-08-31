@@ -241,9 +241,11 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
         base.port = overlay.port;
     }
     if !overlay.identity_files.is_empty() {
-        extend_for_pass(
+        extend_paths_for_pass(
             &mut base.identity_files,
+            &mut base.identity_file_args,
             &overlay.identity_files,
+            &overlay.identity_file_args,
             overlay.pass,
         );
     }
@@ -409,7 +411,13 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
         // For certificate files, we append them like identity files with deduplication and limit
         const MAX_CERTIFICATE_FILES: usize = 100; // Reasonable limit to prevent memory exhaustion
 
-        for cert_file in &overlay.certificate_files {
+        let arguments_are_aligned = base.certificate_file_args.len()
+            == base.certificate_files.len()
+            && overlay.certificate_file_args.len() == overlay.certificate_files.len();
+        if !arguments_are_aligned {
+            base.certificate_file_args.clear();
+        }
+        for (index, cert_file) in overlay.certificate_files.iter().enumerate() {
             // Skip if already present (deduplication)
             if !base.certificate_files.contains(cert_file) {
                 if base.certificate_files.len() >= MAX_CERTIFICATE_FILES {
@@ -420,6 +428,10 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
                     break;
                 }
                 base.certificate_files.push(cert_file.clone());
+                if arguments_are_aligned {
+                    base.certificate_file_args
+                        .push(overlay.certificate_file_args[index].clone());
+                }
             }
         }
     }
@@ -569,6 +581,31 @@ fn extend_for_pass<T: Clone + PartialEq>(base: &mut Vec<T>, values: &[T], pass: 
         base.extend(new_values);
     } else {
         base.extend(values.iter().cloned());
+    }
+}
+
+fn extend_paths_for_pass(
+    base_paths: &mut Vec<PathBuf>,
+    base_arguments: &mut Vec<String>,
+    paths: &[PathBuf],
+    arguments: &[String],
+    pass: ConfigPass,
+) {
+    if base_arguments.len() != base_paths.len() || arguments.len() != paths.len() {
+        extend_for_pass(base_paths, paths, pass);
+        base_arguments.clear();
+        return;
+    }
+    if pass == ConfigPass::Any {
+        base_paths.extend_from_slice(paths);
+        base_arguments.extend_from_slice(arguments);
+        return;
+    }
+    for (path, argument) in paths.iter().zip(arguments) {
+        if !base_paths.contains(path) {
+            base_paths.push(path.clone());
+            base_arguments.push(argument.clone());
+        }
     }
 }
 

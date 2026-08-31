@@ -18,7 +18,8 @@ pub fn render_resolved_config(original_host: &str, config: &SshHostConfig) -> Re
     tokens.effective_host =
         super::resolver::expand_hostname_value(&tokens.effective_host, original_host);
     tokens.remote_user = tokens.expand(&tokens.remote_user)?;
-    tokens.refresh_hash(config.proxy_jump.as_deref().unwrap_or(""));
+    let jump = tokens.expand(config.proxy_jump.as_deref().unwrap_or(""))?;
+    tokens.refresh_hash(&jump);
 
     output.line("host", original_host)?;
     output.line("user", TokenContext::escape_for_dump(&tokens.remote_user))?;
@@ -301,8 +302,8 @@ pub fn render_resolved_config(original_host: &str, config: &SshHostConfig) -> Re
     for identity in identity_files(config) {
         output.line("identityfile", identity)?;
     }
-    for certificate in &config.certificate_files {
-        output.line("certificatefile", certificate.to_string_lossy())?;
+    for certificate in certificate_files(config) {
+        output.line("certificatefile", certificate)?;
     }
     let user_hosts = config.user_known_hosts_file.clone().unwrap_or_else(|| {
         vec![
@@ -312,7 +313,7 @@ pub fn render_resolved_config(original_host: &str, config: &SshHostConfig) -> Re
     });
     let user_hosts = user_hosts
         .iter()
-        .map(|value| tokens.expand_for_dump(value))
+        .map(|value| tokens.expand_path_for_dump(value))
         .collect::<Result<Vec<_>>>()?;
     output.args("userknownhostsfile", &user_hosts)?;
     let global_hosts = config.global_known_hosts_file.clone().unwrap_or_else(|| {
@@ -328,7 +329,10 @@ pub fn render_resolved_config(original_host: &str, config: &SshHostConfig) -> Re
     let mut set_env = config.set_env.iter().collect::<Vec<_>>();
     set_env.sort_by(|left, right| left.0.cmp(right.0));
     for (name, value) in set_env {
-        output.line("setenv", format!("{name}={value}"))?;
+        output.line(
+            "setenv",
+            format!("{name}={}", tokens.expand_for_dump(value)?),
+        )?;
     }
     if !config.clear_all_forwardings.unwrap_or(false) {
         output_forwardings(
@@ -627,6 +631,11 @@ fn identity_files(config: &SshHostConfig) -> Vec<String> {
                 .zip(default_names)
                 .all(|(path, name)| path == &home.join(".ssh").join(name))
     });
+    if !config.identity_file_args.is_empty()
+        && config.identity_file_args.len() == config.identity_files.len()
+    {
+        return config.identity_file_args.clone();
+    }
     if !config.identity_files.is_empty() && !is_expanded_default {
         return config
             .identity_files
@@ -637,6 +646,19 @@ fn identity_files(config: &SshHostConfig) -> Vec<String> {
     default_names
         .into_iter()
         .map(|name| format!("~/.ssh/{name}"))
+        .collect()
+}
+
+fn certificate_files(config: &SshHostConfig) -> Vec<String> {
+    if !config.certificate_file_args.is_empty()
+        && config.certificate_file_args.len() == config.certificate_files.len()
+    {
+        return config.certificate_file_args.clone();
+    }
+    config
+        .certificate_files
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
         .collect()
 }
 

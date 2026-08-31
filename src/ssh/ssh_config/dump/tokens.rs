@@ -16,6 +16,7 @@ pub(super) struct TokenContext {
     local_uid: String,
     pub(super) port: String,
     host_key_alias: String,
+    jump_host: String,
     connection_hash: String,
 }
 
@@ -49,11 +50,14 @@ impl TokenContext {
                 .host_key_alias
                 .clone()
                 .unwrap_or_else(|| original_host.to_string()),
+            jump_host: config.proxy_jump.clone().unwrap_or_default(),
             connection_hash: String::new(),
         }
     }
 
     pub(super) fn refresh_hash(&mut self, jump: &str) {
+        self.jump_host.clear();
+        self.jump_host.push_str(jump);
         let mut digest = Sha1::new();
         digest.update(self.local_host.as_bytes());
         digest.update(self.effective_host.as_bytes());
@@ -103,6 +107,7 @@ impl TokenContext {
                 'd' => &self.local_home,
                 'h' => &self.effective_host,
                 'i' => &self.local_uid,
+                'j' => &self.jump_host,
                 'k' => &self.host_key_alias,
                 'L' => &self.local_host_short,
                 'l' => &self.local_host,
@@ -134,6 +139,7 @@ impl TokenContext {
                 'd' => &self.local_home,
                 'h' => &self.effective_host,
                 'i' => &self.local_uid,
+                'j' => &self.jump_host,
                 'k' => &self.host_key_alias,
                 'L' => &self.local_host_short,
                 'l' => &self.local_host,

@@ -453,6 +453,60 @@ fn match_exec_uses_trusted_shell_without_leaking_output() {
 }
 
 #[test]
+fn setenv_and_path_keywords_expand_at_their_openssh_dump_stages() {
+    let directory = tempdir().unwrap();
+    let config = directory.path().join("config");
+    let reparsed = directory.path().join("dumped-config");
+    fs::write(
+        &config,
+        concat!(
+            "Host target\n",
+            "    HostName final.example\n",
+            "    SetEnv HOST=%h ENV=${BSSH_TEST_SETENV} ",
+            "LITERAL=$${BSSH_LITERAL}\n",
+            "    IdentityFile ~/.ssh/%h-key\n",
+            "    CertificateFile ~/.ssh/%h-cert.pub\n",
+            "    UserKnownHostsFile ~/.ssh/%h-known-hosts\n"
+        ),
+    )
+    .unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_bssh"))
+        .env_remove("BSSH_PDSH_COMPAT")
+        .env_remove("RUST_LOG")
+        .env("BSSH_TEST_SETENV", "expanded-value")
+        .args(["-GF", path(&config), "target"])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    let home = std::env::var("HOME").unwrap();
+    assert!(stdout.contains("setenv HOST=final.example\n"));
+    assert!(stdout.contains("setenv ENV=expanded-value\n"));
+    assert!(stdout.contains("setenv LITERAL=$${BSSH_LITERAL}\n"));
+    assert!(stdout.contains("identityfile ~/.ssh/%h-key\n"));
+    assert!(stdout.contains("certificatefile ~/.ssh/%h-cert.pub\n"));
+    assert!(stdout.contains(&format!(
+        "userknownhostsfile {home}/.ssh/final.example-known-hosts\n"
+    )));
+
+    fs::write(&reparsed, stdout.as_bytes()).unwrap();
+    let second = Command::new(env!("CARGO_BIN_EXE_bssh"))
+        .env_remove("BSSH_PDSH_COMPAT")
+        .env_remove("RUST_LOG")
+        .env("BSSH_TEST_SETENV", "expanded-value")
+        .args(["-GF", path(&reparsed), "target"])
+        .output()
+        .unwrap();
+    assert!(second.status.success());
+    assert_eq!(second.stdout, stdout.as_bytes());
+}
+
+#[test]
 fn explicit_config_relative_includes_anchor_to_home_ssh() {
     let directory = tempdir().unwrap();
     let home = directory.path().join("home");
