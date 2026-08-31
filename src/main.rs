@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::io::IsTerminal;
 use std::process::ExitCode;
 
 use anyhow::Result;
@@ -332,7 +333,9 @@ async fn run_bssh_mode(args: &[String]) -> Result<()> {
     }
     bssh::utils::diagnostics::set_quiet_warnings(cli.quiet);
     let background_worker = BackgroundWorker::from_environment()?;
-    if background_worker.is_none() {
+    // Migration notices are human-facing. Keep redirected stderr and `-E`
+    // logs byte-transparent for OpenSSH-compatible scripts and protocols.
+    if background_worker.is_none() && cli.log_file.is_none() && std::io::stderr().is_terminal() {
         for warning in cli.short_flag_migration_warnings(&effective_args) {
             bssh::warningln!("{warning}");
         }

@@ -13,6 +13,11 @@ requirement: this documentation and the 3.0 implementation do not, by
 themselves, prove that such a warning was shipped. Release notes must not mark
 that requirement complete without evidence from a published 2.x release.
 
+The transition notices in this source tree are written only when standard
+error is an interactive terminal. Redirected standard error and `-E` logs stay
+byte-transparent so automation and SSH protocol tests are not corrupted by a
+human-facing migration message.
+
 ## Script rewrites
 
 | Former bssh use | Rewrite for 3.0 | What the short flag means in 3.0 |

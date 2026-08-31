@@ -46,6 +46,7 @@ class Selection:
     test: str
     disposition: str
     reason: str
+    timeout_seconds: int | None = None
 
 
 @dataclass(frozen=True)
@@ -83,13 +84,28 @@ def read_selection(path: Path) -> list[Selection]:
         reader = csv.DictReader(
             (line for line in stream if not line.startswith("#")), delimiter="\t"
         )
-        if reader.fieldnames != ["test", "disposition", "reason"]:
-            raise ValueError("selection.tsv must have test, disposition, reason columns")
+        if reader.fieldnames != [
+            "test",
+            "disposition",
+            "reason",
+            "timeout_seconds",
+        ]:
+            raise ValueError(
+                "selection.tsv must have test, disposition, reason, timeout_seconds columns"
+            )
         for raw in reader:
+            timeout_text = raw["timeout_seconds"] or ""
+            try:
+                timeout_seconds = int(timeout_text) if timeout_text else None
+            except ValueError as error:
+                raise ValueError(
+                    f"invalid timeout for {raw['test']}: {timeout_text!r}"
+                ) from error
             row = Selection(
                 test=raw["test"],
                 disposition=raw["disposition"],
                 reason=raw["reason"] or "",
+                timeout_seconds=timeout_seconds,
             )
             if row.disposition not in {"run", "skip", "exclude"}:
                 raise ValueError(f"invalid disposition for {row.test}: {row.disposition}")
@@ -97,6 +113,11 @@ def read_selection(path: Path) -> list[Selection]:
                 raise ValueError(f"invalid test name: {row.test}")
             if row.disposition != "run" and not row.reason:
                 raise ValueError(f"{row.test} needs an exclusion reason")
+            if row.timeout_seconds is not None:
+                if row.timeout_seconds < 1:
+                    raise ValueError(f"{row.test} timeout must be positive")
+                if row.disposition != "run":
+                    raise ValueError(f"{row.test} timeout is valid only for runnable tests")
             rows.append(row)
     names = [row.test for row in rows]
     if len(names) != len(set(names)):
@@ -516,7 +537,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--selection", type=Path, default=DEFAULT_SELECTION)
     parser.add_argument("--baseline", type=Path, default=DEFAULT_BASELINE)
     parser.add_argument("--results", type=Path, default=DEFAULT_RESULTS)
-    parser.add_argument("--timeout", type=int, default=120, help="seconds per client run")
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=120,
+        help="base seconds per client run; manifest entries may set a higher minimum",
+    )
     parser.add_argument("--jobs", type=int, default=max(1, min(os.cpu_count() or 1, 4)))
     parser.add_argument("--test", action="append", help="run only the named selected test")
     parser.add_argument("--list", action="store_true", help="validate and list the manifest")
@@ -544,7 +570,11 @@ def main() -> int:
             f"{len(declared_skips)} permanent skips, {len(excluded)} excluded"
         )
         for row in selection:
-            print(f"{row.disposition:7} {row.test} {row.reason}")
+            timeout_note = (
+                f"minimum timeout {row.timeout_seconds}s" if row.timeout_seconds else ""
+            )
+            details = "; ".join(part for part in [row.reason, timeout_note] if part)
+            print(f"{row.disposition:7} {row.test} {details}")
         return 0
     if args.timeout < 1:
         raise ValueError("--timeout must be positive")
@@ -561,8 +591,12 @@ def main() -> int:
     validate_tree_inventory(tree, selection)
     results: list[TestResult] = []
     for index, row in enumerate(runnable, start=1):
-        print(f"[{index}/{len(runnable)}] {row.test}", flush=True)
-        result = classify(tree, bssh, tree / "ssh", row.test, args.timeout, log_dir)
+        test_timeout = max(args.timeout, row.timeout_seconds or 0)
+        print(
+            f"[{index}/{len(runnable)}] {row.test} (timeout {test_timeout}s)",
+            flush=True,
+        )
+        result = classify(tree, bssh, tree / "ssh", row.test, test_timeout, log_dir)
         results.append(result)
         print(f"  {result.verdict} ({result.duration_ms} ms)", flush=True)
     verdicts = ["pass", "skip", "fail", "environmental"]
@@ -577,8 +611,22 @@ def main() -> int:
         "platform": platform_key(),
         "selection": {
             "runnable": len(runnable),
-            "permanent_skips": [asdict(row) for row in declared_skips],
-            "excluded": [asdict(row) for row in excluded],
+            "permanent_skips": [
+                {
+                    "test": row.test,
+                    "disposition": row.disposition,
+                    "reason": row.reason,
+                }
+                for row in declared_skips
+            ],
+            "excluded": [
+                {
+                    "test": row.test,
+                    "disposition": row.disposition,
+                    "reason": row.reason,
+                }
+                for row in excluded
+            ],
         },
         "score": {"passed": counts["pass"], "eligible": denominator, "verdicts": counts},
         "results": [asdict(result) for result in sorted(results, key=lambda item: item.test)],

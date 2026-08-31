@@ -30,6 +30,12 @@ class ManifestTests(unittest.TestCase):
         self.assertEqual(
             next(row.disposition for row in selection if row.test == "forwarding"), "run"
         )
+        timeout_overrides = {
+            row.test: row.timeout_seconds
+            for row in selection
+            if row.timeout_seconds is not None
+        }
+        self.assertEqual(timeout_overrides, {"forward-control": 180, "sshsig": 180})
         self.assertNotIn("pubkey-priority", {row.test for row in selection})
 
     def test_pin_includes_an_immutable_commit(self) -> None:
@@ -49,12 +55,23 @@ class ManifestTests(unittest.TestCase):
     def test_manifest_rejects_duplicate_names(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "selection.tsv"
-            rows = ["test\tdisposition\treason"]
-            rows.extend(f"test-{index}\trun\t" for index in range(88))
-            rows.extend(["duplicate\trun\t", "duplicate\texclude\treason"])
+            rows = ["test\tdisposition\treason\ttimeout_seconds"]
+            rows.extend(f"test-{index}\trun\t\t" for index in range(88))
+            rows.extend(["duplicate\trun\t\t", "duplicate\texclude\treason\t"])
             path.write_text("\n".join(rows) + "\n", encoding="utf-8")
 
             with self.assertRaisesRegex(ValueError, "duplicate"):
+                openssh_regress.read_selection(path)
+
+    def test_manifest_rejects_invalid_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "selection.tsv"
+            rows = ["test\tdisposition\treason\ttimeout_seconds"]
+            rows.extend(f"test-{index}\trun\t\t" for index in range(89))
+            rows.append("invalid\trun\t\tzero")
+            path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+            with self.assertRaisesRegex(ValueError, "invalid timeout"):
                 openssh_regress.read_selection(path)
 
     def test_tree_inventory_reports_drift(self) -> None:
