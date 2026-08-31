@@ -90,7 +90,7 @@ The `looks_like_host_specification` function uses the following detection patter
 
 - Detection happens BEFORE mode determination (`is_ssh_mode`)
 - Auto-sets `cli.cluster` to `"bai_auto"` when Backend.AI environment variables are present
-- Only activates when no explicit cluster (`-C`) or hosts (`-H`) specified
+- Only activates when no explicit cluster (`--cluster`) or hosts (`-H`) specified
 - Skips auto-detection if destination contains host indicators
 - Prevents commands from being misinterpreted as hostnames in SSH mode
 - Respects explicit user configuration over auto-detection

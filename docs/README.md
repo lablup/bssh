@@ -39,6 +39,7 @@ Welcome to the bssh documentation. This documentation covers both the bssh clien
 
 | Document | Description |
 |----------|-------------|
+| [OpenSSH Short Flags for 3.0](./openssh-short-flags-migration.md) | Rewriting bssh scripts for the seven reassigned short options |
 | [pdsh Migration](./pdsh-migration.md) | Migrating from pdsh to bssh |
 | [pdsh Examples](./pdsh-examples.md) | pdsh-style command examples |
 | [pdsh Options](./pdsh-options.md) | pdsh option compatibility |
@@ -115,7 +116,7 @@ bssh user@host
 bssh -H host1,host2,host3 'uptime'
 
 # Using clusters
-bssh -C mycluster 'hostname'
+bssh --cluster mycluster 'hostname'
 ```
 
 ### bssh-server

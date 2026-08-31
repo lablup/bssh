@@ -279,7 +279,7 @@ src/executor/
 **Stream Mode:**
 ```bash
 # Real-time streaming output
-bssh -C production --stream "tail -f /var/log/app.log"
+bssh --cluster production --stream "tail -f /var/log/app.log"
 
 # With filtering
 bssh -H "web*" --stream "systemctl status nginx"
@@ -288,7 +288,7 @@ bssh -H "web*" --stream "systemctl status nginx"
 **File Mode:**
 ```bash
 # Save outputs to directory
-bssh -C cluster --output-dir ./results "ps aux"
+bssh --cluster cluster --output-dir ./results "ps aux"
 
 # Each node gets separate files with timestamps
 ls ./results/
@@ -666,7 +666,7 @@ Comprehensive test coverage including:
 **Status:** Implemented
 
 **Overview:**
-The sudo password module provides secure handling of sudo authentication for commands that require elevated privileges. When enabled with the `-S` flag, bssh automatically detects sudo password prompts in command output and injects the password without user intervention.
+The sudo password module provides secure handling of sudo authentication for commands that require elevated privileges. When enabled with `--sudo-password`, bssh automatically detects sudo password prompts in command output and injects the password without user intervention.
 
 **Architecture Components:**
 
@@ -749,7 +749,7 @@ pub async fn execute_with_sudo(
 - Environment variable option (`BSSH_SUDO_PASSWORD`) with security warnings
 
 **Execution Path Integration:**
-1. CLI flag `-S/--sudo-password` triggers password prompt
+1. CLI flag `--sudo-password` triggers password prompt
 2. Password wrapped in `Arc<SudoPassword>` for sharing across nodes
 3. `ExecutionConfig` carries optional `sudo_password` field
 4. Both streaming and non-streaming execution paths support sudo
@@ -758,14 +758,14 @@ pub async fn execute_with_sudo(
 **Usage Patterns:**
 ```bash
 # Basic usage - prompts for password before execution
-bssh -S -C production "sudo apt update"
+bssh --sudo-password --cluster production "sudo apt update"
 
 # Combined with SSH agent authentication
-bssh -A -S -C production "sudo systemctl restart nginx"
+bssh --use-agent --sudo-password --cluster production "sudo systemctl restart nginx"
 
 # Environment variable (not recommended)
 export BSSH_SUDO_PASSWORD="password"
-bssh -S -C production "sudo apt update"
+bssh --sudo-password --cluster production "sudo apt update"
 ```
 
 **Limitations:**

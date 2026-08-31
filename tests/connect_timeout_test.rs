@@ -148,7 +148,7 @@ fn test_connect_timeout_with_cluster() {
         .args([
             "--connect-timeout",
             "5",
-            "-C",
+            "--cluster",
             "nonexistent_cluster",
             "echo",
             "test",

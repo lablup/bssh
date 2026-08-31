@@ -144,6 +144,32 @@ fn stdin_null_disables_automatic_pty_but_not_forced_pty() {
 }
 
 #[test]
+fn forward_agent_is_an_explicit_session_policy_independent_of_authentication() {
+    let enabled = SessionPolicy::resolve(
+        &SshHostConfig {
+            forward_agent: Some(true),
+            ..Default::default()
+        },
+        &node(),
+        Some("true"),
+        CliTtyMode::Default,
+        false,
+    )
+    .unwrap();
+    assert!(enabled.forward_agent);
+
+    let disabled = SessionPolicy::resolve(
+        &SshHostConfig::default(),
+        &node(),
+        Some("true"),
+        CliTtyMode::Default,
+        false,
+    )
+    .unwrap();
+    assert!(!disabled.forward_agent);
+}
+
+#[test]
 fn session_purpose_tracks_the_resolved_pty_policy() {
     let interactive = SessionPolicy::resolve(
         &SshHostConfig {

@@ -22,7 +22,7 @@ use tokio::sync::mpsc::Sender;
 use crate::ssh::{SessionPolicy, SessionRequest};
 
 use super::channel_manager::{CommandExecutedResult, CommandOutput, CommandOutputBuffer};
-use super::connection::Client;
+use super::connection::{AgentForwardingLease, Client};
 
 impl Client {
     pub async fn execute_session_streaming(
@@ -70,7 +70,7 @@ impl Client {
         if matches!(policy.request, SessionRequest::None) {
             return Ok(0);
         }
-        let channel = self.open_policy_channel(policy, terminal).await?;
+        let (channel, _agent_forwarding_lease) = self.open_policy_channel(policy, terminal).await?;
         self.drain_policy_channel_with_input(channel, sender, input)
             .await
     }
@@ -98,12 +98,18 @@ impl Client {
         &self,
         policy: &SessionPolicy,
         terminal: Option<&str>,
-    ) -> Result<Channel<Msg>, super::Error> {
+    ) -> Result<(Channel<Msg>, Option<AgentForwardingLease>), super::Error> {
         let channel = self
             .connection_handle
             .channel_open_session()
             .await
             .map_err(|source| self.session_error_or(super::Error::ChannelOpen { source }))?;
+
+        let agent_forwarding_lease = if policy.forward_agent {
+            Some(self.request_agent_forwarding(&channel).await?)
+        } else {
+            None
+        };
 
         if policy.request_pty {
             let inherited_terminal;
@@ -157,7 +163,7 @@ impl Client {
                 source,
             })
         })?;
-        Ok(channel)
+        Ok((channel, agent_forwarding_lease))
     }
 
     async fn drain_policy_channel_with_input<R>(

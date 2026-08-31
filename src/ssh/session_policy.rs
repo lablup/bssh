@@ -61,6 +61,13 @@ pub enum SessionRequest {
 pub struct SessionPolicy {
     pub environment: Vec<(String, String)>,
     pub local_command: Option<String>,
+    /// Request forwarding of the local authentication agent on session channels.
+    ///
+    /// This is deliberately independent from using an agent to authenticate the
+    /// SSH connection: OpenSSH `-A` controls forwarding, while bssh
+    /// `--use-agent` controls client authentication.
+    #[serde(default)]
+    pub forward_agent: bool,
     pub request_pty: bool,
     pub stdin_null: bool,
     pub request: SessionRequest,
@@ -239,6 +246,7 @@ impl SessionPolicy {
         Ok(Self {
             environment,
             local_command,
+            forward_agent: config.forward_agent.unwrap_or(false),
             request_pty,
             stdin_null,
             request,

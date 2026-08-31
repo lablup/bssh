@@ -25,8 +25,8 @@ use super::ssh_args::StdioForwardTarget;
     disable_version_flag = true,
     before_help = "\n\nBroadcast SSH - Parallel command execution across cluster nodes",
     about = "Broadcast SSH - SSH-compatible parallel command execution tool",
-    long_about = "bssh is a high-performance SSH client with parallel execution capabilities.\nIt can be used as a drop-in replacement for SSH (single host) or as a powerful cluster management tool (multiple hosts).\n\nThe tool provides secure file transfer using SFTP and supports SSH keys, SSH agent, and password authentication.\nIt automatically detects Backend.AI multi-node session environments.\n\nOutput Modes:\n- TUI Mode (default): Interactive terminal UI with real-time monitoring (auto-enabled in terminals)\n- Stream Mode (--stream): Real-time output with [node] prefixes\n- File Mode (--output-dir): Save per-node output to timestamped files\n- Normal Mode: Traditional output after all nodes complete\n\nSSH Configuration Support:\n- Reads standard SSH config files (defaulting to ~/.ssh/config)\n- Supports Host patterns, HostName, User, Port, IdentityFile, StrictHostKeyChecking\n- ProxyJump, and many other SSH configuration directives\n- CLI arguments override SSH config values following SSH precedence rules",
-    after_help = "EXAMPLES:\n  SSH Mode:\n    bssh user@host                         # Interactive shell\n    bssh admin@server.com \"uptime\"         # Execute command\n    bssh -p 2222 -i ~/.ssh/key user@host   # Custom port and key\n    bssh -F ~/.ssh/myconfig webserver      # Use custom SSH config\n\n  Port Forwarding:\n    bssh -L 8080:example.com:80 user@host  # Local forward: localhost:8080 -> example.com:80\n    bssh -R 8080:localhost:80 user@host    # Remote forward: remote:8080 -> localhost:80\n    bssh -D 1080 user@host                 # SOCKS5 proxy on localhost:1080\n    bssh -L 3306:db:3306 -R 80:web:80 user@host  # Multiple forwards\n    bssh -D *:1080/4 user@host             # SOCKS4 proxy on all interfaces\n\n  Multi-Server Mode:\n    bssh -C production \"systemctl status\"  # Execute on cluster (TUI mode auto-enabled)\n    bssh -H \"web1,web2,web3\" \"df -h\"      # Execute on multiple hosts\n    bssh -H \"web1,web2,web3\" -f \"web1\" \"df -h\"  # Filter to web1 only\n    bssh -C production -f \"web*\" \"uptime\"  # Filter cluster nodes\n    bssh --parallel 20 -H web* \"apt update\" # Increase parallelism\n\n  Hostlist Expression (pdsh-style range expansion):\n    bssh -H \"node[1-5]\" \"uptime\"           # Expands to node1, node2, node3, node4, node5\n    bssh -H \"node[01-03]\" \"df -h\"          # Zero-padded: node01, node02, node03\n    bssh -H \"node[1,3,5]\" \"ps aux\"         # Specific values: node1, node3, node5\n    bssh -H \"node[1-3,7,9-10]\" \"uptime\"    # Mixed: node1-3, node7, node9-10\n    bssh -H \"rack[1-2]-node[1-3]\" \"uptime\" # Cartesian product: 6 hosts\n    bssh -H \"web[1-3].example.com\" \"uptime\" # With domain suffix\n    bssh -H \"admin@db[01-03]:5432\" \"psql\"  # With user and port\n    bssh -H \"^/etc/hosts.cluster\" \"uptime\" # Read hosts from file\n\n  Host Exclusion (--exclude):\n    bssh -H \"node1,node2,node3\" --exclude \"node2\" \"uptime\"  # Exclude single host\n    bssh -C production --exclude \"web1,web2\" \"apt update\"  # Exclude multiple hosts\n    bssh -C production --exclude \"db*\" \"systemctl restart\" # Exclude with wildcard pattern\n    bssh -H \"node[1-10]\" --exclude \"node[3-5]\" \"uptime\"    # Exclude with hostlist expression\n\n  Fail-Fast Mode (pdsh -k compatible):\n    bssh -k -H \"web[1-3]\" \"deploy.sh\"      # Stop on first failure\n    bssh --fail-fast -C prod \"apt upgrade\" # Critical deployment - stop if any node fails\n    bssh -k --require-all-success -C prod cmd # Fail-fast + require all success\n\n  Output Modes:\n    bssh -C prod \"apt-get update\"          # TUI mode (default, interactive monitoring)\n    bssh -C prod --stream \"tail -f log\"    # Stream mode (real-time with [node] prefixes)\n    bssh -C prod --output-dir ./logs \"ps\" # File mode (save to timestamped files)\n    bssh -C prod \"uptime\" | tee log.txt    # Normal mode (auto-detected when piped)\n\n  Batch Mode (Ctrl+C Handling):\n    bssh -C prod \"long-running-command\"    # Default: first Ctrl+C shows status, second terminates\n    bssh -C prod -b \"long-command\"         # Batch mode: single Ctrl+C terminates immediately\n    bssh -H nodes --batch --stream \"cmd\"   # Useful for CI/CD and non-interactive scripts\n\n  TUI Mode Controls (when in TUI):\n    1-9         Jump to node detail view\n    s           Enter split view (2-4 nodes)\n    d           Enter diff view (compare nodes)\n    f           Toggle auto-scroll\n    Up/Down     Scroll output\n    Left/Right  Switch nodes\n    Esc         Return to summary\n    ?           Show help\n    q           Quit\n\n  File Operations:\n    bssh -C staging upload file.txt /tmp/  # Upload to cluster\n    bssh -H host1,host2 download /etc/hosts ./backups/\n\n  Other Commands:\n    bssh list                              # List configured clusters\n    bssh -C production ping                # Test connectivity\n    bssh -H hosts interactive              # Interactive mode\n\n  SSH Config Example (~/.ssh/config):\n    Host web*\n        HostName web.example.com\n        User webuser\n        Port 2222\n        IdentityFile ~/.ssh/web_key\n        StrictHostKeyChecking yes\n\nDeveloped and maintained as part of the Backend.AI project.\nFor more information: https://github.com/lablup/bssh"
+    long_about = "bssh is a high-performance SSH client with parallel execution capabilities.\nIt provides measured OpenSSH compatibility in single-host mode and powerful cluster management features in multi-host mode.\n\nThe tool provides secure file transfer using SFTP and supports SSH keys, SSH agent, and password authentication.\nIt automatically detects Backend.AI multi-node session environments.\n\nOutput Modes:\n- TUI Mode (default): Interactive terminal UI with real-time monitoring (auto-enabled in terminals)\n- Stream Mode (--stream): Real-time output with [node] prefixes\n- File Mode (--output-dir): Save per-node output to timestamped files\n- Normal Mode: Traditional output after all nodes complete\n\nSSH Configuration Support:\n- Reads standard SSH config files (defaulting to ~/.ssh/config)\n- Supports Host patterns, HostName, User, Port, IdentityFile, StrictHostKeyChecking\n- ProxyJump, and many other SSH configuration directives\n- CLI arguments override SSH config values following SSH precedence rules",
+    after_help = "EXAMPLES:\n  SSH Mode:\n    bssh user@host                         # Interactive shell\n    bssh admin@server.com \"uptime\"         # Execute command\n    bssh -p 2222 -i ~/.ssh/key user@host   # Custom port and key\n    bssh -F ~/.ssh/myconfig webserver      # Use custom SSH config\n\n  Port Forwarding:\n    bssh -L 8080:example.com:80 user@host  # Local forward: localhost:8080 -> example.com:80\n    bssh -R 8080:localhost:80 user@host    # Remote forward: remote:8080 -> localhost:80\n    bssh -D 1080 user@host                 # SOCKS5 proxy on localhost:1080\n    bssh -L 3306:db:3306 -R 80:web:80 user@host  # Multiple forwards\n    bssh -D *:1080/4 user@host             # SOCKS4 proxy on all interfaces\n\n  Multi-Server Mode:\n    bssh --cluster production \"systemctl status\"  # Execute on cluster (TUI mode auto-enabled)\n    bssh -H \"web1,web2,web3\" \"df -h\"      # Execute on multiple hosts\n    bssh -H \"web1,web2,web3\" --filter \"web1\" \"df -h\"  # Filter to web1 only\n    bssh --cluster production --filter \"web*\" \"uptime\"  # Filter cluster nodes\n    bssh --parallel 20 -H web* \"apt update\" # Increase parallelism\n\n  Hostlist Expression (pdsh-style range expansion):\n    bssh -H \"node[1-5]\" \"uptime\"           # Expands to node1, node2, node3, node4, node5\n    bssh -H \"node[01-03]\" \"df -h\"          # Zero-padded: node01, node02, node03\n    bssh -H \"node[1,3,5]\" \"ps aux\"         # Specific values: node1, node3, node5\n    bssh -H \"node[1-3,7,9-10]\" \"uptime\"    # Mixed: node1-3, node7, node9-10\n    bssh -H \"rack[1-2]-node[1-3]\" \"uptime\" # Cartesian product: 6 hosts\n    bssh -H \"web[1-3].example.com\" \"uptime\" # With domain suffix\n    bssh -H \"admin@db[01-03]:5432\" \"psql\"  # With user and port\n    bssh -H \"^/etc/hosts.cluster\" \"uptime\" # Read hosts from file\n\n  Host Exclusion (--exclude):\n    bssh -H \"node1,node2,node3\" --exclude \"node2\" \"uptime\"  # Exclude single host\n    bssh --cluster production --exclude \"web1,web2\" \"apt update\"  # Exclude multiple hosts\n    bssh --cluster production --exclude \"db*\" \"systemctl restart\" # Exclude with wildcard pattern\n    bssh -H \"node[1-10]\" --exclude \"node[3-5]\" \"uptime\"    # Exclude with hostlist expression\n\n  Fail-Fast Mode:\n    bssh --fail-fast -H \"web[1-3]\" \"deploy.sh\"      # Stop on first failure\n    bssh --fail-fast --cluster prod \"apt upgrade\" # Critical deployment - stop if any node fails\n    bssh --fail-fast --require-all-success --cluster prod cmd # Fail-fast + require all success\n\n  Output Modes:\n    bssh --cluster prod \"apt-get update\"          # TUI mode (default, interactive monitoring)\n    bssh --cluster prod --stream \"tail -f log\"    # Stream mode (real-time with [node] prefixes)\n    bssh --cluster prod --output-dir ./logs \"ps\" # File mode (save to timestamped files)\n    bssh --cluster prod \"uptime\" | tee log.txt    # Normal mode (auto-detected when piped)\n\n  Batch Mode (Ctrl+C Handling):\n    bssh --cluster prod \"long-running-command\"    # Default: first Ctrl+C shows status, second terminates\n    bssh --cluster prod --batch \"long-command\"         # Batch mode: single Ctrl+C terminates immediately\n    bssh -H nodes --batch --stream \"cmd\"   # Useful for CI/CD and non-interactive scripts\n\n  TUI Mode Controls (when in TUI):\n    1-9         Jump to node detail view\n    s           Enter split view (2-4 nodes)\n    d           Enter diff view (compare nodes)\n    f           Toggle auto-scroll\n    Up/Down     Scroll output\n    Left/Right  Switch nodes\n    Esc         Return to summary\n    ?           Show help\n    q           Quit\n\n  File Operations:\n    bssh --cluster staging upload file.txt /tmp/  # Upload to cluster\n    bssh -H host1,host2 download /etc/hosts ./backups/\n\n  Other Commands:\n    bssh list                              # List configured clusters\n    bssh --cluster production ping                # Test connectivity\n    bssh -H hosts interactive              # Interactive mode\n\n  SSH Config Example (~/.ssh/config):\n    Host web*\n        HostName web.example.com\n        User webuser\n        Port 2222\n        IdentityFile ~/.ssh/web_key\n        StrictHostKeyChecking yes\n\nDeveloped and maintained as part of the Backend.AI project.\nFor more information: https://github.com/lablup/bssh"
 )]
 pub struct Cli {
     /// SSH destination in format: [user@]hostname[:port] or ssh://[user@]hostname[:port]
@@ -46,9 +46,8 @@ pub struct Cli {
     pub hosts: Option<Vec<String>>,
 
     #[arg(
-        short = 'f',
         long = "filter",
-        help = "Filter hosts by pattern (supports wildcards and hostlist expressions)\nUse with -H or -C to execute on a subset of hosts\nExamples:\n  'web*'       -> matches web01, web02, etc. (glob)\n  'node[1-3]'  -> matches node1, node2, node3 (hostlist)"
+        help = "Filter hosts by pattern (supports wildcards and hostlist expressions)\nUse with -H or --cluster to execute on a subset of hosts\nExamples:\n  'web*'       -> matches web01, web02, etc. (glob)\n  'node[1-3]'  -> matches node1, node2, node3 (hostlist)"
     )]
     pub filter: Option<String>,
 
@@ -60,7 +59,6 @@ pub struct Cli {
     pub exclude: Option<Vec<String>>,
 
     #[arg(
-        short = 'C',
         long = "cluster",
         help = "Cluster name from configuration file (multi-server mode)"
     )]
@@ -89,8 +87,7 @@ pub struct Cli {
     pub identity: Vec<PathBuf>,
 
     #[arg(
-        short = 'A',
-        long,
+        long = "use-agent",
         help = "Use SSH agent for authentication (Unix/Linux/macOS only)\nAuto-detected when SSH_AUTH_SOCK is set. Falls back to key file if agent auth fails"
     )]
     pub use_agent: bool,
@@ -102,14 +99,12 @@ pub struct Cli {
     pub password: bool,
 
     #[arg(
-        short = 'S',
         long = "sudo-password",
         help = "Prompt for sudo password to automatically respond to sudo prompts\nWhen enabled, bssh will:\n  1. Securely prompt for sudo password before execution\n  2. Detect sudo password prompts in command output\n  3. Automatically inject the password when prompted\n\nAlternatively, set BSSH_SUDO_PASSWORD environment variable (not recommended)\nSecurity: Password is cleared from memory after use"
     )]
     pub sudo_password: bool,
 
     #[arg(
-        short = 'b',
         long = "batch",
         help = "Batch mode: single Ctrl+C immediately terminates all jobs\nDisables two-stage Ctrl+C handling (status display on first press)\nUseful for non-interactive scripts and CI/CD pipelines\nNote: TUI mode has its own quit handling (q or Ctrl+C) and ignores this flag"
     )]
@@ -140,9 +135,16 @@ pub struct Cli {
         short = 'p',
         long = "port",
         value_name = "port",
+        value_parser = clap::value_parser!(u16).range(1..=u16::MAX as i64),
         help = "Port to connect to on the remote host (SSH-compatible)"
     )]
     pub port: Option<u16>,
+
+    #[arg(
+        short = '2',
+        help = "Force SSH protocol version 2 (accepted for OpenSSH compatibility)"
+    )]
+    pub protocol_2: bool,
 
     #[arg(
         long,
@@ -162,7 +164,6 @@ pub struct Cli {
     pub version: bool,
 
     #[arg(
-        short = 'N',
         long = "no-prefix",
         help = "Disable hostname prefix in output lines (pdsh -N compatibility)\nUseful for programmatic parsing or cleaner display"
     )]
@@ -239,7 +240,6 @@ pub struct Cli {
     pub check_all_nodes: bool,
 
     #[arg(
-        short = 'k',
         long = "fail-fast",
         help = "Stop execution immediately on first failure (pdsh -k compatible)\nCancels pending commands when any node fails (connection error or non-zero exit)\nUseful for critical operations where partial execution is unacceptable"
     )]
@@ -270,6 +270,33 @@ pub struct Cli {
     pub ssh_options: Vec<String>,
 
     #[arg(
+        short = 'N',
+        overrides_with = "subsystem",
+        help = "Do not execute a remote command"
+    )]
+    pub no_remote_command: bool,
+
+    #[arg(short = 'f', help = "Go to the background after authentication")]
+    pub fork_after_authentication: bool,
+
+    #[arg(short = 'C', help = "Enable SSH transport compression")]
+    pub compression: bool,
+
+    #[arg(short = 'A', help = "Enable SSH authentication agent forwarding")]
+    pub forward_agent: bool,
+
+    #[arg(short = 'k', help = "Disable forwarding of GSSAPI credentials")]
+    pub disable_gssapi_credential_forwarding: bool,
+
+    #[arg(
+        short = 'b',
+        value_name = "bind_address",
+        overrides_with = "bind_address",
+        help = "Use the specified local address as the connection source"
+    )]
+    pub bind_address: Option<String>,
+
+    #[arg(
         short = 'M',
         long = "control-master",
         action = clap::ArgAction::Count,
@@ -288,8 +315,10 @@ pub struct Cli {
     pub control_command: Option<String>,
 
     #[arg(
+        short = 'S',
         long = "control-path",
         value_name = "path",
+        overrides_with = "control_path",
         help = "Path template for the connection-sharing control socket"
     )]
     pub control_path: Option<PathBuf>,
@@ -317,6 +346,7 @@ pub struct Cli {
     #[arg(
         short = 's',
         long = "subsystem",
+        overrides_with = "no_remote_command",
         help = "Invoke the remote command as an SSH subsystem"
     )]
     pub subsystem: bool,
@@ -485,7 +515,7 @@ pub enum Commands {
     #[command(
         about = "Start interactive shell session",
         long_about = "Opens an interactive shell session with one or more remote hosts.\nSupports both single-node and multiplex modes for efficient cluster management.\nIn multiplex mode, commands are sent to all active nodes simultaneously.\n\nSpecial commands (default prefix '!'):\n  !all              - Activate all connected nodes\n  !broadcast <cmd>  - Execute on all nodes temporarily\n  !node<N>          - Switch to specific node (e.g., !node1)\n  !list             - List all nodes and connection status\n  !status           - Show currently active nodes\n  !help             - Show special commands help\n  exit              - Exit interactive mode\n\nSettings can be configured globally or per-cluster in config file.\nCLI arguments override configuration file settings.",
-        after_help = "Examples:\n  bssh interactive                           # Auto-detect or use defaults\n  bssh -C prod interactive                   # Use production cluster\n  bssh interactive --single-node             # Connect to one node only\n  bssh interactive --prompt-format '{user}>' # Custom prompt\n  bssh interactive --work-dir /var/www       # Set initial directory"
+        after_help = "Examples:\n  bssh interactive                           # Auto-detect or use defaults\n  bssh --cluster prod interactive            # Use production cluster\n  bssh interactive --single-node             # Connect to one node only\n  bssh interactive --prompt-format '{user}>' # Custom prompt\n  bssh interactive --work-dir /var/www       # Set initial directory"
     )]
     Interactive {
         #[arg(
@@ -540,6 +570,65 @@ pub enum Commands {
 }
 
 impl Cli {
+    /// Return migration notices for reassigned OpenSSH short options.
+    ///
+    /// bssh 2.x used these letters for extensions. The 3.0-compatible parser
+    /// gives the letters back to OpenSSH, so each notice names the long option
+    /// that preserves the former bssh behavior. Only the option prefix of a
+    /// single-destination invocation is inspected; remote-command arguments
+    /// are never treated as bssh flags.
+    pub fn short_flag_migration_warnings(&self, args: &[String]) -> Vec<&'static str> {
+        if !self.is_ssh_mode() {
+            return Vec::new();
+        }
+        let search_end = args.len().saturating_sub(self.command_args.len());
+        let Some(destination_index) = self.destination.as_ref().and_then(|destination| {
+            args[..search_end]
+                .iter()
+                .rposition(|argument| argument == destination)
+        }) else {
+            return Vec::new();
+        };
+
+        let mut warnings = Vec::new();
+        let mut index = 1usize;
+        while index < destination_index {
+            let argument = &args[index];
+            if argument == "--" {
+                break;
+            }
+            if let Some(long) = argument.strip_prefix("--") {
+                let (name, attached) = long
+                    .split_once('=')
+                    .map_or((long, false), |(name, _)| (name, true));
+                if !attached && migration_long_takes_value(name) {
+                    index += 1;
+                }
+                index += 1;
+                continue;
+            }
+            let Some(shorts) = argument.strip_prefix('-').filter(|value| !value.is_empty()) else {
+                index += 1;
+                continue;
+            };
+            for (position, short) in shorts.char_indices() {
+                if let Some(warning) = migration_warning(short)
+                    && !warnings.contains(&warning)
+                {
+                    warnings.push(warning);
+                }
+                if migration_short_takes_value(short) {
+                    if position + short.len_utf8() == shorts.len() {
+                        index += 1;
+                    }
+                    break;
+                }
+            }
+            index += 1;
+        }
+        warnings
+    }
+
     pub fn get_command(&self) -> String {
         // In multi-server mode with destination, treat destination as first command arg
         if self.is_multi_server_mode()
@@ -623,7 +712,15 @@ impl Cli {
         let Some(destination) = self.destination.as_ref() else {
             return Ok(None);
         };
-        let destination = destination.strip_prefix("ssh://").unwrap_or(destination);
+        let destination = if let Some(uri) = destination.strip_prefix("ssh://") {
+            match uri.split_once('/') {
+                Some((authority, "")) => authority,
+                Some((_, path)) => anyhow::bail!("SSH URI paths are not supported: /{path}"),
+                None => uri,
+            }
+        } else {
+            destination
+        };
         let spec = crate::node::parse_node_spec(destination)?;
 
         Ok(Some(spec))
@@ -702,7 +799,13 @@ impl Cli {
                 + usize::from(self.cipher.is_some())
                 + usize::from(self.macs.is_some())
                 + usize::from(self.subsystem)
-                + usize::from(self.stdin_null)
+                + usize::from(self.no_remote_command)
+                + usize::from(self.stdin_null || self.fork_after_authentication)
+                + usize::from(self.fork_after_authentication)
+                + usize::from(self.compression)
+                + usize::from(self.forward_agent)
+                + usize::from(self.disable_gssapi_credential_forwarding)
+                + usize::from(self.bind_address.is_some())
                 + usize::from(self.control_master > 0)
                 + usize::from(self.control_path.is_some()),
         );
@@ -717,6 +820,21 @@ impl Cli {
         if let Some(path) = &self.control_path {
             options.push(format!("ControlPath={}", path.display()));
         }
+        if self.compression {
+            options.push("Compression=yes".to_string());
+        }
+        if self.forward_agent {
+            options.push("ForwardAgent=yes".to_string());
+        }
+        if self.disable_gssapi_credential_forwarding {
+            options.push("GSSAPIDelegateCredentials=no".to_string());
+        }
+        if let Some(address) = &self.bind_address {
+            options.push(format!("BindAddress={address}"));
+        }
+        if self.fork_after_authentication {
+            options.push("ForkAfterAuthentication=yes".to_string());
+        }
         if let Some(cipher) = &self.cipher {
             options.push(format!("Ciphers={cipher}"));
         }
@@ -726,7 +844,10 @@ impl Cli {
         if self.subsystem {
             options.push("SessionType=subsystem".to_string());
         }
-        if self.stdin_null {
+        if self.no_remote_command {
+            options.push("SessionType=none".to_string());
+        }
+        if self.stdin_null || self.fork_after_authentication {
             options.push("StdinNull=yes".to_string());
         }
         options.extend(self.ssh_options.iter().cloned());
@@ -907,6 +1028,89 @@ impl Cli {
     }
 }
 
+fn migration_warning(short: char) -> Option<&'static str> {
+    match short {
+        'N' => Some(
+            "Warning: -N now means 'no remote command' for OpenSSH compatibility; bssh 2.x scripts that used it for output prefixes must use --no-prefix",
+        ),
+        'f' => Some(
+            "Warning: -f now means 'background after authentication' for OpenSSH compatibility; bssh 2.x scripts that used it for host filtering must use --filter",
+        ),
+        'C' => Some(
+            "Warning: -C now enables SSH compression for OpenSSH compatibility; bssh 2.x scripts that selected a cluster must use --cluster",
+        ),
+        'A' => Some(
+            "Warning: -A now enables SSH agent forwarding for OpenSSH compatibility; bssh 2.x scripts that used an agent for authentication must use --use-agent",
+        ),
+        'S' => Some(
+            "Warning: -S now specifies ControlPath for OpenSSH compatibility; bssh 2.x scripts that prompted for sudo credentials must use --sudo-password",
+        ),
+        'k' => Some(
+            "Warning: -k now disables GSSAPI credential forwarding for OpenSSH compatibility; bssh 2.x scripts that stopped on the first failure must use --fail-fast",
+        ),
+        'b' => Some(
+            "Warning: -b now specifies the source bind address for OpenSSH compatibility; bssh 2.x scripts that changed Ctrl+C handling must use --batch",
+        ),
+        _ => None,
+    }
+}
+
+fn migration_short_takes_value(short: char) -> bool {
+    matches!(
+        short,
+        'H' | 'i'
+            | 'J'
+            | 'p'
+            | 'E'
+            | 'Q'
+            | 'L'
+            | 'R'
+            | 'D'
+            | 'o'
+            | 'O'
+            | 'S'
+            | 'b'
+            | 'c'
+            | 'm'
+            | 'W'
+            | 'F'
+    )
+}
+
+fn migration_long_takes_value(name: &str) -> bool {
+    matches!(
+        name,
+        "hosts"
+            | "filter"
+            | "exclude"
+            | "cluster"
+            | "config"
+            | "login"
+            | "identity"
+            | "jump-host"
+            | "parallel"
+            | "port"
+            | "color"
+            | "output-dir"
+            | "timeout"
+            | "connect-timeout"
+            | "server-alive-interval"
+            | "server-alive-count-max"
+            | "option"
+            | "control-command"
+            | "control-path"
+            | "bind-address"
+            | "cipher"
+            | "macs"
+            | "stdio-forward"
+            | "ssh-config"
+            | "query"
+            | "local-forward"
+            | "remote-forward"
+            | "dynamic-forward"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -920,6 +1124,42 @@ mod tests {
             cli.identity,
             [PathBuf::from("first-key"), PathBuf::from("second-key")]
         );
+    }
+
+    #[test]
+    fn port_flag_accepts_only_nonzero_u16_values() {
+        for port in ["1", "22", "65535"] {
+            let cli = Cli::try_parse_from(["bssh", "-p", port, "target"])
+                .unwrap_or_else(|error| panic!("valid port {port} was rejected: {error}"));
+            assert_eq!(cli.port, Some(port.parse().unwrap()));
+        }
+
+        for port in ["0", "65536", "131073", "2000blah", "blah2000"] {
+            assert!(
+                Cli::try_parse_from(["bssh", "-p", port, "target"]).is_err(),
+                "invalid port {port} was accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn ssh_uri_allows_only_an_empty_path() {
+        for destination in [
+            "ssh://user@example.com:2222",
+            "ssh://user@example.com:2222/",
+        ] {
+            let cli = Cli::try_parse_from(["bssh", destination]).unwrap();
+            let parsed = cli.parse_destination_result().unwrap().unwrap();
+            assert_eq!(parsed.user, Some("user"));
+            assert_eq!(parsed.host, "example.com");
+            assert_eq!(parsed.port, Some(2222));
+        }
+
+        let cli = Cli::try_parse_from(["bssh", "ssh://user@example.com:2222/command"]).unwrap();
+        let error = cli
+            .parse_destination_result()
+            .expect_err("non-empty SSH URI path must be rejected");
+        assert!(error.to_string().contains("paths are not supported"));
     }
 
     #[test]
@@ -1016,6 +1256,142 @@ mod tests {
         let repeated_more = Cli::try_parse_from(["bssh", "-MMM", "target"]).unwrap();
         assert_eq!(repeated_more.control_master, 3);
         assert_eq!(repeated_more.ssh_config_overrides()[0], "ControlMaster=ask");
+    }
+
+    #[test]
+    fn openssh_short_flags_are_distinct_from_displaced_bssh_extensions() {
+        let cli = Cli::try_parse_from([
+            "bssh",
+            "-2NfCAk",
+            "-S",
+            "/tmp/control-%C",
+            "-b127.0.0.2",
+            "target",
+        ])
+        .unwrap();
+
+        assert!(cli.protocol_2);
+        assert!(cli.no_remote_command);
+        assert!(cli.fork_after_authentication);
+        assert!(cli.compression);
+        assert!(cli.forward_agent);
+        assert!(cli.disable_gssapi_credential_forwarding);
+        assert_eq!(
+            cli.control_path.as_deref(),
+            Some(std::path::Path::new("/tmp/control-%C"))
+        );
+        assert_eq!(cli.bind_address.as_deref(), Some("127.0.0.2"));
+        assert!(cli.filter.is_none());
+        assert!(cli.cluster.is_none());
+        assert!(!cli.use_agent);
+        assert!(!cli.sudo_password);
+        assert!(!cli.batch);
+        assert!(!cli.no_prefix);
+        assert!(!cli.fail_fast);
+        assert_eq!(
+            cli.ssh_config_overrides(),
+            [
+                "ControlPath=/tmp/control-%C",
+                "Compression=yes",
+                "ForwardAgent=yes",
+                "GSSAPIDelegateCredentials=no",
+                "BindAddress=127.0.0.2",
+                "ForkAfterAuthentication=yes",
+                "SessionType=none",
+                "StdinNull=yes",
+            ]
+        );
+    }
+
+    #[test]
+    fn displaced_bssh_features_remain_available_by_long_option() {
+        let cli = Cli::try_parse_from([
+            "bssh",
+            "--filter",
+            "web*",
+            "--cluster",
+            "production",
+            "--use-agent",
+            "--sudo-password",
+            "--batch",
+            "--no-prefix",
+            "--fail-fast",
+            "uptime",
+        ])
+        .unwrap();
+
+        assert_eq!(cli.filter.as_deref(), Some("web*"));
+        assert_eq!(cli.cluster.as_deref(), Some("production"));
+        assert!(cli.use_agent);
+        assert!(cli.sudo_password);
+        assert!(cli.batch);
+        assert!(cli.no_prefix);
+        assert!(cli.fail_fast);
+        assert!(!cli.no_remote_command);
+        assert!(!cli.fork_after_authentication);
+        assert!(!cli.compression);
+        assert!(!cli.forward_agent);
+        assert!(!cli.disable_gssapi_credential_forwarding);
+        assert!(cli.control_path.is_none());
+        assert!(cli.bind_address.is_none());
+    }
+
+    #[test]
+    fn reassigned_short_flags_name_every_long_migration_replacement() {
+        let args = [
+            "bssh",
+            "-NfCAk",
+            "-S",
+            "/tmp/control",
+            "-b127.0.0.2",
+            "target",
+        ]
+        .map(str::to_string);
+        let cli = Cli::try_parse_from(&args).unwrap();
+        let warnings = cli.short_flag_migration_warnings(&args);
+
+        assert_eq!(warnings.len(), 7);
+        for replacement in [
+            "--no-prefix",
+            "--filter",
+            "--cluster",
+            "--use-agent",
+            "--sudo-password",
+            "--fail-fast",
+            "--batch",
+        ] {
+            assert!(
+                warnings.iter().any(|warning| warning.contains(replacement)),
+                "missing migration replacement {replacement}: {warnings:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn migration_scan_ignores_remote_command_short_options() {
+        let args = ["bssh", "target", "printf", "-NfCAkSb"].map(str::to_string);
+        let cli = Cli::try_parse_from(&args).unwrap();
+        assert!(cli.short_flag_migration_warnings(&args).is_empty());
+    }
+
+    #[test]
+    fn session_type_short_flags_use_the_last_explicit_choice() {
+        let none = Cli::try_parse_from(["bssh", "-sN", "target", "sftp"]).unwrap();
+        assert!(none.no_remote_command);
+        assert!(!none.subsystem);
+        assert!(
+            none.ssh_config_overrides()
+                .contains(&"SessionType=none".to_string())
+        );
+
+        let subsystem = Cli::try_parse_from(["bssh", "-Ns", "target", "sftp"]).unwrap();
+        assert!(!subsystem.no_remote_command);
+        assert!(subsystem.subsystem);
+        assert!(
+            subsystem
+                .ssh_config_overrides()
+                .contains(&"SessionType=subsystem".to_string())
+        );
     }
 
     #[test]

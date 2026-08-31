@@ -18,11 +18,12 @@ use bssh::diagnosticln as eprintln;
 
 pub fn is_supported_query(query: &str) -> bool {
     matches!(
-        query,
+        query.to_ascii_lowercase().as_str(),
         "cipher"
             | "cipher-auth"
             | "mac"
             | "kex"
+            | "kexalgorithms"
             | "key"
             | "key-plain"
             | "key-cert"
@@ -34,7 +35,7 @@ pub fn is_supported_query(query: &str) -> bool {
 
 /// Handle SSH query options (-Q)
 pub fn handle_query(query: &str) {
-    match query {
+    match query.to_ascii_lowercase().as_str() {
         "cipher" => {
             println!(
                 "{}",
@@ -51,7 +52,7 @@ pub fn handle_query(query: &str) {
                 bssh::ssh::tokio_client::supported_mac_names().join("\n")
             );
         }
-        "kex" => {
+        "kex" | "kexalgorithms" => {
             println!("curve25519-sha256\ncurve25519-sha256@libssh.org");
             println!("ecdh-sha2-nistp256\necdh-sha2-nistp384\necdh-sha2-nistp521");
         }
@@ -76,6 +77,18 @@ pub fn handle_query(query: &str) {
             eprintln!("Unknown query option: {query}");
             eprintln!("Use 'bssh -Q help' to see available options");
             std::process::exit(1);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn openssh_kex_algorithms_keyword_is_a_case_insensitive_query_alias() {
+        for query in ["kex", "KexAlgorithms", "kexalgorithms"] {
+            assert!(is_supported_query(query));
         }
     }
 }

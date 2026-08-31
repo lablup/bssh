@@ -17,6 +17,7 @@
 //! This module provides the core application logic, command dispatching,
 //! initialization, and utility functions for the bssh CLI.
 
+pub mod background;
 pub mod cache;
 pub mod config_dump;
 pub mod dispatcher;

@@ -23,7 +23,7 @@ use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use std::time::Duration;
 use std::{fmt::Debug, io};
@@ -119,6 +119,14 @@ pub struct SshConnectionConfig {
     /// Optional local interface selected by ssh_config `BindInterface`.
     pub bind_interface: Option<String>,
 
+    /// Optional explicit socket path or `$ENVIRONMENT_VARIABLE` selected by
+    /// `ForwardAgent`. `None` forwards the current `SSH_AUTH_SOCK`.
+    pub forward_agent_socket_path: Option<String>,
+
+    /// Suppress authentication banners, as requested by `-q` or
+    /// `LogLevel QUIET`.
+    pub suppress_auth_banner: bool,
+
     /// Interactive and bulk socket traffic classes selected by `IPQoS`.
     pub ip_qos: IpQosPolicy,
 
@@ -175,6 +183,8 @@ impl Default for SshConnectionConfig {
             tcp_keep_alive: true,
             bind_address: None,
             bind_interface: None,
+            forward_agent_socket_path: None,
+            suppress_auth_banner: false,
             ip_qos: IpQosPolicy::default(),
             session_purpose: SessionPurpose::Bulk,
             user_known_hosts_files: None,
@@ -215,6 +225,7 @@ pub struct SshConnectionConfigResolver {
     yaml_keepalive_interval: Option<u64>,
     yaml_keepalive_max: Option<usize>,
     cli_address_family: Option<AddressFamily>,
+    cli_quiet: bool,
     cli_host_key_alias: Option<String>,
     cli_proxy_jump: Option<String>,
     yaml_proxy_jump: Option<String>,
@@ -281,6 +292,16 @@ impl SshConnectionConfigResolver {
             return self;
         }
         self.cli_address_family = family;
+        self
+    }
+
+    /// Apply the command-line quiet policy to every resolved destination.
+    #[must_use]
+    pub fn with_cli_quiet(mut self, quiet: bool) -> Self {
+        if let Some(config) = self.fixed_config.as_mut() {
+            config.suppress_auth_banner = quiet;
+        }
+        self.cli_quiet = quiet;
         self
     }
 
@@ -397,6 +418,14 @@ impl SshConnectionConfigResolver {
         let bind_interface = host_config
             .as_ref()
             .and_then(|config| config.bind_interface.clone());
+        let forward_agent_socket_path = host_config
+            .as_ref()
+            .and_then(|config| config.forward_agent_socket_path.clone());
+        let suppress_auth_banner = self.cli_quiet
+            || host_config
+                .as_ref()
+                .and_then(|config| config.log_level.as_deref())
+                .is_some_and(|level| level.eq_ignore_ascii_case("quiet"));
         let ip_qos = host_config
             .as_ref()
             .and_then(|config| config.ipqos)
@@ -582,6 +611,8 @@ impl SshConnectionConfigResolver {
             .with_connection_attempts(connection_attempts)
             .with_tcp_keep_alive(tcp_keep_alive)
             .with_source_binding(bind_address, bind_interface)
+            .with_forward_agent_socket_path(forward_agent_socket_path)
+            .with_suppress_auth_banner(suppress_auth_banner)
             .with_ip_qos(ip_qos)
             .with_known_hosts_files(user_known_hosts_files, global_known_hosts_files)
             .with_host_key_alias(host_key_alias)
@@ -721,6 +752,13 @@ impl SshConnectionConfig {
         self
     }
 
+    /// Set whether server authentication banners should be hidden.
+    #[must_use]
+    pub fn with_suppress_auth_banner(mut self, suppress: bool) -> Self {
+        self.suppress_auth_banner = suppress;
+        self
+    }
+
     /// Set the maximum number of keepalive attempts.
     #[must_use]
     pub fn with_keepalive_max(mut self, max: usize) -> Self {
@@ -768,6 +806,13 @@ impl SshConnectionConfig {
     ) -> Self {
         self.bind_address = bind_address;
         self.bind_interface = bind_interface;
+        self
+    }
+
+    /// Select a non-default local agent socket for `ForwardAgent`.
+    #[must_use]
+    pub fn with_forward_agent_socket_path(mut self, socket_path: Option<String>) -> Self {
+        self.forward_agent_socket_path = socket_path;
         self
     }
 
@@ -1295,6 +1340,71 @@ pub struct Client {
     hostkey_rotation: HostkeyRotationTasks,
     forwarding_runtime: Arc<ForwardingRuntime>,
     remote_forward_registry: RemoteForwardRegistry,
+    agent_forwarding: AgentForwardingState,
+}
+
+/// Session-scoped permission for server-initiated agent channels.
+///
+/// The handler starts disabled. Each session that successfully requests
+/// `auth-agent-req@openssh.com` retains a lease, and the handler accepts new
+/// agent channels only while at least one lease is alive. This prevents one
+/// `-A` session on a persistent connection from granting agent access to later
+/// sessions that did not request forwarding.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct AgentForwardingState {
+    active_leases: Arc<AtomicUsize>,
+    socket_path: Arc<Mutex<Option<String>>>,
+}
+
+impl AgentForwardingState {
+    fn acquire(&self) -> AgentForwardingLease {
+        self.active_leases.fetch_add(1, Ordering::AcqRel);
+        AgentForwardingLease {
+            state: self.clone(),
+        }
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.active_leases.load(Ordering::Acquire) > 0
+    }
+
+    fn set_socket_path(&self, socket_path: Option<String>) {
+        *self
+            .socket_path
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = socket_path;
+    }
+
+    #[cfg(unix)]
+    fn socket_path(&self) -> Option<std::ffi::OsString> {
+        let configured = self
+            .socket_path
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        match configured.as_deref() {
+            None => std::env::var_os("SSH_AUTH_SOCK"),
+            Some(value) if value.starts_with('$') => std::env::var_os(&value[1..]),
+            Some("~") => dirs::home_dir().map(std::path::PathBuf::into_os_string),
+            Some(value) if value.starts_with("~/") => {
+                dirs::home_dir().map(|home| home.join(&value[2..]).into_os_string())
+            }
+            Some(value) => Some(std::ffi::OsString::from(value)),
+        }
+    }
+}
+
+/// Keeps agent forwarding enabled for the lifetime of one requested session.
+#[derive(Debug)]
+pub(crate) struct AgentForwardingLease {
+    state: AgentForwardingState,
+}
+
+impl Drop for AgentForwardingLease {
+    fn drop(&mut self) {
+        let previous = self.state.active_leases.fetch_sub(1, Ordering::AcqRel);
+        debug_assert!(previous > 0, "agent forwarding lease count underflow");
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1414,6 +1524,7 @@ struct DirectCarrierOptions<'a> {
     bind_address: Option<&'a str>,
     bind_interface: Option<&'a str>,
     ip_qos: IpQosValue,
+    suppress_auth_banner: bool,
 }
 
 impl Client {
@@ -1511,10 +1622,14 @@ impl Client {
                     Arc::clone(&config),
                     policy.clone(),
                     proxy,
+                    ssh_config.suppress_auth_banner,
                 )
                 .await;
                 match result {
                     Ok(client) => {
+                        client
+                            .agent_forwarding
+                            .set_socket_path(ssh_config.forward_agent_socket_path.clone());
                         client
                             .initialize_forwarding(&ssh_config.forwarding_plan)
                             .await?;
@@ -1568,9 +1683,13 @@ impl Client {
                 bind_address: ssh_config.bind_address.as_deref(),
                 bind_interface: ssh_config.bind_interface.as_deref(),
                 ip_qos: ssh_config.selected_ip_qos(),
+                suppress_auth_banner: ssh_config.suppress_auth_banner,
             },
         )
         .await?;
+        client
+            .agent_forwarding
+            .set_socket_path(ssh_config.forward_agent_socket_path.clone());
         client
             .initialize_forwarding(&ssh_config.forwarding_plan)
             .await?;
@@ -1587,6 +1706,7 @@ impl Client {
         config: Arc<Config>,
         policy: KnownHostRuntimePolicy,
         proxy: &ProxyCommandConfig,
+        suppress_auth_banner: bool,
     ) -> Result<Self, super::Error> {
         let proxy_session = spawn_proxy_command(proxy, host, port, username)?;
         let process = Arc::clone(&proxy_session.process);
@@ -1608,10 +1728,12 @@ impl Client {
             verification_address,
             server_check,
             policy,
-        );
+        )
+        .with_suppress_auth_banner(suppress_auth_banner);
         let fatal_transport = handler.fatal_transport_state();
         let hostkey_rotation = handler.hostkey_rotation_tasks();
         let remote_forward_registry = handler.remote_forward_registry();
+        let agent_forwarding = handler.agent_forwarding_state();
         let mut handle = match russh::client::connect_stream(config, proxy_session.stream, handler)
             .await
         {
@@ -1648,6 +1770,7 @@ impl Client {
             hostkey_rotation,
             forwarding_runtime: Arc::new(ForwardingRuntime::default()),
             remote_forward_registry,
+            agent_forwarding,
         };
         client.flush_hostkey_updates().await;
         Ok(client)
@@ -1681,6 +1804,7 @@ impl Client {
                 bind_address: None,
                 bind_interface: None,
                 ip_qos: IpQosValue::None,
+                suppress_auth_banner: false,
             },
         )
         .await
@@ -1715,6 +1839,7 @@ impl Client {
             bind_address,
             bind_interface,
             ip_qos,
+            suppress_auth_banner,
         } = carrier;
         let connection_attempts = connection_attempts.max(1);
         let target_host = addr.hostname();
@@ -1813,10 +1938,12 @@ impl Client {
         }
 
         let handler =
-            ClientHandler::new_with_policy(target_host.clone(), address, server_check, policy);
+            ClientHandler::new_with_policy(target_host.clone(), address, server_check, policy)
+                .with_suppress_auth_banner(suppress_auth_banner);
         let fatal_transport = handler.fatal_transport_state();
         let hostkey_rotation = handler.hostkey_rotation_tasks();
         let remote_forward_registry = handler.remote_forward_registry();
+        let agent_forwarding = handler.agent_forwarding_state();
         let mut handle = russh::client::connect_stream(Arc::new(config), stream, handler)
             .await
             .map_err(|error| {
@@ -1840,6 +1967,7 @@ impl Client {
             hostkey_rotation,
             forwarding_runtime: Arc::new(ForwardingRuntime::default()),
             remote_forward_registry,
+            agent_forwarding,
         };
         client.flush_hostkey_updates().await;
         Ok(client)
@@ -1857,6 +1985,25 @@ impl Client {
         self.fatal_transport.take_error().unwrap_or(fallback)
     }
 
+    /// Request OpenSSH agent forwarding on a session channel.
+    ///
+    /// Permission becomes visible to the connection handler
+    /// before the request is sent, so a server response cannot race the opt-in.
+    /// The returned lease revokes that session's permission when dropped.
+    pub(crate) async fn request_agent_forwarding(
+        &self,
+        channel: &russh::Channel<russh::client::Msg>,
+    ) -> Result<AgentForwardingLease, super::Error> {
+        let lease = self.agent_forwarding.acquire();
+        if let Err(source) = channel.agent_forward(true).await {
+            return Err(self.session_error_or(super::Error::CommandExecution {
+                action: "agent forwarding request",
+                source,
+            }));
+        }
+        Ok(lease)
+    }
+
     /// Create a Client from an existing russh handle and address.
     ///
     /// This is used internally for jump host connections where we already have
@@ -1872,6 +2019,7 @@ impl Client {
             address,
             FatalTransportState::default(),
             RemoteForwardRegistry::default(),
+            AgentForwardingState::default(),
         )
     }
 
@@ -1881,6 +2029,7 @@ impl Client {
         address: SocketAddr,
         fatal_transport: FatalTransportState,
         remote_forward_registry: RemoteForwardRegistry,
+        agent_forwarding: AgentForwardingState,
     ) -> Self {
         Self {
             connection_handle: handle.clone(),
@@ -1892,6 +2041,7 @@ impl Client {
             hostkey_rotation: HostkeyRotationTasks::new(false),
             forwarding_runtime: Arc::new(ForwardingRuntime::default()),
             remote_forward_registry,
+            agent_forwarding,
         }
     }
 
@@ -1902,6 +2052,7 @@ impl Client {
         fatal_transport: FatalTransportState,
         hostkey_rotation: HostkeyRotationTasks,
         remote_forward_registry: RemoteForwardRegistry,
+        agent_forwarding: AgentForwardingState,
     ) -> Self {
         let client = Self {
             connection_handle: handle.clone(),
@@ -1913,6 +2064,7 @@ impl Client {
             hostkey_rotation,
             forwarding_runtime: Arc::new(ForwardingRuntime::default()),
             remote_forward_registry,
+            agent_forwarding,
         };
         client.flush_hostkey_updates().await;
         client
@@ -2214,6 +2366,8 @@ pub struct ClientHandler {
     hostkey_rotation: HostkeyRotationTasks,
     fatal_transport: FatalTransportState,
     remote_forward_registry: RemoteForwardRegistry,
+    agent_forwarding: AgentForwardingState,
+    suppress_auth_banner: bool,
 }
 
 impl ClientHandler {
@@ -2247,7 +2401,14 @@ impl ClientHandler {
             hostkey_rotation,
             fatal_transport: FatalTransportState::default(),
             remote_forward_registry: RemoteForwardRegistry::default(),
+            agent_forwarding: AgentForwardingState::default(),
+            suppress_auth_banner: false,
         }
+    }
+
+    fn with_suppress_auth_banner(mut self, suppress: bool) -> Self {
+        self.suppress_auth_banner = suppress;
+        self
     }
 
     pub(crate) fn hostkey_rotation_tasks(&self) -> HostkeyRotationTasks {
@@ -2260,6 +2421,10 @@ impl ClientHandler {
 
     pub(crate) fn remote_forward_registry(&self) -> RemoteForwardRegistry {
         self.remote_forward_registry.clone()
+    }
+
+    pub(crate) fn agent_forwarding_state(&self) -> AgentForwardingState {
+        self.agent_forwarding.clone()
     }
 
     async fn run_known_hosts_lookup(
@@ -2777,6 +2942,25 @@ where
 impl Handler for ClientHandler {
     type Error = super::Error;
 
+    fn auth_banner(
+        &mut self,
+        banner: &str,
+        _session: &mut russh::client::Session,
+    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
+        let suppress = self.suppress_auth_banner;
+        let banner = banner.to_string();
+        async move {
+            if !suppress {
+                use std::io::Write as _;
+
+                let mut stderr = std::io::stderr().lock();
+                stderr.write_all(banner.as_bytes())?;
+                stderr.flush()?;
+            }
+            Ok(())
+        }
+    }
+
     async fn disconnected(
         &mut self,
         reason: DisconnectReason<Self::Error>,
@@ -2814,6 +2998,66 @@ impl Handler for ClientHandler {
                     .reject(russh::ChannelOpenFailure::AdministrativelyProhibited)
                     .await;
             }
+            Ok(())
+        }
+    }
+
+    fn server_channel_open_agent_forward(
+        &mut self,
+        channel: russh::Channel<russh::client::Msg>,
+        reply: russh::client::ChannelOpenHandle,
+        _session: &mut russh::client::Session,
+    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
+        let forwarding = self.agent_forwarding.clone();
+        async move {
+            if !forwarding.is_enabled() {
+                reply
+                    .reject(russh::ChannelOpenFailure::AdministrativelyProhibited)
+                    .await;
+                return Ok(());
+            }
+
+            #[cfg(unix)]
+            {
+                let Some(socket_path) = forwarding.socket_path() else {
+                    tracing::warn!(
+                        "The server requested agent forwarding, but the selected agent socket is unavailable"
+                    );
+                    reply.reject(russh::ChannelOpenFailure::ConnectFailed).await;
+                    return Ok(());
+                };
+                let mut agent = match tokio::net::UnixStream::connect(&socket_path).await {
+                    Ok(agent) => agent,
+                    Err(error) => {
+                        tracing::warn!(
+                            path = %std::path::Path::new(&socket_path).display(),
+                            %error,
+                            "Could not connect to the local SSH agent for forwarding"
+                        );
+                        reply.reject(russh::ChannelOpenFailure::ConnectFailed).await;
+                        return Ok(());
+                    }
+                };
+
+                reply.accept().await;
+                tokio::spawn(async move {
+                    let mut stream = channel.into_stream();
+                    if let Err(error) = tokio::io::copy_bidirectional(&mut stream, &mut agent).await
+                    {
+                        tracing::debug!(%error, "SSH agent forwarding channel closed with an I/O error");
+                    }
+                });
+            }
+
+            #[cfg(not(unix))]
+            {
+                let _ = channel;
+                tracing::warn!("SSH agent forwarding requires a Unix-domain agent socket");
+                reply
+                    .reject(russh::ChannelOpenFailure::AdministrativelyProhibited)
+                    .await;
+            }
+
             Ok(())
         }
     }
@@ -3143,6 +3387,8 @@ impl Handler for ClientHandler {
 mod fatal_transport_tests {
     use super::*;
     use crate::ssh::tokio_client::{Error, TransportIntegrityCause};
+    #[cfg(unix)]
+    use crate::test_helpers::EnvGuard;
 
     #[test]
     fn first_typed_integrity_cause_is_preserved_and_consumed_once() {
@@ -3231,6 +3477,45 @@ mod fatal_transport_tests {
         assert!(
             first.fatal_transport_state().take_error().is_none(),
             "a consumed cause must not be reused by another operation"
+        );
+
+        let first_agent = first.agent_forwarding_state();
+        assert!(!first_agent.is_enabled());
+        let first_lease = first_agent.acquire();
+        assert!(first_clone.agent_forwarding_state().is_enabled());
+        assert!(
+            !second.agent_forwarding_state().is_enabled(),
+            "agent forwarding permission must not leak into another connection"
+        );
+        let second_lease = first_agent.acquire();
+        drop(first_lease);
+        assert!(
+            first_clone.agent_forwarding_state().is_enabled(),
+            "another active session must retain permission"
+        );
+        drop(second_lease);
+        assert!(
+            !first_clone.agent_forwarding_state().is_enabled(),
+            "the final session lease must revoke permission"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    #[serial_test::serial]
+    fn agent_socket_selection_supports_explicit_paths_and_environment_names() {
+        let state = AgentForwardingState::default();
+        state.set_socket_path(Some("/tmp/explicit-agent.sock".to_string()));
+        assert_eq!(
+            state.socket_path().as_deref(),
+            Some(std::ffi::OsStr::new("/tmp/explicit-agent.sock"))
+        );
+
+        let _socket = EnvGuard::set("BSSH_TEST_FORWARD_AGENT_SOCK", "/tmp/env-agent.sock");
+        state.set_socket_path(Some("$BSSH_TEST_FORWARD_AGENT_SOCK".to_string()));
+        assert_eq!(
+            state.socket_path().as_deref(),
+            Some(std::ffi::OsStr::new("/tmp/env-agent.sock"))
         );
     }
 }

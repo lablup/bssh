@@ -340,11 +340,11 @@ clusters:
     ssh_key: ~/.ssh/prod_key
 ```
 
-Then use with `-C` flag:
+Then use bssh's native `--cluster` option:
 
 ```bash
 # Using config file
-bssh -C production "uptime"
+bssh --cluster production "uptime"
 
 # Still works with -w
 pdsh -w web[1-3].example.com "uptime"
@@ -371,7 +371,7 @@ pdsh -w web[1-3].example.com "uptime"
 
 - [ ] Convert GENDERS files to bssh YAML format
 - [ ] Migrate cluster definitions to `~/.config/bssh/config.yaml`
-- [ ] Test cluster access: `bssh -C <cluster> "uptime"`
+- [ ] Test cluster access: `bssh --cluster <cluster> "uptime"`
 - [ ] Configure SSH keys and authentication methods
 - [ ] Set up any required environment variables
 
@@ -485,8 +485,8 @@ pdsh -w hosts -S "cmd"
 
 **Solution**:
 ```bash
-# Enable SSH agent
-pdsh -A -w hosts "cmd"
+# Explicitly use the SSH agent in native bssh mode
+bssh --use-agent -H hosts "cmd"
 
 # Use specific SSH key
 pdsh -i ~/.ssh/key -w hosts "cmd"
@@ -522,7 +522,7 @@ HOSTS=$(cat /path/to/hosts | tr '\n' ',' | sed 's/,$//')
 pdsh -w "$HOSTS" "cmd"
 
 # Or use bssh config file
-bssh -C cluster-name "cmd"
+bssh --cluster cluster-name "cmd"
 ```
 
 ## Getting Help

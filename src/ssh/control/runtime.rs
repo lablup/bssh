@@ -11,7 +11,7 @@ mod unix {
     use std::os::fd::AsRawFd as _;
     use std::path::Path;
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
     use std::time::Duration;
 
     use anyhow::{Context, Result};
@@ -117,6 +117,18 @@ mod unix {
         client: Client,
         require_confirmation: bool,
     ) -> Result<RunningControlMaster> {
+        start_control_master_with_bootstrap_session(path, client, require_confirmation, false)
+    }
+
+    /// Start a master and optionally let its own initial foreground passenger
+    /// attach without an `ask` prompt. Subsequent shared sessions still honor
+    /// `require_confirmation`.
+    pub fn start_control_master_with_bootstrap_session(
+        path: &Path,
+        client: Client,
+        require_confirmation: bool,
+        allow_bootstrap_session: bool,
+    ) -> Result<RunningControlMaster> {
         let (listener, guard) = bind_control_socket(path)?;
         let (signal_tx, signal_rx) = mpsc::channel(8);
         let (active_tx, active_rx) = watch::channel(0usize);
@@ -127,6 +139,7 @@ mod unix {
                 guard,
                 client,
                 require_confirmation,
+                allow_bootstrap_session,
                 signal_rx,
                 task_signal,
                 active_tx,
@@ -145,6 +158,20 @@ mod unix {
         session: SessionOpenRequest,
         invoking_policy: &crate::ssh::SessionPolicy,
     ) -> Result<AttachOutcome> {
+        let Some(attached) = prepare_attached_session(path, session, invoking_policy).await? else {
+            return Ok(AttachOutcome::NoMaster);
+        };
+        attached.finish().await.map(AttachOutcome::ExitStatus)
+    }
+
+    /// Complete the hello and OpenSession exchange without starting local I/O.
+    /// Callers implementing `-f` may safely detach after this returns because
+    /// the master has authenticated the control peer and accepted the session.
+    pub async fn prepare_attached_session(
+        path: &Path,
+        session: SessionOpenRequest,
+        invoking_policy: &crate::ssh::SessionPolicy,
+    ) -> Result<Option<AttachedSession>> {
         let mut stream = match tokio::time::timeout(
             CONTROL_HANDSHAKE_TIMEOUT,
             connect_control_socket(path),
@@ -154,7 +181,7 @@ mod unix {
             Ok(Ok(stream)) => stream,
             Err(_) => {
                 tracing::debug!(path = %path.display(), "Control master connect timed out; falling back");
-                return Ok(AttachOutcome::NoMaster);
+                return Ok(None);
             }
             Ok(Err(error))
                 if matches!(
@@ -162,7 +189,7 @@ mod unix {
                     io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
                 ) =>
             {
-                return Ok(AttachOutcome::NoMaster);
+                return Ok(None);
             }
             Ok(Err(error)) => {
                 return Err(error).with_context(|| {
@@ -174,17 +201,53 @@ mod unix {
             Ok(Ok(())) => {}
             Ok(Err(error)) => {
                 tracing::debug!(path = %path.display(), "Control master handshake failed; falling back: {error:#}");
-                return Ok(AttachOutcome::NoMaster);
+                return Ok(None);
             }
             Err(_) => {
                 tracing::debug!(path = %path.display(), "Control master handshake timed out; falling back");
-                return Ok(AttachOutcome::NoMaster);
+                return Ok(None);
             }
         }
         invoking_policy.run_local_command().await?;
-        run_attached_session(stream, session)
-            .await
-            .map(AttachOutcome::ExitStatus)
+        AttachedSession::open(stream, session).await.map(Some)
+    }
+
+    pub struct AttachedSession {
+        stream: UnixStream,
+        session_id: u64,
+        stdin_null: bool,
+    }
+
+    impl AttachedSession {
+        async fn open(mut stream: UnixStream, session: SessionOpenRequest) -> Result<Self> {
+            write_control_message(
+                &mut stream,
+                &ControlMessage::Request(ControlRequest {
+                    request_id: OPERATION_REQUEST_ID,
+                    operation: ControlOperation::OpenSession(session.clone()),
+                }),
+            )
+            .await?;
+            let opened = read_response(&mut stream, OPERATION_REQUEST_ID).await?;
+            let session_id = match opened {
+                ControlResponseKind::SessionOpened { session_id } => session_id,
+                ControlResponseKind::Error { code, message } => {
+                    anyhow::bail!("control master rejected session ({code}): {message}")
+                }
+                response => {
+                    anyhow::bail!("unexpected control response while opening session: {response:?}")
+                }
+            };
+            Ok(Self {
+                stream,
+                session_id,
+                stdin_null: session.policy.stdin_null,
+            })
+        }
+
+        pub async fn finish(self) -> Result<u32> {
+            run_attached_session(self.stream, self.session_id, self.stdin_null).await
+        }
     }
 
     pub async fn send_control_command(
@@ -223,29 +286,11 @@ mod unix {
     }
 
     async fn run_attached_session(
-        mut stream: UnixStream,
-        session: SessionOpenRequest,
+        stream: UnixStream,
+        session_id: u64,
+        stdin_null: bool,
     ) -> Result<u32> {
-        write_control_message(
-            &mut stream,
-            &ControlMessage::Request(ControlRequest {
-                request_id: OPERATION_REQUEST_ID,
-                operation: ControlOperation::OpenSession(session.clone()),
-            }),
-        )
-        .await?;
-        let opened = read_response(&mut stream, OPERATION_REQUEST_ID).await?;
-        let session_id = match opened {
-            ControlResponseKind::SessionOpened { session_id } => session_id,
-            ControlResponseKind::Error { code, message } => {
-                anyhow::bail!("control master rejected session ({code}): {message}")
-            }
-            response => {
-                anyhow::bail!("unexpected control response while opening session: {response:?}")
-            }
-        };
         let (mut reader, mut writer) = stream.into_split();
-        let stdin_null = session.policy.stdin_null;
         let input = tokio::spawn(async move {
             let mut sequence = 0u64;
             if !stdin_null {
@@ -366,6 +411,7 @@ mod unix {
         guard: super::super::ControlSocketGuard,
         client: Client,
         require_confirmation: bool,
+        allow_bootstrap_session: bool,
         mut signal_rx: mpsc::Receiver<MasterSignal>,
         signal_tx: mpsc::Sender<MasterSignal>,
         active_tx: watch::Sender<usize>,
@@ -373,6 +419,7 @@ mod unix {
         let next_session = Arc::new(AtomicU64::new(1));
         let active = Arc::new(AtomicUsize::new(0));
         let confirmation = Arc::new(Mutex::new(()));
+        let bootstrap_session = Arc::new(AtomicBool::new(allow_bootstrap_session));
         let handler_slots = Arc::new(Semaphore::new(MAX_CONTROL_CLIENTS));
         let mut handlers = JoinSet::new();
         let immediate = loop {
@@ -397,12 +444,14 @@ mod unix {
                     let handler_active_tx = active_tx.clone();
                     let handler_next_session = Arc::clone(&next_session);
                     let handler_confirmation = Arc::clone(&confirmation);
+                    let handler_bootstrap_session = Arc::clone(&bootstrap_session);
                     handlers.spawn(async move {
                         let _handler_slot = handler_slot;
                         if let Err(error) = handle_control_connection(
                             stream,
                             handler_client,
                             require_confirmation,
+                            handler_bootstrap_session,
                             handler_confirmation,
                             handler_signal,
                             handler_active,
@@ -448,6 +497,7 @@ mod unix {
         mut stream: UnixStream,
         client: Client,
         require_confirmation: bool,
+        bootstrap_session: Arc<AtomicBool>,
         confirmation: Arc<Mutex<()>>,
         signal: mpsc::Sender<MasterSignal>,
         active: Arc<AtomicUsize>,
@@ -478,7 +528,8 @@ mod unix {
                 .await
             }
             ControlOperation::OpenSession(session) => {
-                if require_confirmation {
+                let is_bootstrap = bootstrap_session.swap(false, Ordering::AcqRel);
+                if require_confirmation && !is_bootstrap {
                     let approved = confirm_attach(Arc::clone(&confirmation)).await?;
                     if !approved {
                         return send_error(
@@ -785,6 +836,7 @@ mod unix {
                 SessionPolicy {
                     environment: Vec::new(),
                     local_command: None,
+                    forward_agent: false,
                     request_pty: false,
                     stdin_null: true,
                     request: SessionRequest::None,
@@ -835,7 +887,8 @@ mod unix {
 
 #[cfg(unix)]
 pub use unix::{
-    AttachOutcome, RunningControlMaster, attach_session, send_control_command, start_control_master,
+    AttachOutcome, AttachedSession, RunningControlMaster, attach_session, prepare_attached_session,
+    send_control_command, start_control_master, start_control_master_with_bootstrap_session,
 };
 
 #[cfg(not(unix))]
@@ -856,6 +909,14 @@ mod unsupported {
     }
 
     pub struct RunningControlMaster;
+
+    pub struct AttachedSession;
+
+    impl AttachedSession {
+        pub async fn finish(self) -> Result<u32> {
+            anyhow::bail!("connection multiplexing requires Unix-domain sockets")
+        }
+    }
 
     impl RunningControlMaster {
         pub async fn shutdown_immediately(self) -> Result<()> {
@@ -879,12 +940,29 @@ mod unsupported {
         anyhow::bail!("connection multiplexing requires Unix-domain sockets")
     }
 
+    pub fn start_control_master_with_bootstrap_session(
+        _path: &Path,
+        _client: Client,
+        _require_confirmation: bool,
+        _allow_bootstrap_session: bool,
+    ) -> Result<RunningControlMaster> {
+        anyhow::bail!("connection multiplexing requires Unix-domain sockets")
+    }
+
     pub async fn attach_session(
         _path: &Path,
         _session: SessionOpenRequest,
         _invoking_policy: &crate::ssh::SessionPolicy,
     ) -> Result<AttachOutcome> {
         Ok(AttachOutcome::NoMaster)
+    }
+
+    pub async fn prepare_attached_session(
+        _path: &Path,
+        _session: SessionOpenRequest,
+        _invoking_policy: &crate::ssh::SessionPolicy,
+    ) -> Result<Option<AttachedSession>> {
+        Ok(None)
     }
 
     pub async fn send_control_command(
@@ -899,5 +977,6 @@ mod unsupported {
 
 #[cfg(not(unix))]
 pub use unsupported::{
-    AttachOutcome, RunningControlMaster, attach_session, send_control_command, start_control_master,
+    AttachOutcome, AttachedSession, RunningControlMaster, attach_session, prepare_attached_session,
+    send_control_command, start_control_master, start_control_master_with_bootstrap_session,
 };

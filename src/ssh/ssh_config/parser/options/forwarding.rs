@@ -33,11 +33,27 @@ pub(super) fn parse_forwarding_option(
             if args.is_empty() {
                 anyhow::bail!("ForwardAgent requires a value at line {line_number}");
             }
-            // OpenSSH also accepts an agent socket path. Runtime forwarding is
-            // declared unimplemented, so retain that raw value for `-G` while
-            // preserving the existing typed yes/no representation when possible.
             if matches!(args[0].to_ascii_lowercase().as_str(), "yes" | "no") {
                 host.forward_agent = Some(parse_yes_no(&args[0], line_number)?);
+            } else {
+                let path = &args[0];
+                if path.contains('\0') {
+                    anyhow::bail!("ForwardAgent socket path contains NUL at line {line_number}");
+                }
+                if let Some(name) = path.strip_prefix('$')
+                    && (name.is_empty()
+                        || !name.bytes().enumerate().all(|(index, byte)| {
+                            byte == b'_'
+                                || byte.is_ascii_alphabetic()
+                                || (index > 0 && byte.is_ascii_digit())
+                        }))
+                {
+                    anyhow::bail!(
+                        "Invalid ForwardAgent environment variable name '{path}' at line {line_number}"
+                    );
+                }
+                host.forward_agent = Some(true);
+                host.forward_agent_socket_path = Some(path.clone());
             }
         }
         "forwardx11" => {

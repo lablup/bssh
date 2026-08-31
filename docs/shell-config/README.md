@@ -173,14 +173,14 @@ bssh-info production
 
 ```bash
 # Bash/Zsh
-alias bssh-web='bssh -C webservers'
-alias bssh-db='bssh -C databases'
+alias bssh-web='bssh --cluster webservers'
+alias bssh-db='bssh --cluster databases'
 
 # Fish
-alias bssh-web='bssh -C webservers'
-alias bssh-db='bssh -C databases'
+alias bssh-web='bssh --cluster webservers'
+alias bssh-db='bssh --cluster databases'
 # Or use abbreviations
-abbr --add bsw 'bssh -C webservers'
+abbr --add bsw 'bssh --cluster webservers'
 ```
 
 ### Custom Cluster Groups
@@ -198,7 +198,7 @@ BSSH_CLUSTER_GROUPS[monitoring]="monitoring-prod monitoring-staging"
 ```bash
 # Bash/Zsh
 bssh-full-health() {
-    bssh -C "$1" "
+    bssh --cluster "$1" "
         echo '=== System Info ===' &&
         uname -a &&
         echo '=== Uptime ===' &&
@@ -212,7 +212,7 @@ bssh-full-health() {
 
 # Fish
 function bssh-full-health
-    bssh -C $argv[1] "
+    bssh --cluster $argv[1] "
         echo '=== System Info ===' &&
         uname -a &&
         echo '=== Uptime ===' &&

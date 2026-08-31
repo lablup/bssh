@@ -25,11 +25,22 @@ use std::io::{self, Write};
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use anyhow::{Context, Result};
 use tracing_subscriber::fmt::MakeWriter;
 
 static LOG_FILE: Mutex<Option<File>> = Mutex::new(None);
+static QUIET_WARNINGS: AtomicBool = AtomicBool::new(false);
+
+/// Select whether non-error diagnostics should be suppressed.
+///
+/// Errors continue to use [`write_line`] and are always emitted. This switch
+/// is intentionally process-wide because the CLI initializes it once before
+/// any configuration warnings are produced.
+pub fn set_quiet_warnings(quiet: bool) {
+    QUIET_WARNINGS.store(quiet, Ordering::Relaxed);
+}
 
 /// Open `path` as the destination for subsequent bssh diagnostics.
 ///
@@ -84,6 +95,13 @@ pub fn write_line(arguments: fmt::Arguments<'_>) {
     }
 }
 
+/// Write one warning unless OpenSSH-compatible quiet mode is active.
+pub fn write_warning_line(arguments: fmt::Arguments<'_>) {
+    if !QUIET_WARNINGS.load(Ordering::Relaxed) {
+        write_line(arguments);
+    }
+}
+
 /// A tracing writer that emits each formatted event as one diagnostic write.
 #[derive(Debug, Default)]
 pub struct DiagnosticWriter {
@@ -130,5 +148,12 @@ impl<'a> MakeWriter<'a> for DiagnosticMakeWriter {
 macro_rules! diagnosticln {
     ($($argument:tt)*) => {
         $crate::utils::diagnostics::write_line(format_args!($($argument)*))
+    };
+}
+
+#[macro_export]
+macro_rules! warningln {
+    ($($argument:tt)*) => {
+        $crate::utils::diagnostics::write_warning_line(format_args!($($argument)*))
     };
 }

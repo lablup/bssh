@@ -29,7 +29,7 @@ set -euo pipefail
 
 # Run MPI simulation across cluster
 echo "Running MPI simulation..."
-bssh -C production exec "mpirun -n 16 ./simulation --config production.yaml"
+bssh --cluster production exec "mpirun -n 16 ./simulation --config production.yaml"
 EXIT_CODE=$?
 
 # Handle different exit codes appropriately
@@ -53,14 +53,14 @@ case $EXIT_CODE in
         echo "   Current memory: 64GB"
         echo "   Retrying with increased memory allocation..."
         # Retry with more memory
-        bssh -C production exec "mpirun -n 16 --bind-to none ./simulation --config production.yaml --memory 128g"
+        bssh --cluster production exec "mpirun -n 16 --bind-to none ./simulation --config production.yaml --memory 128g"
         ;;
 
     124)
         echo "⚠️  Timeout detected!"
         echo "   Extending time limit and retrying..."
         # Retry with extended timeout
-        bssh --timeout 1200 -C production exec "mpirun -n 16 ./simulation --config production.yaml"
+        bssh --timeout 1200 --cluster production exec "mpirun -n 16 ./simulation --config production.yaml"
         ;;
 
     *)

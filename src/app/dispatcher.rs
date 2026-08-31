@@ -35,7 +35,8 @@ use bssh::{
         control::{
             AttachOutcome, ControlCommand, ControlPathContext, ControlPolicy, ControlResponseKind,
             SessionOpenRequest, attach_session, connect_control_socket, expand_control_path,
-            remove_stale_control_socket, send_control_command, start_control_master,
+            prepare_attached_session, remove_stale_control_socket, send_control_command,
+            start_control_master_with_bootstrap_session,
         },
         tokio_client::{AddressFamily, ProxyMode, SshConnectionConfigResolver},
     },
@@ -43,7 +44,9 @@ use bssh::{
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
+use super::background::{BackgroundEvent, BackgroundWorker};
 #[cfg(target_os = "macos")]
 use super::initialization::determine_use_keychain;
 use super::initialization::{AppContext, determine_ssh_key_path};
@@ -72,6 +75,7 @@ fn build_ssh_connection_config_resolver(
         .with_yaml_keepalive_interval(ctx.config.get_server_alive_interval(cluster_name))
         .with_yaml_keepalive_max(ctx.config.get_server_alive_count_max(cluster_name))
         .with_cli_address_family(AddressFamily::from_flags(cli.ipv4, cli.ipv6))
+        .with_cli_quiet(cli.quiet)
         .with_cli_host_key_alias(cli.get_ssh_option("HostKeyAlias"))
         .with_cli_proxy_jump(cli.jump_hosts.clone())
         .with_yaml_proxy_jump(ctx.config.get_cluster_jump_host(cluster_name))
@@ -88,11 +92,63 @@ fn build_ssh_connection_config_resolver(
 struct ResolvedControlInvocation {
     policy: ControlPolicy,
     path: PathBuf,
+    fork_after_authentication: bool,
     session_policy: SessionPolicy,
     session_request: SessionOpenRequest,
     forwarding_directives: Vec<bssh::forwarding::ForwardingDirective>,
     address_family: AddressFamily,
     jump_spec: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ResolvedDirectSession {
+    policy: SessionPolicy,
+    fork_after_authentication: bool,
+    jump_spec: Option<String>,
+}
+
+fn resolve_direct_session(
+    cli: &Cli,
+    ctx: &AppContext,
+    command: &str,
+) -> Result<ResolvedDirectSession> {
+    let node = ctx
+        .nodes
+        .first()
+        .context("SSH session requires a destination node")?;
+    let effective = ctx.ssh_config.find_host_config(node.config_host());
+    let resolver = build_ssh_connection_config_resolver(
+        cli,
+        ctx,
+        ctx.cluster_name.as_deref().or(cli.cluster.as_deref()),
+    );
+    let resolved_connection = resolver.resolve_for_host(node.config_host());
+    let jump_spec =
+        session_policy_jump_spec(resolved_connection.proxy_mode.as_ref()).map(str::to_string);
+    let mut policy = SessionPolicy::resolve_with_jump_spec(
+        &effective,
+        node,
+        (!command.is_empty()).then_some(command),
+        cli_tty_mode(cli),
+        std::io::stdin().is_terminal(),
+        jump_spec.as_deref(),
+    )?;
+    let fork_after_authentication = effective.fork_after_authentication.unwrap_or(false);
+    if fork_after_authentication {
+        anyhow::ensure!(
+            !matches!(policy.request, SessionRequest::Shell),
+            "Cannot fork into background without a command to execute"
+        );
+        // ForkAfterAuthentication has the same remote-input semantics as -n,
+        // including when it came from ssh_config rather than the CLI.
+        policy.stdin_null = true;
+        policy.request_pty = false;
+    }
+    Ok(ResolvedDirectSession {
+        policy,
+        fork_after_authentication,
+        jump_spec,
+    })
 }
 
 fn resolve_control_invocation(
@@ -149,7 +205,7 @@ fn resolve_control_invocation(
         path_context = path_context.with_jump_host(jump);
     }
     let path = expand_control_path(template, &path_context)?;
-    let session_policy = SessionPolicy::resolve_with_jump_spec(
+    let mut session_policy = SessionPolicy::resolve_with_jump_spec(
         &effective,
         node,
         (!command.is_empty()).then_some(command),
@@ -157,6 +213,15 @@ fn resolve_control_invocation(
         std::io::stdin().is_terminal(),
         jump_spec.as_deref(),
     )?;
+    let fork_after_authentication = effective.fork_after_authentication.unwrap_or(false);
+    if fork_after_authentication {
+        anyhow::ensure!(
+            !matches!(session_policy.request, SessionRequest::Shell),
+            "Cannot fork into background without a command to execute"
+        );
+        session_policy.stdin_null = true;
+        session_policy.request_pty = false;
+    }
     let mut remote_policy = session_policy.clone();
     remote_policy.local_command = None;
     let terminal = remote_policy
@@ -166,6 +231,7 @@ fn resolve_control_invocation(
     Ok(Some(ResolvedControlInvocation {
         policy,
         path,
+        fork_after_authentication,
         session_policy,
         session_request,
         forwarding_directives: resolved_connection.forwarding_plan.directives.clone(),
@@ -177,6 +243,7 @@ fn resolve_control_invocation(
 async fn try_existing_control_master(
     cli: &Cli,
     control: &ResolvedControlInvocation,
+    background_worker: Option<&BackgroundWorker>,
 ) -> Result<Option<i32>> {
     if let Some(command) = cli.control_command.as_deref() {
         let command = command.parse::<ControlCommand>()?;
@@ -198,6 +265,25 @@ async fn try_existing_control_master(
     }
     if !control.policy.master.tries_existing() {
         return Ok(None);
+    }
+    if control.fork_after_authentication {
+        let Some(attached) = prepare_attached_session(
+            &control.path,
+            control.session_request.clone(),
+            &control.session_policy,
+        )
+        .await?
+        else {
+            return Ok(None);
+        };
+        background_worker
+            .context("-f requires the supervised SSH worker")?
+            .detach(&BackgroundEvent::Detached { exit_code: 0 })
+            .await?;
+        return attached
+            .finish()
+            .await
+            .map(|status| Some(i32::try_from(status).unwrap_or(255)));
     }
     match attach_session(
         &control.path,
@@ -287,6 +373,7 @@ async fn handle_control_master(
     ctx: &AppContext,
     control: &ResolvedControlInvocation,
     ssh_password: Option<Arc<Password>>,
+    background_worker: Option<&BackgroundWorker>,
 ) -> Result<i32> {
     anyhow::ensure!(
         control.policy.master.creates_master(),
@@ -326,10 +413,14 @@ async fn handle_control_master(
     };
     let mut ssh_client = SshClient::new(node.host.clone(), node.port, node.username.clone());
     let client = ssh_client.connect_authenticated(&connection).await?;
-    let master = match start_control_master(
+    let bootstrap_session = !control.fork_after_authentication
+        && control.policy.persist.is_enabled()
+        && background_worker.is_some();
+    let master = match start_control_master_with_bootstrap_session(
         &control.path,
         client.clone(),
         control.policy.master.requires_confirmation(),
+        bootstrap_session,
     ) {
         Ok(master) => master,
         Err(error) => {
@@ -338,7 +429,32 @@ async fn handle_control_master(
         }
     };
     let initial_request_was_none = matches!(control.session_policy.request, SessionRequest::None);
-    let status = match execute_initial_control_session(&client, &control.session_policy).await {
+    if control.fork_after_authentication {
+        control.session_policy.run_local_command().await?;
+        background_worker
+            .context("-f requires the supervised SSH worker")?
+            .detach(&BackgroundEvent::Detached { exit_code: 0 })
+            .await?;
+    } else if control.policy.persist.is_enabled()
+        && let Some(background_worker) = background_worker
+    {
+        background_worker
+            .detach(&BackgroundEvent::PersistentMaster {
+                control_path: control.path.clone(),
+                session_request: Box::new(control.session_request.clone()),
+                invoking_policy: control.session_policy.clone(),
+            })
+            .await?;
+        master
+            .finish_after_initial(control.policy.persist, true)
+            .await?;
+        return Ok(EXIT_SUCCESS);
+    }
+    let mut execution_policy = control.session_policy.clone();
+    if control.fork_after_authentication {
+        execution_policy.local_command = None;
+    }
+    let status = match execute_initial_control_session(&client, &execution_policy).await {
         Ok(status) => status,
         Err(error) => {
             if let Err(shutdown_error) = master.shutdown_immediately().await {
@@ -353,6 +469,92 @@ async fn handle_control_master(
         .finish_after_initial(control.policy.persist, initial_request_was_none)
         .await?;
     Ok(i32::try_from(status).unwrap_or(255))
+}
+
+async fn handle_direct_single_session(
+    cli: &Cli,
+    ctx: &AppContext,
+    resolved_session: &ResolvedDirectSession,
+    ssh_password: Option<Arc<Password>>,
+    background_worker: Option<&BackgroundWorker>,
+) -> Result<i32> {
+    let node = ctx
+        .nodes
+        .first()
+        .context("SSH session requires a destination node")?;
+    let effective_cluster_name = ctx.cluster_name.as_deref().or(cli.cluster.as_deref());
+    let resolver = build_ssh_connection_config_resolver(cli, ctx, effective_cluster_name);
+    let resolved_connection = resolver.resolve_for_host(node.config_host());
+    let key_path = determine_ssh_key_path(
+        cli,
+        &ctx.config,
+        &ctx.ssh_config,
+        Some(node.config_host()),
+        effective_cluster_name,
+    );
+    #[cfg(target_os = "macos")]
+    let use_keychain = determine_use_keychain(&ctx.ssh_config, Some(node.config_host()));
+    let connection = ConnectionConfig {
+        key_path: key_path.as_deref(),
+        strict_mode: Some(ctx.strict_mode),
+        use_agent: cli.use_agent,
+        use_password: cli.password,
+        #[cfg(target_os = "macos")]
+        use_keychain,
+        timeout_seconds: cli.timeout,
+        connect_timeout_seconds: Some(cli.connect_timeout),
+        jump_hosts_spec: resolved_session.jump_spec.as_deref(),
+        ssh_connection_config: Some(&resolved_connection),
+        ssh_connection_config_resolver: Some(&resolver),
+        session_policy: Some(&resolved_session.policy),
+        ssh_password,
+    };
+    let mut ssh_client = SshClient::new(node.host.clone(), node.port, node.username.clone());
+    let client = ssh_client.connect_authenticated(&connection).await?;
+
+    let operation = async {
+        resolved_session.policy.run_local_command().await?;
+        if resolved_session.fork_after_authentication {
+            background_worker
+                .context("-f requires the supervised SSH worker")?
+                .detach(&BackgroundEvent::Detached { exit_code: 0 })
+                .await?;
+        }
+        if matches!(resolved_session.policy.request, SessionRequest::None) {
+            return wait_for_no_session_transport(&client).await;
+        }
+        let mut remote_policy = resolved_session.policy.clone();
+        remote_policy.local_command = None;
+        execute_initial_control_session(&client, &remote_policy).await
+    }
+    .await;
+    let disconnect = client.disconnect().await;
+    match (operation, disconnect) {
+        (Ok(status), Ok(())) => Ok(i32::try_from(status).unwrap_or(255)),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(error)) => Err(error).context("Could not disconnect SSH transport"),
+        (Err(error), Err(disconnect_error)) => {
+            tracing::warn!("SSH operation failed and disconnect also failed: {disconnect_error}");
+            Err(error)
+        }
+    }
+}
+
+async fn wait_for_no_session_transport(client: &bssh::ssh::tokio_client::Client) -> Result<u32> {
+    loop {
+        tokio::select! {
+            signal = tokio::signal::ctrl_c() => {
+                signal.context("Could not listen for Ctrl-C while keeping the SSH transport open")?;
+                return Ok(0);
+            }
+            () = tokio::time::sleep(Duration::from_secs(1)) => {
+                anyhow::ensure!(
+                    !client.is_closed(),
+                    "SSH transport closed while no remote session was requested"
+                );
+            }
+        }
+    }
 }
 
 /// Decide whether `-S` (sudo-password) is meaningful for the given dispatch path.
@@ -441,14 +643,41 @@ fn subcommand_name(command: &Option<Commands>) -> &'static str {
     }
 }
 
-/// Dispatch commands to their appropriate handlers.
+/// Dispatch commands without a background supervisor.
 ///
 /// Returns the exit code the process should report. Most subcommands either
 /// succeed (0) or return `Err`, but `ping` completes normally while still
 /// having per-host failures to report, so the count has to survive the return.
-/// The caller (`main`) is the single place that turns a nonzero value into the
-/// process exit status.
+#[allow(dead_code)]
 pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<i32> {
+    dispatch_command_with_background(cli, ctx, None).await
+}
+
+/// Whether this initialized single-destination invocation may detach itself.
+///
+/// This check deliberately runs after ssh_config and CLI overrides have been
+/// resolved. Ordinary SSH sessions stay in the original process; only `-f` or
+/// a master that must outlive its initial ControlPersist passenger pays the
+/// self-reexec supervision cost.
+pub fn requires_background_supervision(cli: &Cli, ctx: &AppContext) -> Result<bool> {
+    if !cli.is_ssh_mode() || cli.control_command.is_some() {
+        return Ok(false);
+    }
+    let command = cli.get_command();
+    if let Some(control) = resolve_control_invocation(cli, ctx, &command)? {
+        return Ok(control.fork_after_authentication
+            || (control.policy.master.creates_master() && control.policy.persist.is_enabled()));
+    }
+    resolve_direct_session(cli, ctx, &command).map(|session| session.fork_after_authentication)
+}
+
+/// Dispatch commands with the optional supervisor channel used by `-f` and
+/// ControlPersist.
+pub async fn dispatch_command_with_background(
+    cli: &Cli,
+    ctx: &AppContext,
+    background_worker: Option<&BackgroundWorker>,
+) -> Result<i32> {
     // Get command to execute
     let command = cli.get_command();
 
@@ -487,9 +716,30 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<i32> {
     // invocations reuse the master's one authenticated transport.
     let control = resolve_control_invocation(cli, ctx, &command)?;
     if let Some(control) = control.as_ref()
-        && let Some(exit_code) = try_existing_control_master(cli, control).await?
+        && let Some(exit_code) =
+            try_existing_control_master(cli, control, background_worker).await?
     {
         return Ok(exit_code);
+    }
+    let direct_session = if cli.is_ssh_mode()
+        && cli.stdio_forward.is_none()
+        && control
+            .as_ref()
+            .is_none_or(|control| !control.policy.master.creates_master())
+    {
+        Some(resolve_direct_session(cli, ctx, &command)?)
+    } else {
+        None
+    };
+    #[cfg(not(unix))]
+    if control
+        .as_ref()
+        .is_some_and(|control| control.fork_after_authentication)
+        || direct_session
+            .as_ref()
+            .is_some_and(|session| session.fork_after_authentication)
+    {
+        anyhow::bail!("ForkAfterAuthentication currently requires Unix");
     }
 
     // Calculate hostname for SSH config integration before deciding whether an
@@ -529,6 +779,20 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<i32> {
         get_password(true)
             .map_err(|error| anyhow::anyhow!("Failed to collect SSH password: {error}"))
     })?;
+
+    if let Some(direct_session) = direct_session.as_ref()
+        && (direct_session.fork_after_authentication
+            || matches!(direct_session.policy.request, SessionRequest::None))
+    {
+        return handle_direct_single_session(
+            cli,
+            ctx,
+            direct_session,
+            ssh_password,
+            background_worker,
+        )
+        .await;
+    }
 
     match &cli.command {
         Some(Commands::List) => {
@@ -678,7 +942,8 @@ pub async fn dispatch_command(cli: &Cli, ctx: &AppContext) -> Result<i32> {
             if let Some(control) = control.as_ref()
                 && control.policy.master.creates_master()
             {
-                return handle_control_master(cli, ctx, control, ssh_password).await;
+                return handle_control_master(cli, ctx, control, ssh_password, background_worker)
+                    .await;
             }
             // Execute command (auto-exec or interactive shell). This path owns
             // its own exit code strategy (`ExitCodeStrategy`, selected by

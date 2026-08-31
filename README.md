@@ -29,12 +29,12 @@ _See [CHANGELOG.md](./CHANGELOG.md) for the complete version history._
 
 ## Features
 
-- **SSH Compatibility**: Drop-in replacement for SSH with compatible command-line syntax
+- **Measured SSH Compatibility**: Single-host behavior is continuously checked against a pinned OpenSSH regress suite; see the [measured score and documented skips](docs/openssh-regress.md)
 - **Port Forwarding**: Full support for local (-L), remote (-R), and dynamic (-D) SSH port forwarding
 - **Jump Host Support**: Connect through bastion hosts using OpenSSH ProxyJump syntax (`-J`)
 - **Parallel Execution**: Execute commands across multiple nodes simultaneously
 - **Hostlist Expressions**: pdsh-style range expansion (`node[1-5]`, `rack[1-2]-node[1-3]`) for compact host specification
-- **Fail-Fast Mode**: Stop immediately on first failure with `-k` flag (pdsh compatible)
+- **Fail-Fast Mode**: Stop immediately on first failure with `--fail-fast` (`-k` remains available only in pdsh compatibility mode)
 - **Interactive Terminal UI (TUI)**: Real-time monitoring with 4 view modes (Summary/Detail/Split/Diff) for multi-node operations
 - **Cluster Management**: Define and manage node clusters via configuration files
 - **Progress Tracking**: Real-time progress indicators with smart detection (percentages, fractions, apt/dpkg)
@@ -49,7 +49,7 @@ _See [CHANGELOG.md](./CHANGELOG.md) for the complete version history._
 
 ## Platform Support
 
-- **Linux and macOS**: Fully supported, including SSH agent authentication (`-A`), PTY-based interactive sessions, and every CLI feature documented here.
+- **Linux and macOS**: Fully supported, including SSH agent authentication (`--use-agent`), PTY-based interactive sessions, and every CLI feature documented here.
 - **Windows (native)**: Not currently supported as a client. The `bssh` crate does not build for a Windows target today because of unconditional Unix-only dependencies (`nix`, `signal-hook`, `libc`) and un-gated PTY/agent code; there is no Windows CI job or release artifact. Use **WSL2** to run `bssh` on Windows in the meantime. See [#213](https://github.com/lablup/bssh/issues/213) for the current status and the known blockers to native Windows client support.
 
 ## Installation
@@ -110,6 +110,19 @@ sudo cp target/release/bssh /usr/local/bin/
 ## Quick Start
 
 ### SSH-Compatible Mode (Single Host)
+
+The 3.0 command-line contract gives these seven letters their OpenSSH meanings. Existing bssh scripts must use the corresponding long option for the displaced bssh feature; see the [3.0 short-flag migration guide](docs/openssh-short-flags-migration.md).
+
+| Short flag | OpenSSH-compatible meaning | Long option for the former bssh meaning |
+|------------|----------------------------|------------------------------------------|
+| `-N` | Do not execute a remote command | `--no-prefix` |
+| `-f` | Go to the background after authentication | `--filter` |
+| `-C` | Enable SSH compression | `--cluster` |
+| `-A` | Enable authentication-agent forwarding | `--use-agent` |
+| `-S path` | Select the multiplexing `ControlPath` | `--sudo-password` |
+| `-k` | Disable GSSAPI credential delegation | `--fail-fast` |
+| `-b address` | Bind the client to a source address | `--batch` |
+
 ```bash
 # Connect to a host (just like SSH!)
 bssh user@hostname
@@ -139,32 +152,32 @@ Like OpenSSH, bssh supports escape sequences in PTY sessions. These must be type
 ```bash
 # Local port forwarding (-L)
 # Forward local port 8080 to example.com:80 via SSH
-bssh -L 8080:example.com:80 user@host
+bssh -N -L 8080:example.com:80 user@host
 
 # Remote port forwarding (-R)  
 # Forward remote port 8080 to localhost:80
-bssh -R 8080:localhost:80 user@host
+bssh -N -R 8080:localhost:80 user@host
 
 # Dynamic port forwarding / SOCKS proxy (-D)
 # Create SOCKS5 proxy on local port 1080
-bssh -D 1080 user@host
+bssh -N -D 1080 user@host
 
 # Multiple port forwards
-bssh -L 3306:db:3306 -R 80:web:80 -D 1080 user@host
+bssh -N -L 3306:db:3306 -R 80:web:80 -D 1080 user@host
 
 # Bind to specific address
-bssh -L 127.0.0.1:8080:web:80 user@host           # Local only
-bssh -L *:8080:web:80 user@host                   # All interfaces
+bssh -N -L 127.0.0.1:8080:web:80 user@host        # Local only
+bssh -N -L *:8080:web:80 user@host                # All interfaces
 
 # SOCKS4 proxy (specify version)
-bssh -D 1080/4 user@host                          # SOCKS4
-bssh -D *:1080/5 user@host                        # SOCKS5 on all interfaces
+bssh -N -D 1080/4 user@host                       # SOCKS4
+bssh -N -D *:1080/5 user@host                     # SOCKS5 on all interfaces
 
 # Port forwarding with command execution
 bssh -L 5432:postgres:5432 user@host "psql -h localhost"
 
-# Port forwarding with cluster operations
-bssh -C production -L 8080:internal:80 "curl http://localhost:8080"
+# Port forwarding without opening a remote shell
+bssh -N -L 8080:internal:80 user@gateway
 ```
 
 ### Jump Host Support (ProxyJump)
@@ -182,15 +195,15 @@ bssh -J admin@bastion:2222 user@internal-host
 bssh -J "[2001:db8::1]:22" user@destination
 
 # Combine with cluster operations
-bssh -J bastion.example.com -C production "uptime"
+bssh -J bastion.example.com --cluster production "uptime"
 
 # File transfer through jump host
 bssh -J bastion.example.com -H internal-server upload app.tar.gz /opt/
-bssh -J admin@bastion:2222 -C production download /etc/config ./backups/
+bssh -J admin@bastion:2222 --cluster production download /etc/config ./backups/
 
 # Interactive mode through jump hosts
 bssh -J bastion.example.com user@internal-server
-bssh -J "jump1,jump2" -C production interactive
+bssh -J "jump1,jump2" --cluster production interactive
 
 # Multi-hop with file transfer
 bssh -J "bastion1,bastion2,bastion3" -H target upload -r ./app/ /opt/app/
@@ -202,7 +215,7 @@ bssh -J "bastion1,bastion2,bastion3" -H target upload -r ./app/ /opt/app/
 bssh -H "user1@host1.com,user2@host2.com:2222" "uptime"
 
 # Using cluster from config
-bssh -C production "df -h"
+bssh --cluster production "df -h"
 
 # Hostlist expressions (pdsh-style range expansion)
 bssh -H "node[1-5]" "uptime"                       # node1, node2, node3, node4, node5
@@ -214,63 +227,63 @@ bssh -H "admin@db[01-03]:5432" "psql --version"    # With user and port
 bssh -H "^/etc/hosts.cluster" "uptime"             # Read hosts from file
 
 # Filter specific hosts with pattern matching
-bssh -H "web1,web2,db1,db2" -f "web*" "systemctl status nginx"
-bssh -C production -f "db*" "pg_dump --version"
-bssh -H "node[1-10]" -f "node[1-5]" "uptime"       # Filter with hostlist expression
+bssh -H "web1,web2,db1,db2" --filter "web*" "systemctl status nginx"
+bssh --cluster production --filter "db*" "pg_dump --version"
+bssh -H "node[1-10]" --filter "node[1-5]" "uptime" # Filter with hostlist expression
 
 # Exclude specific hosts from execution
 bssh -H "node1,node2,node3" --exclude "node2" "uptime"
-bssh -C production --exclude "db*" "systemctl restart nginx"
+bssh --cluster production --exclude "db*" "systemctl restart nginx"
 bssh -H "node[1-10]" --exclude "node[3-5]" "uptime" # Exclude with hostlist expression
 
 # With custom SSH key
-bssh -C staging -i ~/.ssh/custom_key "systemctl status nginx"
+bssh --cluster staging -i ~/.ssh/custom_key "systemctl status nginx"
 
 # Use SSH agent for authentication
-bssh -A -C production "systemctl status nginx"
+bssh --use-agent --cluster production "systemctl status nginx"
 
 # Use password authentication (will prompt for password)
 bssh --password -H "user@host.com" "uptime"
 
 # Use sudo password for privileged commands (prompts securely)
-bssh -S -C production "sudo apt update && sudo apt upgrade -y"
+bssh --sudo-password --cluster production "sudo apt update && sudo apt upgrade -y"
 
 # Combine sudo password with SSH agent authentication
-bssh -A -S -C production "sudo systemctl restart nginx"
+bssh --use-agent --sudo-password --cluster production "sudo systemctl restart nginx"
 
 # Use encrypted SSH key (will prompt for passphrase)
-bssh -i ~/.ssh/encrypted_key -C production "df -h"
+bssh -i ~/.ssh/encrypted_key --cluster production "df -h"
 
 # Limit parallel connections
-bssh -C production --parallel 5 "apt update"
+bssh --cluster production --parallel 5 "apt update"
 
 # Set command timeout (10 seconds)
-bssh -C production --timeout 10 "quick-check"
+bssh --cluster production --timeout 10 "quick-check"
 
 # No timeout (unlimited execution time)
-bssh -C staging --timeout 0 "long-running-backup"
+bssh --cluster staging --timeout 0 "long-running-backup"
 
 # Set connection timeout (default: 30 seconds)
-bssh -C production --connect-timeout 10 "uptime"
+bssh --cluster production --connect-timeout 10 "uptime"
 
 # Different timeouts for connection and command
-bssh -C production --connect-timeout 5 --timeout 600 "long-running-job"
+bssh --cluster production --connect-timeout 5 --timeout 600 "long-running-job"
 
 # Configure SSH keepalive (prevent idle connection timeouts)
-bssh -C production --server-alive-interval 30 "long-running-job"
+bssh --cluster production --server-alive-interval 30 "long-running-job"
 
 # Disable keepalive (set interval to 0)
-bssh -C production --server-alive-interval 0 "quick-job"
+bssh --cluster production --server-alive-interval 0 "quick-job"
 
 # Keepalive with custom max retries (default: 3)
-bssh -C production --server-alive-interval 30 --server-alive-count-max 5 "long-running-job"
+bssh --cluster production --server-alive-interval 30 --server-alive-count-max 5 "long-running-job"
 
-# Fail-fast mode: stop immediately on any failure (pdsh -k compatible)
-bssh -k -H "web1,web2,web3" "deploy.sh"
-bssh --fail-fast -C production "critical-script.sh"
+# Fail-fast mode: stop immediately on any failure
+bssh --fail-fast -H "web1,web2,web3" "deploy.sh"
+bssh --fail-fast --cluster production "critical-script.sh"
 
 # Combine fail-fast with require-all-success for critical operations
-bssh -k --require-all-success -C production "service-restart.sh"
+bssh --fail-fast --require-all-success --cluster production "service-restart.sh"
 ```
 
 ### Output Modes
@@ -282,7 +295,7 @@ Interactive Terminal UI with real-time monitoring - automatically enabled when r
 
 ```bash
 # TUI mode automatically activates for multi-node commands
-bssh -C production "apt-get update"
+bssh --cluster production "apt-get update"
 
 # Features:
 # - Summary view: All nodes at a glance with progress bars
@@ -363,7 +376,7 @@ The TUI includes an in-app log panel that captures error and warning messages wi
 #### Stream Mode (Real-time with Node Prefixes)
 ```bash
 # Enable stream mode explicitly
-bssh -C production --stream "tail -f /var/log/syslog"
+bssh --cluster production --stream "tail -f /var/log/syslog"
 
 # Output:
 # [node1] Oct 30 10:15:23 systemd[1]: Started nginx.service
@@ -371,7 +384,7 @@ bssh -C production --stream "tail -f /var/log/syslog"
 # [node1] Oct 30 10:15:25 nginx: Configuration test successful
 
 # Stream mode without hostname prefix (pdsh -N compatibility)
-bssh -C production --stream --no-prefix "uname -a"
+bssh --cluster production --stream --no-prefix "uname -a"
 # Output (no [node] prefixes):
 # Linux node1 5.15.0-generic
 # Linux node2 5.15.0-generic
@@ -380,7 +393,7 @@ bssh -C production --stream --no-prefix "uname -a"
 #### File Mode (Save to Per-Node Files)
 ```bash
 # Save each node's output to timestamped files
-bssh -C production --output-dir ./logs "ps aux"
+bssh --cluster production --output-dir ./logs "ps aux"
 
 # Creates:
 # ./logs/node1_20251030_101523.stdout
@@ -391,11 +404,11 @@ bssh -C production --output-dir ./logs "ps aux"
 #### Normal Mode (Traditional Output)
 ```bash
 # Automatically used when output is piped or redirected
-bssh -C production "uptime" | tee results.txt
-bssh -C production "df -h" > disk-usage.log
+bssh --cluster production "uptime" | tee results.txt
+bssh --cluster production "df -h" > disk-usage.log
 
 # Manually disable TUI in terminals
-CI=true bssh -C production "command"
+CI=true bssh --cluster production "command"
 ```
 
 ### Batch Mode (Ctrl+C Handling)
@@ -406,18 +419,18 @@ bssh provides two modes for handling Ctrl+C during parallel execution:
 - First Ctrl+C: Shows status (running/completed counts)
 - Second Ctrl+C (within 1 second): Terminates all jobs
 
-**Batch Mode (`-b` / `--batch`)**:
+**Batch Mode (`--batch`)**:
 - Single Ctrl+C: Immediately terminates all jobs
 - Useful for non-interactive scripts and CI/CD pipelines
 
 ```bash
 # Default behavior (two-stage Ctrl+C)
-bssh -C production "long-running-command"
+bssh --cluster production "long-running-command"
 # Ctrl+C once: shows status
 # Ctrl+C again (within 1s): terminates
 
 # Batch mode (immediate termination)
-bssh -C production -b "long-running-command"
+bssh --cluster production --batch "long-running-command"
 # Ctrl+C once: immediately terminates all jobs
 
 # Useful for automation
@@ -522,18 +535,18 @@ pdsh -w node1,node2,backup1,backup2 -x "*backup*" -q
 ### Built-in Commands
 ```bash
 # Test connectivity to hosts
-bssh -C production ping
+bssh --cluster production ping
 bssh -H "host1,host2" ping
 
 # List configured clusters
 bssh list
 
 # Interactive mode (single or multiplexed)
-bssh -C production interactive
+bssh --cluster production interactive
 bssh -H "host1,host2" interactive
 
 # File transfer operations
-bssh -C production upload local.txt /tmp/
+bssh --cluster production upload local.txt /tmp/
 bssh -H "host1,host2" download /etc/hosts ./backups/
 ```
 
@@ -584,10 +597,10 @@ bssh supports multiple authentication methods:
 
 ### SSH Agent
 - **Auto-detection**: Automatically uses SSH agent if `SSH_AUTH_SOCK` is set
-- **Explicit**: Use `-A` flag to force SSH agent authentication
+- **Explicit**: Use `--use-agent` to force SSH agent authentication
 
 ### Password Authentication
-- Use `-P` / `--password` flag to enable password authentication
+- Use `--password` to enable password authentication
 - The password is prompted **once up-front**, before any parallel connection tasks start, and is shared securely across all nodes — the prompt appears exactly once regardless of how many hosts are targeted
 - Password is prompted securely without echo
 - For automation, set `BSSH_PASSWORD` in the environment (not recommended; see security notes in the Sudo Password section)
@@ -598,17 +611,17 @@ bssh supports multiple authentication methods:
 bssh -H "user@host" "uptime"
 
 # Use specific SSH key (prompts for passphrase if encrypted)
-bssh -i ~/.ssh/custom_key -c production "df -h"
+bssh -i ~/.ssh/custom_key --cluster production "df -h"
 
 # Use SSH agent
-bssh -A -c production "systemctl status"
+bssh --use-agent --cluster production "systemctl status"
 
 # Use password authentication
-bssh -P -H "user@host" "ls -la"
+bssh --password -H "user@host" "ls -la"
 
 # Authentication through jump hosts
-bssh -A -J bastion.example.com user@internal-server "uptime"
-bssh -i ~/.ssh/prod_key -J "jump1,jump2" -C production "df -h"
+bssh --use-agent -J bastion.example.com user@internal-server "uptime"
+bssh -i ~/.ssh/prod_key -J "jump1,jump2" --cluster production "df -h"
 ```
 
 ### Sudo Password Support
@@ -621,16 +634,16 @@ bssh supports automatic sudo password injection for commands that require elevat
 
 ```bash
 # Basic sudo command (will prompt for sudo password)
-bssh -S -C production "sudo apt update"
+bssh --sudo-password --cluster production "sudo apt update"
 
 # Combine with SSH agent authentication
-bssh -A -S -C production "sudo systemctl restart nginx"
+bssh --use-agent --sudo-password --cluster production "sudo systemctl restart nginx"
 
 # Multiple sudo commands in a single session
-bssh -S -C production "sudo apt update && sudo apt upgrade -y"
+bssh --sudo-password --cluster production "sudo apt update && sudo apt upgrade -y"
 
 # Sudo with specific SSH key
-bssh -i ~/.ssh/admin_key -S -C production "sudo reboot"
+bssh -i ~/.ssh/admin_key --sudo-password --cluster production "sudo reboot"
 ```
 
 **Environment Variable Alternative:**
@@ -640,13 +653,13 @@ For automation scenarios, you can use the `BSSH_SUDO_PASSWORD` environment varia
 ```bash
 # NOT RECOMMENDED for security reasons
 export BSSH_SUDO_PASSWORD="your-password"
-bssh -S -C production "sudo apt update"
+bssh --sudo-password --cluster production "sudo apt update"
 ```
 
 **Security Warnings:**
 - Environment variables may be visible in process listings
 - Avoid storing passwords in shell history
-- The `-S` flag with secure prompt is the recommended approach
+- The `--sudo-password` option with secure prompt is the recommended approach
 - Password is automatically cleared from memory after use using `zeroize`
 
 ## Environment Variables
@@ -674,19 +687,19 @@ bssh supports configuration via environment variables:
 ### SSH Password Variable
 
 - **`BSSH_PASSWORD`**: SSH password for automated password authentication
-  - Used when `--password` / `-P` is set and `BSSH_PASSWORD` is non-empty; skips the interactive prompt
+  - Used when `--password` is set and `BSSH_PASSWORD` is non-empty; skips the interactive prompt
   - **WARNING**: Not recommended for security reasons
   - Environment variables may be visible in process listings and shell history
-  - Use the interactive `-P` prompt instead for security-sensitive operations
-  - Example: `BSSH_PASSWORD=secret bssh -P -H "user@host" "uptime"`
+  - Use the interactive `--password` prompt instead for security-sensitive operations
+  - Example: `BSSH_PASSWORD=secret bssh --password -H "user@host" "uptime"`
 
 ### Sudo Password Variable
 
 - **`BSSH_SUDO_PASSWORD`**: Sudo password for automated sudo authentication
   - **WARNING**: Not recommended for security reasons
   - Environment variables may be visible in process listings
-  - Use the `-S` flag with secure prompt instead
-  - Example: `BSSH_SUDO_PASSWORD=password bssh -S -C prod "sudo apt update"`
+  - Use the `--sudo-password` option with secure prompt instead
+  - Example: `BSSH_SUDO_PASSWORD=password bssh --sudo-password --cluster prod "sudo apt update"`
 
 ## Configuration
 
@@ -725,7 +738,7 @@ bssh "nvidia-smi" # Check GPU status on all nodes
 bssh interactive  # Opens interactive session with all Backend.AI nodes
 
 # You can still override with explicit options if needed:
-bssh -C other-cluster "command"  # Use a different cluster
+bssh --cluster other-cluster "command"  # Use a different cluster
 bssh -H specific-host "command"   # Use specific host
 ```
 
@@ -1173,10 +1186,10 @@ bssh user@host.prod.example.com
 bssh -F ~/custom-ssh-config user@host.prod.example.com
 
 # SSH config works with cluster operations
-bssh -C production "uptime"
+bssh --cluster production "uptime"
 
 # Config options apply to all cluster nodes
-bssh -F ~/.ssh/prod-config -C production upload app.tar.gz /opt/
+bssh -F ~/.ssh/prod-config --cluster production upload app.tar.gz /opt/
 ```
 
 ## Command-Line Options
@@ -1184,27 +1197,36 @@ bssh -F ~/.ssh/prod-config -C production upload app.tar.gz /opt/
 ```
 Options:
   -H, --hosts <HOSTS>                     Comma-separated list of hosts (user@host:port format)
-  -C, --cluster <CLUSTER>                 Cluster name from configuration file
-  -f, --filter <PATTERN>                  Filter hosts by pattern (supports wildcards like 'web*')
+  -C                                      Enable SSH compression
+  -f                                      Go to background after authentication
+  --cluster <CLUSTER>                     Cluster name from configuration file
+  --filter <PATTERN>                      Filter hosts by pattern (supports wildcards like 'web*')
   --exclude <HOSTS>                       Exclude hosts from target list (comma-separated, supports wildcards)
   --config <CONFIG>                       Configuration file path [default: ~/.config/bssh/config.yaml]
   -u, --user <USER>                       Default username for SSH connections
   -i, --identity <IDENTITY>               SSH private key file path (prompts for passphrase if encrypted)
-  -A, --use-agent                         Use SSH agent for authentication (Unix/Linux/macOS only)
-  -P, --password                          Use password authentication (will prompt for password)
-  -S, --sudo-password                     Prompt for sudo password to auto-respond to sudo prompts
+  -A                                      Enable authentication-agent forwarding
+  --use-agent                             Use SSH agent for authentication (Unix/Linux/macOS only)
+  --password                              Use password authentication (will prompt for password)
+  -S <CONTROL_PATH>                       Multiplexing control socket path
+  --sudo-password                         Prompt for sudo password to auto-respond to sudo prompts
+  -N                                      Do not execute a remote command
+  -k                                      Disable GSSAPI credential delegation
+  -b <BIND_ADDRESS>                       Bind to a local source address
   -J, --jump-host <JUMP_HOSTS>            Jump hosts: [user@]host[:port],... (uses local user if not specified)
   -L, --local-forward <SPEC>              Local port forwarding [bind_address:]port:host:hostport
   -R, --remote-forward <SPEC>             Remote port forwarding [bind_address:]port:host:hostport
   -D, --dynamic-forward <SPEC>            Dynamic port forwarding (SOCKS) [bind_address:]port[/version]
   --strict-host-key-checking <MODE>       Host key checking mode (yes/no/accept-new) [default: accept-new]
-  -p, --parallel <PARALLEL>               Maximum parallel connections [default: 10]
+  --parallel <PARALLEL>                   Maximum parallel connections [default: 10]
   --timeout <TIMEOUT>                     Command timeout in seconds (0 for unlimited) [default: 300]
   --connect-timeout <SECONDS>             SSH connection timeout in seconds (minimum: 1) [default: 30]
   --server-alive-interval <SECONDS>       SSH keepalive interval in seconds (0 to disable) [default: 30]
   --server-alive-count-max <COUNT>        Max keepalive messages without response [default: 3]
   --output-dir <OUTPUT_DIR>               Output directory for command results
-  -N, --no-prefix                         Disable hostname prefix in output (pdsh -N compatibility)
+  --no-prefix                             Disable hostname prefix in output
+  --fail-fast                             Stop on the first failed node
+  --batch                                 Terminate all jobs on the first Ctrl+C
   -v, --verbose                           Increase verbosity (-v, -vv, -vvv)
   -h, --help                              Print help
   -V, --version                           Print version
@@ -1222,7 +1244,7 @@ bssh "python train.py --distributed"  # Run distributed training
 
 ### Run system updates
 ```bash
-bssh -C production "sudo apt update && sudo apt upgrade -y"
+bssh --cluster production "sudo apt update && sudo apt upgrade -y"
 ```
 
 ### Check disk usage
@@ -1232,24 +1254,24 @@ bssh -H "server1,server2,server3" "df -h | grep -E '^/dev/'"
 
 ### Restart services
 ```bash
-bssh -C webservers "sudo systemctl restart nginx"
+bssh --cluster webservers "sudo systemctl restart nginx"
 ```
 
 ### Collect logs
 ```bash
-bssh -C production --output-dir ./logs "tail -n 100 /var/log/syslog"
+bssh --cluster production --output-dir ./logs "tail -n 100 /var/log/syslog"
 ```
 
 ### Long-running commands with timeout
 ```bash
 # Set 30 minute timeout for backup operations
-bssh -C production --timeout 1800 "backup-database.sh"
+bssh --cluster production --timeout 1800 "backup-database.sh"
 
 # No timeout for data migration (may take hours)
-bssh -C production --timeout 0 "migrate-data.sh"
+bssh --cluster production --timeout 0 "migrate-data.sh"
 
 # Quick health check with 5 second timeout
-bssh -C monitoring --timeout 5 "health-check.sh"
+bssh --cluster monitoring --timeout 5 "health-check.sh"
 ```
 
 ### Interactive Mode
@@ -1258,19 +1280,19 @@ Start an interactive shell session on cluster nodes:
 
 ```bash
 # Interactive session on all nodes (multiplex mode - default)
-bssh -C production interactive
+bssh --cluster production interactive
 
 # Interactive session on a single node
-bssh -C production interactive --single-node
+bssh --cluster production interactive --single-node
 
 # Custom prompt format
 bssh -H server1,server2 interactive --prompt-format "{user}@{host}> "
 
 # Set initial working directory
-bssh -C staging interactive --work-dir /var/www
+bssh --cluster staging interactive --work-dir /var/www
 
 # Interactive mode with keepalive for long-running sessions (e.g., tmux)
-bssh -C production --server-alive-interval 30 --server-alive-count-max 5 interactive
+bssh --cluster production --server-alive-interval 30 --server-alive-count-max 5 interactive
 ```
 
 #### Interactive Mode Configuration
@@ -1356,7 +1378,7 @@ For large clusters (>10 nodes), the prompt uses a compact format:
 #### Example Interactive Session
 
 ```bash
-$ bssh -C production interactive
+$ bssh --cluster production interactive
 
 Connected to 3 nodes
 [● ● ●] bssh> !status
@@ -1426,13 +1448,13 @@ Each output file includes metadata headers:
 ### Example Usage
 ```bash
 # Save outputs to timestamped directory
-bssh -C production --output-dir ./results/$(date +%Y%m%d) "ps aux | head -10"
+bssh --cluster production --output-dir ./results/$(date +%Y%m%d) "ps aux | head -10"
 
 # Collect system information
-bssh -C all-servers --output-dir ./system-info "uname -a; df -h; free -m"
+bssh --cluster all-servers --output-dir ./system-info "uname -a; df -h; free -m"
 
 # Debug failed services
-bssh -C webservers --output-dir ./debug "systemctl status nginx"
+bssh --cluster webservers --output-dir ./debug "systemctl status nginx"
 ```
 
 ## Development

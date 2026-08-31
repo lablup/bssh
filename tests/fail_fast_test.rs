@@ -220,12 +220,7 @@ fn test_cli_fail_fast_flag_parsing() {
     use bssh::cli::Cli;
     use clap::Parser;
 
-    // Test short form -k
-    let args = ["bssh", "-H", "host1,host2", "-k", "echo test"];
-    let cli = Cli::try_parse_from(args).expect("Should parse with -k flag");
-    assert!(cli.fail_fast, "Short flag -k should set fail_fast=true");
-
-    // Test long form --fail-fast
+    // --fail-fast is intentionally long-only in SSH mode.
     let args = ["bssh", "-H", "host1,host2", "--fail-fast", "echo test"];
     let cli = Cli::try_parse_from(args).expect("Should parse with --fail-fast flag");
     assert!(
@@ -297,7 +292,14 @@ fn test_fail_fast_flag_combinations() {
     assert!(cli.check_all_nodes);
 
     // fail-fast + verbose
-    let args = ["bssh", "-H", "host1,host2", "-k", "-v", "echo test"];
+    let args = [
+        "bssh",
+        "-H",
+        "host1,host2",
+        "--fail-fast",
+        "-v",
+        "echo test",
+    ];
     let cli = Cli::try_parse_from(args).expect("Should parse with fail-fast and verbose");
     assert!(cli.fail_fast);
     assert_eq!(cli.verbose, 1);
@@ -307,7 +309,7 @@ fn test_fail_fast_flag_combinations() {
         "bssh",
         "-H",
         "host1,host2",
-        "-k",
+        "--fail-fast",
         "--timeout",
         "60",
         "echo test",
@@ -317,20 +319,18 @@ fn test_fail_fast_flag_combinations() {
     assert_eq!(cli.timeout, Some(60));
 }
 
-/// Test that -k doesn't conflict with existing short options
+/// OpenSSH-compatible -k disables GSSAPI credential delegation.
 #[test]
 #[serial]
-fn test_k_flag_no_conflict() {
+fn test_k_flag_uses_openssh_semantics() {
     use bssh::cli::Cli;
     use clap::Parser;
-
-    // Verify -k is distinct from other flags
-    // The -k flag is now assigned to fail-fast (pdsh compatibility)
 
     let args = ["bssh", "-H", "host1", "-k", "uptime"];
     let result = Cli::try_parse_from(args);
     assert!(result.is_ok(), "-k should be a valid flag");
 
     let cli = result.unwrap();
-    assert!(cli.fail_fast, "-k should set fail_fast=true");
+    assert!(cli.disable_gssapi_credential_forwarding);
+    assert!(!cli.fail_fast, "-k must not enable --fail-fast");
 }

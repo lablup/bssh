@@ -18,10 +18,12 @@ use std::time::Duration;
 
 /// Show concise usage message (like SSH)
 pub fn show_usage() {
-    println!("usage: bssh [-46AqtTvx] [-C cluster] [-F ssh_configfile] [-H hosts]");
+    println!("usage: bssh [-46ACNfkMqtTvx] [-b bind_address] [-S control_path]");
+    println!("           [-F ssh_configfile] [-H hosts] [--cluster cluster]");
     println!("           [-i identity_file] [-J destination] [-l login_name]");
     println!("           [-o option] [-p port] [--config config] [--parallel N]");
-    println!("           [--output-dir dir] [--timeout seconds] [--use-agent]");
+    println!("           [--filter pattern] [--output-dir dir] [--timeout seconds]");
+    println!("           [--use-agent] [--sudo-password] [--fail-fast] [--batch]");
     println!("           destination [command [argument ...]]");
     println!("       bssh [-Q query_option]");
     println!("       bssh [list|ping|upload|download|interactive] ...");

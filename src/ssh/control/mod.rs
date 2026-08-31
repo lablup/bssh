@@ -31,7 +31,8 @@ pub use protocol::{
     write_control_message,
 };
 pub use runtime::{
-    AttachOutcome, RunningControlMaster, attach_session, send_control_command, start_control_master,
+    AttachOutcome, AttachedSession, RunningControlMaster, attach_session, prepare_attached_session,
+    send_control_command, start_control_master, start_control_master_with_bootstrap_session,
 };
 #[cfg(unix)]
 pub use socket::verify_same_user;

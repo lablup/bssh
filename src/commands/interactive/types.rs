@@ -27,7 +27,9 @@ use crate::pty::PtyConfig;
 use crate::security::Password;
 use crate::ssh::SessionPolicy;
 use crate::ssh::known_hosts::StrictHostKeyChecking;
-use crate::ssh::tokio_client::{Client, SshConnectionConfig, SshConnectionConfigResolver};
+use crate::ssh::tokio_client::{
+    AgentForwardingLease, Client, SshConnectionConfig, SshConnectionConfigResolver,
+};
 
 /// SSH output polling interval for responsive display
 /// - 10ms provides very responsive output display
@@ -90,6 +92,7 @@ pub(super) struct NodeSession {
     #[allow(dead_code)]
     pub client: Client,
     pub channel: Channel<Msg>,
+    _agent_forwarding_lease: Option<AgentForwardingLease>,
     pub working_dir: String,
     pub is_connected: bool,
     pub is_active: bool, // Whether this node is currently active for commands
@@ -97,11 +100,18 @@ pub(super) struct NodeSession {
 
 impl NodeSession {
     /// Create a new NodeSession
-    pub fn new(node: Node, client: Client, channel: Channel<Msg>, working_dir: String) -> Self {
+    pub fn new(
+        node: Node,
+        client: Client,
+        channel: Channel<Msg>,
+        working_dir: String,
+        agent_forwarding_lease: Option<AgentForwardingLease>,
+    ) -> Self {
         Self {
             node,
             client,
             channel,
+            _agent_forwarding_lease: agent_forwarding_lease,
             working_dir,
             is_connected: true,
             is_active: true,

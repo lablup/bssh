@@ -53,8 +53,10 @@ pub fn render_resolved_config(original_host: &str, config: &SshHostConfig) -> Re
         "forwardx11trusted",
         config.forward_x11_trusted.unwrap_or(false),
     )?;
-    let forward_agent = raw_option(config, "forwardagent")
-        .map(|value| tokens.expand_path_for_dump(&value))
+    let forward_agent = config
+        .forward_agent_socket_path
+        .as_deref()
+        .map(|value| tokens.expand_path_for_dump(value))
         .transpose()?
         .unwrap_or_else(|| yes_no(config.forward_agent.unwrap_or(false)).to_string());
     output.line("forwardagent", forward_agent)?;
@@ -65,6 +67,10 @@ pub fn render_resolved_config(original_host: &str, config: &SshHostConfig) -> Re
     output.bool(
         "gssapiauthentication",
         config.gssapi_authentication.unwrap_or(false),
+    )?;
+    output.bool(
+        "gssapidelegatecredentials",
+        config.gssapi_delegate_credentials.unwrap_or(false),
     )?;
     output.bool("hashknownhosts", config.hash_known_hosts.unwrap_or(false))?;
     output.bool(

@@ -25,10 +25,15 @@ use glob::Pattern;
 
 mod app;
 
+#[cfg(unix)]
+use app::background;
+#[cfg(unix)]
+use app::dispatcher::requires_background_supervision;
 use app::{
+    background::BackgroundWorker,
     cache::handle_cache_stats,
     config_dump::handle_config_dump,
-    dispatcher::dispatch_command,
+    dispatcher::dispatch_command_with_background,
     initialization::{AppContext, initialize_app},
     query::{handle_query, is_supported_query},
     utils::show_usage,
@@ -108,8 +113,12 @@ async fn run() -> Result<()> {
 /// exit code. `dispatch_command` returns the code instead of exiting itself, so
 /// the mapping stays in one place instead of being scattered across command
 /// implementations.
-async fn dispatch_and_exit(cli: &Cli, ctx: &AppContext) -> Result<()> {
-    match dispatch_command(cli, ctx).await {
+async fn dispatch_and_exit(
+    cli: &Cli,
+    ctx: &AppContext,
+    background_worker: Option<&BackgroundWorker>,
+) -> Result<()> {
+    match dispatch_command_with_background(cli, ctx, background_worker).await {
         Ok(0) => Ok(()),
         Ok(exit_code) => std::process::exit(exit_code),
         Err(e) => Err(map_hard_failure(&cli.command, cli.is_ssh_mode(), e)),
@@ -194,7 +203,7 @@ async fn run_pdsh_mode(args: &[String]) -> Result<()> {
 
     // Initialize and run
     let ctx = initialize_app(&mut cli, args).await?;
-    dispatch_and_exit(&cli, &ctx).await
+    dispatch_and_exit(&cli, &ctx, None).await
 }
 
 /// Handle pdsh query mode (-q)
@@ -321,6 +330,13 @@ async fn run_bssh_mode(args: &[String]) -> Result<()> {
     if effective_args != args {
         cli = Cli::parse_from(&effective_args);
     }
+    bssh::utils::diagnostics::set_quiet_warnings(cli.quiet);
+    let background_worker = BackgroundWorker::from_environment()?;
+    if background_worker.is_none() {
+        for warning in cli.short_flag_migration_warnings(&effective_args) {
+            bssh::warningln!("{warning}");
+        }
+    }
     bssh::ui::configure_color(cli.color);
 
     if cli.version {
@@ -359,6 +375,11 @@ async fn run_bssh_mode(args: &[String]) -> Result<()> {
         return Ok(());
     }
 
+    #[cfg(not(unix))]
+    if cli.is_ssh_mode() && cli.fork_after_authentication {
+        anyhow::bail!("-f background-after-authentication currently requires Unix");
+    }
+
     // Initialize the application and load all configurations. A failure here is
     // a pre-connection failure, which `ping` reports as 255.
     let init_result = initialize_app(&mut cli, &effective_args).await;
@@ -367,6 +388,22 @@ async fn run_bssh_mode(args: &[String]) -> Result<()> {
         Err(e) => return Err(map_hard_failure(&cli.command, cli.is_ssh_mode(), e)),
     };
 
+    // Re-execute only invocations that may actually detach. This decision is
+    // made after effective ssh_config resolution so config-only
+    // ForkAfterAuthentication and ControlPersist remain supported, while
+    // ordinary commands and subsystem transports retain their original
+    // single-process stdio and latency characteristics.
+    #[cfg(unix)]
+    if background_worker.is_none() && requires_background_supervision(&cli, &ctx)? {
+        let exit_code = background::supervise(&effective_args)
+            .await
+            .map_err(|error| map_hard_failure(&cli.command, true, error))?;
+        if exit_code == 0 {
+            return Ok(());
+        }
+        std::process::exit(exit_code);
+    }
+
     // Dispatch to the appropriate command handler
-    dispatch_and_exit(&cli, &ctx).await
+    dispatch_and_exit(&cli, &ctx, background_worker.as_ref()).await
 }

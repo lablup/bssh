@@ -57,16 +57,18 @@ impl InteractiveCommand {
         // Connect to all selected nodes and get SSH channels
         let mut channels = Vec::new();
         let mut clients = Vec::new();
+        let mut agent_forwarding_leases = Vec::new();
         let mut connected_nodes = Vec::new();
 
         for node in nodes_to_connect {
             match self.connect_to_node_pty(node.clone()).await {
-                Ok((client, channel)) => {
+                Ok((client, channel, agent_forwarding_lease)) => {
                     if !ssh_compatible {
                         println!("✓ Connected to {}", node.to_string().green());
                     }
                     channels.push(channel);
                     clients.push(client);
+                    agent_forwarding_leases.extend(agent_forwarding_lease);
                     connected_nodes.push(node);
                 }
                 Err(e) => {
@@ -117,6 +119,7 @@ impl InteractiveCommand {
             Ok(())
         }
         .await;
+        drop(agent_forwarding_leases);
         let disconnect_result = Self::disconnect_clients(&clients).await;
 
         if requested_remote_pty {

@@ -40,6 +40,7 @@ pub use algorithms::{supported_cipher_names, supported_mac_names};
 pub use auth_policy::SshAuthenticationPolicy;
 pub use authentication::{AuthKeyboardInteractive, AuthMethod, ServerCheckMethod};
 pub use channel_manager::{CommandExecutedResult, CommandOutput};
+pub(crate) use connection::AgentForwardingLease;
 pub use connection::{
     Client, ClientHandler, DEFAULT_KEEPALIVE_INTERVAL, DEFAULT_KEEPALIVE_MAX, SshConnectionConfig,
     SshConnectionConfigResolver,

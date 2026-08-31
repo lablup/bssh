@@ -86,6 +86,9 @@ pub struct SshHostConfig {
     /// Raw `GlobalKnownHostsFile` values in OpenSSH lookup order.
     pub global_known_hosts_file: Option<Vec<String>>,
     pub forward_agent: Option<bool>,
+    /// Optional explicit agent socket path or `$ENVIRONMENT_VARIABLE` selected
+    /// by `ForwardAgent`. `None` uses `SSH_AUTH_SOCK` when forwarding is enabled.
+    pub forward_agent_socket_path: Option<String>,
     pub forward_x11: Option<bool>,
     pub server_alive_interval: Option<u32>,
     pub server_alive_count_max: Option<u32>,
@@ -99,6 +102,11 @@ pub struct SshHostConfig {
     pub password_authentication: Option<bool>,
     pub keyboard_interactive_authentication: Option<bool>,
     pub gssapi_authentication: Option<bool>,
+    /// Whether GSSAPI credentials may be delegated.
+    ///
+    /// bssh does not implement GSSAPI authentication, so `no` is an enforced
+    /// safe state while `yes` remains explicitly unsupported.
+    pub gssapi_delegate_credentials: Option<bool>,
     pub host_key_algorithms: Vec<String>,
     pub kex_algorithms: Vec<String>,
     pub ciphers: Vec<String>,

@@ -54,13 +54,17 @@ pub fn parse_option(
         if reported_diagnostics.insert(format!("unknown:{accepted_keyword}")) {
             let keyword = escape_field(accepted_keyword);
             let location = source.location();
-            crate::diagnosticln!("Unknown SSH config option '{keyword}' at {location}");
+            crate::warningln!("Unknown SSH config option '{keyword}' at {location}");
         }
         return Ok(());
     };
     let keyword = spec.canonical;
 
-    if spec.support == support::KeywordSupport::Unimplemented {
+    let enforced_gssapi_disable = keyword == "gssapidelegatecredentials"
+        && args
+            .first()
+            .is_some_and(|value| value.eq_ignore_ascii_case("no"));
+    if spec.support == support::KeywordSupport::Unimplemented && !enforced_gssapi_disable {
         validate_retained_option(keyword, args, line_number)?;
         if !args.is_empty() {
             host.unimplemented_options
@@ -69,7 +73,7 @@ pub fn parse_option(
         }
         if reported_diagnostics.insert(format!("unsupported:{keyword}")) {
             let location = source.location();
-            crate::diagnosticln!(
+            crate::warningln!(
                 "Unsupported SSH config option '{keyword}' at {location}; bssh parses this value for inspection but does not implement its runtime behavior"
             );
         }
@@ -92,6 +96,7 @@ pub fn parse_option(
         | "kbdinteractiveauthentication"
         | "challengeresponseauthentication"
         | "gssapiauthentication"
+        | "gssapidelegatecredentials"
         | "preferredauthentications"
         | "hostbasedauthentication"
         | "hostbasedacceptedalgorithms"
