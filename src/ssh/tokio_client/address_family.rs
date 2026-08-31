@@ -32,7 +32,9 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 /// address is a candidate, tried in resolver order. The other two variants are
 /// hard constraints; there is no fallback to the other family, matching
 /// OpenSSH.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
 pub enum AddressFamily {
     /// No constraint (`AddressFamily any`, neither `-4` nor `-6`).
     #[default]

@@ -416,16 +416,22 @@ impl ForwardingManager {
         // Cancel the forwarding task
         session.cancel_token.cancel();
 
-        // Wait for task to complete if it exists
-        if let Some(task) = session.task_handle.take() {
-            let _ = task.await; // Ignore join errors
-        }
+        // Wait for task completion so remote cancel failures reach callers.
+        let task_result = match session.task_handle.take() {
+            Some(task) => task
+                .await
+                .with_context(|| format!("Forwarding session {id} task failed to join"))?,
+            None => match &session.status {
+                ForwardingStatus::Failed(reason) => Err(anyhow::anyhow!(reason.clone())),
+                _ => Ok(()),
+            },
+        };
 
         session.status = ForwardingStatus::Stopped;
         session.updated_at = Instant::now();
 
         tracing::info!("Stopped forwarding session {}", id);
-        Ok(())
+        task_result
     }
 
     /// Stop all forwarding sessions
@@ -482,7 +488,7 @@ impl ForwardingManager {
     /// Remove a forwarding session (must be stopped first)
     pub async fn remove_forwarding(&mut self, id: ForwardingId) -> Result<()> {
         // Ensure session is stopped first
-        let _ = self.stop_forwarding(id).await;
+        let stop_result = self.stop_forwarding(id).await;
 
         let mut sessions = self.sessions.write().await;
         sessions
@@ -490,7 +496,7 @@ impl ForwardingManager {
             .ok_or_else(|| anyhow::anyhow!("Forwarding session {id} not found"))?;
 
         tracing::info!("Removed forwarding session {}", id);
-        Ok(())
+        stop_result
     }
 
     /// Shutdown the ForwardingManager and all active sessions

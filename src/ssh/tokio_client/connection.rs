@@ -1944,6 +1944,26 @@ impl Client {
         result
     }
 
+    pub(crate) async fn add_control_forwardings(
+        &self,
+        plan: &ForwardingPlan,
+    ) -> Result<(), super::Error> {
+        self.forwarding_runtime
+            .add_control_forwardings(self, plan)
+            .await
+            .map_err(|error| super::Error::PortForwardRequestFailed(format!("{error:#}")))
+    }
+
+    pub(crate) async fn cancel_control_forwardings(
+        &self,
+        plan: &ForwardingPlan,
+    ) -> Result<(), super::Error> {
+        self.forwarding_runtime
+            .cancel_control_forwardings(plan)
+            .await
+            .map_err(|error| super::Error::PortForwardRequestFailed(format!("{error:#}")))
+    }
+
     pub(crate) fn remote_forward_registry(&self) -> RemoteForwardRegistry {
         self.remote_forward_registry.clone()
     }

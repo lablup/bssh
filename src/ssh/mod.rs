@@ -15,6 +15,7 @@
 pub mod auth;
 pub mod client;
 pub mod config_cache;
+pub mod control;
 pub mod handler;
 pub mod known_hosts;
 pub mod pool;
@@ -28,6 +29,9 @@ pub mod keychain_macos;
 pub use auth::AuthContext;
 pub use client::SshClient;
 pub use config_cache::{CacheConfig, CacheStats, GLOBAL_CACHE, SshConfigCache};
+pub use control::{
+    ControlCommand, ControlMasterMode, ControlPathContext, ControlPersist, ControlPolicy,
+};
 pub use handler::BsshHandler;
 pub use pool::ConnectionPool;
 pub use session_policy::{CliTtyMode, SessionPolicy, SessionPurpose, SessionRequest};

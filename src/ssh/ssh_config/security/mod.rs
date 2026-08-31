@@ -22,7 +22,9 @@ mod path_validation;
 mod string_validation;
 
 pub use path_validation::secure_validate_path;
-pub use string_validation::{validate_control_path, validate_executable_string};
+#[cfg(test)]
+pub use string_validation::validate_control_path;
+pub use string_validation::validate_executable_string;
 
 #[cfg(test)]
 mod tests;
