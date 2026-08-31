@@ -42,6 +42,49 @@ fn version_matches_openssh_stream_contract() {
 }
 
 #[test]
+fn algorithm_queries_match_the_selectable_transport_surface() {
+    let ciphers = bssh().args(["-Q", "cipher"]).output().unwrap();
+    let macs = bssh().args(["-Q", "mac"]).output().unwrap();
+    assert!(ciphers.status.success() && macs.status.success());
+    let ciphers = String::from_utf8(ciphers.stdout).unwrap();
+    let macs = String::from_utf8(macs.stdout).unwrap();
+    assert!(ciphers.lines().any(|value| value == "aes128-cbc"));
+    assert!(
+        macs.lines()
+            .any(|value| value == "hmac-sha2-256-etm@openssh.com")
+    );
+    assert!(
+        !ciphers
+            .lines()
+            .any(|value| matches!(value, "clear" | "none"))
+    );
+    assert!(!macs.lines().any(|value| value == "none"));
+}
+
+#[test]
+fn unsupported_algorithm_policies_fail_before_connecting_with_supported_values() {
+    for (flag, policy, kind) in [
+        ("-c", "-definitely-not-a-cipher", "cipher"),
+        ("-m", "-definitely-not-a-mac", "mac"),
+        ("-c", "+", "cipher"),
+        ("-m", "^", "mac"),
+    ] {
+        let output = bssh()
+            .args([flag, policy, "unresolvable.invalid", "true"])
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr).to_ascii_lowercase();
+        assert_eq!(output.status.code(), Some(1), "{flag} {policy}: {stderr}");
+        assert!(output.stdout.is_empty());
+        assert!(stderr.contains(kind), "{flag} {policy}: {stderr}");
+        assert!(
+            stderr.contains("supported values"),
+            "{flag} {policy}: {stderr}"
+        );
+    }
+}
+
+#[test]
 fn explicit_and_environment_color_controls_apply_to_stdout() {
     let never = bssh()
         .args(["--color=never", "cache-stats"])

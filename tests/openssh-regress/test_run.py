@@ -24,7 +24,7 @@ class ManifestTests(unittest.TestCase):
     def test_committed_manifest_is_valid(self) -> None:
         selection = openssh_regress.read_selection(openssh_regress.DEFAULT_SELECTION)
 
-        self.assertEqual(sum(row.disposition == "run" for row in selection), 78)
+        self.assertEqual(sum(row.disposition == "run" for row in selection), 79)
         self.assertEqual(sum(row.disposition == "skip" for row in selection), 11)
         self.assertTrue(all(row.reason for row in selection if row.disposition != "run"))
         self.assertEqual(

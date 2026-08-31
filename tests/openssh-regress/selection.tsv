@@ -64,7 +64,7 @@ krl	skip	Permanent candidate skip: KRL generation is outside the compatibility t
 limit-keytype	run
 localcommand	run
 login-timeout	run
-match-subsystem	exclude	sshd-side subsystem matching test; outside the client candidate set.
+match-subsystem	run	Exercises the client -s subsystem request and preserves remote exit status.
 multiplex	run
 multipubkey	run
 password	run

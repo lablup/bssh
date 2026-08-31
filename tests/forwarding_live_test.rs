@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::net::{Ipv4Addr, SocketAddr};
+use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -19,6 +20,7 @@ use russh::server::{self, Msg, Server, Session};
 use russh::{Channel, ChannelId, ChannelOpenFailure};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::process::Command;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, timeout};
@@ -140,6 +142,7 @@ impl server::Handler for ForwardingServer {
         reply: server::ChannelOpenHandle,
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
+        self.state.record("direct-tcpip");
         let Ok(tcp) = TcpStream::connect((host_to_connect, port_to_connect as u16)).await else {
             reply.reject(ChannelOpenFailure::ConnectFailed).await;
             return Ok(());
@@ -237,6 +240,202 @@ impl server::Handler for ForwardingServer {
             Ok(false)
         }
     }
+}
+
+#[tokio::test]
+async fn stdio_forward_is_byte_transparent_and_preserves_half_close() {
+    let ssh = TestSshServer::start().await;
+    let echo = EchoServer::start().await;
+    let config = SshConnectionConfig::new().with_address_family(AddressFamily::V4);
+    let client = Client::connect_with_ssh_config(
+        ssh.address,
+        "test",
+        AuthMethod::with_password("test"),
+        ServerCheckMethod::NoCheck,
+        &config,
+    )
+    .await
+    .expect("connect stdio forwarding client");
+
+    let payload = b"stdio\0forward\nbytes".to_vec();
+    let (mut input_writer, input_reader) = tokio::io::duplex(64);
+    let (output_writer, mut output_reader) = tokio::io::duplex(64);
+    let write_payload = payload.clone();
+    let writer = async move {
+        input_writer.write_all(&write_payload).await.unwrap();
+        input_writer.shutdown().await.unwrap();
+    };
+    let forward = client.forward_stdio_with_io(
+        (echo.address.ip().to_string(), echo.address.port()),
+        AddressFamily::V4,
+        input_reader,
+        output_writer,
+    );
+    let reader = async {
+        let mut output = Vec::new();
+        output_reader.read_to_end(&mut output).await.unwrap();
+        output
+    };
+    let (_, forwarded, output) = timeout(TEST_TIMEOUT, async {
+        tokio::join!(writer, forward, reader)
+    })
+    .await
+    .expect("stdio forward timed out");
+    forwarded.expect("stdio forward failed");
+    assert_eq!(output, payload);
+    assert_eq!(ssh.state.authentications.load(Ordering::SeqCst), 1);
+    assert!(
+        ssh.state
+            .events()
+            .iter()
+            .any(|event| event == "direct-tcpip")
+    );
+    assert!(
+        !ssh.state
+            .events()
+            .iter()
+            .any(|event| matches!(event.as_str(), "session" | "pty" | "exec"))
+    );
+
+    client.disconnect().await.expect("disconnect stdio client");
+    echo.shutdown().await;
+    ssh.shutdown().await;
+}
+
+#[tokio::test]
+async fn stdio_forward_keeps_uploading_after_remote_half_close() {
+    let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+        .await
+        .expect("bind half-close target");
+    let target = listener.local_addr().expect("half-close target address");
+    let (remote_eof_tx, remote_eof_rx) = tokio::sync::oneshot::channel();
+    let (received_tx, received_rx) = tokio::sync::oneshot::channel();
+    let target_task = tokio::spawn(async move {
+        let (mut stream, _) = listener.accept().await.expect("accept forwarded stream");
+        stream.write_all(b"remote-eof").await.unwrap();
+        stream.shutdown().await.unwrap();
+        remote_eof_tx.send(()).unwrap();
+        let mut received = Vec::new();
+        stream.read_to_end(&mut received).await.unwrap();
+        received_tx.send(received).unwrap();
+    });
+
+    let ssh = TestSshServer::start().await;
+    let client = Client::connect_with_ssh_config(
+        ssh.address,
+        "test",
+        AuthMethod::with_password("test"),
+        ServerCheckMethod::NoCheck,
+        &SshConnectionConfig::new().with_address_family(AddressFamily::V4),
+    )
+    .await
+    .expect("connect half-close forwarding client");
+    let payload = b"upload-after-remote-eof".to_vec();
+    let (mut input_writer, input_reader) = tokio::io::duplex(64);
+    let (output_writer, mut output_reader) = tokio::io::duplex(64);
+    let forward = client.forward_stdio_with_io(
+        (target.ip().to_string(), target.port()),
+        AddressFamily::V4,
+        input_reader,
+        output_writer,
+    );
+    let drive = async {
+        remote_eof_rx.await.expect("target sent remote EOF");
+        input_writer.write_all(&payload).await.unwrap();
+        input_writer.shutdown().await.unwrap();
+        let mut output = Vec::new();
+        output_reader.read_to_end(&mut output).await.unwrap();
+        let received = received_rx.await.expect("target received upload");
+        (output, received)
+    };
+    let (forwarded, (output, received)) =
+        timeout(TEST_TIMEOUT, async { tokio::join!(forward, drive) })
+            .await
+            .expect("remote half-close forwarding timed out");
+    forwarded.expect("remote half-close forwarding failed");
+    assert_eq!(output, b"remote-eof");
+    assert_eq!(received, payload);
+
+    target_task.await.expect("half-close target task");
+    client.disconnect().await.expect("disconnect stdio client");
+    ssh.shutdown().await;
+}
+
+#[tokio::test]
+async fn bssh_stdio_forward_is_a_working_proxy_command_transport() {
+    let bastion = TestSshServer::start().await;
+    let target = TestSshServer::start().await;
+    let binary = env!("CARGO_BIN_EXE_bssh");
+    let mut config_file = tempfile::NamedTempFile::new().expect("temporary ssh config");
+    let config = format!(
+        "Host target\n\
+         HostName 127.0.0.1\n\
+         Port {}\n\
+         User test\n\
+         StrictHostKeyChecking no\n\
+         UserKnownHostsFile /dev/null\n\
+         ProxyCommand {binary} --password -q -p {} -oStrictHostKeyChecking=no -oUserKnownHostsFile=/dev/null -W %h:%p test@127.0.0.1\n",
+        target.address.port(),
+        bastion.address.port(),
+    );
+    std::io::Write::write_all(config_file.as_file_mut(), config.as_bytes())
+        .expect("write ssh config");
+
+    let output = timeout(
+        TEST_TIMEOUT,
+        Command::new(binary)
+            .args([
+                "--password",
+                "-q",
+                "-F",
+                config_file.path().to_str().unwrap(),
+                "target",
+                "true",
+            ])
+            .env("BSSH_PASSWORD", "test")
+            .kill_on_drop(true)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output(),
+    )
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "nested ProxyCommand timed out; bastion={:?}, target={:?}",
+            bastion.state.events(),
+            target.state.events()
+        )
+    })
+    .expect("run bssh through ProxyCommand");
+    assert!(
+        output.status.success(),
+        "status={:?}, stdout={}, stderr={}",
+        output.status.code(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    assert!(output.stdout.is_empty(), "ProxyCommand polluted stdout");
+    assert!(
+        bastion
+            .state
+            .events()
+            .iter()
+            .any(|event| event == "direct-tcpip")
+    );
+    assert!(
+        !bastion
+            .state
+            .events()
+            .iter()
+            .any(|event| matches!(event.as_str(), "session" | "pty" | "exec"))
+    );
+    let target_events = target.state.events();
+    assert!(target_events.iter().any(|event| event == "session"));
+    assert!(target_events.iter().any(|event| event == "exec"));
+
+    target.shutdown().await;
+    bastion.shutdown().await;
 }
 
 struct TestSshServer {

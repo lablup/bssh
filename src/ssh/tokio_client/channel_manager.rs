@@ -25,7 +25,7 @@ use russh::Channel;
 use russh::client::Msg;
 use std::io;
 use std::net::SocketAddr;
-use tokio::io::{AsyncRead, AsyncReadExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc::{Receiver, Sender, channel};
 use tokio::task::JoinHandle;
 
@@ -313,6 +313,87 @@ impl Client {
         }
 
         Err(connect_err)
+    }
+
+    /// Forward process stdin/stdout over a `direct-tcpip` channel.
+    ///
+    /// Local EOF half-closes only the sending side. The remote side is still
+    /// drained to stdout until the SSH channel closes, which is required for
+    /// protocols that send their final response after consuming request EOF.
+    pub async fn forward_stdio(
+        &self,
+        target: (String, u16),
+        address_family: AddressFamily,
+    ) -> Result<(), super::Error> {
+        self.forward_stdio_with_io(
+            target,
+            address_family,
+            tokio::io::stdin(),
+            tokio::io::stdout(),
+        )
+        .await
+    }
+
+    /// Forward arbitrary asynchronous input/output over a `direct-tcpip`
+    /// channel. The two directions are pumped independently so SSH flow
+    /// control in one direction cannot block progress in the other.
+    pub async fn forward_stdio_with_io<R, W>(
+        &self,
+        target: (String, u16),
+        address_family: AddressFamily,
+        mut input: R,
+        mut output: W,
+    ) -> Result<(), super::Error>
+    where
+        R: AsyncRead + Unpin,
+        W: AsyncWrite + Unpin,
+    {
+        let channel = self
+            .open_direct_tcpip_channel_with_family(target, None, address_family)
+            .await?;
+        let (mut channel_read, channel_write) = channel.split();
+
+        let upload = async {
+            let mut writer = channel_write.make_writer();
+            tokio::io::copy(&mut input, &mut writer)
+                .await
+                .map_err(super::Error::IoError)?;
+            writer.flush().await.map_err(super::Error::IoError)?;
+            drop(writer);
+            channel_write.eof().await?;
+            Ok::<(), super::Error>(())
+        };
+        let download = async {
+            while let Some(message) = channel_read.wait().await {
+                match message {
+                    russh::ChannelMsg::Data { data } => {
+                        output
+                            .write_all(&data)
+                            .await
+                            .map_err(super::Error::IoError)?;
+                        output.flush().await.map_err(super::Error::IoError)?;
+                    }
+                    // Remote EOF only half-closes remote-to-local traffic.
+                    // Keep pumping stdin until local EOF or a full Close.
+                    russh::ChannelMsg::Eof => {}
+                    russh::ChannelMsg::Close => break,
+                    // direct-tcpip is a single byte stream. Extended data is
+                    // not part of that transport and must never contaminate
+                    // stdout.
+                    _ => {}
+                }
+            }
+            output.flush().await.map_err(super::Error::IoError)
+        };
+        tokio::pin!(upload, download);
+        tokio::select! {
+            biased;
+            result = &mut download => result,
+            result = &mut upload => {
+                result?;
+                download.await
+            }
+        }
     }
 
     /// Execute a remote command via the ssh connection with streaming output.

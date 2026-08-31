@@ -36,16 +36,20 @@ pub fn is_supported_query(query: &str) -> bool {
 pub fn handle_query(query: &str) {
     match query {
         "cipher" => {
-            println!("aes128-ctr\naes192-ctr\naes256-ctr");
-            println!("aes128-gcm@openssh.com\naes256-gcm@openssh.com");
-            println!("chacha20-poly1305@openssh.com");
+            println!(
+                "{}",
+                bssh::ssh::tokio_client::supported_cipher_names().join("\n")
+            );
         }
         "cipher-auth" => {
             println!("aes128-gcm@openssh.com\naes256-gcm@openssh.com");
             println!("chacha20-poly1305@openssh.com");
         }
         "mac" => {
-            println!("hmac-sha2-256\nhmac-sha2-512\nhmac-sha1");
+            println!(
+                "{}",
+                bssh::ssh::tokio_client::supported_mac_names().join("\n")
+            );
         }
         "kex" => {
             println!("curve25519-sha256\ncurve25519-sha256@libssh.org");

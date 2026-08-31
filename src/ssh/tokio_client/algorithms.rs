@@ -60,26 +60,6 @@ fn expand_supported<T: Clone + PartialEq>(
     Ok(expanded)
 }
 
-fn remove_matching<T: Clone>(
-    defaults: &[T],
-    patterns: &[&str],
-    name: impl Fn(&T) -> &str,
-) -> Result<Vec<T>, String> {
-    let patterns = patterns
-        .iter()
-        .map(|pattern| Pattern::new(pattern).map_err(|error| error.to_string()))
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(defaults
-        .iter()
-        .filter(|algorithm| {
-            !patterns
-                .iter()
-                .any(|pattern| pattern.matches(name(algorithm)))
-        })
-        .cloned()
-        .collect())
-}
-
 fn combine<T: Clone + PartialEq>(defaults: &[T], configured: Vec<T>, mode: ListMode) -> Vec<T> {
     match mode {
         ListMode::Replace => configured,
@@ -123,8 +103,19 @@ fn resolve_policy<T: Clone + PartialEq>(
     name: impl Fn(&T) -> &str + Copy,
 ) -> Result<Vec<T>, String> {
     let (mode, names) = list_mode(values);
+    if names.is_empty() {
+        return Err(format!(
+            "empty {kind} policy; supported values: {}",
+            supported.iter().map(name).collect::<Vec<_>>().join(",")
+        ));
+    }
     let resolved = if mode == ListMode::Remove {
-        remove_matching(defaults, &names, name)?
+        let removed = expand_supported(kind, &names, supported, name)?;
+        defaults
+            .iter()
+            .filter(|algorithm| !removed.contains(algorithm))
+            .cloned()
+            .collect()
     } else {
         let configured = expand_supported(kind, &names, supported, name)?;
         combine(defaults, configured, mode)
@@ -135,11 +126,40 @@ fn resolve_policy<T: Clone + PartialEq>(
     Ok(resolved)
 }
 
-pub(crate) fn resolve_ciphers(values: &[String]) -> Result<Vec<cipher::Name>, String> {
-    let supported = cipher::ALL_CIPHERS
+fn selectable_ciphers() -> Vec<cipher::Name> {
+    cipher::ALL_CIPHERS
         .iter()
         .map(|value| **value)
-        .collect::<Vec<_>>();
+        .filter(|value| !matches!(value.as_ref(), "clear" | "none"))
+        .collect()
+}
+
+fn selectable_macs() -> Vec<mac::Name> {
+    mac::ALL_MAC_ALGORITHMS
+        .iter()
+        .map(|value| **value)
+        .filter(|value| value.as_ref() != "none")
+        .collect()
+}
+
+#[must_use]
+pub fn supported_cipher_names() -> Vec<String> {
+    selectable_ciphers()
+        .iter()
+        .map(|value| value.as_ref().to_string())
+        .collect()
+}
+
+#[must_use]
+pub fn supported_mac_names() -> Vec<String> {
+    selectable_macs()
+        .iter()
+        .map(|value| value.as_ref().to_string())
+        .collect()
+}
+
+pub(crate) fn resolve_ciphers(values: &[String]) -> Result<Vec<cipher::Name>, String> {
+    let supported = selectable_ciphers();
     resolve_policy(
         "cipher",
         values,
@@ -150,10 +170,7 @@ pub(crate) fn resolve_ciphers(values: &[String]) -> Result<Vec<cipher::Name>, St
 }
 
 pub(crate) fn resolve_macs(values: &[String]) -> Result<Vec<mac::Name>, String> {
-    let supported = mac::ALL_MAC_ALGORITHMS
-        .iter()
-        .map(|value| **value)
-        .collect::<Vec<_>>();
+    let supported = selectable_macs();
     resolve_policy(
         "MAC",
         values,
@@ -271,6 +288,28 @@ mod tests {
 
         let error = resolve_macs(&[String::from("-*")]).unwrap_err();
         assert!(error.contains("selects no supported algorithms"));
+    }
+
+    #[test]
+    fn removal_and_internal_algorithms_fail_closed() {
+        for policy in ["-not-real", "+", "-", "^", "clear", "none"] {
+            let error = resolve_ciphers(&[policy.to_string()]).unwrap_err();
+            assert!(error.contains("supported values"), "{policy}: {error}");
+        }
+        assert!(resolve_macs(&["none".to_string()]).is_err());
+        assert!(
+            !supported_cipher_names()
+                .iter()
+                .any(|name| name == "clear" || name == "none")
+        );
+        assert!(!supported_mac_names().iter().any(|name| name == "none"));
+
+        // A supported non-default removal is valid and simply leaves the
+        // default preference unchanged.
+        assert_eq!(
+            resolve_ciphers(&["-aes128-cbc".to_string()]).unwrap(),
+            russh::Preferred::DEFAULT.cipher.as_ref()
+        );
     }
 
     #[test]

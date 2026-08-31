@@ -857,6 +857,7 @@ Host beta
             environment: Vec::new(),
             local_command: None,
             request_pty: false,
+            stdin_null: false,
             request: SessionRequest::Shell,
         };
 

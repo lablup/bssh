@@ -332,9 +332,9 @@ fn raw_dump_dispatch_treats_bssh_subcommand_names_as_destinations() {
 }
 
 #[test]
-fn normal_mode_stdio_forward_fails_closed_before_connecting() {
+fn normal_mode_stdio_forward_connection_failure_is_ssh_level_and_stdout_clean() {
     let output = run(&["-W", "localhost:22", "host"]);
-    assert!(!output.status.success());
+    assert_eq!(output.status.code(), Some(255));
     assert!(output.stdout.is_empty());
 }
 
