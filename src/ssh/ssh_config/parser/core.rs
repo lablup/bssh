@@ -506,7 +506,7 @@ fn parse_option_line(
     }
 
     let remainder = config_value_remainder(line);
-    Ok((keyword, vec![remainder.to_string()]))
+    Ok((keyword, vec![normalize_command_remainder(remainder)]))
 }
 
 fn config_value_remainder(line: &str) -> &str {
@@ -524,6 +524,49 @@ fn config_value_remainder(line: &str) -> &str {
         remainder = after_equals.trim_start();
     }
     remainder
+}
+
+/// Collapse configuration separators without rewriting shell syntax. This
+/// preserves the parser's established single-separator representation while
+/// retaining whitespace protected by quotes or backslashes for the shell.
+fn normalize_command_remainder(remainder: &str) -> String {
+    let mut normalized = String::with_capacity(remainder.len());
+    let mut chars = remainder.chars();
+    let mut quote = None;
+    let mut pending_separator = false;
+
+    while let Some(ch) = chars.next() {
+        if ch == '\\' {
+            if pending_separator && !normalized.is_empty() {
+                normalized.push(' ');
+            }
+            pending_separator = false;
+            normalized.push(ch);
+            if let Some(escaped) = chars.next() {
+                normalized.push(escaped);
+            }
+        } else if quote == Some(ch) {
+            normalized.push(ch);
+            quote = None;
+        } else if quote.is_none() && matches!(ch, '\'' | '"') {
+            if pending_separator && !normalized.is_empty() {
+                normalized.push(' ');
+            }
+            pending_separator = false;
+            normalized.push(ch);
+            quote = Some(ch);
+        } else if quote.is_none() && matches!(ch, ' ' | '\t') {
+            pending_separator = true;
+        } else {
+            if pending_separator && !normalized.is_empty() {
+                normalized.push(' ');
+            }
+            pending_separator = false;
+            normalized.push(ch);
+        }
+    }
+
+    normalized
 }
 
 /// Parse a Host directive line
@@ -589,4 +632,17 @@ pub(super) fn parse_config_line(
             .collect();
     }
     Ok((keyword, args))
+}
+
+#[cfg(test)]
+mod command_remainder_tests {
+    use super::normalize_command_remainder;
+
+    #[test]
+    fn normalizes_only_unquoted_command_separators() {
+        assert_eq!(
+            normalize_command_remainder(r#"printf    '%h  %k'    escaped\ space    "%n  %p""#),
+            r#"printf '%h  %k' escaped\ space "%n  %p""#
+        );
+    }
 }
