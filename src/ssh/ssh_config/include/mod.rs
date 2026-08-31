@@ -159,13 +159,13 @@ pub(crate) async fn resolve_includes_for_host_at(
     hostname: Option<&str>,
     anchor: PathBuf,
 ) -> Result<Vec<IncludedFile>> {
+    let initial_config = super::types::SshHostConfig::default();
     resolve_includes_for_host_at_pass(
         config_path,
         content,
         hostname,
         anchor,
-        None,
-        None,
+        &initial_config,
         false,
         true,
     )
@@ -178,14 +178,12 @@ pub(crate) async fn resolve_includes_for_host_at_pass(
     content: &str,
     hostname: Option<&str>,
     anchor: PathBuf,
-    effective_hostname: Option<&str>,
-    remote_user: Option<&str>,
+    initial_config: &super::types::SshHostConfig,
     final_pass: bool,
     allow_tilde: bool,
 ) -> Result<Vec<IncludedFile>> {
     let mut context = IncludeContext::with_anchor(anchor, allow_tilde);
-    let mut expansion =
-        IncludeExpansionState::new(hostname, effective_hostname, remote_user, final_pass);
+    let mut expansion = IncludeExpansionState::new(hostname, initial_config, final_pass);
 
     // Process the main file with includes
     process_file_with_includes(
@@ -215,16 +213,24 @@ struct IncludeExpansionState {
 impl IncludeExpansionState {
     fn new(
         hostname: Option<&str>,
-        effective_hostname: Option<&str>,
-        remote_user: Option<&str>,
+        initial_config: &super::types::SshHostConfig,
         final_pass: bool,
     ) -> Self {
+        let effective_hostname = initial_config.hostname.as_deref().map_or_else(
+            || hostname.map(str::to_string),
+            |value| {
+                Some(hostname.map_or_else(
+                    || value.to_string(),
+                    |original| super::resolver::expand_hostname_value(value, original),
+                ))
+            },
+        );
         Self {
             original_hostname: hostname.map(str::to_string),
-            effective_hostname: effective_hostname.or(hostname).map(str::to_string),
-            hostname_obtained: effective_hostname.is_some(),
-            remote_user: remote_user.map(str::to_string),
-            config: super::types::SshHostConfig::default(),
+            effective_hostname,
+            hostname_obtained: initial_config.hostname.is_some(),
+            remote_user: initial_config.user.clone(),
+            config: initial_config.clone(),
             final_pass,
         }
     }
@@ -1014,15 +1020,15 @@ mod tests {
 
     #[test]
     fn include_percent_tokens_use_current_streaming_context() {
-        let mut state = IncludeExpansionState::new(
-            Some("alias"),
-            Some("effective.example"),
-            Some("deploy"),
-            false,
-        );
-        state.config.port = Some(2200);
-        state.config.host_key_alias = Some("key-alias".to_string());
-        state.config.proxy_jump = Some("jump".to_string());
+        let initial = super::super::types::SshHostConfig {
+            hostname: Some("effective.example".to_string()),
+            user: Some("deploy".to_string()),
+            port: Some(2200),
+            host_key_alias: Some("key-alias".to_string()),
+            proxy_jump: Some("jump".to_string()),
+            ..Default::default()
+        };
+        let state = IncludeExpansionState::new(Some("alias"), &initial, false);
         let expanded = expand_include_percent("%h-%n-%r-%p-%k-%j-%%", &state).unwrap();
         assert_eq!(
             expanded,

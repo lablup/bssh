@@ -95,12 +95,16 @@ pub(crate) async fn parse_from_file_for_host_at_with_diagnostics(
     anchor: std::path::PathBuf,
     reported_diagnostics: &mut HashSet<String>,
 ) -> Result<Vec<SshHostConfig>> {
+    let initial_config = SshHostConfig {
+        hostname: initial_hostname.map(str::to_string),
+        user: initial_user.map(str::to_string),
+        ..Default::default()
+    };
     let first_pass = parse_from_file_for_host_pass_at_with_diagnostics(
         path,
         content,
         hostname,
-        initial_hostname,
-        initial_user,
+        &initial_config,
         anchor.clone(),
         false,
         true,
@@ -115,8 +119,7 @@ pub(crate) async fn parse_from_file_for_host_at_with_diagnostics(
         path,
         content,
         hostname,
-        preliminary.hostname.as_deref(),
-        preliminary.user.as_deref(),
+        &preliminary,
         anchor,
         true,
         true,
@@ -137,8 +140,7 @@ pub(crate) async fn parse_from_file_for_host_pass_at_with_diagnostics(
     path: &Path,
     content: &str,
     hostname: &str,
-    initial_hostname: Option<&str>,
-    initial_user: Option<&str>,
+    initial_config: &SshHostConfig,
     anchor: std::path::PathBuf,
     final_pass: bool,
     allow_tilde: bool,
@@ -149,8 +151,7 @@ pub(crate) async fn parse_from_file_for_host_pass_at_with_diagnostics(
         content,
         Some(hostname),
         anchor,
-        initial_hostname,
-        initial_user,
+        initial_config,
         final_pass,
         allow_tilde,
     )

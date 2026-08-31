@@ -15,7 +15,7 @@ use bssh::ssh::ssh_config::{SshConfig, render_resolved_config};
 pub async fn handle_config_dump(invocation: &SshDumpInvocation) -> Result<()> {
     let mut config = match invocation.config_file.as_deref() {
         Some(path) if path.as_os_str() == "none" => SshConfig::new(),
-        Some(path) => SshConfig::load_from_file_for_host_with_options(
+        Some(path) => SshConfig::load_explicit_for_config_dump_with_options(
             path,
             &invocation.destination,
             &invocation.overrides,
@@ -23,7 +23,7 @@ pub async fn handle_config_dump(invocation: &SshDumpInvocation) -> Result<()> {
         .await
         .with_context(|| format!("Failed to load SSH config from {path:?}"))?,
         None => {
-            SshConfig::load_default_for_host_with_options(
+            SshConfig::load_default_for_config_dump_with_options(
                 &invocation.destination,
                 &invocation.overrides,
             )
