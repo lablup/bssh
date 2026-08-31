@@ -215,9 +215,9 @@ pub fn render_resolved_config(original_host: &str, config: &SshHostConfig) -> Re
             .as_deref()
             .unwrap_or("/usr/bin/xauth"),
     )?;
-    output.optional("localcommand", config.local_command.as_deref())?;
-    output.percent_expanded("remotecommand", config.remote_command.as_deref(), &tokens)?;
-    output.optional("knownhostscommand", config.known_hosts_command.as_deref())?;
+    output.optional_command("localcommand", config.local_command.as_deref())?;
+    output.percent_expanded_command("remotecommand", config.remote_command.as_deref(), &tokens)?;
+    output.optional_command("knownhostscommand", config.known_hosts_command.as_deref())?;
     if let Some(proxy_jump) = config.proxy_jump.as_deref() {
         output.line("proxyjump", proxy_jump)?;
     } else {
@@ -225,7 +225,7 @@ pub fn render_resolved_config(original_host: &str, config: &SshHostConfig) -> Re
             .proxy_command
             .clone()
             .unwrap_or_else(|| "none".to_string());
-        output.line("proxycommand", proxy_command)?;
+        output.command("proxycommand", &proxy_command)?;
     }
     output.bool("proxyusefdpass", config.proxy_use_fdpass.unwrap_or(false))?;
     output.line("loglevel", config.log_level.as_deref().unwrap_or("INFO"))?;
@@ -478,6 +478,18 @@ impl DumpWriter {
         .context("Failed to format resolved SSH configuration")
     }
 
+    fn command(&mut self, keyword: &str, value: &str) -> Result<()> {
+        if keyword.is_empty()
+            || keyword.chars().any(|ch| !ch.is_ascii_alphanumeric())
+            || value.is_empty()
+            || value.chars().any(char::is_control)
+        {
+            anyhow::bail!("Resolved SSH configuration contains an unsafe command");
+        }
+        writeln!(self.value, "{} {}", keyword.to_ascii_lowercase(), value)
+            .context("Failed to format resolved SSH configuration")
+    }
+
     fn bool(&mut self, keyword: &str, value: bool) -> Result<()> {
         self.line(keyword, yes_no(value))
     }
@@ -489,14 +501,21 @@ impl DumpWriter {
         Ok(())
     }
 
-    fn percent_expanded(
+    fn optional_command(&mut self, keyword: &str, value: Option<&str>) -> Result<()> {
+        if let Some(value) = value {
+            self.command(keyword, value)?;
+        }
+        Ok(())
+    }
+
+    fn percent_expanded_command(
         &mut self,
         keyword: &str,
         value: Option<&str>,
         tokens: &TokenContext,
     ) -> Result<()> {
         if let Some(value) = value {
-            self.line(keyword, tokens.expand_percent(value)?)?;
+            self.command(keyword, &tokens.expand_percent(value)?)?;
         }
         Ok(())
     }

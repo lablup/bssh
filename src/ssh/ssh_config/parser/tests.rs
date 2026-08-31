@@ -143,7 +143,7 @@ Host example.com
 
     assert_eq!(
         hosts[0].proxy_command,
-        Some("env SSH_SK_HELPER=/tmp/ssh-sk-helper nc %h %p".to_string())
+        Some("env SSH_SK_HELPER=\"/tmp/ssh-sk-helper\" nc %h %p".to_string())
     );
 }
 

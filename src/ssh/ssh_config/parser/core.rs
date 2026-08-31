@@ -213,7 +213,7 @@ pub(crate) fn parse_cli_options(
             anyhow::bail!("-o option #{option_number} exceeds {MAX_LINE_LENGTH} bytes");
         }
 
-        let (keyword, args) = parse_config_line(option, option_number, MAX_VALUE_LENGTH)
+        let (keyword, args) = parse_option_line(option, option_number, MAX_VALUE_LENGTH)
             .with_context(|| format!("Invalid -o option #{option_number}"))?;
         if keyword.is_empty() {
             anyhow::bail!("-o option #{option_number} has no keyword");
@@ -384,7 +384,7 @@ fn parse_lines<'a>(
         }
 
         // Parse configuration option
-        let (keyword, args) = parse_config_line(line, line_number, MAX_VALUE_LENGTH)?;
+        let (keyword, args) = parse_option_line(line, line_number, MAX_VALUE_LENGTH)?;
 
         if keyword.is_empty() {
             continue;
@@ -486,6 +486,44 @@ fn parse_option_first(
     options::parse_option(&mut parsed, keyword, args, source, reported_diagnostics)?;
     merge_host_config(target, &parsed);
     Ok(())
+}
+
+/// Parse an option while retaining the shell grammar of command-valued
+/// directives. OpenSSH passes these remainders to a shell later, so removing
+/// quotes here can turn protected metacharacters into live operators.
+fn parse_option_line(
+    line: &str,
+    line_number: usize,
+    max_value_length: usize,
+) -> Result<(String, Vec<String>)> {
+    let (keyword, args) = parse_config_line(line, line_number, max_value_length)?;
+    if !matches!(
+        keyword.as_str(),
+        "proxycommand" | "localcommand" | "remotecommand" | "knownhostscommand"
+    ) || args.is_empty()
+    {
+        return Ok((keyword, args));
+    }
+
+    let remainder = config_value_remainder(line);
+    Ok((keyword, vec![remainder.to_string()]))
+}
+
+fn config_value_remainder(line: &str) -> &str {
+    let line = line.trim();
+    let Some((index, delimiter)) = line
+        .char_indices()
+        .find(|(_, ch)| ch.is_whitespace() || *ch == '=')
+    else {
+        return "";
+    };
+    let mut remainder = line[index + delimiter.len_utf8()..].trim_start();
+    if delimiter != '='
+        && let Some(after_equals) = remainder.strip_prefix('=')
+    {
+        remainder = after_equals.trim_start();
+    }
+    remainder
 }
 
 /// Parse a Host directive line

@@ -93,14 +93,14 @@ fn renderer_rejects_line_injection() {
 #[test]
 fn command_tokens_expand_only_at_the_openssh_dump_stages() {
     let config = SshConfig::parse(
-        "LocalCommand echo %h\nRemoteCommand echo %h ${HOME}\nKnownHostsCommand echo %h\nProxyCommand echo %h ${HOME}\n",
+        "LocalCommand printf '%h local'\nRemoteCommand printf '%h remote'\nKnownHostsCommand printf '%h known'\nProxyCommand printf '%h|${HOME}'\n",
     )
     .unwrap();
     let first = render_resolved_config("target", &config.find_host_config("target")).unwrap();
-    assert!(first.contains(r#"localcommand "echo %h""#));
-    assert!(first.contains(r#"remotecommand "echo target ${HOME}""#));
-    assert!(first.contains(r#"knownhostscommand "echo %h""#));
-    assert!(first.contains(r#"proxycommand "echo %h ${HOME}""#));
+    assert!(first.contains("localcommand printf '%h local'"));
+    assert!(first.contains("remotecommand printf 'target remote'"));
+    assert!(first.contains("knownhostscommand printf '%h known'"));
+    assert!(first.contains("proxycommand printf '%h|${HOME}'"));
 
     let reparsed = SshConfig::parse(&first).unwrap();
     let second = render_resolved_config("target", &reparsed.find_host_config("target")).unwrap();
