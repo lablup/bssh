@@ -248,7 +248,7 @@ impl SshConfig {
         let system_config = Path::new("/etc/ssh/ssh_config");
         let has_system_config = path_exists(system_config).await?;
         if has_system_config {
-            let accumulated = config.find_host_config(hostname);
+            let accumulated = resolver::find_host_config_first_pass(&config.hosts, hostname);
             config
                 .append_file_for_host_pass(
                     system_config,
@@ -1049,6 +1049,99 @@ mod tests {
             .unwrap();
 
         assert_eq!(config.find_host_config("alias").port, Some(2202));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn system_first_pass_can_obtain_hostname_after_user_requests_final() {
+        let directory = TempDir::new().unwrap();
+        let user = directory.path().join("user.conf");
+        let system = directory.path().join("system.conf");
+        write_config(&user, "Match final\n    User final-user\n");
+        write_config(
+            &system,
+            &format!(
+                concat!(
+                    "Host *\n",
+                    "    HostName effective.example\n",
+                    "Match exec=\"test %h = effective.example\"\n",
+                    "    Include {}/%h.conf\n"
+                ),
+                directory.path().display()
+            ),
+        );
+        write_config(
+            directory.path().join("effective.example.conf"),
+            "Port 2205\n",
+        );
+
+        let mut config = SshConfig::new();
+        let initial = SshHostConfig::default();
+        config
+            .append_file_for_host_pass(
+                &user,
+                "alias",
+                &initial,
+                directory.path().to_path_buf(),
+                false,
+                false,
+                true,
+            )
+            .await
+            .unwrap();
+
+        let boundary = resolver::find_host_config_first_pass(&config.hosts, "alias");
+        assert_eq!(boundary.hostname, None);
+        assert_eq!(
+            config.find_host_config("alias").hostname.as_deref(),
+            Some("alias")
+        );
+        config
+            .append_file_for_host_pass(
+                &system,
+                "alias",
+                &boundary,
+                directory.path().to_path_buf(),
+                false,
+                false,
+                false,
+            )
+            .await
+            .unwrap();
+
+        let first_pass = resolver::find_host_config_first_pass(&config.hosts, "alias");
+        assert_eq!(first_pass.hostname.as_deref(), Some("effective.example"));
+        assert_eq!(first_pass.port, Some(2205));
+        config
+            .append_file_for_host_pass(
+                &user,
+                "alias",
+                &first_pass,
+                directory.path().to_path_buf(),
+                false,
+                true,
+                true,
+            )
+            .await
+            .unwrap();
+        let after_final_user = config.find_host_config("alias");
+        config
+            .append_file_for_host_pass(
+                &system,
+                "alias",
+                &after_final_user,
+                directory.path().to_path_buf(),
+                false,
+                true,
+                false,
+            )
+            .await
+            .unwrap();
+
+        let resolved = config.find_host_config("alias");
+        assert_eq!(resolved.hostname.as_deref(), Some("effective.example"));
+        assert_eq!(resolved.user.as_deref(), Some("final-user"));
+        assert_eq!(resolved.port, Some(2205));
     }
 
     #[test]

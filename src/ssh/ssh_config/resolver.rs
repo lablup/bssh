@@ -33,17 +33,8 @@ pub(super) fn find_host_config_with_user(
     hostname: &str,
     remote_user: Option<&str>,
 ) -> SshHostConfig {
-    let mut merged_config = SshHostConfig::default();
-    let mut requests_final = false;
-    for host_config in hosts.iter().filter(|config| config.pass == ConfigPass::Any) {
-        requests_final |= apply_source_block(
-            &mut merged_config,
-            host_config,
-            hostname,
-            remote_user,
-            false,
-        );
-    }
+    let (mut merged_config, requests_final) =
+        resolve_first_pass_with_user(hosts, hostname, remote_user);
 
     if requests_final || canonicalization_requested(&merged_config) {
         // OpenSSH fixes HostName to the first-pass effective destination before
@@ -59,6 +50,35 @@ pub(super) fn find_host_config_with_user(
     }
 
     merged_config
+}
+
+/// Resolve only pass-one blocks without fixing an unset HostName or replaying
+/// final-pass blocks. Source loaders use this between user and system files so
+/// a later first-pass HostName can still be obtained in OpenSSH source order.
+pub(super) fn find_host_config_first_pass(
+    hosts: &[SshHostConfig],
+    hostname: &str,
+) -> SshHostConfig {
+    resolve_first_pass_with_user(hosts, hostname, None).0
+}
+
+fn resolve_first_pass_with_user(
+    hosts: &[SshHostConfig],
+    hostname: &str,
+    remote_user: Option<&str>,
+) -> (SshHostConfig, bool) {
+    let mut merged_config = SshHostConfig::default();
+    let mut requests_final = false;
+    for host_config in hosts.iter().filter(|config| config.pass == ConfigPass::Any) {
+        requests_final |= apply_source_block(
+            &mut merged_config,
+            host_config,
+            hostname,
+            remote_user,
+            false,
+        );
+    }
+    (merged_config, requests_final)
 }
 
 fn apply_source_block(
@@ -169,11 +189,7 @@ pub(super) fn requests_final_pass(hosts: &[SshHostConfig]) -> bool {
 }
 
 pub(super) fn requests_final_pass_for_host(hosts: &[SshHostConfig], hostname: &str) -> bool {
-    let mut merged = SshHostConfig::default();
-    let mut requests_final = false;
-    for source in hosts.iter().filter(|config| config.pass == ConfigPass::Any) {
-        requests_final |= apply_source_block(&mut merged, source, hostname, None, false);
-    }
+    let (merged, requests_final) = resolve_first_pass_with_user(hosts, hostname, None);
     requests_final || canonicalization_requested(&merged)
 }
 
