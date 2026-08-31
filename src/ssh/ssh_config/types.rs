@@ -14,7 +14,7 @@
 
 //! Core data structures for SSH configuration
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 use std::path::PathBuf;
 
@@ -31,9 +31,37 @@ pub enum ConfigBlock {
     Match(Vec<crate::ssh::ssh_config::match_directive::MatchCondition>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum ConfigPass {
+    #[default]
+    Any,
+    FinalOnly,
+}
+
 /// SSH configuration for a specific host or match block
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SshHostConfig {
+    /// Parsing pass in which this source block is eligible.
+    pub(crate) pass: ConfigPass,
+    /// Match result already evaluated while expanding Includes for this pass.
+    ///
+    /// File-backed parsing must evaluate `Match exec` while streaming so it
+    /// can decide which Includes and context-changing directives are active.
+    /// Reusing that result prevents the resolver from executing the command a
+    /// second time for the same pass. In-memory parsing leaves this unset.
+    pub(crate) precomputed_match: Option<bool>,
+    /// Whether this Match block contains a positive `final` criterion.
+    ///
+    /// This differs from `precomputed_match`: during pass one, `final` is
+    /// false but parsing a positive `final` requests the second pass even when
+    /// an earlier runtime predicate does not match.
+    pub(crate) precomputed_requests_final: Option<bool>,
+    /// Whether all parent scopes at an Include site were active when the file
+    /// was expanded. This similarly prevents re-evaluating an outer
+    /// `Match exec` when the included blocks are resolved.
+    pub(crate) precomputed_scope_active: Option<bool>,
+    /// Parent Host/Match scopes active at an Include directive.
+    pub(crate) scope_guards: Vec<ConfigBlock>,
     /// Block type (Host patterns or Match conditions)
     pub block_type: Option<ConfigBlock>,
     /// Host patterns (for backward compatibility and Host blocks)
@@ -42,6 +70,8 @@ pub struct SshHostConfig {
     pub user: Option<String>,
     pub port: Option<u16>,
     pub identity_files: Vec<PathBuf>,
+    /// Original IdentityFile arguments retained for OpenSSH-shaped `-G` output.
+    pub(crate) identity_file_args: Vec<String>,
     pub proxy_jump: Option<String>,
     pub proxy_command: Option<String>,
     /// ProxyUseFdpass option - specifies whether ProxyCommand will pass a file descriptor
@@ -82,6 +112,10 @@ pub struct SshHostConfig {
     pub local_forward: Vec<String>,
     pub remote_forward: Vec<String>,
     pub dynamic_forward: Vec<String>,
+    /// Original argument boundaries retained for a reparse-safe `-G` dump.
+    pub(crate) local_forward_args: Vec<Vec<String>>,
+    pub(crate) remote_forward_args: Vec<Vec<String>>,
+    pub(crate) dynamic_forward_args: Vec<Vec<String>>,
     /// Local, remote, and dynamic directives in source order.
     pub forwarding_directives: Vec<ForwardingDirective>,
     pub request_tty: Option<String>,
@@ -97,6 +131,8 @@ pub struct SshHostConfig {
     pub control_persist: Option<String>,
     // Certificate authentication and advanced port forwarding
     pub certificate_files: Vec<PathBuf>,
+    /// Original CertificateFile arguments retained for `-G` output.
+    pub(crate) certificate_file_args: Vec<String>,
     pub ca_signature_algorithms: Vec<String>,
     pub gateway_ports: Option<String>,
     pub exit_on_forward_failure: Option<bool>,
@@ -146,6 +182,11 @@ pub struct SshHostConfig {
     pub resolved_pubkey_accepted_algorithms: Option<Vec<String>>,
     pub required_rsa_size: Option<u32>,
     pub fingerprint_hash: Option<String>, // md5/sha256
+    /// Canonical values for accepted keywords whose runtime behavior is not
+    /// implemented. Retaining them makes `-G` an honest inspection surface.
+    pub unimplemented_options: BTreeMap<String, Vec<String>>,
+    /// Unknown keywords retained so strict inspection modes can reject them.
+    pub unknown_options: BTreeMap<String, Vec<String>>,
 }
 
 impl fmt::Display for SshHostConfig {

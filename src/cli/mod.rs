@@ -35,12 +35,14 @@
 
 mod bssh;
 pub mod pdsh;
+mod ssh_args;
 
 #[cfg(test)]
 mod mode_detection_tests;
 
 // Re-export main CLI types from bssh module
 pub use bssh::{Cli, Commands};
+pub use ssh_args::SshDumpInvocation;
 
 // Re-export pdsh compatibility utilities
 pub use pdsh::{

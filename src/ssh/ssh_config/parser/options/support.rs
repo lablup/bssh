@@ -240,6 +240,46 @@ pub(super) const ACCEPTED_KEYWORDS: &[(&str, &str, KeywordSupport)] = &[
     ("useroaming", "useroaming", Unimplemented),
     ("usersh", "usersh", Unimplemented),
     ("useprivilegedport", "useprivilegedport", Unimplemented),
+    ("tunneldevice", "tunneldevice", Unimplemented),
+    (
+        "canonicalizefallbacklocal",
+        "canonicalizefallbacklocal",
+        Unimplemented,
+    ),
+    (
+        "canonicalizehostname",
+        "canonicalizehostname",
+        Unimplemented,
+    ),
+    ("canonicalizemaxdots", "canonicalizemaxdots", Unimplemented),
+    ("canonicaldomains", "canonicaldomains", Unimplemented),
+    (
+        "canonicalizepermittedcnames",
+        "canonicalizepermittedcnames",
+        Unimplemented,
+    ),
+    ("channeltimeout", "channeltimeout", Unimplemented),
+    (
+        "enableescapecommandline",
+        "enableescapecommandline",
+        Unimplemented,
+    ),
+    ("logverbose", "logverbose", Unimplemented),
+    (
+        "obscurekeystroketiming",
+        "obscurekeystroketiming",
+        Unimplemented,
+    ),
+    (
+        "streamlocalbindunlink",
+        "streamlocalbindunlink",
+        Unimplemented,
+    ),
+    ("streamlocalbindmask", "streamlocalbindmask", Unimplemented),
+    ("tunnel", "tunnel", Unimplemented),
+    ("warnweakcrypto", "warnweakcrypto", Unimplemented),
+    ("xauthlocation", "xauthlocation", Unimplemented),
+    ("revokedhostkeys", "revokedhostkeys", Unimplemented),
 ];
 
 pub(super) fn keyword_spec(keyword: &str) -> Option<KeywordSpec> {
@@ -258,9 +298,9 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    const ACCEPTED_SPELLING_COUNT: usize = 91;
+    const ACCEPTED_SPELLING_COUNT: usize = 107;
     const RUNTIME_SPELLING_COUNT: usize = 51;
-    const UNIMPLEMENTED_SPELLING_COUNT: usize = 40;
+    const UNIMPLEMENTED_SPELLING_COUNT: usize = 56;
 
     #[test]
     fn accepted_keywords_and_aliases_have_one_consistent_classification() {
@@ -410,6 +450,22 @@ mod tests {
             "useroaming",
             "usersh",
             "useprivilegedport",
+            "tunneldevice",
+            "canonicalizefallbacklocal",
+            "canonicalizehostname",
+            "canonicalizemaxdots",
+            "canonicaldomains",
+            "canonicalizepermittedcnames",
+            "channeltimeout",
+            "enableescapecommandline",
+            "logverbose",
+            "obscurekeystroketiming",
+            "streamlocalbindunlink",
+            "streamlocalbindmask",
+            "tunnel",
+            "warnweakcrypto",
+            "xauthlocation",
+            "revokedhostkeys",
         ];
         let unimplemented = ACCEPTED_KEYWORDS
             .iter()

@@ -19,7 +19,7 @@
 
 use super::match_directive::MatchContext;
 use super::pattern::matches_host_pattern;
-use super::types::{ConfigBlock, SshHostConfig};
+use super::types::{ConfigBlock, ConfigPass, SshHostConfig};
 use std::path::PathBuf;
 
 /// Find configuration for a specific hostname
@@ -33,60 +33,216 @@ pub(super) fn find_host_config_with_user(
     hostname: &str,
     remote_user: Option<&str>,
 ) -> SshHostConfig {
-    let mut merged_config = SshHostConfig::default();
+    let (mut merged_config, requests_final) =
+        resolve_first_pass_with_user(hosts, hostname, remote_user);
 
-    // Create match context for evaluating Match blocks
-    let match_context =
-        match MatchContext::new(hostname.to_string(), remote_user.map(|s| s.to_string())) {
-            Ok(ctx) => Some(ctx),
-            Err(e) => {
-                tracing::warn!("Failed to create match context: {}", e);
-                None
-            }
-        };
-
-    for host_config in hosts {
-        let should_apply = match &host_config.block_type {
-            Some(ConfigBlock::Host(patterns)) => {
-                // For Host blocks, check pattern matching
-                matches_host_pattern(hostname, patterns)
-            }
-            Some(ConfigBlock::Match(conditions)) => {
-                // For Match blocks, evaluate conditions
-                if let Some(ref ctx) = match_context {
-                    // Create a temporary MatchBlock to evaluate conditions
-                    let match_block = super::match_directive::MatchBlock {
-                        conditions: conditions.clone(),
-                        config: host_config.clone(),
-                        line_number: 0, // Not used for evaluation
-                    };
-                    match match_block.matches(ctx) {
-                        Ok(matches) => matches,
-                        Err(e) => {
-                            tracing::debug!("Failed to evaluate Match conditions: {}", e);
-                            false
-                        }
-                    }
-                } else {
-                    false
-                }
-            }
-            None => {
-                // Legacy format without block_type - use host_patterns
-                matches_host_pattern(hostname, &host_config.host_patterns)
-            }
-        };
-
-        if should_apply {
-            merge_host_config(&mut merged_config, host_config);
+    if requests_final || canonicalization_requested(&merged_config) {
+        // OpenSSH fixes HostName to the first-pass effective destination before
+        // reparsing. A Match final block therefore cannot obtain HostName when
+        // it was otherwise unset during pass one.
+        merged_config.hostname = Some(effective_hostname(&merged_config, hostname));
+        for host_config in hosts
+            .iter()
+            .filter(|config| config.pass == ConfigPass::FinalOnly)
+        {
+            apply_source_block(&mut merged_config, host_config, hostname, remote_user, true);
         }
     }
 
     merged_config
 }
 
+/// Resolve only pass-one blocks without fixing an unset HostName or replaying
+/// final-pass blocks. Source loaders use this between user and system files so
+/// a later first-pass HostName can still be obtained in OpenSSH source order.
+pub(super) fn find_host_config_first_pass(
+    hosts: &[SshHostConfig],
+    hostname: &str,
+) -> SshHostConfig {
+    resolve_first_pass_with_user(hosts, hostname, None).0
+}
+
+fn resolve_first_pass_with_user(
+    hosts: &[SshHostConfig],
+    hostname: &str,
+    remote_user: Option<&str>,
+) -> (SshHostConfig, bool) {
+    let mut merged_config = SshHostConfig::default();
+    let mut requests_final = false;
+    for host_config in hosts.iter().filter(|config| config.pass == ConfigPass::Any) {
+        requests_final |= apply_source_block(
+            &mut merged_config,
+            host_config,
+            hostname,
+            remote_user,
+            false,
+        );
+    }
+    (merged_config, requests_final)
+}
+
+fn apply_source_block(
+    merged: &mut SshHostConfig,
+    source: &SshHostConfig,
+    original_hostname: &str,
+    remote_user: Option<&str>,
+    final_pass: bool,
+) -> bool {
+    let current_hostname = effective_hostname(merged, original_hostname);
+    let current_user = remote_user
+        .map(str::to_string)
+        .or_else(|| merged.user.clone())
+        .or_else(|| whoami::username().ok());
+    let context = MatchContext::with_original_hostname(
+        current_hostname,
+        original_hostname.to_string(),
+        current_user,
+    )
+    .map(|context| context.with_config(merged).with_final_pass(final_pass));
+    let Ok(context) = context else {
+        return false;
+    };
+    if !scopes_match(source, original_hostname, Some(&context)) {
+        return false;
+    }
+    let evaluation = match &source.block_type {
+        Some(ConfigBlock::Host(patterns)) => super::match_directive::MatchEvaluation {
+            matched: matches_host_pattern(original_hostname, patterns),
+            requests_final: false,
+        },
+        Some(ConfigBlock::Match(conditions)) => {
+            if let Some(matched) = source.precomputed_match {
+                super::match_directive::MatchEvaluation {
+                    matched,
+                    requests_final: source.precomputed_requests_final.unwrap_or(false),
+                }
+            } else {
+                conditions_match(conditions, &context)
+            }
+        }
+        None => super::match_directive::MatchEvaluation {
+            matched: matches_host_pattern(original_hostname, &source.host_patterns),
+            requests_final: false,
+        },
+    };
+    if evaluation.matched {
+        merge_host_config(merged, source);
+    }
+    evaluation.requests_final
+}
+
+fn effective_hostname(config: &SshHostConfig, original_hostname: &str) -> String {
+    config.hostname.as_deref().map_or_else(
+        || original_hostname.to_string(),
+        |value| expand_hostname_value(value, original_hostname),
+    )
+}
+
+pub(super) fn expand_hostname_value(value: &str, original_hostname: &str) -> String {
+    let mut output = String::with_capacity(value.len() + original_hostname.len());
+    let mut chars = value.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch != '%' {
+            output.push(ch);
+            continue;
+        }
+        match chars.next() {
+            Some('h') => output.push_str(original_hostname),
+            Some('%') => output.push('%'),
+            Some(other) => {
+                output.push('%');
+                output.push(other);
+            }
+            None => output.push('%'),
+        }
+    }
+    output
+}
+
+fn conditions_match(
+    conditions: &[super::match_directive::MatchCondition],
+    context: &MatchContext,
+) -> super::match_directive::MatchEvaluation {
+    let block = super::match_directive::MatchBlock {
+        conditions: conditions.to_vec(),
+        config: SshHostConfig::default(),
+        line_number: 0,
+    };
+    block
+        .evaluate(context)
+        .unwrap_or(super::match_directive::MatchEvaluation {
+            matched: false,
+            requests_final: false,
+        })
+}
+
+pub(super) fn requests_final_pass(hosts: &[SshHostConfig]) -> bool {
+    hosts.iter().any(|config| {
+        (match &config.block_type {
+            Some(ConfigBlock::Match(conditions)) => conditions.iter().any(requests_final),
+            _ => false,
+        }) || config.scope_guards.iter().any(|guard| match guard {
+            ConfigBlock::Match(conditions) => conditions.iter().any(requests_final),
+            ConfigBlock::Host(_) => false,
+        })
+    })
+}
+
+pub(super) fn requests_final_pass_for_host(hosts: &[SshHostConfig], hostname: &str) -> bool {
+    let (merged, requests_final) = resolve_first_pass_with_user(hosts, hostname, None);
+    requests_final || canonicalization_requested(&merged)
+}
+
+fn canonicalization_requested(config: &SshHostConfig) -> bool {
+    config
+        .unimplemented_options
+        .get("canonicalizehostname")
+        .and_then(|values| values.first())
+        .is_some_and(|value| {
+            matches!(
+                value.to_ascii_lowercase().as_str(),
+                "yes" | "true" | "always"
+            )
+        })
+}
+
+fn requests_final(condition: &super::match_directive::MatchCondition) -> bool {
+    condition.requests_final_pass()
+}
+
+fn scopes_match(
+    config: &SshHostConfig,
+    original_hostname: &str,
+    context: Option<&MatchContext>,
+) -> bool {
+    if let Some(active) = config.precomputed_scope_active {
+        return active;
+    }
+    config.scope_guards.iter().all(|guard| match guard {
+        ConfigBlock::Host(patterns) => matches_host_pattern(original_hostname, patterns),
+        ConfigBlock::Match(conditions) => context.is_some_and(|context| {
+            let block = super::match_directive::MatchBlock {
+                conditions: conditions.clone(),
+                config: SshHostConfig::default(),
+                line_number: 0,
+            };
+            block.matches(context).unwrap_or(false)
+        }),
+    })
+}
+
 /// Merge a matching block using OpenSSH's first-obtained-value rule.
 pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfig) {
+    for (keyword, value) in &overlay.unimplemented_options {
+        base.unimplemented_options
+            .entry(keyword.clone())
+            .or_insert_with(|| value.clone());
+    }
+    for (keyword, value) in &overlay.unknown_options {
+        base.unknown_options
+            .entry(keyword.clone())
+            .or_insert_with(|| value.clone());
+    }
     // Blocks are visited in source order, so scalar values only fill empty slots.
     if base.host_patterns.is_empty() && !overlay.host_patterns.is_empty() {
         base.host_patterns = overlay.host_patterns.clone();
@@ -101,9 +257,13 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
         base.port = overlay.port;
     }
     if !overlay.identity_files.is_empty() {
-        // For identity files, we append them
-        base.identity_files
-            .extend(overlay.identity_files.iter().cloned());
+        extend_paths_for_pass(
+            &mut base.identity_files,
+            &mut base.identity_file_args,
+            &overlay.identity_files,
+            &overlay.identity_file_args,
+            overlay.pass,
+        );
     }
     // OpenSSH keeps the first obtained proxy directive. ProxyCommand and
     // ProxyJump compete for the same slot, so either one suppresses all later
@@ -188,7 +348,7 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
         base.resolved_macs = overlay.resolved_macs.clone();
     }
     if !overlay.send_env.is_empty() {
-        base.send_env.extend(overlay.send_env.iter().cloned());
+        extend_for_pass(&mut base.send_env, &overlay.send_env, overlay.pass);
     }
     for (name, value) in &overlay.set_env {
         base.set_env
@@ -196,20 +356,38 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
             .or_insert_with(|| value.clone());
     }
     if !overlay.local_forward.is_empty() {
-        base.local_forward
-            .extend(overlay.local_forward.iter().cloned());
+        extend_forwardings_for_pass(
+            &mut base.local_forward,
+            &mut base.local_forward_args,
+            &overlay.local_forward,
+            &overlay.local_forward_args,
+            overlay.pass,
+        );
     }
     if !overlay.remote_forward.is_empty() {
-        base.remote_forward
-            .extend(overlay.remote_forward.iter().cloned());
+        extend_forwardings_for_pass(
+            &mut base.remote_forward,
+            &mut base.remote_forward_args,
+            &overlay.remote_forward,
+            &overlay.remote_forward_args,
+            overlay.pass,
+        );
     }
     if !overlay.dynamic_forward.is_empty() {
-        base.dynamic_forward
-            .extend(overlay.dynamic_forward.iter().cloned());
+        extend_forwardings_for_pass(
+            &mut base.dynamic_forward,
+            &mut base.dynamic_forward_args,
+            &overlay.dynamic_forward,
+            &overlay.dynamic_forward_args,
+            overlay.pass,
+        );
     }
     if !overlay.forwarding_directives.is_empty() {
-        base.forwarding_directives
-            .extend(overlay.forwarding_directives.iter().cloned());
+        extend_for_pass(
+            &mut base.forwarding_directives,
+            &overlay.forwarding_directives,
+            overlay.pass,
+        );
     }
     if base.request_tty.is_none() && overlay.request_tty.is_some() {
         base.request_tty = overlay.request_tty.clone();
@@ -249,7 +427,13 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
         // For certificate files, we append them like identity files with deduplication and limit
         const MAX_CERTIFICATE_FILES: usize = 100; // Reasonable limit to prevent memory exhaustion
 
-        for cert_file in &overlay.certificate_files {
+        let arguments_are_aligned = base.certificate_file_args.len()
+            == base.certificate_files.len()
+            && overlay.certificate_file_args.len() == overlay.certificate_files.len();
+        if !arguments_are_aligned {
+            base.certificate_file_args.clear();
+        }
+        for (index, cert_file) in overlay.certificate_files.iter().enumerate() {
             // Skip if already present (deduplication)
             if !base.certificate_files.contains(cert_file) {
                 if base.certificate_files.len() >= MAX_CERTIFICATE_FILES {
@@ -260,6 +444,10 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
                     break;
                 }
                 base.certificate_files.push(cert_file.clone());
+                if arguments_are_aligned {
+                    base.certificate_file_args
+                        .push(overlay.certificate_file_args[index].clone());
+                }
             }
         }
     }
@@ -399,10 +587,73 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
     }
 }
 
+fn extend_for_pass<T: Clone + PartialEq>(base: &mut Vec<T>, values: &[T], pass: ConfigPass) {
+    if pass == ConfigPass::FinalOnly {
+        let new_values = values
+            .iter()
+            .filter(|value| !base.contains(value))
+            .cloned()
+            .collect::<Vec<_>>();
+        base.extend(new_values);
+    } else {
+        base.extend(values.iter().cloned());
+    }
+}
+
+fn extend_paths_for_pass(
+    base_paths: &mut Vec<PathBuf>,
+    base_arguments: &mut Vec<String>,
+    paths: &[PathBuf],
+    arguments: &[String],
+    pass: ConfigPass,
+) {
+    if base_arguments.len() != base_paths.len() || arguments.len() != paths.len() {
+        extend_for_pass(base_paths, paths, pass);
+        base_arguments.clear();
+        return;
+    }
+    if pass == ConfigPass::Any {
+        base_paths.extend_from_slice(paths);
+        base_arguments.extend_from_slice(arguments);
+        return;
+    }
+    for (path, argument) in paths.iter().zip(arguments) {
+        if !base_paths.contains(path) {
+            base_paths.push(path.clone());
+            base_arguments.push(argument.clone());
+        }
+    }
+}
+
+fn extend_forwardings_for_pass(
+    base_values: &mut Vec<String>,
+    base_arguments: &mut Vec<Vec<String>>,
+    values: &[String],
+    arguments: &[Vec<String>],
+    pass: ConfigPass,
+) {
+    if arguments.len() != values.len() || base_arguments.len() != base_values.len() {
+        extend_for_pass(base_values, values, pass);
+        base_arguments.clear();
+        return;
+    }
+    if pass == ConfigPass::Any {
+        base_values.extend_from_slice(values);
+        base_arguments.extend_from_slice(arguments);
+        return;
+    }
+    for (value, arguments) in values.iter().zip(arguments) {
+        if !base_values.contains(value) {
+            base_values.push(value.clone());
+            base_arguments.push(arguments.clone());
+        }
+    }
+}
+
 /// Get the effective hostname (resolves HostName directive)
 pub(super) fn get_effective_hostname(hosts: &[SshHostConfig], hostname: &str) -> String {
     let config = find_host_config(hosts, hostname);
-    config.hostname.unwrap_or_else(|| hostname.to_string())
+    effective_hostname(&config, hostname)
 }
 
 /// Get the effective username

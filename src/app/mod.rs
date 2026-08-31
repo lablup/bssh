@@ -18,6 +18,7 @@
 //! initialization, and utility functions for the bssh CLI.
 
 pub mod cache;
+pub mod config_dump;
 pub mod dispatcher;
 pub mod initialization;
 pub mod nodes;

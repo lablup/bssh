@@ -19,47 +19,30 @@ use std::path::PathBuf;
 
 use super::super::diagnostic::{escape_field, escape_path};
 use super::super::path::expand_path_internal;
-#[cfg(not(test))]
-use super::validation::is_path_allowed;
-use super::validation::{validate_glob_pattern, validate_include_path};
+use super::validation::validate_glob_pattern;
 use crate::ssh::ssh_config::include::IncludeContext;
 
 /// Parse an Include directive line
-pub fn parse_include_line(line: &str) -> Option<Vec<&str>> {
-    // Support both "Include pattern" and "Include=pattern" syntax
+pub fn parse_include_line(line: &str) -> Result<Option<Vec<String>>> {
     let line = line.trim();
-
-    // Check if it starts with Include directive (case-insensitive)
-    if !line.to_lowercase().starts_with("include") {
-        return None;
-    }
-
-    // Extract the patterns part
-    let patterns_part = if let Some(pos) = line.find('=') {
-        // Include=pattern syntax
-        line[pos + 1..].trim()
-    } else {
-        // Include pattern syntax
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() < 2 || parts[0].to_lowercase() != "include" {
-            return None;
-        }
-        // Join all parts after "Include" keyword
-        line[parts[0].len()..].trim()
+    let boundary = line
+        .char_indices()
+        .find(|(_, ch)| ch.is_whitespace() || *ch == '=');
+    let (keyword, remainder) = match boundary {
+        Some((index, delimiter)) => (
+            &line[..index],
+            line[index + delimiter.len_utf8()..].trim_start(),
+        ),
+        None => (line, ""),
     };
-
-    if patterns_part.is_empty() {
-        return None;
+    if !keyword.eq_ignore_ascii_case("include") {
+        return Ok(None);
     }
-
-    // Split multiple patterns (space-separated)
-    let patterns: Vec<&str> = patterns_part.split_whitespace().collect();
-
+    let patterns = super::super::value::tokenize(remainder, 0)?;
     if patterns.is_empty() {
-        None
-    } else {
-        Some(patterns)
+        anyhow::bail!("Include directive requires at least one path");
     }
+    Ok(Some(patterns))
 }
 
 /// Resolve a single include pattern to a list of files
@@ -70,12 +53,16 @@ pub async fn resolve_include_pattern(
     // Validate pattern for security before expansion
     validate_glob_pattern(pattern)?;
 
+    if pattern.starts_with('~') && !context.allow_tilde {
+        anyhow::bail!("Tilde expansion is not permitted in system SSH config Includes");
+    }
+
     // Expand environment variables and tilde
     let expanded = expand_path_internal(pattern)?;
 
     // Make relative paths relative to the config directory
     let search_path = if expanded.is_relative() {
-        context.base_dir.join(&expanded)
+        context.anchor.join(&expanded)
     } else {
         expanded
     };
@@ -110,60 +97,14 @@ pub async fn resolve_include_pattern(
         }
 
         match entry {
-            Ok(path) => {
-                // Additional security: ensure resolved path doesn't escape expected directories
-                // Skip this check in test mode
-                #[cfg(not(test))]
-                {
-                    let canonical = match path.canonicalize() {
-                        Ok(c) => c,
-                        Err(_) if !path.exists() => continue, // Skip non-existent files
-                        Err(e) => {
-                            tracing::debug!(
-                                "Failed to canonicalize {}: {}",
-                                escape_path(&path),
-                                escape_field(&e.to_string())
-                            );
-                            continue;
-                        }
-                    };
-
-                    // Verify the canonical path is still under an allowed directory
-                    if !is_path_allowed(&canonical) {
-                        tracing::warn!(
-                            "Glob result {} escapes allowed directories, skipping",
-                            escape_path(&path)
-                        );
-                        continue;
-                    }
-                }
-
-                // Skip directories and symlinks
-                match std::fs::symlink_metadata(&path) {
-                    Ok(metadata) => {
-                        if metadata.is_file() && !metadata.is_symlink() {
-                            // Security check: validate the path
-                            if validate_include_path(&path).is_ok() {
-                                files.push(path);
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::debug!(
-                            "Failed to get metadata for {}: {}",
-                            escape_path(&path),
-                            escape_field(&e.to_string())
-                        );
-                    }
-                }
-            }
-            Err(e) => {
-                // Log glob errors but continue
-                tracing::warn!(
-                    "Error processing glob pattern '{}': {}",
-                    escape_field(pattern_str),
-                    escape_field(&e.to_string())
-                );
+            Ok(path) => files.push(path),
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "Error processing glob pattern '{}'",
+                        escape_field(pattern_str)
+                    )
+                });
             }
         }
     }
@@ -186,37 +127,53 @@ pub async fn resolve_include_pattern(
 mod tests {
     use super::*;
     use std::fs;
+    use std::path::Path;
     use tempfile::TempDir;
+
+    fn write_config(path: impl AsRef<Path>, contents: impl AsRef<[u8]>) {
+        let path = path.as_ref();
+        fs::write(path, contents).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+    }
 
     #[test]
     fn test_parse_include_line() {
         // Test space syntax
         assert_eq!(
-            parse_include_line("Include ~/.ssh/config.d/*"),
-            Some(vec!["~/.ssh/config.d/*"])
+            parse_include_line("Include ~/.ssh/config.d/*").unwrap(),
+            Some(vec!["~/.ssh/config.d/*".to_string()])
         );
 
         // Test equals syntax
         assert_eq!(
-            parse_include_line("Include=~/.ssh/config.d/*"),
-            Some(vec!["~/.ssh/config.d/*"])
+            parse_include_line("Include=~/.ssh/config.d/*").unwrap(),
+            Some(vec!["~/.ssh/config.d/*".to_string()])
         );
 
         // Test multiple patterns
         assert_eq!(
-            parse_include_line("Include /etc/ssh/config.d/* ~/.ssh/extra/*"),
-            Some(vec!["/etc/ssh/config.d/*", "~/.ssh/extra/*"])
+            parse_include_line("Include /etc/ssh/config.d/* ~/.ssh/extra/*").unwrap(),
+            Some(vec![
+                "/etc/ssh/config.d/*".to_string(),
+                "~/.ssh/extra/*".to_string()
+            ])
         );
 
         // Test case insensitivity
         assert_eq!(
-            parse_include_line("include ~/.ssh/config.d/*"),
-            Some(vec!["~/.ssh/config.d/*"])
+            parse_include_line("include ~/.ssh/config.d/*").unwrap(),
+            Some(vec!["~/.ssh/config.d/*".to_string()])
         );
 
         // Test non-include lines
-        assert_eq!(parse_include_line("Host example.com"), None);
-        assert_eq!(parse_include_line("User testuser"), None);
+        assert_eq!(parse_include_line("Host example.com").unwrap(), None);
+        assert_eq!(parse_include_line("Included yes").unwrap(), None);
+        assert_eq!(parse_include_line("Included=yes").unwrap(), None);
+        assert!(parse_include_line("Include").is_err());
     }
 
     #[tokio::test]
@@ -229,9 +186,9 @@ mod tests {
         let config_dir = temp_dir.path().join("config.d");
         fs::create_dir(&config_dir).unwrap();
 
-        fs::write(config_dir.join("01-first.conf"), "Host first\n").unwrap();
-        fs::write(config_dir.join("02-second.conf"), "Host second\n").unwrap();
-        fs::write(config_dir.join("03-third.conf"), "Host third\n").unwrap();
+        write_config(config_dir.join("01-first.conf"), "Host first\n");
+        write_config(config_dir.join("02-second.conf"), "Host second\n");
+        write_config(config_dir.join("03-third.conf"), "Host third\n");
 
         // Create context
         let main_config = temp_dir.path().join("config");
@@ -271,12 +228,29 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn system_source_rejects_tilde_include_while_user_source_accepts_it() {
+        let anchor = tempfile::tempdir().unwrap();
+        let system = IncludeContext::with_anchor(anchor.path().to_path_buf(), false);
+        assert!(
+            resolve_include_pattern("~/.ssh/config", &system)
+                .await
+                .is_err()
+        );
+
+        let user = IncludeContext::with_anchor(anchor.path().to_path_buf(), true);
+        assert!(
+            resolve_include_pattern("~/.ssh/definitely-missing", &user)
+                .await
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
     async fn test_include_with_tilde_expansion() {
         // Test that tilde expansion is handled
-        let patterns = parse_include_line("Include ~/.ssh/config.d/*.conf");
-        assert!(patterns.is_some());
-
-        let patterns = patterns.unwrap();
+        let patterns = parse_include_line("Include ~/.ssh/config.d/*.conf")
+            .unwrap()
+            .unwrap();
         assert_eq!(patterns.len(), 1);
         assert!(patterns[0].starts_with("~/"));
     }

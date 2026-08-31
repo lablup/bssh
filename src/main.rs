@@ -27,9 +27,10 @@ mod app;
 
 use app::{
     cache::handle_cache_stats,
+    config_dump::handle_config_dump,
     dispatcher::dispatch_command,
     initialization::{AppContext, initialize_app},
-    query::handle_query,
+    query::{handle_query, is_supported_query},
     utils::show_usage,
 };
 
@@ -59,6 +60,42 @@ async fn run() -> Result<()> {
 
     if pdsh_mode {
         return run_pdsh_mode(&args).await;
+    }
+
+    // Raw dispatch is required before Clap so SSH destinations named like
+    // bssh subcommands remain destinations. It also guarantees SSH-style
+    // error status and diagnostic routing for all `-G` parse failures.
+    if bssh::cli::SshDumpInvocation::requests_config_dump(&args) {
+        if let Some(path) = bssh::cli::SshDumpInvocation::diagnostic_file(&args)
+            && let Err(error) = bssh::utils::diagnostics::set_log_file(&path)
+        {
+            bssh::diagnosticln!("Error: {error:?}");
+            std::process::exit(255);
+        }
+        let invocation = match bssh::cli::SshDumpInvocation::from_argv(&args) {
+            Ok(invocation) => invocation,
+            Err(error) => {
+                bssh::diagnosticln!("Error: {error:?}");
+                std::process::exit(255);
+            }
+        };
+        if invocation.version {
+            eprintln!("bssh_{}", env!("CARGO_PKG_VERSION"));
+            return Ok(());
+        }
+        if let Some(query) = invocation.query.as_deref() {
+            if !is_supported_query(query) {
+                bssh::diagnosticln!("Unsupported query \"{query}\"");
+                std::process::exit(255);
+            }
+            handle_query(query);
+            return Ok(());
+        }
+        if let Err(error) = handle_config_dump(&invocation).await {
+            bssh::diagnosticln!("Error: {error:?}");
+            std::process::exit(255);
+        }
+        return Ok(());
     }
 
     // Standard bssh mode

@@ -23,7 +23,18 @@
 pub(crate) mod tests {
     use crate::ssh::ssh_config::SshConfig;
     use std::fs;
+    use std::path::Path;
     use tempfile::TempDir;
+
+    fn write_config(path: impl AsRef<Path>, contents: impl AsRef<[u8]>) {
+        let path = path.as_ref();
+        fs::write(path, contents).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+        }
+    }
 
     #[tokio::test]
     async fn test_include_with_certificate_options() {
@@ -39,7 +50,7 @@ Host *.prod.example.com
     HostbasedAuthentication yes
     HostbasedAcceptedAlgorithms ssh-ed25519,rsa-sha2-512
 "#;
-        fs::write(&include_file, include_content).unwrap();
+        write_config(&include_file, include_content);
 
         // Create main config that includes the certificate config
         let main_config = temp_dir.path().join("config");
@@ -53,7 +64,7 @@ Host web.prod.example.com
 "#,
             include_file.display()
         );
-        fs::write(&main_config, &main_content).unwrap();
+        write_config(&main_config, &main_content);
 
         // Parse the configuration
         let config = SshConfig::load_from_file(&main_config).await.unwrap();
@@ -98,7 +109,7 @@ Host *.secure.example.com
     PermitRemoteOpen localhost:8080
     PermitRemoteOpen db.internal:5432
 "#;
-        fs::write(&include_file, include_content).unwrap();
+        write_config(&include_file, include_content);
 
         // Create main config
         let main_config = temp_dir.path().join("config");
@@ -111,7 +122,7 @@ Host app.secure.example.com
 "#,
             include_file.display()
         );
-        fs::write(&main_config, &main_content).unwrap();
+        write_config(&main_config, &main_content);
 
         // Parse the configuration
         let config = SshConfig::load_from_file(&main_config).await.unwrap();
@@ -213,7 +224,7 @@ Match host *.corp.example.com
     CertificateFile ~/.ssh/corp-cert.pub
     HostbasedAuthentication yes
 "#;
-        fs::write(&base_file, base_content).unwrap();
+        write_config(&base_file, base_content);
 
         // Create forwarding config
         let forward_file = temp_dir.path().join("forward.conf");
@@ -223,7 +234,7 @@ Host *.prod.corp.example.com
     ExitOnForwardFailure yes
     PermitRemoteOpen localhost:8080
 "#;
-        fs::write(&forward_file, forward_content).unwrap();
+        write_config(&forward_file, forward_content);
 
         // Main config includes both
         let main_config = temp_dir.path().join("config");
@@ -240,7 +251,7 @@ Host web.prod.corp.example.com
             base_file.display(),
             forward_file.display()
         );
-        fs::write(&main_config, &main_content).unwrap();
+        write_config(&main_config, &main_content);
 
         // Parse
         let config = SshConfig::load_from_file(&main_config).await.unwrap();
@@ -267,19 +278,18 @@ Host web.prod.corp.example.com
 
         // Deep include: base authentication
         let deep_file = temp_dir.path().join("deep.conf");
-        fs::write(
+        write_config(
             &deep_file,
             r#"
 Host *
     HostbasedAuthentication no
     CertificateFile ~/.ssh/default-cert.pub
 "#,
-        )
-        .unwrap();
+        );
 
         // Middle include: prod-specific
         let middle_file = temp_dir.path().join("middle.conf");
-        fs::write(
+        write_config(
             &middle_file,
             format!(
                 r#"
@@ -292,12 +302,11 @@ Host *.prod.example.com
 "#,
                 deep_file.display()
             ),
-        )
-        .unwrap();
+        );
 
         // Main config
         let main_config = temp_dir.path().join("config");
-        fs::write(
+        write_config(
             &main_config,
             format!(
                 r#"
@@ -313,8 +322,7 @@ Host web1.prod.example.com
 "#,
                 middle_file.display()
             ),
-        )
-        .unwrap();
+        );
 
         // Parse
         let config = SshConfig::load_from_file(&main_config).await.unwrap();
@@ -379,7 +387,7 @@ Host web.secure.prod.example.com
     CertificateFile ~/.ssh/web-specific-cert.pub
     PermitRemoteOpen cache.internal:6379
 "#;
-        fs::write(&config_file, config_content).unwrap();
+        write_config(&config_file, config_content);
 
         // Parse
         let config = SshConfig::load_from_file(&config_file).await.unwrap();

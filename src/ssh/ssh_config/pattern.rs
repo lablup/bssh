@@ -19,12 +19,17 @@
 
 /// Check if a hostname matches any of the host patterns
 pub(super) fn matches_host_pattern(hostname: &str, patterns: &[String]) -> bool {
+    let mut positive_match = false;
     for pattern in patterns {
-        if matches_pattern(hostname, pattern) {
-            return true;
+        if let Some(negated) = pattern.strip_prefix('!') {
+            if matches_pattern(hostname, negated) {
+                return false;
+            }
+        } else if matches_pattern(hostname, pattern) {
+            positive_match = true;
         }
     }
-    false
+    positive_match
 }
 
 /// Check if a hostname matches a single pattern (supports wildcards)

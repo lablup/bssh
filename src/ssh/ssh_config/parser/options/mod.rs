@@ -48,6 +48,9 @@ pub fn parse_option(
 ) -> Result<()> {
     let line_number = source.number();
     let Some(spec) = support::keyword_spec(accepted_keyword) else {
+        host.unknown_options
+            .entry(accepted_keyword.to_string())
+            .or_insert_with(|| args.to_vec());
         if reported_diagnostics.insert(format!("unknown:{accepted_keyword}")) {
             let keyword = escape_field(accepted_keyword);
             let location = source.location();
@@ -57,13 +60,19 @@ pub fn parse_option(
     };
     let keyword = spec.canonical;
 
-    if spec.support == support::KeywordSupport::Unimplemented
-        && reported_diagnostics.insert(format!("unsupported:{keyword}"))
-    {
-        let location = source.location();
-        crate::diagnosticln!(
-            "Unsupported SSH config option '{keyword}' at {location}; bssh parses this value for inspection but does not implement its runtime behavior"
-        );
+    if spec.support == support::KeywordSupport::Unimplemented {
+        validate_retained_option(keyword, args, line_number)?;
+        if !args.is_empty() {
+            host.unimplemented_options
+                .entry(keyword.to_string())
+                .or_insert_with(|| args.to_vec());
+        }
+        if reported_diagnostics.insert(format!("unsupported:{keyword}")) {
+            let location = source.location();
+            crate::diagnosticln!(
+                "Unsupported SSH config option '{keyword}' at {location}; bssh parses this value for inspection but does not implement its runtime behavior"
+            );
+        }
     }
 
     match keyword {
@@ -178,7 +187,186 @@ pub fn parse_option(
         | "userknownhostsfile2"
         | "useroaming"
         | "usersh"
-        | "useprivilegedport" => Ok(()),
+        | "useprivilegedport"
+        | "tunneldevice"
+        | "canonicalizefallbacklocal"
+        | "canonicalizehostname"
+        | "canonicalizemaxdots"
+        | "canonicaldomains"
+        | "canonicalizepermittedcnames"
+        | "channeltimeout"
+        | "enableescapecommandline"
+        | "logverbose"
+        | "obscurekeystroketiming"
+        | "streamlocalbindunlink"
+        | "streamlocalbindmask"
+        | "tunnel"
+        | "warnweakcrypto"
+        | "xauthlocation"
+        | "revokedhostkeys" => Ok(()),
         _ => unreachable!("accepted keyword is missing a parser: {keyword}"),
+    }
+}
+
+fn validate_retained_option(keyword: &str, args: &[String], line_number: usize) -> Result<()> {
+    let one = || {
+        if args.len() != 1 || args[0].is_empty() {
+            anyhow::bail!("{keyword} expects exactly one value at line {line_number}");
+        }
+        Ok(())
+    };
+    let boolean = || {
+        one()?;
+        if !matches!(
+            args[0].to_ascii_lowercase().as_str(),
+            "yes" | "no" | "true" | "false"
+        ) {
+            anyhow::bail!("Invalid boolean for {keyword} at line {line_number}");
+        }
+        Ok(())
+    };
+    match keyword {
+        "canonicalizefallbacklocal" => {
+            boolean()?;
+        }
+        "canonicalizehostname" => {
+            one()?;
+            if !matches!(
+                args[0].to_ascii_lowercase().as_str(),
+                "yes" | "no" | "always" | "true" | "false"
+            ) {
+                anyhow::bail!("Invalid canonicalizehostname at line {line_number}");
+            }
+        }
+        "canonicalizemaxdots" => {
+            one()?;
+            args[0].parse::<u32>().map_err(|_| {
+                anyhow::anyhow!("Invalid canonicalizemaxdots at line {line_number}")
+            })?;
+        }
+        "canonicaldomains" | "canonicalizepermittedcnames" => {
+            if args.is_empty() {
+                anyhow::bail!("{keyword} requires at least one value at line {line_number}");
+            }
+        }
+        "enableescapecommandline" | "streamlocalbindunlink" | "warnweakcrypto" => boolean()?,
+        "tunnel" => {
+            one()?;
+            if !matches!(
+                args[0].to_ascii_lowercase().as_str(),
+                "yes" | "no" | "true" | "false" | "point-to-point" | "ethernet"
+            ) {
+                anyhow::bail!("Invalid tunnel value at line {line_number}");
+            }
+        }
+        "streamlocalbindmask" => {
+            one()?;
+            let mode = u32::from_str_radix(&args[0], 8).map_err(|_| {
+                anyhow::anyhow!("Invalid streamlocalbindmask at line {line_number}")
+            })?;
+            if mode > 0o777 {
+                anyhow::bail!("Invalid streamlocalbindmask at line {line_number}");
+            }
+        }
+        "tunneldevice" => {
+            one()?;
+            let component = |part: &str| part == "any" || part.parse::<u32>().is_ok();
+            let valid = args[0].split_once(':').map_or_else(
+                || component(&args[0]),
+                |(local, remote)| component(local) && component(remote),
+            );
+            if !valid {
+                anyhow::bail!("Invalid tunneldevice at line {line_number}");
+            }
+        }
+        "obscurekeystroketiming" => {
+            one()?;
+            let value = args[0].to_ascii_lowercase();
+            if !matches!(value.as_str(), "yes" | "no" | "true" | "false")
+                && !value
+                    .strip_prefix("interval:")
+                    .and_then(|value| value.parse::<u32>().ok())
+                    .is_some_and(|value| (1..=1000).contains(&value))
+            {
+                anyhow::bail!("Invalid obscurekeystroketiming at line {line_number}");
+            }
+        }
+        "securitykeyprovider" | "xauthlocation" | "revokedhostkeys" => one()?,
+        "channeltimeout" | "logverbose" if args.is_empty() => {
+            anyhow::bail!("{keyword} expects at least one value at line {line_number}");
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::ssh::ssh_config::SshConfig;
+
+    #[test]
+    fn accepts_audited_retained_value_grammars() {
+        let valid = r#"
+Host *
+    CanonicalizeFallbackLocal yes
+    CanonicalizeHostname false
+    CanonicalizeMaxDots 1
+    CanonicalDomains none
+    CanonicalizePermittedCNAMEs none
+    ChannelTimeout none
+    EnableEscapeCommandline no
+    LogVerbose none
+    ObscureKeystrokeTiming interval:1000
+    StreamLocalBindUnlink yes
+    StreamLocalBindMask 0000
+    Tunnel point-to-point
+    TunnelDevice any
+    WarnWeakCrypto yes
+    SecurityKeyProvider /tmp/provider
+    XAuthLocation /usr/bin/xauth
+    RevokedHostKeys none
+"#;
+        assert!(SshConfig::parse(valid).is_ok());
+        assert!(SshConfig::parse("Host *\nStreamLocalBindMask 0777\n").is_ok());
+        assert!(SshConfig::parse("Host *\nTunnelDevice 1:any\n").is_ok());
+        assert!(SshConfig::parse("Host *\nObscureKeystrokeTiming interval:1\n").is_ok());
+        assert!(SshConfig::parse("Host *\nCanonicalizeFallbackLocal no\n").is_ok());
+        assert!(SshConfig::parse("Host *\nCanonicalizeHostname yes\n").is_ok());
+        assert!(SshConfig::parse("Host *\nCanonicalizeMaxDots 2\n").is_ok());
+        assert!(SshConfig::parse("Host *\nCanonicalDomains example.com\n").is_ok());
+        assert!(SshConfig::parse("Host *\nCanonicalizePermittedCNAMEs *.a:*.b\n").is_ok());
+    }
+
+    #[test]
+    fn rejects_invalid_retained_values() {
+        for option in [
+            "CanonicalizeFallbackLocal maybe",
+            "CanonicalizeHostname maybe",
+            "CanonicalizeMaxDots nope",
+            "CanonicalDomains",
+            "CanonicalizePermittedCNAMEs",
+            "ChannelTimeout",
+            "EnableEscapeCommandline maybe",
+            "LogVerbose",
+            "ObscureKeystrokeTiming interval:0",
+            "ObscureKeystrokeTiming interval:1001",
+            "StreamLocalBindUnlink maybe",
+            "StreamLocalBindMask 1000",
+            "Tunnel invalid",
+            "TunnelDevice any:invalid",
+            "WarnWeakCrypto maybe",
+            "SecurityKeyProvider",
+            "XAuthLocation",
+            "RevokedHostKeys",
+        ] {
+            let config = format!("Host *\n    {option}\n");
+            assert!(SshConfig::parse(&config).is_err(), "accepted {option}");
+        }
+    }
+
+    #[test]
+    fn existing_opaque_legacy_values_keep_their_previous_behavior() {
+        assert!(SshConfig::parse("Host *\n    UseKeychain yes\n").is_ok());
+        assert!(SshConfig::parse("Host *\n    UseKeychain arbitrary legacy value\n").is_err());
     }
 }

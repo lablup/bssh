@@ -258,6 +258,38 @@ Host *
     }
 
     #[test]
+    fn later_host_user_does_not_retroactively_change_earlier_match() {
+        let hosts = parse(
+            "Match user audit-no-such-user\n    Port 2200\nHost *\n    User audit-no-such-user\n",
+        )
+        .unwrap();
+
+        let config = find_host_config(&hosts, "alias");
+        assert_eq!(config.port, None);
+        assert_eq!(config.user.as_deref(), Some("audit-no-such-user"));
+    }
+
+    #[test]
+    fn match_final_cannot_supply_the_first_hostname() {
+        let hosts = parse("Host alias\nMatch final\n    HostName final.example\n").unwrap();
+
+        let config = find_host_config(&hosts, "alias");
+        assert_eq!(config.hostname.as_deref(), Some("alias"));
+    }
+
+    #[test]
+    fn hostname_percent_h_expands_once_from_original_destination() {
+        let hosts = parse("Host alias\n    HostName %h.example\n").unwrap();
+
+        let config = find_host_config(&hosts, "alias");
+        assert_eq!(config.hostname.as_deref(), Some("%h.example"));
+        assert_eq!(
+            super::super::resolver::get_effective_hostname(&hosts, "alias"),
+            "alias.example"
+        );
+    }
+
+    #[test]
     fn test_all_new_options_together() {
         let content = r#"
 Host secure.example.com
