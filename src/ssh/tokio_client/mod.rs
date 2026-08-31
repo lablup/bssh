@@ -36,6 +36,7 @@ mod to_socket_addrs_with_hostname;
 
 // Re-export public API types for backward compatibility
 pub use address_family::AddressFamily;
+pub use algorithms::{supported_cipher_names, supported_mac_names};
 pub use auth_policy::SshAuthenticationPolicy;
 pub use authentication::{AuthKeyboardInteractive, AuthMethod, ServerCheckMethod};
 pub use channel_manager::{CommandExecutedResult, CommandOutput};

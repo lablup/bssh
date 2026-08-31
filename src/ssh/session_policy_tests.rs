@@ -128,6 +128,22 @@ fn request_tty_obeys_cli_precedence_and_config_modes() {
 }
 
 #[test]
+fn stdin_null_disables_automatic_pty_but_not_forced_pty() {
+    let config = SshHostConfig {
+        stdin_null: Some(true),
+        request_tty: Some("yes".into()),
+        ..Default::default()
+    };
+    let policy = SessionPolicy::resolve(&config, &node(), None, CliTtyMode::Default, true).unwrap();
+    assert!(policy.stdin_null);
+    assert!(!policy.request_pty);
+
+    let forced = SessionPolicy::resolve(&config, &node(), None, CliTtyMode::Force, true).unwrap();
+    assert!(forced.stdin_null);
+    assert!(forced.request_pty);
+}
+
+#[test]
 fn session_purpose_tracks_the_resolved_pty_policy() {
     let interactive = SessionPolicy::resolve(
         &SshHostConfig {

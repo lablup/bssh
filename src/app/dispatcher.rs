@@ -30,7 +30,8 @@ use bssh::{
     pty::PtyConfig,
     security::{Password, get_password, get_sudo_password},
     ssh::{
-        CliTtyMode, SessionPolicy, SessionRequest,
+        CliTtyMode, SessionPolicy, SessionRequest, SshClient,
+        client::ConnectionConfig,
         tokio_client::{AddressFamily, ProxyMode, SshConnectionConfigResolver},
     },
 };
@@ -75,6 +76,7 @@ fn build_ssh_connection_config_resolver(
             cli.remote_forwards.clone(),
             cli.dynamic_forwards.clone(),
         )
+        .with_stdio_forward(cli.stdio_forward.is_some())
 }
 
 /// Decide whether `-S` (sudo-password) is meaningful for the given dispatch path.
@@ -548,7 +550,7 @@ fn resolve_ssh_mode_interactive_policy(
         stdin_is_terminal,
         jump_spec,
     )?;
-    Ok(matches!(policy.request, SessionRequest::Shell).then_some(policy))
+    Ok((matches!(policy.request, SessionRequest::Shell) && !policy.stdin_null).then_some(policy))
 }
 
 fn session_policy_jump_spec(proxy_mode: Option<&ProxyMode>) -> Option<&str> {
@@ -568,6 +570,48 @@ async fn handle_exec_command(
     command: &str,
     ssh_password: Option<Arc<Password>>,
 ) -> Result<()> {
+    if let Some(target) = &cli.stdio_forward {
+        anyhow::ensure!(
+            cli.is_ssh_mode() && ctx.nodes.len() == 1,
+            "-W requires exactly one SSH destination"
+        );
+        let node = ctx
+            .nodes
+            .first()
+            .context("-W requires an SSH destination node")?;
+        let effective_cluster_name = ctx.cluster_name.as_deref().or(cli.cluster.as_deref());
+        let resolver = build_ssh_connection_config_resolver(cli, ctx, effective_cluster_name);
+        let resolved = resolver.resolve_for_host(node.config_host());
+        let key_path = determine_ssh_key_path(
+            cli,
+            &ctx.config,
+            &ctx.ssh_config,
+            Some(node.config_host()),
+            effective_cluster_name,
+        );
+        #[cfg(target_os = "macos")]
+        let use_keychain = determine_use_keychain(&ctx.ssh_config, Some(node.config_host()));
+        let config = ConnectionConfig {
+            key_path: key_path.as_deref(),
+            strict_mode: Some(ctx.strict_mode),
+            use_agent: cli.use_agent,
+            use_password: cli.password,
+            #[cfg(target_os = "macos")]
+            use_keychain,
+            timeout_seconds: None,
+            connect_timeout_seconds: Some(cli.connect_timeout),
+            jump_hosts_spec: cli.jump_hosts.as_deref(),
+            ssh_connection_config: Some(&resolved),
+            ssh_connection_config_resolver: Some(&resolver),
+            session_policy: None,
+            ssh_password,
+        };
+        let mut client = SshClient::new(node.host.clone(), node.port, node.username.clone());
+        return client
+            .connect_and_forward_stdio((target.host.clone(), target.port), &config)
+            .await;
+    }
+
     // Resolve policy even for a plain ssh-compatible shell. Remote/subsystem/
     // none requests stay on the command executor; shell requests retain the
     // existing interactive stdin, PTY resize, and byte-stream implementation.
@@ -820,6 +864,22 @@ mod tests {
             [(String::from("JUMP"), String::from("bastion.example"))]
         );
         assert_eq!(resolved.local_command.as_deref(), Some("true"));
+
+        configured.remote_command = None;
+        configured.stdin_null = Some(true);
+        assert!(
+            resolve_ssh_mode_interactive_policy(
+                &configured,
+                &node,
+                CliTtyMode::Default,
+                true,
+                None,
+            )
+            .unwrap()
+            .is_none(),
+            "StdinNull shells must use the EOF-capable raw executor"
+        );
+        configured.stdin_null = None;
 
         configured.remote_command = Some("true".into());
         assert!(

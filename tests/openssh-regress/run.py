@@ -102,9 +102,9 @@ def read_selection(path: Path) -> list[Selection]:
     if len(names) != len(set(names)):
         raise ValueError("selection.tsv contains duplicate test names")
     candidate_count = sum(row.disposition in {"run", "skip"} for row in rows)
-    if candidate_count != 89:
+    if candidate_count != 90:
         raise ValueError(
-            f"selection.tsv must contain 89 candidate tests, found {candidate_count}"
+            f"selection.tsv must contain 90 candidate tests, found {candidate_count}"
         )
     return rows
 

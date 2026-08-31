@@ -42,7 +42,7 @@ mod mode_detection_tests;
 
 // Re-export main CLI types from bssh module
 pub use bssh::{Cli, Commands};
-pub use ssh_args::SshDumpInvocation;
+pub use ssh_args::{SshDumpInvocation, StdioForwardTarget, normalize_ssh_option_pass};
 
 // Re-export pdsh compatibility utilities
 pub use pdsh::{

@@ -223,6 +223,7 @@ pub struct SshConnectionConfigResolver {
     cli_remote_forwards: Vec<String>,
     cli_dynamic_forwards: Vec<String>,
     cli_forwarding_order: Vec<ForwardingDirective>,
+    stdio_forward: bool,
 }
 
 impl SshConnectionConfigResolver {
@@ -325,6 +326,15 @@ impl SshConnectionConfigResolver {
         self.cli_local_forwards = local;
         self.cli_remote_forwards = remote;
         self.cli_dynamic_forwards = dynamic;
+        self
+    }
+
+    /// Apply OpenSSH's `-W` defaults after all explicit ssh_config values
+    /// have been resolved. Explicit `ClearAllForwardings=no` and
+    /// `ExitOnForwardFailure=no` therefore keep their documented precedence.
+    #[must_use]
+    pub fn with_stdio_forward(mut self, enabled: bool) -> Self {
+        self.stdio_forward = enabled;
         self
     }
 
@@ -549,11 +559,11 @@ impl SshConnectionConfigResolver {
             clear_all: host_config
                 .as_ref()
                 .and_then(|config| config.clear_all_forwardings)
-                .unwrap_or(false),
+                .unwrap_or(self.stdio_forward),
             exit_on_failure: host_config
                 .as_ref()
                 .and_then(|config| config.exit_on_forward_failure)
-                .unwrap_or(false),
+                .unwrap_or(self.stdio_forward),
             address_family,
         };
         let rekey_limit = host_config

@@ -107,6 +107,7 @@ mod tests {
                 environment: vec![("POLICY".into(), "value".into())],
                 local_command: None,
                 request_pty: false,
+                stdin_null: false,
                 request: crate::ssh::SessionRequest::Shell,
             }),
             ssh_connection_config: SshConnectionConfig::default(),

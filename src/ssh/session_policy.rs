@@ -62,6 +62,7 @@ pub struct SessionPolicy {
     pub environment: Vec<(String, String)>,
     pub local_command: Option<String>,
     pub request_pty: bool,
+    pub stdin_null: bool,
     pub request: SessionRequest,
 }
 
@@ -227,10 +228,11 @@ impl SessionPolicy {
                 value => anyhow::bail!("Unsupported SessionType value: {value}"),
             };
         let interactive = matches!(request, SessionRequest::Shell);
+        let stdin_null = config.stdin_null.unwrap_or(false);
         let request_pty = resolve_request_pty(
             cli_tty,
             config.request_tty.as_deref(),
-            stdin_is_terminal,
+            stdin_is_terminal && !stdin_null,
             interactive,
         )?;
 
@@ -238,6 +240,7 @@ impl SessionPolicy {
             environment,
             local_command,
             request_pty,
+            stdin_null,
             request,
         })
     }

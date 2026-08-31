@@ -8,9 +8,121 @@
 
 //! Order-preserving extraction of ssh_config command-line options.
 
+use std::net::Ipv6Addr;
 use std::path::PathBuf;
+use std::str::FromStr;
 
 use anyhow::{Context, Result};
+
+/// Destination of an OpenSSH-compatible `-W host:port` stdio forwarding
+/// request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StdioForwardTarget {
+    pub host: String,
+    pub port: u16,
+}
+
+impl FromStr for StdioForwardTarget {
+    type Err = String;
+
+    fn from_str(value: &str) -> std::result::Result<Self, Self::Err> {
+        let (raw_host, raw_port) = value
+            .rsplit_once(':')
+            .ok_or_else(|| format!("Invalid -W target '{value}'; expected host:port"))?;
+        let host = if let Some(bracketed) = raw_host.strip_prefix('[') {
+            let host = bracketed
+                .strip_suffix(']')
+                .ok_or_else(|| format!("Invalid -W target '{value}'; expected [IPv6]:port"))?;
+            host.parse::<Ipv6Addr>()
+                .map_err(|_| format!("Invalid -W target '{value}'; expected [IPv6]:port"))?;
+            host.to_string()
+        } else if raw_host.is_empty() || raw_host.contains([':', '[', ']']) {
+            return Err(format!("Invalid -W target '{value}'; expected host:port"));
+        } else {
+            raw_host.to_string()
+        };
+        let port = raw_port
+            .parse::<u16>()
+            .ok()
+            .filter(|port| *port > 0)
+            .or_else(|| service_port(raw_port))
+            .ok_or_else(|| format!("Invalid -W target '{value}'; expected host:port"))?;
+        Ok(Self { host, port })
+    }
+}
+
+/// Move the OpenSSH second option pass in front of the destination so clap can
+/// parse it. `trailing_var_arg` intentionally captures everything after the
+/// destination; OpenSSH accepts another option group there until the first
+/// remote-command argument.
+pub fn normalize_ssh_option_pass(
+    args: &[String],
+    destination: &str,
+    trailing_count: usize,
+) -> Vec<String> {
+    if trailing_count == 0 || args.len() < trailing_count + 2 {
+        return args.to_vec();
+    }
+    let search_end = args.len() - trailing_count;
+    let Some(destination_index) = args[..search_end]
+        .iter()
+        .rposition(|argument| argument == destination)
+    else {
+        return args.to_vec();
+    };
+    let trailing = &args[destination_index + 1..];
+    let mut consumed = 0usize;
+    while consumed < trailing.len() {
+        let argument = &trailing[consumed];
+        if argument == "--" {
+            consumed += 1;
+            break;
+        }
+        let Some(width) = scoped_second_pass_width(argument, trailing.get(consumed + 1)) else {
+            break;
+        };
+        consumed += width;
+    }
+    if consumed == 0 {
+        return args.to_vec();
+    }
+
+    let mut normalized = Vec::with_capacity(args.len());
+    normalized.extend_from_slice(&args[..destination_index]);
+    normalized.extend_from_slice(&trailing[..consumed]);
+    normalized.push(args[destination_index].clone());
+    normalized.extend_from_slice(&trailing[consumed..]);
+    normalized
+}
+
+fn scoped_second_pass_width(argument: &str, next: Option<&String>) -> Option<usize> {
+    if let Some(long) = argument.strip_prefix("--") {
+        let (name, attached) = long
+            .split_once('=')
+            .map_or((long, false), |(name, _)| (name, true));
+        return match name {
+            "subsystem" | "stdin-null" => Some(1),
+            "cipher" | "macs" | "stdio-forward" | "ssh-config" | "option" => {
+                Some(usize::from(!attached && next.is_some()) + 1)
+            }
+            _ => None,
+        };
+    }
+    let shorts = argument
+        .strip_prefix('-')
+        .filter(|value| !value.is_empty())?;
+    for (position, short) in shorts.char_indices() {
+        match short {
+            's' | 'n' => {}
+            'c' | 'm' | 'W' | 'F' | 'o' => {
+                let attached = position + short.len_utf8() < shorts.len();
+                return Some(usize::from(!attached && next.is_some()) + 1);
+            }
+            _ => return None,
+        }
+    }
+    Some(1)
+}
 
 /// Inputs needed by `ssh -G`, in the order OpenSSH obtains them.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -359,7 +471,9 @@ fn apply_value(
         "remote-forward" => config_option("RemoteForward", value)?,
         "dynamic-forward" => config_option("DynamicForward", value)?,
         "stdio-forward" => {
-            validate_stdio_forward(value)?;
+            value
+                .parse::<StdioForwardTarget>()
+                .map_err(anyhow::Error::msg)?;
             return Ok(());
         }
         "diagnostic-file" => {
@@ -407,55 +521,38 @@ fn set_priority(
     }
 }
 
-fn validate_stdio_forward(value: &str) -> Result<()> {
-    let (host, port) = value.rsplit_once(':').context("-W requires host:port")?;
-    let valid_host = !host.is_empty()
-        && if host.starts_with('[') {
-            host.ends_with(']') && host.len() > 2
-        } else {
-            !host.contains(':') && !host.ends_with(']')
-        };
-    let valid_port = match port.parse::<u16>() {
-        Ok(port) => port > 0,
-        Err(_) => service_exists(port),
-    };
-    if !valid_host || !valid_port {
-        anyhow::bail!("Invalid -W target '{value}'; expected host:port");
-    }
-    Ok(())
-}
-
 #[cfg(unix)]
-fn service_exists(name: &str) -> bool {
+fn service_port(name: &str) -> Option<u16> {
     if name.is_empty()
         || !name
             .chars()
             .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
     {
-        return false;
+        return None;
     }
     std::fs::read_to_string("/etc/services")
         .ok()
-        .is_some_and(|services| {
-            services.lines().any(|line| {
+        .and_then(|services| {
+            services.lines().find_map(|line| {
                 let fields = line
                     .split('#')
                     .next()
                     .unwrap_or_default()
                     .split_whitespace()
                     .collect::<Vec<_>>();
-                fields.get(1).is_some_and(|port| port.ends_with("/tcp"))
-                    && fields
-                        .iter()
-                        .enumerate()
-                        .any(|(index, field)| index != 1 && *field == name)
+                let port = fields.get(1)?.strip_suffix("/tcp")?.parse().ok()?;
+                fields
+                    .iter()
+                    .enumerate()
+                    .any(|(index, field)| index != 1 && *field == name)
+                    .then_some(port)
             })
         })
 }
 
 #[cfg(not(unix))]
-fn service_exists(_name: &str) -> bool {
-    false
+fn service_port(_name: &str) -> Option<u16> {
+    None
 }
 
 fn scan_for_dump_flag(args: &[String]) -> bool {
@@ -638,7 +735,7 @@ fn literal_user(value: &str) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::SshDumpInvocation;
+    use super::{SshDumpInvocation, StdioForwardTarget, normalize_ssh_option_pass};
 
     fn args(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_string()).collect()
@@ -660,6 +757,84 @@ mod tests {
             parsed.overrides,
             ["AddressFamily=inet6", "User=first", "User=second", "Port=9"]
         );
+    }
+
+    #[test]
+    fn normalizes_scoped_second_option_pass_for_clap() {
+        let argv = args(&[
+            "bssh",
+            "host",
+            "-sn",
+            "-c",
+            "-aes128-cbc",
+            "-W[::1]:443",
+            "remote-command",
+        ]);
+        assert_eq!(
+            normalize_ssh_option_pass(&argv, "host", 5),
+            args(&[
+                "bssh",
+                "-sn",
+                "-c",
+                "-aes128-cbc",
+                "-W[::1]:443",
+                "host",
+                "remote-command",
+            ])
+        );
+
+        let terminated = args(&["bssh", "host", "-s", "--", "-literal-command"]);
+        assert_eq!(
+            normalize_ssh_option_pass(&terminated, "host", 3),
+            args(&["bssh", "-s", "--", "host", "-literal-command"])
+        );
+
+        let with_generic_option = args(&[
+            "bssh",
+            "host",
+            "-oCiphers=aes128-ctr",
+            "-c",
+            "aes256-ctr",
+            "command",
+        ]);
+        assert_eq!(
+            normalize_ssh_option_pass(&with_generic_option, "host", 4),
+            args(&[
+                "bssh",
+                "-oCiphers=aes128-ctr",
+                "-c",
+                "aes256-ctr",
+                "host",
+                "command",
+            ])
+        );
+
+        let missing_value = args(&["bssh", "host", "-c"]);
+        assert_eq!(
+            normalize_ssh_option_pass(&missing_value, "host", 1),
+            args(&["bssh", "-c", "host"])
+        );
+    }
+
+    #[test]
+    fn parses_numeric_service_and_bracketed_ipv6_stdio_targets() {
+        assert_eq!(
+            "example.com:443".parse::<StdioForwardTarget>().unwrap(),
+            StdioForwardTarget {
+                host: "example.com".into(),
+                port: 443,
+            }
+        );
+        assert_eq!(
+            "[2001:db8::1]:22".parse::<StdioForwardTarget>().unwrap(),
+            StdioForwardTarget {
+                host: "2001:db8::1".into(),
+                port: 22,
+            }
+        );
+        for invalid in ["host", ":22", "host:0", "2001:db8::1:22", "[bad]:22"] {
+            assert!(invalid.parse::<StdioForwardTarget>().is_err(), "{invalid}");
+        }
     }
 
     #[test]

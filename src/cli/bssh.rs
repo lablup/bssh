@@ -17,6 +17,8 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 
+use super::ssh_args::StdioForwardTarget;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "bssh",
@@ -271,6 +273,8 @@ pub struct Cli {
         short = 'c',
         long = "cipher",
         value_name = "cipher_spec",
+        allow_hyphen_values = true,
+        overrides_with = "cipher",
         help = "Select SSH transport ciphers (OpenSSH-compatible -c)"
     )]
     pub cipher: Option<String>,
@@ -279,9 +283,34 @@ pub struct Cli {
         short = 'm',
         long = "macs",
         value_name = "mac_spec",
+        allow_hyphen_values = true,
+        overrides_with = "macs",
         help = "Select SSH MAC algorithms (OpenSSH-compatible -m)"
     )]
     pub macs: Option<String>,
+
+    #[arg(
+        short = 's',
+        long = "subsystem",
+        help = "Invoke the remote command as an SSH subsystem"
+    )]
+    pub subsystem: bool,
+
+    #[arg(
+        short = 'n',
+        long = "stdin-null",
+        help = "Redirect stdin from /dev/null"
+    )]
+    pub stdin_null: bool,
+
+    #[arg(
+        short = 'W',
+        long = "stdio-forward",
+        value_name = "host:port",
+        overrides_with = "stdio_forward",
+        help = "Forward standard input and output to host:port over SSH"
+    )]
+    pub stdio_forward: Option<StdioForwardTarget>,
 
     #[arg(
         short = 'F',
@@ -646,13 +675,21 @@ impl Cli {
         let mut options = Vec::with_capacity(
             self.ssh_options.len()
                 + usize::from(self.cipher.is_some())
-                + usize::from(self.macs.is_some()),
+                + usize::from(self.macs.is_some())
+                + usize::from(self.subsystem)
+                + usize::from(self.stdin_null),
         );
         if let Some(cipher) = &self.cipher {
             options.push(format!("Ciphers={cipher}"));
         }
         if let Some(macs) = &self.macs {
             options.push(format!("MACs={macs}"));
+        }
+        if self.subsystem {
+            options.push("SessionType=subsystem".to_string());
+        }
+        if self.stdin_null {
+            options.push("StdinNull=yes".to_string());
         }
         options.extend(self.ssh_options.iter().cloned());
         options
@@ -907,6 +944,57 @@ mod tests {
                 "Ciphers=aes256-ctr"
             ]
         );
+    }
+
+    #[test]
+    fn compatibility_flags_parse_repetition_modifiers_and_session_overrides() {
+        let cli = Cli::try_parse_from([
+            "bssh",
+            "-c",
+            "aes128-ctr",
+            "-c",
+            "-aes128-cbc",
+            "-m",
+            "hmac-sha1",
+            "-m",
+            "+hmac-sha2-256",
+            "-sn",
+            "-W[::1]:443",
+            "target",
+            "sftp",
+        ])
+        .unwrap();
+
+        assert_eq!(cli.cipher.as_deref(), Some("-aes128-cbc"));
+        assert_eq!(cli.macs.as_deref(), Some("+hmac-sha2-256"));
+        assert!(cli.subsystem && cli.stdin_null);
+        assert_eq!(cli.stdio_forward.as_ref().unwrap().host, "::1");
+        assert_eq!(
+            cli.ssh_config_overrides(),
+            [
+                "Ciphers=-aes128-cbc",
+                "MACs=+hmac-sha2-256",
+                "SessionType=subsystem",
+                "StdinNull=yes",
+            ]
+        );
+    }
+
+    #[test]
+    fn second_option_pass_preserves_hyphen_leading_command_after_double_dash() {
+        let argv = ["bssh", "host", "-s", "--", "-literal-command"]
+            .map(str::to_string)
+            .to_vec();
+        let first = Cli::try_parse_from(&argv).unwrap();
+        let normalized = crate::cli::normalize_ssh_option_pass(
+            &argv,
+            first.destination.as_deref().unwrap(),
+            first.command_args.len(),
+        );
+        let parsed = Cli::try_parse_from(normalized).unwrap();
+        assert!(parsed.subsystem);
+        assert_eq!(parsed.destination.as_deref(), Some("host"));
+        assert_eq!(parsed.command_args, ["-literal-command"]);
     }
     #[test]
     fn openssh_cipher_flag_rejects_unsupported_and_empty_policies() {

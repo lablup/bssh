@@ -308,7 +308,19 @@ async fn run_bssh_mode(args: &[String]) -> Result<()> {
         std::process::exit(0);
     }
 
-    let mut cli = Cli::parse();
+    let mut cli = Cli::parse_from(args);
+    let effective_args = if cli.is_ssh_mode() {
+        bssh::cli::normalize_ssh_option_pass(
+            args,
+            cli.destination.as_deref().unwrap_or_default(),
+            cli.command_args.len(),
+        )
+    } else {
+        args.to_vec()
+    };
+    if effective_args != args {
+        cli = Cli::parse_from(&effective_args);
+    }
     bssh::ui::configure_color(cli.color);
 
     if cli.version {
@@ -349,7 +361,7 @@ async fn run_bssh_mode(args: &[String]) -> Result<()> {
 
     // Initialize the application and load all configurations. A failure here is
     // a pre-connection failure, which `ping` reports as 255.
-    let init_result = initialize_app(&mut cli, args).await;
+    let init_result = initialize_app(&mut cli, &effective_args).await;
     let ctx = match init_result {
         Ok(ctx) => ctx,
         Err(e) => return Err(map_hard_failure(&cli.command, cli.is_ssh_mode(), e)),

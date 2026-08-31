@@ -204,6 +204,31 @@ Host target
     assert_eq!(config.keepalive_max, 9);
 }
 
+#[test]
+fn stdio_forward_defaults_clear_forwards_but_preserves_explicit_no() {
+    let implicit =
+        SshConfig::parse("Host target\n    LocalForward 127.0.0.1:2200 example.com:22\n").unwrap();
+    let implicit = SshConnectionConfigResolver::new()
+        .with_ssh_config(Some(implicit))
+        .with_stdio_forward(true)
+        .resolve_for_host("target");
+    assert!(implicit.forwarding_plan.clear_all);
+    assert!(implicit.forwarding_plan.exit_on_failure);
+    assert!(implicit.forwarding_plan.parse().unwrap().is_empty());
+
+    let explicit = SshConfig::parse(
+        "Host target\n    ClearAllForwardings no\n    ExitOnForwardFailure no\n    LocalForward 127.0.0.1:2200 example.com:22\n",
+    )
+    .unwrap();
+    let explicit = SshConnectionConfigResolver::new()
+        .with_ssh_config(Some(explicit))
+        .with_stdio_forward(true)
+        .resolve_for_host("target");
+    assert!(!explicit.forwarding_plan.clear_all);
+    assert!(!explicit.forwarding_plan.exit_on_failure);
+    assert_eq!(explicit.forwarding_plan.parse().unwrap().len(), 1);
+}
+
 /// The empty-after-filter path must fail with a specific error naming the host
 /// and the requested family, not the generic "could not resolve to any
 /// addresses". Passing a `SocketAddr` makes the candidate list exactly one

@@ -56,6 +56,56 @@ impl SshClient {
         }
     }
 
+    /// Connect and expose a remote `direct-tcpip` channel on local stdio.
+    ///
+    /// This is intentionally separate from command/session execution: `-W`
+    /// creates no session channel, PTY, RemoteCommand, or command timeout.
+    pub async fn connect_and_forward_stdio(
+        &mut self,
+        target: (String, u16),
+        config: &ConnectionConfig<'_>,
+    ) -> Result<()> {
+        let auth_method = self
+            .determine_auth_method(
+                config.key_path,
+                config.use_agent,
+                config.use_password,
+                #[cfg(target_os = "macos")]
+                config.use_keychain,
+                config.ssh_password.clone(),
+                config.ssh_connection_config,
+            )
+            .await?;
+        let strict_mode = config
+            .strict_mode
+            .unwrap_or(StrictHostKeyChecking::AcceptNew);
+        let client = self
+            .establish_connection(
+                &auth_method,
+                strict_mode,
+                config.jump_hosts_spec,
+                config.key_path,
+                config.use_agent,
+                config.use_password,
+                config.connect_timeout_seconds,
+                config.ssh_connection_config,
+                config.ssh_connection_config_resolver,
+                config.ssh_password.clone(),
+                crate::ssh::SessionPurpose::Bulk,
+            )
+            .await?;
+        let address_family = config
+            .ssh_connection_config
+            .map_or(crate::ssh::tokio_client::AddressFamily::Any, |value| {
+                value.address_family
+            });
+        let operation = client
+            .forward_stdio(target, address_family)
+            .await
+            .context("Failed to forward standard I/O over SSH");
+        self.finish_with_disconnect(&client, operation).await
+    }
+
     /// Execute a command on the remote host with basic configuration
     pub async fn connect_and_execute(
         &mut self,
@@ -347,7 +397,7 @@ impl SshClient {
         forward_stdin: bool,
     ) -> Result<u32, crate::ssh::tokio_client::Error> {
         match session_policy {
-            Some(policy) if forward_stdin => {
+            Some(policy) if forward_stdin && !policy.stdin_null => {
                 client
                     .execute_session_streaming_with_stdin(policy, output_sender)
                     .await
