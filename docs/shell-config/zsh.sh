@@ -17,13 +17,13 @@ alias pdsh='bssh --pdsh-compat'
 # Create shortcuts for frequently used clusters
 
 # Production cluster shortcut
-alias bssh-prod='bssh -C production'
+alias bssh-prod='bssh --cluster production'
 
 # Staging cluster shortcut
-alias bssh-staging='bssh -C staging'
+alias bssh-staging='bssh --cluster staging'
 
 # Development cluster shortcut
-alias bssh-dev='bssh -C development'
+alias bssh-dev='bssh --cluster development'
 
 # ============================================
 # Helper Functions
@@ -38,7 +38,7 @@ bssh-all() {
 
     local cluster="$1"
     shift
-    bssh -C "$cluster" "$@"
+    bssh --cluster "$cluster" "$@"
 }
 
 # Execute command with hostlist expansion
@@ -72,7 +72,7 @@ bssh-health() {
         return 1
     fi
 
-    bssh -C "$1" "uptime; free -h | grep 'Mem:'; df -h /"
+    bssh --cluster "$1" "uptime; free -h | grep 'Mem:'; df -h /"
 }
 
 # Parallel execution with progress tracking
@@ -85,7 +85,7 @@ bssh-parallel() {
     local cluster="$1"
     local parallel="$2"
     shift 2
-    bssh -C "$cluster" --parallel "$parallel" "$@"
+    bssh --cluster "$cluster" --parallel "$parallel" "$@"
 }
 
 # ============================================
@@ -148,7 +148,7 @@ bssh-ctx() {
         return 1
     fi
 
-    bssh -C "$BSSH_CURRENT_CLUSTER" "$@"
+    bssh --cluster "$BSSH_CURRENT_CLUSTER" "$@"
 }
 
 # ============================================
@@ -182,7 +182,7 @@ bssh-group() {
 
     for cluster in ${=BSSH_CLUSTER_GROUPS[$group]}; do
         echo "===> Running on cluster: $cluster"
-        bssh -C "$cluster" "$@"
+        bssh --cluster "$cluster" "$@"
     done
 }
 

@@ -157,19 +157,22 @@ pub fn is_pdsh_compat_mode() -> bool {
     }
 
     // Check argv[0] for "pdsh" binary name
-    if let Some(arg0) = std::env::args().next() {
-        let binary_name = Path::new(&arg0)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
-
-        // Match exact "pdsh" or "pdsh.exe" (Windows) or "pdsh.*" patterns
-        if binary_name == "pdsh" || binary_name.starts_with("pdsh.") {
-            return true;
-        }
+    if let Some(arg0) = std::env::args().next()
+        && is_pdsh_binary_name(&arg0)
+    {
+        return true;
     }
 
     false
+}
+
+/// Return whether an argv[0] path selects the dedicated pdsh parser.
+pub(crate) fn is_pdsh_binary_name(arg0: &str) -> bool {
+    let binary_name = Path::new(arg0)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("");
+    binary_name == "pdsh" || binary_name.starts_with("pdsh.")
 }
 
 /// Checks if pdsh compatibility mode should be enabled based on arguments.
@@ -307,6 +310,7 @@ impl PdshCli {
             sudo_password: false,
             jump_hosts: None,
             port: None,
+            protocol_2: false,
             stream: false,
             color: crate::ui::ColorMode::Auto,
             version: false,
@@ -317,6 +321,12 @@ impl PdshCli {
             require_all_success: false,
             check_all_nodes: false,
             ssh_options: Vec::new(),
+            no_remote_command: false,
+            fork_after_authentication: false,
+            compression: false,
+            forward_agent: false,
+            disable_gssapi_credential_forwarding: false,
+            bind_address: None,
             control_master: 0,
             control_command: None,
             control_path: None,
@@ -548,6 +558,14 @@ mod tests {
         assert!(bssh_cli.fail_fast);
         // Any failure flag
         assert!(bssh_cli.any_failure);
+        // The pdsh parser owns these short flags; no SSH-mode field leaks.
+        assert!(!bssh_cli.no_remote_command);
+        assert!(!bssh_cli.fork_after_authentication);
+        assert!(!bssh_cli.compression);
+        assert!(!bssh_cli.forward_agent);
+        assert!(!bssh_cli.disable_gssapi_credential_forwarding);
+        assert!(bssh_cli.control_path.is_none());
+        assert!(bssh_cli.bind_address.is_none());
         // Command
         assert_eq!(bssh_cli.command_args, vec!["df", "-h"]);
     }

@@ -83,11 +83,11 @@ bssh -J "user@[::1]:2222" -H target "command"
 
 # File transfer through jump hosts
 bssh -J bastion.example.com -H internal upload app.tar.gz /opt/
-bssh -J "jump1,jump2" -C production download /etc/config ./backups/
+bssh -J "jump1,jump2" --cluster production download /etc/config ./backups/
 
 # Interactive mode through jump hosts
 bssh -J bastion.example.com user@internal-server
-bssh -J "jump1,jump2" -C production interactive
+bssh -J "jump1,jump2" --cluster production interactive
 ```
 
 ### Completed Features

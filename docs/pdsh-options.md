@@ -124,7 +124,7 @@ pdsh -w compute[001-100] -x "compute[080-100]" "check-gpu.sh"
 pdsh -g webservers "command"
 
 # bssh equivalent
-bssh -C webservers "command"
+bssh --cluster webservers "command"
 ```
 
 **Config file** (`~/.config/bssh/config.yaml`):
@@ -463,70 +463,70 @@ pdsh -w prod-servers -i ~/.ssh/prod_rsa "deploy.sh"
 pdsh -w servers -i ~/.ssh/encrypted_key "command"
 ```
 
-### `-A` (--use-agent) [bssh Extension]
+### `--use-agent` [bssh Native Extension]
 
 **pdsh**: N/A (auto-detects agent)
 
-**bssh Native**: `-A` or `--use-agent`
+**bssh Native**: `--use-agent`
 
-**pdsh Compat**: `-A`
+**pdsh Compat**: Not exposed by the pdsh-compatible parser; use native bssh mode
 
 **Syntax**:
 ```bash
-# Use SSH agent
-pdsh -A -w hosts "command"
+# Use SSH agent in native bssh mode
+bssh --use-agent -H hosts "command"
 ```
 
 **Examples**:
 ```bash
 # Force agent authentication
-pdsh -A -w secure-hosts "sensitive-operation.sh"
+bssh --use-agent -H secure-hosts "sensitive-operation.sh"
 
 # Combined with sudo
-pdsh -A -S -w servers "sudo apt update"
+bssh --use-agent --sudo-password -H servers "sudo apt update"
 ```
 
-### `-P` (--password) [bssh Extension]
+### `--password` [bssh Native Extension]
 
 **pdsh**: N/A
 
-**bssh Native**: `-P` or `--password`
+**bssh Native**: `--password`
 
-**pdsh Compat**: `-P`
+**pdsh Compat**: Not exposed by the pdsh-compatible parser; use native bssh mode
 
 **Behavior**: Prompts for SSH password (not recommended for scripts)
 
 **Syntax**:
 ```bash
 # Password authentication
-pdsh -P -w hosts "command"
+bssh --password -H hosts "command"
 # Prompts: "Enter SSH password:"
 ```
 
-### `-S` (--sudo-password) [bssh Extension]
+### `--sudo-password` [bssh Native Extension]
 
 **pdsh**: N/A
 
-**bssh Native**: `-S` or `--sudo-password`
+**bssh Native**: `--sudo-password`
 
-**pdsh Compat**: `-S`
+**pdsh Compat**: `-S` means `--any-failure`; the sudo helper is not exposed by the pdsh-compatible parser
 
 **Behavior**: Prompts for sudo password and auto-injects it
 
 **Syntax**:
 ```bash
 # Sudo password injection
-pdsh -S -w hosts "sudo apt update"
+bssh --sudo-password -H hosts "sudo apt update"
 # Prompts: "Enter sudo password:"
 ```
 
 **Examples**:
 ```bash
 # System updates with sudo
-pdsh -S -w servers "sudo systemctl restart nginx"
+bssh --sudo-password -H servers "sudo systemctl restart nginx"
 
 # Combined with SSH agent
-pdsh -A -S -w hosts "sudo reboot"
+bssh --use-agent --sudo-password -H hosts "sudo reboot"
 ```
 
 ## Query and Information Options
@@ -707,7 +707,7 @@ The following pdsh options are **not supported** in bssh:
 
 | Option | Description | Alternative |
 |--------|-------------|-------------|
-| `-g <group>` | Target host group | Use `-C <cluster>` with YAML config |
+| `-g <group>` | Target host group | Use native bssh `--cluster <cluster>` with YAML config |
 | `-a` | Target all hosts | Define "all" cluster in config |
 | `-X <group>` | Exclude host group | Use `--exclude` with hostlist |
 
@@ -731,19 +731,19 @@ The following pdsh options are **not supported** in bssh:
 
 ## bssh-Specific Extensions
 
-These options are available in bssh but not in pdsh:
+These options are available in native bssh mode, not through the pdsh-compatible parser:
 
 ### Advanced Features
 
 | Option | Description | Example |
 |--------|-------------|---------|
-| `-J <hosts>` | Jump host (bastion) | `pdsh -J bastion -w internal-hosts "cmd"` |
-| `-L <spec>` | Local port forwarding | `pdsh -L 8080:web:80 -w hosts "cmd"` |
-| `-R <spec>` | Remote port forwarding | `pdsh -R 80:localhost:8080 -w hosts "cmd"` |
-| `-D <spec>` | Dynamic forwarding (SOCKS) | `pdsh -D 1080 -w hosts "cmd"` |
-| `-F <file>` | SSH config file | `pdsh -F ~/.ssh/custom_config -w hosts "cmd"` |
-| `-C <cluster>` | Use cluster from config | `pdsh -C production "cmd"` |
-| `--filter <pattern>` | Filter hosts by pattern | `pdsh -w hosts --filter "web*" "cmd"` |
+| `-J <hosts>` | Jump host (bastion) | `bssh -J bastion -H internal-hosts "cmd"` |
+| `-L <spec>` | Local port forwarding | `bssh -L 8080:web:80 -H hosts "cmd"` |
+| `-R <spec>` | Remote port forwarding | `bssh -R 80:localhost:8080 -H hosts "cmd"` |
+| `-D <spec>` | Dynamic forwarding (SOCKS) | `bssh -D 1080 -H hosts "cmd"` |
+| `-F <file>` | SSH config file | `bssh -F ~/.ssh/custom_config -H hosts "cmd"` |
+| `--cluster <cluster>` | Use cluster from config in native bssh mode | `bssh --cluster production "cmd"` |
+| `--filter <pattern>` | Filter hosts in native bssh mode | `bssh -H hosts --filter "web*" "cmd"` |
 
 ### Verbosity Levels
 
@@ -765,7 +765,7 @@ pdsh -vv -w problematic-host "command"
 |--------|-------------|
 | `--stream` | Stream mode with real-time output |
 | `--output-dir <dir>` | Save per-host output to files |
-| `--no-prefix` | Disable hostname prefix (same as `-N`) |
+| `--no-prefix` | Disable hostname prefix (`-N` has this meaning only in pdsh mode) |
 
 ### Exit Code Strategies
 
@@ -773,7 +773,7 @@ pdsh -vv -w problematic-host "command"
 |--------|-------------|
 | `--require-all-success` | Return 0 only if all hosts succeed |
 | `--check-all-nodes` | Return main rank code, or 1 if others fail |
-| `--any-failure` | Return largest exit code (same as `-S`) |
+| `--any-failure` | Return largest exit code (`-S` has this meaning only in pdsh mode) |
 
 ## Summary
 
@@ -785,7 +785,7 @@ pdsh -vv -w problematic-host "command"
 | **Execution** | `-f`, `-b`, `-k` | ✅ Full | Direct mapping |
 | **Timeouts** | `-t`, `-u` | ✅ Full | Direct mapping |
 | **Output** | `-N`, `-o` | ✅ Partial | `-N` supported; use `--stream` instead of `-o` |
-| **Authentication** | `-l` | ✅ Full | Plus additional `-i`, `-A`, `-P`, `-S` |
+| **Authentication** | `-l` | ✅ Full | Native bssh additionally provides `-i`, `--use-agent`, `--password`, and `--sudo-password` |
 | **Query** | `-q` | ✅ Full | Direct mapping |
 | **Exit Codes** | `-S` | ✅ Full | Plus additional strategies |
 | **RCMD Modules** | `-R`, `-M` | ❌ None | SSH-only by design |

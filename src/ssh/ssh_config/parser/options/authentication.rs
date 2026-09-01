@@ -224,6 +224,12 @@ pub(super) fn parse_authentication_option(
             }
             host.gssapi_authentication = Some(parse_yes_no(&args[0], line_number)?);
         }
+        "gssapidelegatecredentials" => {
+            if args.is_empty() {
+                anyhow::bail!("GSSAPIDelegateCredentials requires a value at line {line_number}");
+            }
+            host.gssapi_delegate_credentials = Some(parse_yes_no(&args[0], line_number)?);
+        }
         "preferredauthentications" => {
             if args.is_empty() {
                 anyhow::bail!("PreferredAuthentications requires a value at line {line_number}");

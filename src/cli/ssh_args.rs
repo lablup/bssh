@@ -112,8 +112,8 @@ fn scoped_second_pass_width(argument: &str, next: Option<&String>) -> Option<usi
         .filter(|value| !value.is_empty())?;
     for (position, short) in shorts.char_indices() {
         match short {
-            's' | 'n' | 'M' => {}
-            'c' | 'm' | 'W' | 'F' | 'o' | 'O' => {
+            '2' | 's' | 'n' | 'M' | 'N' | 'f' | 'C' | 'A' | 'k' => {}
+            'c' | 'm' | 'W' | 'F' | 'o' | 'O' | 'S' | 'b' => {
                 let attached = position + short.len_utf8() < shorts.len();
                 return Some(usize::from(!attached && next.is_some()) + 1);
             }
@@ -320,10 +320,18 @@ impl SshDumpInvocation {
                             set_priority(&mut priority_overrides, "sessiontype", "SessionType=none")
                         }
                         'n' => set_priority(&mut priority_overrides, "stdinnull", "StdinNull=yes"),
-                        'f' => set_priority(
+                        'f' => {
+                            set_priority(
+                                &mut priority_overrides,
+                                "forkafterauthentication",
+                                "ForkAfterAuthentication=yes",
+                            );
+                            set_priority(&mut priority_overrides, "stdinnull", "StdinNull=yes");
+                        }
+                        'k' => set_priority(
                             &mut priority_overrides,
-                            "forkafterauthentication",
-                            "ForkAfterAuthentication=yes",
+                            "gssapidelegatecredentials",
+                            "GSSAPIDelegateCredentials=no",
                         ),
                         'g' => set_priority(
                             &mut priority_overrides,
@@ -352,7 +360,7 @@ impl SshDumpInvocation {
                             version = true;
                             break 'arguments;
                         }
-                        'q' | 'v' | 'y' => {}
+                        '2' | 'q' | 'v' | 'y' => {}
                         _ => anyhow::bail!("Unknown option '-{short}'"),
                     }
                 }
@@ -812,6 +820,54 @@ mod tests {
         assert_eq!(
             normalize_ssh_option_pass(&missing_value, "host", 1),
             args(&["bssh", "-c", "host"])
+        );
+
+        let reassigned = args(&[
+            "bssh",
+            "host",
+            "-2NfCAk",
+            "-S",
+            "/tmp/control",
+            "-b127.0.0.2",
+            "remote-command",
+        ]);
+        assert_eq!(
+            normalize_ssh_option_pass(&reassigned, "host", 5),
+            args(&[
+                "bssh",
+                "-2NfCAk",
+                "-S",
+                "/tmp/control",
+                "-b127.0.0.2",
+                "host",
+                "remote-command",
+            ])
+        );
+    }
+
+    #[test]
+    fn config_dump_maps_all_reassigned_openssh_short_flags() {
+        let parsed = SshDumpInvocation::from_argv(&args(&[
+            "bssh",
+            "-G2NfCAk",
+            "-S/tmp/control",
+            "-b127.0.0.2",
+            "host",
+        ]))
+        .unwrap();
+
+        assert_eq!(
+            parsed.overrides,
+            [
+                "SessionType=none",
+                "ForkAfterAuthentication=yes",
+                "StdinNull=yes",
+                "Compression=yes",
+                "ForwardAgent=yes",
+                "GSSAPIDelegateCredentials=no",
+                "ControlPath=/tmp/control",
+                "BindAddress=127.0.0.2",
+            ]
         );
     }
 

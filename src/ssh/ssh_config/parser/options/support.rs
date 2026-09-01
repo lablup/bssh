@@ -79,6 +79,11 @@ pub(super) const ACCEPTED_KEYWORDS: &[(&str, &str, KeywordSupport)] = &[
         Unimplemented,
     ),
     (
+        "gssapidelegatecredentials",
+        "gssapidelegatecredentials",
+        Unimplemented,
+    ),
+    (
         "preferredauthentications",
         "preferredauthentications",
         Runtime(Authentication),
@@ -154,7 +159,7 @@ pub(super) const ACCEPTED_KEYWORDS: &[(&str, &str, KeywordSupport)] = &[
     ),
     ("requiredrsasize", "requiredrsasize", Unimplemented),
     ("fingerprinthash", "fingerprinthash", Unimplemented),
-    ("forwardagent", "forwardagent", Unimplemented),
+    ("forwardagent", "forwardagent", Runtime(Session)),
     ("forwardx11", "forwardx11", Unimplemented),
     ("localforward", "localforward", Runtime(Forwarding)),
     ("remoteforward", "remoteforward", Runtime(Forwarding)),
@@ -207,7 +212,7 @@ pub(super) const ACCEPTED_KEYWORDS: &[(&str, &str, KeywordSupport)] = &[
     ("setenv", "setenv", Runtime(Session)),
     ("requesttty", "requesttty", Runtime(Session)),
     ("escapechar", "escapechar", Unimplemented),
-    ("loglevel", "loglevel", Unimplemented),
+    ("loglevel", "loglevel", Runtime(Session)),
     ("syslogfacility", "syslogfacility", Unimplemented),
     ("protocol", "protocol", Unimplemented),
     ("permitlocalcommand", "permitlocalcommand", Runtime(Session)),
@@ -221,10 +226,10 @@ pub(super) const ACCEPTED_KEYWORDS: &[(&str, &str, KeywordSupport)] = &[
     (
         "forkafterauthentication",
         "forkafterauthentication",
-        Unimplemented,
+        Runtime(Session),
     ),
     ("sessiontype", "sessiontype", Runtime(Session)),
-    ("stdinnull", "stdinnull", Unimplemented),
+    ("stdinnull", "stdinnull", Runtime(Session)),
     ("cipher", "cipher", Unimplemented),
     ("fallbacktorsh", "fallbacktorsh", Unimplemented),
     (
@@ -300,9 +305,9 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    const ACCEPTED_SPELLING_COUNT: usize = 107;
-    const RUNTIME_SPELLING_COUNT: usize = 54;
-    const UNIMPLEMENTED_SPELLING_COUNT: usize = 53;
+    const ACCEPTED_SPELLING_COUNT: usize = 108;
+    const RUNTIME_SPELLING_COUNT: usize = 58;
+    const UNIMPLEMENTED_SPELLING_COUNT: usize = 50;
 
     #[test]
     fn accepted_keywords_and_aliases_have_one_consistent_classification() {
@@ -367,6 +372,7 @@ mod tests {
             ("hostkeyalias", HostVerification),
             ("verifyhostkeydns", HostVerification),
             ("updatehostkeys", HostVerification),
+            ("forwardagent", Session),
             ("localforward", Forwarding),
             ("remoteforward", Forwarding),
             ("dynamicforward", Forwarding),
@@ -392,11 +398,14 @@ mod tests {
             ("sendenv", Session),
             ("setenv", Session),
             ("requesttty", Session),
+            ("loglevel", Session),
             ("permitlocalcommand", Session),
             ("localcommand", Session),
             ("remotecommand", Session),
             ("knownhostscommand", HostVerification),
+            ("forkafterauthentication", Session),
             ("sessiontype", Session),
+            ("stdinnull", Session),
         ];
         let runtime = ACCEPTED_KEYWORDS
             .iter()
@@ -421,6 +430,7 @@ mod tests {
             "identityagent",
             "kbdinteractiveauthentication",
             "gssapiauthentication",
+            "gssapidelegatecredentials",
             "hostbasedauthentication",
             "hostbasedacceptedalgorithms",
             "enablesshkeysign",
@@ -430,7 +440,6 @@ mod tests {
             "visualhostkey",
             "requiredrsasize",
             "fingerprinthash",
-            "forwardagent",
             "forwardx11",
             "gatewayports",
             "permitremoteopen",
@@ -438,11 +447,8 @@ mod tests {
             "forwardx11trusted",
             "connecttimeout",
             "escapechar",
-            "loglevel",
             "syslogfacility",
             "protocol",
-            "forkafterauthentication",
-            "stdinnull",
             "cipher",
             "fallbacktorsh",
             "globalknownhostsfile2",

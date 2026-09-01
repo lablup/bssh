@@ -1,4 +1,4 @@
-test	disposition	reason
+test	disposition	reason	timeout_seconds
 addrmatch	run
 agent-getpeereid	run
 agent-pkcs11-cert	skip	Permanent candidate skip: PKCS#11 and FIDO/security-key middleware are outside the compatibility target.
@@ -38,7 +38,7 @@ envpass	run
 exit-status-signal	run
 exit-status	run
 forcecommand	exclude	sshd-side ForceCommand test; outside the client candidate set.
-forward-control	run
+forward-control	run		180
 forwarding	run
 gss-auth	skip	Permanent candidate skip: GSSAPI authentication is outside the compatibility target.
 host-expand	run
@@ -106,7 +106,7 @@ ssh-tty	run
 ssh2putty	exclude	Upstream conversion helper; it is not a standalone regression test.
 sshcfgparse	run
 sshfp-connect	run
-sshsig	run
+sshsig	run		180
 stderr-after-eof	run
 stderr-data	run
 test-exec	exclude	Upstream test driver; it is not a standalone regression test.

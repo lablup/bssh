@@ -207,6 +207,51 @@ Match all
 }
 
 #[test]
+fn gssapi_credential_delegation_disable_is_enforced_but_enable_is_retained_as_unsupported() {
+    let disabled = parse(
+        "Host disabled\n    GSSAPIDelegateCredentials no\n\
+         Host enabled\n    GSSAPIDelegateCredentials yes\n",
+    )
+    .unwrap();
+
+    assert_eq!(disabled[0].gssapi_delegate_credentials, Some(false));
+    assert!(
+        !disabled[0]
+            .unimplemented_options
+            .contains_key("gssapidelegatecredentials")
+    );
+    assert_eq!(disabled[1].gssapi_delegate_credentials, Some(true));
+    assert_eq!(
+        disabled[1]
+            .unimplemented_options
+            .get("gssapidelegatecredentials")
+            .map(Vec::as_slice),
+        Some(["yes".to_string()].as_slice())
+    );
+}
+
+#[test]
+fn forward_agent_accepts_explicit_and_environment_selected_sockets() {
+    let hosts = parse(
+        "Host explicit\n    ForwardAgent /tmp/agent.sock\n\
+         Host environment\n    ForwardAgent $FORWARD_AGENT_SOCK\n",
+    )
+    .unwrap();
+
+    assert_eq!(hosts[0].forward_agent, Some(true));
+    assert_eq!(
+        hosts[0].forward_agent_socket_path.as_deref(),
+        Some("/tmp/agent.sock")
+    );
+    assert_eq!(hosts[1].forward_agent, Some(true));
+    assert_eq!(
+        hosts[1].forward_agent_socket_path.as_deref(),
+        Some("$FORWARD_AGENT_SOCK")
+    );
+    assert!(parse("Host invalid\n    ForwardAgent $9INVALID\n").is_err());
+}
+
+#[test]
 fn test_parse_match_with_exec() {
     use crate::ssh::ssh_config::match_directive::MatchCondition;
     use crate::ssh::ssh_config::types::ConfigBlock;

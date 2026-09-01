@@ -63,6 +63,7 @@ async fn main() -> anyhow::Result<()> {
         use_pty: None,
         session_policy: None,
         ssh_connection_config: SshConnectionConfig::default(),
+        ssh_connection_config_resolver: None,
     };
 
     println!("Starting interactive session...");

@@ -53,7 +53,7 @@ fn test_download_command_parsing() {
 fn test_download_command_with_cluster() {
     let args = vec![
         "bssh",
-        "-C",
+        "--cluster",
         "staging",
         "download",
         "/var/log/app.log",

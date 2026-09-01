@@ -289,6 +289,7 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
     }
     if base.forward_agent.is_none() && overlay.forward_agent.is_some() {
         base.forward_agent = overlay.forward_agent;
+        base.forward_agent_socket_path = overlay.forward_agent_socket_path.clone();
     }
     if base.forward_x11.is_none() && overlay.forward_x11.is_some() {
         base.forward_x11 = overlay.forward_x11;
@@ -330,6 +331,9 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
     }
     if base.gssapi_authentication.is_none() && overlay.gssapi_authentication.is_some() {
         base.gssapi_authentication = overlay.gssapi_authentication;
+    }
+    if base.gssapi_delegate_credentials.is_none() && overlay.gssapi_delegate_credentials.is_some() {
+        base.gssapi_delegate_credentials = overlay.gssapi_delegate_credentials;
     }
     if base.host_key_algorithms.is_empty() && !overlay.host_key_algorithms.is_empty() {
         base.host_key_algorithms = overlay.host_key_algorithms.clone();

@@ -272,6 +272,13 @@ fn test_pdsh_to_bssh_flags_conversion() {
     assert!(bssh_cli.fail_fast);
     assert!(bssh_cli.any_failure);
     assert!(bssh_cli.pdsh_compat); // pdsh_compat should be set
+    assert!(!bssh_cli.no_remote_command);
+    assert!(!bssh_cli.fork_after_authentication);
+    assert!(!bssh_cli.compression);
+    assert!(!bssh_cli.forward_agent);
+    assert!(!bssh_cli.disable_gssapi_credential_forwarding);
+    assert!(bssh_cli.control_path.is_none());
+    assert!(bssh_cli.bind_address.is_none());
 }
 
 #[test]

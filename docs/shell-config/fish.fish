@@ -17,13 +17,13 @@ alias pdsh='bssh --pdsh-compat'
 # Create shortcuts for frequently used clusters
 
 # Production cluster shortcut
-alias bssh-prod='bssh -C production'
+alias bssh-prod='bssh --cluster production'
 
 # Staging cluster shortcut
-alias bssh-staging='bssh -C staging'
+alias bssh-staging='bssh --cluster staging'
 
 # Development cluster shortcut
-alias bssh-dev='bssh -C development'
+alias bssh-dev='bssh --cluster development'
 
 # ============================================
 # Helper Functions
@@ -38,7 +38,7 @@ function bssh-all
 
     set cluster $argv[1]
     set -e argv[1]
-    bssh -C $cluster $argv
+    bssh --cluster $cluster $argv
 end
 
 # Execute command with hostlist expansion
@@ -72,7 +72,7 @@ function bssh-health
         return 1
     end
 
-    bssh -C $argv[1] "uptime; free -h | grep 'Mem:'; df -h /"
+    bssh --cluster $argv[1] "uptime; free -h | grep 'Mem:'; df -h /"
 end
 
 # Parallel execution with progress tracking
@@ -85,7 +85,7 @@ function bssh-parallel
     set cluster $argv[1]
     set parallel $argv[2]
     set -e argv[1..2]
-    bssh -C $cluster --parallel $parallel $argv
+    bssh --cluster $cluster --parallel $parallel $argv
 end
 
 # ============================================
@@ -149,7 +149,7 @@ function bssh-ctx
         return 1
     end
 
-    bssh -C $BSSH_CURRENT_CLUSTER $argv
+    bssh --cluster $BSSH_CURRENT_CLUSTER $argv
 end
 
 # ============================================
@@ -182,7 +182,7 @@ function bssh-group
 
     for cluster in $clusters
         echo "===> Running on cluster: $cluster"
-        bssh -C $cluster $argv
+        bssh --cluster $cluster $argv
     end
 end
 
@@ -218,7 +218,7 @@ function bssh-select
         echo "Selected: $selected_cluster"
 
         if test (count $argv) -gt 0
-            bssh -C $selected_cluster $argv
+            bssh --cluster $selected_cluster $argv
         else
             bssh-context $selected_cluster
         end
@@ -237,7 +237,7 @@ function bssh-info
 
     echo "Cluster: $argv[1]"
     echo "Nodes:"
-    bssh -C $argv[1] -q 2>/dev/null | while read node
+    bssh --cluster $argv[1] -q 2>/dev/null | while read node
         echo "  - $node"
     end
 end

@@ -2,6 +2,11 @@
 
 Real-world examples of common pdsh usage patterns with bssh.
 
+Commands written as `pdsh` use the pdsh-compatible parser. Examples that need
+bssh's sudo-password helper are explicitly written as native `bssh` commands,
+because pdsh mode does not expose that helper and reserves `-S` for exit-code
+selection.
+
 ## Table of Contents
 
 - [Basic Operations](#basic-operations)
@@ -93,58 +98,58 @@ pdsh -w node[1-10] -x "node[3-5]" -q
 ### Package Management
 
 ```bash
-# Update package lists (Ubuntu/Debian)
-pdsh -w servers -l root -S "sudo apt update"
+# Update package lists with bssh's native sudo helper
+bssh -H servers -l root --sudo-password "sudo apt update"
 
 # Upgrade packages
-pdsh -w servers -l admin -S "sudo apt upgrade -y"
+bssh -H servers -l admin --sudo-password "sudo apt upgrade -y"
 
 # Install specific package on all hosts
-pdsh -w webservers -S "sudo apt install -y nginx"
+bssh -H webservers --sudo-password "sudo apt install -y nginx"
 
 # Check package version
 pdsh -w servers "dpkg -l | grep nginx"
 
 # Clean package cache
-pdsh -w servers -S "sudo apt clean"
+bssh -H servers --sudo-password "sudo apt clean"
 ```
 
 ### Service Management
 
 ```bash
 # Restart service on all web servers
-pdsh -w web[1-10] -S "sudo systemctl restart nginx"
+bssh -H web[1-10] --sudo-password "sudo systemctl restart nginx"
 
 # Check service status
 pdsh -w app-servers "systemctl status myapp"
 
 # Enable service on boot
-pdsh -w servers -S "sudo systemctl enable docker"
+bssh -H servers --sudo-password "sudo systemctl enable docker"
 
 # Stop service on specific hosts
-pdsh -w cache[1-3] -S "sudo systemctl stop redis"
+bssh -H cache[1-3] --sudo-password "sudo systemctl stop redis"
 
 # Reload configuration
-pdsh -w webservers -S "sudo systemctl reload nginx"
+bssh -H webservers --sudo-password "sudo systemctl reload nginx"
 ```
 
 ### User Management
 
 ```bash
 # Create user on all hosts
-pdsh -w servers -S "sudo useradd -m -s /bin/bash deploy"
+bssh -H servers --sudo-password "sudo useradd -m -s /bin/bash deploy"
 
 # Set password
-pdsh -w servers -S "echo 'deploy:newpassword' | sudo chpasswd"
+bssh -H servers --sudo-password "echo 'deploy:newpassword' | sudo chpasswd"
 
 # Add user to group
-pdsh -w servers -S "sudo usermod -aG docker deploy"
+bssh -H servers --sudo-password "sudo usermod -aG docker deploy"
 
 # Check user existence
 pdsh -w servers "id deploy"
 
 # Remove user
-pdsh -w servers -S "sudo userdel -r olduser"
+bssh -H servers --sudo-password "sudo userdel -r olduser"
 ```
 
 ### File System Operations
@@ -160,7 +165,7 @@ pdsh -w servers "du -sh /var/log"
 pdsh -w servers "find /var/log -type f -size +100M"
 
 # Clean up old logs
-pdsh -w servers -S "sudo find /var/log -name '*.log' -mtime +30 -delete"
+bssh -H servers --sudo-password "sudo find /var/log -name '*.log' -mtime +30 -delete"
 
 # Check mount points
 pdsh -w servers "mount | grep -E '^/dev/'"
@@ -197,7 +202,7 @@ pdsh -w app-servers -l deploy "cd /app && git pull origin main"
 pdsh -w app-servers -l deploy "cd /app && npm install && npm run build"
 
 # Restart application
-pdsh -w app-servers -S "sudo systemctl restart myapp"
+bssh -H app-servers --sudo-password "sudo systemctl restart myapp"
 
 # Verify deployment
 pdsh -w app-servers "curl -s http://localhost:3000/health | jq .version"
@@ -216,7 +221,7 @@ for host in $(pdsh -w web[1-5] -q); do
 done
 
 # Update configuration value
-pdsh -w app-servers -S "sudo sed -i 's/^PORT=.*/PORT=8080/' /etc/myapp/config"
+bssh -H app-servers --sudo-password "sudo sed -i 's/^PORT=.*/PORT=8080/' /etc/myapp/config"
 
 # Validate configuration
 pdsh -w webservers "nginx -t"
@@ -238,7 +243,7 @@ for host in $(pdsh -w webservers -q); do
 done
 
 # Update certificate paths in config
-pdsh -w webservers -S "sudo systemctl restart nginx"
+bssh -H webservers --sudo-password "sudo systemctl restart nginx"
 
 # Verify certificates
 pdsh -w webservers "sudo openssl x509 -in /etc/ssl/cert.pem -noout -dates"
@@ -398,14 +403,14 @@ pdsh -w db-servers "
 
 ```bash
 # Rolling restart with fanout=1 (one at a time)
-pdsh -w web[1-10] -f 1 -S "
+bssh -H web[1-10] --parallel 1 --sudo-password "
     sudo systemctl restart nginx &&
     sleep 5 &&
     curl -f http://localhost/health
 "
 
 # Update SSL certificates
-pdsh -w web[1-5] -S "
+bssh -H web[1-5] --sudo-password "
     sudo certbot renew &&
     sudo systemctl reload nginx
 "
@@ -487,7 +492,7 @@ wait
 ```bash
 # Check primary and failover to secondary if down
 pdsh -w db-primary "pg_isready" ||
-pdsh -w db-secondary -S "sudo -u postgres pg_ctl promote -D /var/lib/postgresql/data"
+bssh -H db-secondary --sudo-password "sudo -u postgres pg_ctl promote -D /var/lib/postgresql/data"
 
 # Health check with timeout
 pdsh -w webservers -u 5 "curl -f -m 3 http://localhost/health" ||

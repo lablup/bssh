@@ -27,7 +27,7 @@ echo
 
 # Check disk space on all nodes (require all to pass)
 echo "1. Checking disk space..."
-if bssh --require-all-success -C production exec "df -h / | awk 'NR==2 {if (\$5+0 > 90) exit 1}'"; then
+if bssh --require-all-success --cluster production exec "df -h / | awk 'NR==2 {if (\$5+0 > 90) exit 1}'"; then
     echo "   ✅ Disk space OK on all nodes"
 else
     echo "   ❌ CRITICAL: Disk space exceeded on one or more nodes!"
@@ -38,7 +38,7 @@ fi
 # Check memory usage
 echo
 echo "2. Checking memory usage..."
-if bssh --require-all-success -C production exec "free | awk '/Mem:/ {if (\$3/\$2 > 0.95) exit 1}'"; then
+if bssh --require-all-success --cluster production exec "free | awk '/Mem:/ {if (\$3/\$2 > 0.95) exit 1}'"; then
     echo "   ✅ Memory usage OK on all nodes"
 else
     echo "   ❌ WARNING: High memory usage detected!"
@@ -49,7 +49,7 @@ fi
 # Check critical services
 echo
 echo "3. Checking critical services..."
-if bssh --require-all-success -C production exec "systemctl is-active docker nginx"; then
+if bssh --require-all-success --cluster production exec "systemctl is-active docker nginx"; then
     echo "   ✅ All services running on all nodes"
 else
     echo "   ❌ CRITICAL: Service failure detected!"
@@ -60,7 +60,7 @@ fi
 # Check network connectivity
 echo
 echo "4. Checking network connectivity..."
-if bssh --require-all-success -C production exec "ping -c 1 -W 1 8.8.8.8 > /dev/null"; then
+if bssh --require-all-success --cluster production exec "ping -c 1 -W 1 8.8.8.8 > /dev/null"; then
     echo "   ✅ Network connectivity OK on all nodes"
 else
     echo "   ❌ CRITICAL: Network connectivity issue!"
@@ -71,7 +71,7 @@ fi
 # Check GPU status (if applicable)
 echo
 echo "5. Checking GPU status..."
-if bssh --require-all-success -C production exec "nvidia-smi > /dev/null 2>&1"; then
+if bssh --require-all-success --cluster production exec "nvidia-smi > /dev/null 2>&1"; then
     echo "   ✅ GPUs operational on all nodes"
 else
     echo "   ⚠️  WARNING: GPU check failed (may not have GPUs)"

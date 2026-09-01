@@ -184,6 +184,7 @@ pub(super) async fn connect_through_tunnel(
     let fatal_transport = handler.fatal_transport_state();
     let hostkey_rotation = handler.hostkey_rotation_tasks();
     let remote_forward_registry = handler.remote_forward_registry();
+    let agent_forwarding = handler.agent_forwarding_state();
 
     // Connect through the stream
     let handle = tokio::time::timeout(
@@ -241,6 +242,7 @@ pub(super) async fn connect_through_tunnel(
         fatal_transport,
         hostkey_rotation,
         remote_forward_registry,
+        agent_forwarding,
     )
     .await;
 
@@ -342,6 +344,7 @@ pub(super) async fn connect_to_destination(
     let fatal_transport = handler.fatal_transport_state();
     let hostkey_rotation = handler.hostkey_rotation_tasks();
     let remote_forward_registry = handler.remote_forward_registry();
+    let agent_forwarding = handler.agent_forwarding_state();
 
     // Connect through the stream
     let handle = tokio::time::timeout(
@@ -387,6 +390,7 @@ pub(super) async fn connect_to_destination(
         fatal_transport,
         hostkey_rotation,
         remote_forward_registry,
+        agent_forwarding,
     )
     .await;
     client

@@ -10,6 +10,7 @@ import os
 import platform
 import re
 import signal
+import shlex
 import shutil
 import subprocess
 import sys
@@ -29,6 +30,7 @@ DEFAULT_SELECTION = HERE / "selection.tsv"
 PIN_FILE = HERE / "openssh-version"
 MAX_CAPTURE_BYTES = 1024 * 1024
 MAX_LOG_BYTES = 16 * 1024 * 1024
+CLIENT_WRAPPER_BYTES = 1024 * 1024
 TRUNCATION_NOTICE = b"\n...[output truncated by harness]...\n"
 FAILURE_PATTERN = re.compile(
     r"(?:^|\b)(?:FAIL(?:ED)?|FATAL|ERROR|Error|error|timed out|unexpected argument)(?:\b|:)",
@@ -46,6 +48,7 @@ class Selection:
     test: str
     disposition: str
     reason: str
+    timeout_seconds: int | None = None
 
 
 @dataclass(frozen=True)
@@ -83,13 +86,28 @@ def read_selection(path: Path) -> list[Selection]:
         reader = csv.DictReader(
             (line for line in stream if not line.startswith("#")), delimiter="\t"
         )
-        if reader.fieldnames != ["test", "disposition", "reason"]:
-            raise ValueError("selection.tsv must have test, disposition, reason columns")
+        if reader.fieldnames != [
+            "test",
+            "disposition",
+            "reason",
+            "timeout_seconds",
+        ]:
+            raise ValueError(
+                "selection.tsv must have test, disposition, reason, timeout_seconds columns"
+            )
         for raw in reader:
+            timeout_text = raw["timeout_seconds"] or ""
+            try:
+                timeout_seconds = int(timeout_text) if timeout_text else None
+            except ValueError as error:
+                raise ValueError(
+                    f"invalid timeout for {raw['test']}: {timeout_text!r}"
+                ) from error
             row = Selection(
                 test=raw["test"],
                 disposition=raw["disposition"],
                 reason=raw["reason"] or "",
+                timeout_seconds=timeout_seconds,
             )
             if row.disposition not in {"run", "skip", "exclude"}:
                 raise ValueError(f"invalid disposition for {row.test}: {row.disposition}")
@@ -97,6 +115,11 @@ def read_selection(path: Path) -> list[Selection]:
                 raise ValueError(f"invalid test name: {row.test}")
             if row.disposition != "run" and not row.reason:
                 raise ValueError(f"{row.test} needs an exclusion reason")
+            if row.timeout_seconds is not None:
+                if row.timeout_seconds < 1:
+                    raise ValueError(f"{row.test} timeout must be positive")
+                if row.disposition != "run":
+                    raise ValueError(f"{row.test} timeout is valid only for runnable tests")
             rows.append(row)
     names = [row.test for row in rows]
     if len(names) != len(set(names)):
@@ -212,12 +235,32 @@ def make_value(makefile: Path, name: str, default: str = "") -> str:
     return match.group(1).strip().strip(chr(34)) if match else default
 
 
+def prepare_client_wrapper(tree: Path, client: Path) -> Path:
+    """Create a stable-size executable wrapper for the SSH client under test.
+
+    OpenSSH's test-exec.sh copies the SSH executable into its generic data
+    fixture. A Rust debug binary can contain hundreds of MiB of symbols, which
+    turns ordinary transfer tests into accidental stress tests. The padded
+    wrapper keeps that fixture deterministic while still execing the exact
+    requested client.
+    """
+    wrapper = tree / "regress" / ".bssh-openssh-client"
+    wrapper.parent.mkdir(parents=True, exist_ok=True)
+    contents = f'#!/bin/sh\nexec {shlex.quote(str(client))} "$@"\n#'.encode()
+    if len(contents) < CLIENT_WRAPPER_BYTES:
+        contents += b"x" * (CLIENT_WRAPPER_BYTES - len(contents) - 1) + b"\n"
+    wrapper.write_bytes(contents)
+    wrapper.chmod(0o700)
+    return wrapper
+
+
 def reference_environment(tree: Path, client: Path) -> dict[str, str]:
     makefile = tree / "Makefile"
     env = os.environ.copy()
+    client_wrapper = prepare_client_wrapper(tree, client)
     helpers = {
         "TEST_SSH_SCP": "scp",
-        "TEST_SSH_SSH": str(client),
+        "TEST_SSH_SSH": str(client_wrapper),
         "TEST_SSH_SSHD": "sshd",
         "TEST_SSH_SSHD_SESSION": "sshd-session",
         "TEST_SSH_SSHD_AUTH": "sshd-auth",
@@ -516,7 +559,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--selection", type=Path, default=DEFAULT_SELECTION)
     parser.add_argument("--baseline", type=Path, default=DEFAULT_BASELINE)
     parser.add_argument("--results", type=Path, default=DEFAULT_RESULTS)
-    parser.add_argument("--timeout", type=int, default=120, help="seconds per client run")
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=120,
+        help="base seconds per client run; manifest entries may set a higher minimum",
+    )
     parser.add_argument("--jobs", type=int, default=max(1, min(os.cpu_count() or 1, 4)))
     parser.add_argument("--test", action="append", help="run only the named selected test")
     parser.add_argument("--list", action="store_true", help="validate and list the manifest")
@@ -544,7 +592,11 @@ def main() -> int:
             f"{len(declared_skips)} permanent skips, {len(excluded)} excluded"
         )
         for row in selection:
-            print(f"{row.disposition:7} {row.test} {row.reason}")
+            timeout_note = (
+                f"minimum timeout {row.timeout_seconds}s" if row.timeout_seconds else ""
+            )
+            details = "; ".join(part for part in [row.reason, timeout_note] if part)
+            print(f"{row.disposition:7} {row.test} {details}")
         return 0
     if args.timeout < 1:
         raise ValueError("--timeout must be positive")
@@ -561,8 +613,12 @@ def main() -> int:
     validate_tree_inventory(tree, selection)
     results: list[TestResult] = []
     for index, row in enumerate(runnable, start=1):
-        print(f"[{index}/{len(runnable)}] {row.test}", flush=True)
-        result = classify(tree, bssh, tree / "ssh", row.test, args.timeout, log_dir)
+        test_timeout = max(args.timeout, row.timeout_seconds or 0)
+        print(
+            f"[{index}/{len(runnable)}] {row.test} (timeout {test_timeout}s)",
+            flush=True,
+        )
+        result = classify(tree, bssh, tree / "ssh", row.test, test_timeout, log_dir)
         results.append(result)
         print(f"  {result.verdict} ({result.duration_ms} ms)", flush=True)
     verdicts = ["pass", "skip", "fail", "environmental"]
@@ -577,8 +633,22 @@ def main() -> int:
         "platform": platform_key(),
         "selection": {
             "runnable": len(runnable),
-            "permanent_skips": [asdict(row) for row in declared_skips],
-            "excluded": [asdict(row) for row in excluded],
+            "permanent_skips": [
+                {
+                    "test": row.test,
+                    "disposition": row.disposition,
+                    "reason": row.reason,
+                }
+                for row in declared_skips
+            ],
+            "excluded": [
+                {
+                    "test": row.test,
+                    "disposition": row.disposition,
+                    "reason": row.reason,
+                }
+                for row in excluded
+            ],
         },
         "score": {"passed": counts["pass"], "eligible": denominator, "verdicts": counts},
         "results": [asdict(result) for result in sorted(results, key=lambda item: item.test)],

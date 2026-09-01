@@ -277,6 +277,7 @@ mod tests {
         SessionPolicy {
             environment: vec![("LANG".into(), "C.UTF-8".into())],
             local_command: None,
+            forward_agent: true,
             request_pty: false,
             stdin_null: false,
             request: SessionRequest::Exec("printf test".into()),

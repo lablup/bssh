@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! Tests for --no-prefix / -N option functionality
+//! Tests for the long-only --no-prefix option functionality.
 
 use bssh::cli::Cli;
 use bssh::executor::OutputMode;
@@ -34,14 +34,15 @@ fn test_no_prefix_long_option() {
     );
 }
 
-/// Test CLI parsing with -N short option
+/// OpenSSH-compatible -N must not enable the legacy no-prefix behavior.
 #[test]
-fn test_no_prefix_short_option() {
+fn test_openssh_no_remote_command_does_not_enable_no_prefix() {
     let args = vec!["bssh", "-H", "host1,host2", "-N", "uptime"];
 
     let cli = Cli::parse_from(args);
 
-    assert!(cli.no_prefix, "-N should set no_prefix to true");
+    assert!(cli.no_remote_command, "-N should disable remote sessions");
+    assert!(!cli.no_prefix, "-N must not enable --no-prefix");
 }
 
 /// Test CLI parsing without no_prefix option (default should be false)
@@ -86,13 +87,13 @@ fn test_no_prefix_with_output_dir() {
         "host1,host2",
         "--output-dir",
         "/tmp/output",
-        "-N",
+        "--no-prefix",
         "uptime",
     ];
 
     let cli = Cli::parse_from(args);
 
-    assert!(cli.no_prefix, "-N should be set");
+    assert!(cli.no_prefix, "--no-prefix should be set");
     assert_eq!(cli.output_dir, Some(PathBuf::from("/tmp/output")));
 
     // OutputMode should respect both flags
@@ -105,7 +106,7 @@ fn test_no_prefix_with_output_dir() {
 /// Test --no-prefix with cluster option
 #[test]
 fn test_no_prefix_with_cluster() {
-    let args = vec!["bssh", "-C", "production", "--no-prefix", "df -h"];
+    let args = vec!["bssh", "--cluster", "production", "--no-prefix", "df -h"];
 
     let cli = Cli::parse_from(args);
 
@@ -113,19 +114,23 @@ fn test_no_prefix_with_cluster() {
     assert_eq!(cli.cluster, Some("production".to_string()));
 }
 
-/// Test -N does not conflict with other short options
+/// Test --no-prefix with the long-only authentication-agent option.
 #[test]
 fn test_no_prefix_with_other_options() {
     let args = vec![
-        "bssh", "-H", "host1", "-N", "-A", // use-agent
+        "bssh",
+        "-H",
+        "host1",
+        "--no-prefix",
+        "--use-agent",
         "-v", // verbose
         "uptime",
     ];
 
     let cli = Cli::parse_from(args);
 
-    assert!(cli.no_prefix, "-N should be set");
-    assert!(cli.use_agent, "-A should be set");
+    assert!(cli.no_prefix, "--no-prefix should be set");
+    assert!(cli.use_agent, "--use-agent should be set");
     assert_eq!(cli.verbose, 1, "-v should increase verbosity");
 }
 

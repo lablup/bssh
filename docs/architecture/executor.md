@@ -68,7 +68,7 @@ The executor supports two modes for handling Ctrl+C (SIGINT) signals during para
 3. **Time window reset**: If >1 second passes, next Ctrl+C restarts the sequence and shows status again
 4. Provides users visibility into execution progress before termination
 
-### Batch Mode (`--batch` / `-b`)
+### Batch Mode (`--batch`)
 
 - **Single Ctrl+C**: Immediately terminates all jobs with exit code 130
 - Optimized for non-interactive environments (CI/CD, scripts)
@@ -156,7 +156,9 @@ The batch flag is passed through the executor chain:
 
 ## Fail-Fast Mode
 
-The `--fail-fast` / `-k` option enables immediate termination when any node fails. This is compatible with pdsh's `-k` flag and useful for:
+The `--fail-fast` option enables immediate termination when any node fails. In
+pdsh compatibility mode, the equivalent spelling is `-k`. This behavior is
+useful for:
 - Critical operations where partial execution is unacceptable
 - Deployment scripts where all nodes must succeed
 - Validation checks across clusters

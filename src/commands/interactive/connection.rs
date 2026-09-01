@@ -28,8 +28,8 @@ use crate::ssh::{
     SessionPolicy, SessionPurpose, SessionRequest,
     known_hosts::get_check_method_for_target,
     tokio_client::{
-        AuthMethod, Client, Error as SshError, ServerCheckMethod, SshConnectionConfig,
-        SshConnectionConfigResolver, select_proxy_jump,
+        AgentForwardingLease, AuthMethod, Client, Error as SshError, ServerCheckMethod,
+        SshConnectionConfig, SshConnectionConfigResolver, select_proxy_jump,
     },
 };
 
@@ -312,7 +312,7 @@ impl InteractiveCommand {
         term_type: &str,
         width: u32,
         height: u32,
-    ) -> Result<Channel<Msg>> {
+    ) -> Result<(Channel<Msg>, Option<AgentForwardingLease>)> {
         if let Some(policy) = self.session_policy.as_ref() {
             if !matches!(policy.request, SessionRequest::Shell) {
                 anyhow::bail!("Interactive mode requires a shell session policy");
@@ -320,10 +320,25 @@ impl InteractiveCommand {
             policy.run_local_command().await?;
         }
 
-        client
+        let channel = client
             .request_interactive_shell(term_type, width, height)
             .await
-            .context("Failed to open interactive session channel")
+            .context("Failed to open interactive session channel")?;
+        let agent_forwarding_lease = if self
+            .session_policy
+            .as_ref()
+            .is_some_and(|policy| policy.forward_agent)
+        {
+            Some(
+                client
+                    .request_agent_forwarding(&channel)
+                    .await
+                    .context("Failed to request SSH agent forwarding")?,
+            )
+        } else {
+            None
+        };
+        Ok((channel, agent_forwarding_lease))
     }
 
     /// Connect to a single node and establish an interactive shell
@@ -461,7 +476,7 @@ impl InteractiveCommand {
         // Get terminal dimensions
         let (width, height) = terminal::size().unwrap_or((80, 24));
 
-        let channel = self
+        let (channel, agent_forwarding_lease) = self
             .open_interactive_channel(
                 &client,
                 "xterm-256color",
@@ -490,11 +505,20 @@ impl InteractiveCommand {
             String::from("~")
         };
 
-        Ok(NodeSession::new(node, client, channel, working_dir))
+        Ok(NodeSession::new(
+            node,
+            client,
+            channel,
+            working_dir,
+            agent_forwarding_lease,
+        ))
     }
 
     /// Connect to a single node and establish a PTY-enabled SSH channel
-    pub(super) async fn connect_to_node_pty(&self, node: Node) -> Result<(Client, Channel<Msg>)> {
+    pub(super) async fn connect_to_node_pty(
+        &self,
+        node: Node,
+    ) -> Result<(Client, Channel<Msg>, Option<AgentForwardingLease>)> {
         let target_config = interactive_target_connection_config(
             &node,
             &self.ssh_connection_config,
@@ -629,12 +653,12 @@ impl InteractiveCommand {
 
         // The PTY manager retains channel ownership for raw stdin, resize, and
         // byte-transparent output. It requests PTY and shell after policy env.
-        let channel = self
+        let (channel, agent_forwarding_lease) = self
             .open_interactive_channel(&client, &self.pty_config.term_type, width, height)
             .await
             .context("Failed to request interactive shell with PTY")?;
 
-        Ok((client, channel))
+        Ok((client, channel, agent_forwarding_lease))
     }
 }
 
@@ -856,6 +880,7 @@ Host beta
         let policy = SessionPolicy {
             environment: Vec::new(),
             local_command: None,
+            forward_agent: false,
             request_pty: false,
             stdin_null: false,
             request: SessionRequest::Shell,

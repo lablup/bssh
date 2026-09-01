@@ -19,7 +19,7 @@
 
 #[cfg(test)]
 mod tests {
-    use crate::cli::pdsh::PDSH_COMPAT_ENV_VAR;
+    use crate::cli::pdsh::{PDSH_COMPAT_ENV_VAR, is_pdsh_binary_name};
     use crate::test_helpers::EnvGuard;
     use serial_test::serial;
     use std::env;
@@ -107,118 +107,49 @@ mod tests {
     /// Test binary name detection logic for "pdsh"
     #[test]
     fn test_binary_name_pdsh() {
-        use std::path::Path;
-
-        let arg0 = "/usr/bin/pdsh";
-        let binary_name = Path::new(arg0)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
-
-        assert_eq!(binary_name, "pdsh");
-        assert!(binary_name == "pdsh" || binary_name.starts_with("pdsh."));
+        assert!(is_pdsh_binary_name("/usr/bin/pdsh"));
     }
 
     /// Test binary name detection for relative path
     #[test]
     fn test_binary_name_relative_path() {
-        use std::path::Path;
-
-        let arg0 = "./pdsh";
-        let binary_name = Path::new(arg0)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
-
-        assert_eq!(binary_name, "pdsh");
+        assert!(is_pdsh_binary_name("./pdsh"));
     }
 
     /// Test binary name detection for "pdsh.exe" (Windows)
     #[test]
     #[cfg(windows)]
     fn test_binary_name_windows() {
-        use std::path::Path;
-
-        let arg0 = "C:\\Program Files\\bssh\\pdsh.exe";
-        let binary_name = Path::new(arg0)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
-
-        assert!(binary_name.starts_with("pdsh."));
+        assert!(is_pdsh_binary_name("C:\\Program Files\\bssh\\pdsh.exe"));
     }
 
     /// Test binary name detection for "pdsh.exe" pattern
     #[test]
     fn test_binary_name_exe_extension() {
-        use std::path::Path;
-
-        // Test just the filename (works cross-platform)
-        let arg0 = "pdsh.exe";
-        let binary_name = Path::new(arg0)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
-
-        assert!(binary_name.starts_with("pdsh."));
+        assert!(is_pdsh_binary_name("pdsh.exe"));
     }
 
     /// Test that bssh binary name is not detected as pdsh
     #[test]
     fn test_binary_name_bssh() {
-        use std::path::Path;
-
-        let arg0 = "/usr/bin/bssh";
-        let binary_name = Path::new(arg0)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
-
-        assert_eq!(binary_name, "bssh");
-        assert!(!(binary_name == "pdsh" || binary_name.starts_with("pdsh.")));
+        assert!(!is_pdsh_binary_name("/usr/bin/bssh"));
     }
 
     /// Test that symlinked pdsh is detected
     #[test]
     fn test_binary_name_symlink() {
-        use std::path::Path;
-
-        // When bssh is symlinked as pdsh, arg0 would be the symlink name
-        let arg0 = "/usr/local/bin/pdsh";
-        let binary_name = Path::new(arg0)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
-
-        assert_eq!(binary_name, "pdsh");
+        assert!(is_pdsh_binary_name("/usr/local/bin/pdsh"));
     }
 
     /// Test edge case: empty arg0
     #[test]
     fn test_binary_name_empty() {
-        use std::path::Path;
-
-        let arg0 = "";
-        let binary_name = Path::new(arg0)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
-
-        assert!(binary_name.is_empty());
-        assert!(!(binary_name == "pdsh" || binary_name.starts_with("pdsh.")));
+        assert!(!is_pdsh_binary_name(""));
     }
 
     /// Test edge case: just filename without path
     #[test]
     fn test_binary_name_no_path() {
-        use std::path::Path;
-
-        let arg0 = "pdsh";
-        let binary_name = Path::new(arg0)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("");
-
-        assert_eq!(binary_name, "pdsh");
+        assert!(is_pdsh_binary_name("pdsh"));
     }
 }

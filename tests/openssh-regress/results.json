@@ -1,572 +1,571 @@
 {
-  "generated_at": "2026-08-26T00:00:00+00:00",
-  "note": "Initial unmodified bssh measurement recorded by epic #275; durations and environmental reference diagnostics were not retained. The historical pubkey-priority row is preserved even though the exact V_10_3_P1 tree does not contain that script; see docs/openssh-regress.md.",
+  "generated_at": "2026-08-31T22:47:33.974717+00:00",
   "openssh_tag": "V_10_3_P1",
-  "platform": "macos",
+  "platform": "linux",
   "results": [
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 365,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "addrmatch",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 14729,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "agent",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 215,
+      "first_failure_line": "SKIPPED: need SUDO to switch to uid nobody",
       "reference_first_failure_line": null,
       "test": "agent-getpeereid",
-      "verdict": "fail"
+      "verdict": "skip"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 214,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "agent-ptrace",
+      "verdict": "pass"
+    },
+    {
+      "duration_ms": 35753,
+      "first_failure_line": "WARNING: Unsafe (group or world writable) directory permissions found:",
+      "reference_first_failure_line": null,
+      "test": "agent-restrict",
       "verdict": "fail"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
-      "reference_first_failure_line": "not retained in the historical measurement",
-      "test": "agent-restrict",
-      "verdict": "environmental"
-    },
-    {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 10233,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "agent-subprocess",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 20279,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "agent-timeout",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 6569,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "banner",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 316,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "broken-pipe",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 1076,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "brokenkeys",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 7893,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "cert-file",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 866,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "cfginclude",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 12537,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "cfgmatch",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 316,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "cfgparse",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
-      "reference_first_failure_line": "not retained in the historical measurement",
+      "duration_ms": 85315,
+      "first_failure_line": "ssh returned unexpected error code 1",
+      "reference_first_failure_line": "FATAL: open mux failed",
       "test": "channel-timeout",
       "verdict": "environmental"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 1830,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "connect",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 1124,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "connect-bigconf",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 1829,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "connect-uri",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
-      "reference_first_failure_line": "not retained in the historical measurement",
+      "duration_ms": 24058,
+      "first_failure_line": "Error: Failed to load SSH config from \"none\"",
+      "reference_first_failure_line": "FATAL: failed to start ssh 255",
       "test": "connection-timeout",
       "verdict": "environmental"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 265,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "dhgex",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 20130,
+      "first_failure_line": "FATAL: failed to start dynamic forwarding 255",
       "reference_first_failure_line": null,
       "test": "dynamic-forward",
       "verdict": "fail"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 7236,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "envpass",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 32897,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "exit-status",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 1227,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "exit-status-signal",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
-      "reference_first_failure_line": "not retained in the historical measurement",
+      "duration_ms": 101306,
+      "first_failure_line": null,
+      "reference_first_failure_line": null,
       "test": "forward-control",
-      "verdict": "environmental"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
-      "reference_first_failure_line": "not retained in the historical measurement",
+      "duration_ms": 23114,
+      "first_failure_line": "WARNING: Unsafe (group or world writable) directory permissions found:",
+      "reference_first_failure_line": "WARNING: Unsafe (group or world writable) directory permissions found:",
       "test": "forwarding",
       "verdict": "environmental"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 971,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "host-expand",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 215,
+      "first_failure_line": "SKIPPED: TEST_SSH_HOSTBASED_AUTH not set.",
       "reference_first_failure_line": null,
       "test": "hostbased",
-      "verdict": "fail"
+      "verdict": "skip"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 6160,
+      "first_failure_line": "WARNING: Unsafe (group or world writable) directory permissions found:",
       "reference_first_failure_line": null,
       "test": "hostkey-agent",
       "verdict": "fail"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 9984,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "hostkey-rotate",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 70446,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "integrity",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 216,
+      "first_failure_line": "SKIPPED: Password auth requires SUDO and kbdintpw file.",
       "reference_first_failure_line": null,
       "test": "kbdint",
-      "verdict": "fail"
+      "verdict": "skip"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 15863,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "kextype",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 13398,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "key-options",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 3334,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "keygen-change",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 1927,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "keygen-comment",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 2178,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "keygen-convert",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 415,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "keygen-knownhosts",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 266,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "keygen-moduli",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 265,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "keygen-sshfp",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 466,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "keyscan",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 14384,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "keytype",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 5673,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "knownhosts",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 6526,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "knownhosts-command",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 15417,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "limit-keytype",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 1021,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "localcommand",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 16067,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "login-timeout",
+      "verdict": "pass"
+    },
+    {
+      "duration_ms": 6514,
+      "first_failure_line": null,
+      "reference_first_failure_line": null,
+      "test": "match-subsystem",
+      "verdict": "pass"
+    },
+    {
+      "duration_ms": 45370,
+      "first_failure_line": "error: the argument '-E <log_file>' cannot be used multiple times",
+      "reference_first_failure_line": null,
+      "test": "multiplex",
       "verdict": "fail"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
-      "reference_first_failure_line": "not retained in the historical measurement",
-      "test": "multiplex",
-      "verdict": "environmental"
-    },
-    {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 6432,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "multipubkey",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 266,
+      "first_failure_line": "SKIPPED: Password auth requires SUDO and password file.",
       "reference_first_failure_line": null,
       "test": "password",
-      "verdict": "fail"
+      "verdict": "skip"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 21677,
+      "first_failure_line": "WARNING: Unsafe (group or world writable) directory permissions found:",
       "reference_first_failure_line": null,
       "test": "percent",
       "verdict": "fail"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 4103,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "portnum",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 265,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "proto-mismatch",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 265,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "proto-version",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 2540,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "proxy-connect",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 817,
+      "first_failure_line": "WARNING: Unsafe (group or world writable) directory permissions found:",
       "reference_first_failure_line": null,
       "test": "proxyjump",
       "verdict": "fail"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
-      "reference_first_failure_line": "not retained in the historical measurement",
-      "test": "pubkey-priority",
-      "verdict": "environmental"
-    },
-    {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 120116,
+      "first_failure_line": "timed out",
       "reference_first_failure_line": null,
       "test": "rekey",
       "verdict": "fail"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 20715,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "scp",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 3631,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "scp-uri",
+      "verdict": "pass"
+    },
+    {
+      "duration_ms": 6744,
+      "first_failure_line": "WARNING: Unsafe (group or world writable) directory permissions found:",
+      "reference_first_failure_line": null,
+      "test": "scp3",
       "verdict": "fail"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
-      "reference_first_failure_line": "not retained in the historical measurement",
-      "test": "scp3",
-      "verdict": "environmental"
-    },
-    {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 314,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "servcfginclude",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 120017,
+      "first_failure_line": "timed out",
       "reference_first_failure_line": null,
       "test": "sftp",
       "verdict": "fail"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
-      "reference_first_failure_line": null,
+      "duration_ms": 416,
+      "first_failure_line": "WARNING: Unsafe (group or world writable) directory permissions found:",
+      "reference_first_failure_line": "WARNING: Unsafe (group or world writable) directory permissions found:",
       "test": "sftp-badcmds",
-      "verdict": "fail"
+      "verdict": "environmental"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 717,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "sftp-batch",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 3832,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "sftp-cmds",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 315,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "sftp-glob",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 2927,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "sftp-perm",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 3237,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "sftp-resume",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 19766,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "sftp-uri",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 215,
+      "first_failure_line": "SKIPPED: $PATH or $HOME has whitespace, not supported in this test",
       "reference_first_failure_line": null,
       "test": "ssh-tty",
-      "verdict": "fail"
+      "verdict": "skip"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 466,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "sshcfgparse",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 266,
+      "first_failure_line": "SKIPPED: TEST_SSH_SSHFP_DOMAIN not set.",
       "reference_first_failure_line": null,
       "test": "sshfp-connect",
-      "verdict": "fail"
+      "verdict": "skip"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 95735,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "sshsig",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 3048,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "stderr-after-eof",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 28809,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "stderr-data",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 35794,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "transfer",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 30944,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "try-ciphers",
-      "verdict": "fail"
+      "verdict": "pass"
     },
     {
-      "duration_ms": null,
-      "first_failure_line": "error: unexpected argument '-E' found",
+      "duration_ms": 3253,
+      "first_failure_line": null,
       "reference_first_failure_line": null,
       "test": "yes-head",
-      "verdict": "fail"
+      "verdict": "pass"
     }
   ],
   "schema_version": 1,
   "score": {
-    "eligible": 71,
-    "passed": 0,
+    "eligible": 69,
+    "passed": 60,
     "verdicts": {
-      "environmental": 8,
-      "fail": 71,
-      "pass": 0,
-      "skip": 0
+      "environmental": 4,
+      "fail": 9,
+      "pass": 60,
+      "skip": 6
     }
   },
   "selection": {
@@ -623,11 +622,6 @@
       },
       {
         "disposition": "exclude",
-        "reason": "sshd-side subsystem matching test; outside the client candidate set.",
-        "test": "match-subsystem"
-      },
-      {
-        "disposition": "exclude",
         "reason": "sshd-side penalty configuration test; outside the client candidate set.",
         "test": "penalty-expire"
       },
@@ -665,11 +659,6 @@
         "disposition": "exclude",
         "reason": "Upstream helper script; it is not a standalone regression test.",
         "test": "scp-ssh-wrapper"
-      },
-      {
-        "disposition": "exclude",
-        "reason": "sshd ChrootDirectory and in-process SFTP behavior is server-side.",
-        "test": "sftp-chroot"
       },
       {
         "disposition": "exclude",
@@ -752,6 +741,11 @@
         "disposition": "skip",
         "reason": "Permanent candidate skip: sshd process reconfiguration is server-side lifecycle behavior.",
         "test": "reconfigure"
+      },
+      {
+        "disposition": "skip",
+        "reason": "Permanent candidate skip: sshd ChrootDirectory and in-process SFTP behavior are server-side.",
+        "test": "sftp-chroot"
       },
       {
         "disposition": "skip",

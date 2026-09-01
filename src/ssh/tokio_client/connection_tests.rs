@@ -205,6 +205,26 @@ Host target
 }
 
 #[test]
+fn auth_banner_suppression_resolves_from_quiet_cli_or_log_level() {
+    let ssh_config =
+        SshConfig::parse("Host quiet-config\n    LogLevel QUIET\nHost normal\n    LogLevel INFO\n")
+            .unwrap();
+    let resolver = SshConnectionConfigResolver::new().with_ssh_config(Some(ssh_config.clone()));
+
+    assert!(
+        resolver
+            .resolve_for_host("quiet-config")
+            .suppress_auth_banner
+    );
+    assert!(!resolver.resolve_for_host("normal").suppress_auth_banner);
+
+    let quiet_cli = SshConnectionConfigResolver::new()
+        .with_ssh_config(Some(ssh_config))
+        .with_cli_quiet(true);
+    assert!(quiet_cli.resolve_for_host("normal").suppress_auth_banner);
+}
+
+#[test]
 fn stdio_forward_defaults_clear_forwards_but_preserves_explicit_no() {
     let implicit =
         SshConfig::parse("Host target\n    LocalForward 127.0.0.1:2200 example.com:22\n").unwrap();
@@ -801,6 +821,20 @@ fn source_binding_and_ipqos_reach_the_connection_config() {
             .with_session_purpose(SessionPurpose::Interactive)
             .selected_ip_qos(),
         IpQosValue::Class(0xb8)
+    );
+}
+
+#[test]
+fn forward_agent_socket_path_reaches_the_connection_config() {
+    let ssh_config =
+        SshConfig::parse("Host target\n    ForwardAgent $FORWARD_AGENT_SOCK\n").unwrap();
+    let config = SshConnectionConfigResolver::new()
+        .with_ssh_config(Some(ssh_config))
+        .resolve_for_host("target");
+
+    assert_eq!(
+        config.forward_agent_socket_path.as_deref(),
+        Some("$FORWARD_AGENT_SOCK")
     );
 }
 

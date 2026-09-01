@@ -23,6 +23,7 @@ Thumbs.db
 /output/
 .bssh/
 *.md
+!docs/openssh-short-flags-migration.md
 .claude/
 .gemini/
 references/

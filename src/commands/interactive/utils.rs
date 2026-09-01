@@ -106,6 +106,7 @@ mod tests {
             session_policy: Some(crate::ssh::SessionPolicy {
                 environment: vec![("POLICY".into(), "value".into())],
                 local_command: None,
+                forward_agent: false,
                 request_pty: false,
                 stdin_null: false,
                 request: crate::ssh::SessionRequest::Shell,
