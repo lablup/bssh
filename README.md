@@ -12,6 +12,7 @@ A high-performance SSH client with **SSH-compatible syntax** for both single-hos
 
 ## Recent Updates
 
+- **v3.0.0 (2026/09/01):** Made single-destination sessions byte-transparent, applied SSH configuration at runtime, added OpenSSH configuration, session, forwarding, and multiplexing options, and restored seven colliding short flags to their OpenSSH meanings. The pinned OpenSSH suite passes 60 tests on macOS and 61 on Ubuntu (#275, #313).
 - **v2.4.3 (2026/08/24):** Fix bssh-to-bssh SFTP downloads above 255 KiB, upgrade to russh 0.63.1 with two security fixes and host-certificate refusal, sync bssh-russh-sftp 2.4.0, and repair release automation for API-key notarization and Homebrew updates (#268, #269, #270, #272, #273).
 - **v2.4.2 (2026/08/14):** Republish the macOS binaries with a Developer ID signature and Apple notarization. The v2.4.1 and earlier macOS builds are killed on launch and deleted by macOS because their signing certificate was revoked. No source changes (#264).
 - **v2.4.1 (2026/08/03):** Close the four host key and forwarding known issues from v2.4.0: `accept-new` no longer disables verification without a home directory or an unusable known_hosts file, first-use recording is serialized across processes, `@cert-authority` lines can be rejected, forwarding targets keep their hostnames for the server to resolve, SOCKS4 honors `-4`/`-6`, and SOCKS5 accepts IPv6 destination literals (#242, #243, #255, #256, #257).

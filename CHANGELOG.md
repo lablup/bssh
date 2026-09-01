@@ -5,6 +5,53 @@ All notable changes to bssh will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - 2026-09-01
+
+Moved single-destination mode onto an OpenSSH-compatible command-line and runtime contract measured against the pinned OpenSSH `V_10_3_P1` regression suite.
+
+### Added
+- **Write diagnostics to a dedicated log with `-E`** (#289). Attached and separate path forms append tracing, warnings, and terminal errors to a private file while remote command stderr remains on file descriptor 2.
+- **Dump the effective SSH configuration with `-G`** (#310). Resolution includes CLI precedence, ordered `Host`, `Match`, and `Include` processing, token expansion, forwarding settings, and bounded `Match exec` evaluation.
+- **Apply OpenSSH session and transport options** (#302, #303, #311). Runtime support now covers algorithm lists, retries, TCP keepalive, environment requests, local and remote commands, TTY and subsystem policy, null stdin, and `-W` stdio forwarding.
+- **Reuse authenticated connections through bssh control sockets** (#312, #313). `-M`, `-O check|forward|cancel|exit|stop|proxy`, `ControlPath`, and `ControlPersist` support passenger sessions, forwarding changes, background masters, and bounded same-user control handlers.
+- **Forward the local authentication agent and display server authentication banners** (#313). Agent forwarding is session-scoped and follows OpenSSH's `-A` meaning.
+
+### Security
+- **Honor every configured user and global known-hosts store** (#290). Verification, `accept-new` recording, path expansion, revoked keys, malformed files, and multi-file matching now use the resolved `UserKnownHostsFile` and `GlobalKnownHostsFile` policy.
+- **Use `HostKeyAlias` as the trust identity without changing the network target** (#292). Direct, interactive, forwarding, and jump-host paths share the aliased lookup and recording behavior.
+- **Enforce host-key policy and verified key rotation** (#304). `CheckHostIP`, `HashKnownHosts`, `KnownHostsCommand`, DNSSEC-aware SSHFP checks, `VerifyHostKeyDNS`, and proof-backed `UpdateHostKeys` are active at runtime.
+- **Enforce authentication policy and user certificates** (#306). Identity selection, accepted algorithms, authentication order, batch mode, password prompt limits, and certificate-to-key pairing now affect live authentication.
+- **Escape control characters at SSH configuration diagnostic boundaries** (#309). Paths, patterns, keywords, cache errors, include errors, validation errors, and tracing output cannot inject terminal or log lines.
+
+### Fixed
+- **Preserve exact stdout and stderr bytes for one SSH destination** (#291). Single-host execution no longer adds prefixes, banners, summaries, ANSI styling, UTF-8 conversion, synthesized newlines, or forwarding status messages.
+- **Execute `ProxyCommand` instead of silently connecting directly** (#293). Managed child transports implement OpenSSH proxy precedence, bounded stderr capture, token expansion, exit diagnostics, and deterministic cleanup.
+- **Replace opaque SSH I/O errors with stage-specific diagnostics** (#294). DNS, TCP, negotiation, host-key, authentication, channel, command, and timeout failures retain their causes and use SSH-compatible exit status 255.
+- **Apply configured forwarding directives to live connections** (#305). Local, remote, and dynamic forwards honor ordering, clear semantics, failure policy, allocated remote ports, connection limits, and deterministic teardown.
+- **Honor source binding and IPQoS for each target and jump hop** (#307). `BindAddress`, `BindInterface`, address-family matching, and traffic class are applied before TCP establishment without losing the original host alias policy.
+- **Enforce byte and time based `RekeyLimit` policies** (#308). Client and server transports count directional payload bytes, rekey after authentication, and reset their limits after each completed key installation.
+- **Stop silently accepting unused SSH configuration keywords** (#309). The registry classifies all 91 accepted spellings as 51 runtime-supported and 40 explicitly unimplemented entries that emit one source-aware warning.
+
+### CI/CD
+- **Gate compatibility with the pinned OpenSSH regression suite** (#288). Linux and macOS CI validate an audited client-test inventory, compare candidate failures with the reference client, bound timeouts and logs, and enforce committed pass floors.
+- **Raise the measured compatibility score to the epic gate** (#313). The final harness records 60 passes out of 66 eligible tests on macOS and 61 out of 69 on Ubuntu.
+
+### Dependencies
+- **Add an internal bssh-russh 0.63.1 workspace member** (#304). The fork adds bounded host-key proof support, post-authentication automatic rekey, compatible key-exchange diagnostics, and default exclusion of legacy SSH-RSA/SHA-1 host signatures.
+- **Add DNSSEC-capable SSHFP resolution and cryptographic proof dependencies** (#304). The root package now directly uses hickory-resolver, SHA-1, SHA-2, HMAC, signature, and Base64 support required by host-key verification and rotation.
+
+### Breaking Changes
+- **Restore OpenSSH meanings for seven colliding short flags** (#313). Native bssh 2.x scripts must replace the former bssh meanings as follows: `-N` with `--no-prefix`, `-f` with `--filter`, `-C` with `--cluster`, `-A` with `--use-agent`, `-S` with `--sudo-password`, `-k` with `--fail-fast`, and `-b` with `--batch`. The letters now mean no remote command, background after authentication, compression, agent forwarding, control path, disabled GSSAPI credential delegation, and source bind address respectively. pdsh meanings remain available in pdsh compatibility mode.
+- **Treat `-A` as agent forwarding rather than local agent authentication** (#313). Update 2.x scripts to `--use-agent` before running them with 3.0 because an unchanged `-A` expands the remote host's access to the local agent.
+- **Change one-destination execution to the SSH-compatible raw output path** (#291). Use `-H host` to retain bssh's multi-host banner, prefixes, progress UI, forwarding status, and summary for a single host.
+- **Write `-V` version output to stderr instead of stdout** (#291). This matches OpenSSH and can require redirection changes in scripts.
+
+### Known Issues
+- **Six OpenSSH regression candidates still fail on both CI platforms** (#314): `agent-restrict`, `dynamic-forward`, `hostkey-agent`, `multiplex`, `percent`, and `proxyjump`.
+- **Two additional candidates fail only on Ubuntu** (#314): `rekey` and legacy remote-to-remote `scp3`; the reference client also fails those cases in the macOS fixture.
+- **Forty recognized SSH configuration spellings remain unimplemented** (#281, #309). They emit a source-aware warning instead of being silently discarded.
+- **Control sockets use a private bssh protocol rather than OpenSSH mux v4** (#312, #314). `-O conninfo` and remaining OpenSSH control operations are not supported.
+
 ## [2.4.3] - 2026-08-24
 
 Fixes bssh-to-bssh SFTP downloads above 255 KiB and updates the SSH stack and release automation.
@@ -1026,6 +1073,7 @@ None
 - russh library for native SSH implementation
 - Cross-platform support (Linux and macOS)
 
+[3.0.0]: https://github.com/lablup/bssh/compare/v2.4.3...v3.0.0
 [2.4.3]: https://github.com/lablup/bssh/compare/v2.4.2...v2.4.3
 [2.4.2]: https://github.com/lablup/bssh/compare/v2.4.1...v2.4.2
 [2.4.1]: https://github.com/lablup/bssh/compare/v2.4.0...v2.4.1
