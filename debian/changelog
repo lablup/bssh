@@ -2,63 +2,60 @@ bssh (3.0.0-1~jammy1) jammy; urgency=medium
 
   * v3.0.0
   ### Added
-  - Add -E diagnostic logs and -G effective SSH configuration output
-    (#289, #310).
+  - Add -E diagnostic logs and -G effective SSH configuration output.
   - Apply algorithm, environment, command, TTY, subsystem, null-stdin,
-    and stdio-forwarding policies at runtime (#302, #303, #311).
+    and stdio-forwarding policies at runtime.
   - Add same-user connection multiplexing, forwarding control,
-    background masters, and ControlPersist (#312, #313).
-  - Add session-scoped SSH agent forwarding and authentication banners
-    (#313).
+    background masters, and ControlPersist.
+  - Add session-scoped SSH agent forwarding and authentication banners.
   ### Security
   - Honor configured user and global known-hosts stores and HostKeyAlias
-    across every connection path (#290, #292).
+    across every connection path.
   - Enforce DNSSEC SSHFP checks, KnownHostsCommand, hashed host names,
-    and proof-backed host-key rotation (#304).
+    and proof-backed host-key rotation.
   - Enforce identity, certificate, algorithm, authentication order,
-    batch mode, and password prompt policies (#306).
-  - Escape control characters in SSH configuration diagnostics (#309).
+    batch mode, and password prompt policies.
+  - Escape control characters in SSH configuration diagnostics.
   ### Fixed
   - Preserve exact stdout and stderr bytes for one SSH destination
-    without banners, prefixes, styling, summaries, or added newlines
-    (#291).
+    without banners, prefixes, styling, summaries, or added newlines.
   - Execute ProxyCommand transports instead of silently connecting
-    directly (#293).
+    directly.
   - Report typed SSH connection stages and causes instead of opaque I/O
-    errors (#294).
+    errors.
   - Apply local, remote, and dynamic forwarding directives to live
-    connections (#305).
+    connections.
   - Honor BindAddress, BindInterface, and IPQoS for targets and jump
-    hops (#307).
-  - Enforce byte and time based RekeyLimit policies (#308).
+    hops.
+  - Enforce byte and time based RekeyLimit policies.
   - Warn once for each accepted but unimplemented SSH configuration
-    keyword instead of silently discarding it (#309).
+    keyword instead of silently discarding it.
   ### CI/CD
   - Gate Linux and macOS compatibility with the pinned OpenSSH 10.3
-    regression suite (#288).
-  - Record 60 eligible passes on macOS and 61 on Ubuntu (#313).
+    regression suite.
+  - Record 60 eligible passes on macOS and 61 on Ubuntu.
   ### Dependencies
   - Add the internal bssh-russh 0.63.1 workspace member and DNSSEC,
-    hashing, signing, and proof dependencies for host-key rotation
-    (#304).
+    hashing, signing, and proof dependencies for host-key rotation.
   ### Breaking Changes
   - Restore OpenSSH meanings for -N, -f, -C, -A, -S, -k, and -b.
     Native bssh 2.x scripts must use --no-prefix, --filter, --cluster,
     --use-agent, --sudo-password, --fail-fast, and --batch for their
-    former meanings (#313).
+    former meanings.
   - Treat -A as remote agent forwarding. Existing scripts that meant
     local agent authentication must change to --use-agent before use
-    with 3.0 (#313).
+    with 3.0.
   - Route one-destination execution through the raw SSH output path;
-    use -H host to retain the multi-host user interface (#291).
-  - Write -V output to stderr instead of stdout (#291).
+    use -H host to retain the multi-host user interface.
+  - Write -V output to stderr instead of stdout.
   ### Known Issues
-  - Track six cross-platform and two Ubuntu-only OpenSSH regression
-    candidate failures in #314.
+  - Keep restricted-agent forwarding, agent-backed host certificates,
+    some dynamic forwarding, multiplexing interoperability, percent-token
+    expansion, ProxyJump, rekeying, and legacy scp -3 limitations explicit.
   - Keep 40 recognized but unimplemented SSH configuration spellings
-    explicit and source-warned under #281 and #309.
+    explicit and source-warned.
   - Use a private bssh control protocol rather than OpenSSH mux v4;
-    conninfo and remaining control operations are tracked in #314.
+    conninfo and remaining control operations are unsupported.
 
  -- Jeongkyu Shin <inureyes@gmail.com>  Tue, 01 Sep 2026 12:59:35 +0900
 

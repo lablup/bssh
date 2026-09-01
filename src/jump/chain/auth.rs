@@ -29,7 +29,7 @@ use std::sync::Arc;
 ///
 /// When `use_password` is `true`, the `pre_collected_password` argument MUST
 /// carry the password the dispatcher collected once up-front via
-/// `prompt_password()` (issue #200). Per-call password prompts here would race
+/// `prompt_password()`. Per-call password prompts here would race
 /// across parallel jump-host auth tasks and produce N prompts for N nodes —
 /// the very bug `--password` was supposed to fix.
 pub(super) async fn determine_auth_method(

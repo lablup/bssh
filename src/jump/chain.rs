@@ -80,7 +80,7 @@ pub struct JumpHostChain {
     /// Pre-collected SSH password (from the dispatcher's single up-front prompt).
     /// When `use_password` is set on a per-call basis, this is consumed by every
     /// jump-host auth step instead of prompting per-call, which would otherwise
-    /// race N parallel auth tasks into N separate prompts. See issue #200.
+    /// produce one prompt per concurrent authentication task.
     ssh_password: Option<Arc<Password>>,
 }
 
@@ -126,7 +126,7 @@ impl JumpHostChain {
     /// Provide the pre-collected SSH password (collected once up-front by the
     /// dispatcher). When `--password` is used together with `-J <jump>`, every
     /// jump-host auth step consumes this shared secret instead of prompting
-    /// per-call. See issue #200.
+    /// per-call.
     pub fn with_ssh_password(mut self, password: Option<Arc<Password>>) -> Self {
         self.ssh_password = password;
         self
@@ -500,8 +500,7 @@ impl Drop for JumpHostChain {
 ///
 /// `hop` is the 1-based position of `jump_host` within the full chain (i.e.
 /// already offset past the first jump host). The host is interpolated only
-/// once; see issue #238 for the readability defect this replaced, where the
-/// host name was duplicated as both the subject and a trailing echo.
+/// once so the rendered error chain does not duplicate the host name.
 fn intermediate_jump_hop_context(jump_host: &JumpHost, hop: usize) -> String {
     format!("Failed to connect to jump host {jump_host} (hop {hop})")
 }

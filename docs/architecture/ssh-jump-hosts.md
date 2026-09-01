@@ -330,7 +330,7 @@ pub fn get_max_jump_hosts -> usize {
 - No compilation warnings (after clippy allows)
 - Successfully handles multi-hop scenarios
 
-### SSH Config ProxyJump Integration (Issue #117 - Implemented)
+### SSH Config ProxyJump Integration
 
 **Implementation:** `src/executor/connection_manager.rs`, `src/app/initialization.rs`
 
@@ -395,7 +395,7 @@ bssh -H db.internal "uptime"  # Uses db-gateway.example.com
 - Each operation establishes fresh tunnel
 - **Rationale:** russh session limitations prevent connection reuse
 
-### YAML Configuration File Support (Issue #115 - Implemented)
+### YAML Configuration File Support
 
 **Implementation:** `src/config/types.rs`, `src/config/resolver.rs`
 
@@ -440,7 +440,7 @@ clusters:
 2. SSH config `ProxyJump` directive
 3. YAML config (node → cluster → global)
 
-### Per-Jump-Host SSH Key Configuration (Issue #167 - Implemented)
+### Per-Jump-Host SSH Key Configuration
 
 **Implementation:** `src/config/types.rs`, `src/jump/chain/auth.rs`, `src/jump/parser/host.rs`
 

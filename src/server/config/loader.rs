@@ -55,7 +55,7 @@ use std::path::{Path, PathBuf};
 /// - `BSSH_HOST_KEY` - Comma-separated host key paths
 /// - `BSSH_MAX_CONNECTIONS` - Maximum concurrent connections
 /// - `BSSH_KEEPALIVE_INTERVAL` - Keepalive interval in seconds
-/// - `BSSH_COMPRESSION` - Advertise SSH transport compression ("true"/"false"; default false, see issue #215)
+/// - `BSSH_COMPRESSION` - Advertise SSH transport compression ("true"/"false"; default false because delayed-zlib interoperability is limited)
 /// - `BSSH_MAX_PACKET_SIZE` - Maximum SSH channel packet size in bytes (default 65535, clamped to at most 65535)
 /// - `BSSH_WINDOW_SIZE` - SSH channel flow-control window size in bytes (default 8388608)
 /// - `BSSH_AUTH_METHODS` - Comma-separated auth methods (e.g., "publickey,password")

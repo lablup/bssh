@@ -17,7 +17,7 @@ Re-applied on sync from `patches/pipelined-file-io.patch`.
 
 ### Server: request read-ahead and write coalescing (`src/server/mod.rs`)
 
-The serial request loop is replaced by a byte-bounded intake queue plus a processor, adding two `server::Config` knobs: `max_buffered_request_bytes` (default 8 MiB) and `max_write_coalesce_len` (default 256 KiB). Read-ahead keeps the transport decrypting requests while the handler is blocked on file I/O, and consecutive `SSH_FXP_WRITE`s to the same handle at sequential offsets are merged into one handler call while each request id still gets its own status reply. The unbounded-in-count, bounded-in-bytes intake is deliberate: stalling intake can deadlock against the russh session loop waiting on channel window (see issue lablup/bssh#227, paramiko's unbounded READ prefetch).
+The serial request loop is replaced by a byte-bounded intake queue plus a processor, adding two `server::Config` knobs: `max_buffered_request_bytes` (default 8 MiB) and `max_write_coalesce_len` (default 256 KiB). Read-ahead keeps the transport decrypting requests while the handler is blocked on file I/O, and consecutive `SSH_FXP_WRITE`s to the same handle at sequential offsets are merged into one handler call while each request id still gets its own status reply. The unbounded-in-count, bounded-in-bytes intake is deliberate: stalling intake can deadlock when unbounded client read-ahead fills the russh channel window.
 
 Re-applied on sync from `patches/server-readahead-write-coalescing.patch`.
 

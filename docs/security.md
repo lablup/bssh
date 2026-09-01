@@ -258,7 +258,7 @@ way:
   SFTP symlink target is itself re-anchored under `root`, so a created link can
   never point at the host filesystem.
 
-When `root` is unset (default since v2.1.3, per #186), the handler runs
+When `root` is unset (the default), the handler runs
 without chroot. Absolute paths are honored verbatim and relative paths
 resolve from the user's home directory, matching OpenSSH `sftp-server`.
 This is the recommended default for Backend.AI session containers and any

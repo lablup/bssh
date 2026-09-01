@@ -224,10 +224,8 @@ pub struct ServerConfig {
     /// fall back to the uncompressed transport. This is the safe default:
     /// russh's delayed-zlib (`zlib@openssh.com`) transport desyncs a few
     /// packets after compression activates post-auth, dropping clients that
-    /// negotiate it (Cyberduck, `sftp -C`) mid-session. See
-    /// <https://github.com/lablup/bssh/issues/215>. Enable only if the
-    /// upstream russh bug is fixed or your clients never negotiate
-    /// compression.
+    /// negotiate it (Cyberduck, `sftp -C`) mid-session. Enable only after
+    /// verifying compression interoperability with every deployed client.
     #[serde(default)]
     pub compression: bool,
 
@@ -235,9 +233,8 @@ pub struct ServerConfig {
     ///
     /// Larger packets amortize per-packet cipher and copy overhead; russh's
     /// library default of 32768 fragments a 256 KiB SFTP write into 8
-    /// CHANNEL_DATA packets (see
-    /// <https://github.com/lablup/bssh/issues/187>). Clamped to at most
-    /// 65535, which russh requires. Default: 65535.
+    /// CHANNEL_DATA packets. Clamped to at most 65535, which russh requires.
+    /// Default: 65535.
     #[serde(default = "default_maximum_packet_size")]
     pub maximum_packet_size: u32,
 
@@ -667,8 +664,8 @@ impl ServerConfigBuilder {
     ///
     /// Disabled by default: russh's delayed-zlib (`zlib@openssh.com`)
     /// transport desyncs mid-session, so the server advertises only `none`
-    /// unless this is explicitly enabled (see
-    /// <https://github.com/lablup/bssh/issues/215>).
+    /// unless this is explicitly enabled. Test interoperability with every
+    /// deployed client before enabling it.
     pub fn compression(mut self, enabled: bool) -> Self {
         self.config.compression = enabled;
         self

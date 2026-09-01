@@ -14,8 +14,8 @@
 
 //! Input event handling for PTY sessions
 //!
-//! NOTE: This module is currently unused since we switched to raw byte passthrough
-//! (see issue #87), but is kept for reference, testing, and potential future use.
+//! NOTE: This module is currently unused because PTY input now uses raw byte
+//! passthrough, but it is kept for reference, testing, and potential future use.
 
 // Allow dead code for the entire module
 #![allow(dead_code)]
