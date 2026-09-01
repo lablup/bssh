@@ -12,19 +12,19 @@ A high-performance SSH client with **SSH-compatible syntax** for both single-hos
 
 ## Recent Updates
 
-- **v3.0.0 (2026/09/01):** Made single-destination sessions byte-transparent, applied SSH configuration at runtime, added OpenSSH configuration, session, forwarding, and multiplexing options, and restored seven colliding short flags to their OpenSSH meanings. The pinned OpenSSH suite passes 60 tests on macOS and 61 on Ubuntu (#275, #313).
-- **v2.4.3 (2026/08/24):** Fix bssh-to-bssh SFTP downloads above 255 KiB, upgrade to russh 0.63.1 with two security fixes and host-certificate refusal, sync bssh-russh-sftp 2.4.0, and repair release automation for API-key notarization and Homebrew updates (#268, #269, #270, #272, #273).
-- **v2.4.2 (2026/08/14):** Republish the macOS binaries with a Developer ID signature and Apple notarization. The v2.4.1 and earlier macOS builds are killed on launch and deleted by macOS because their signing certificate was revoked. No source changes (#264).
-- **v2.4.1 (2026/08/03):** Close the four host key and forwarding known issues from v2.4.0: `accept-new` no longer disables verification without a home directory or an unusable known_hosts file, first-use recording is serialized across processes, `@cert-authority` lines can be rejected, forwarding targets keep their hostnames for the server to resolve, SOCKS4 honors `-4`/`-6`, and SOCKS5 accepts IPv6 destination literals (#242, #243, #255, #256, #257).
-- **v2.4.0 (2026/08/03):** Implement real TOFU verification for the default `accept-new` host key mode, make `bssh ping` report a 0/1/255 exit code, wire up the `-4`/`-6` flags and ssh_config `AddressFamily` across connect, forwarding, and jump chains, resolve ssh_config settings per target host, and accept bracketed IPv6 host literals (#238, #239, #245, #246, #248, #249, #251).
-- **v2.3.1 (2026/07/29):** Restore keyboard protocols leaked by disconnected PTY applications, preserve an outer TUI's keyboard state, raise the MSRV and Debian/Launchpad toolchain to Rust 1.96, and make Homebrew formula updates safer (#231, #232, #233, #235, #237).
-- **v2.3.0 (2026/07/18):** Roughly double bssh-server SFTP write throughput, fix the paramiko prefetch deadlock (with TCP_NODELAY), make `sftp.root`/`scp.root` chroot usable, make server SSH compression configurable, and drop the vendored `bssh-russh` fork for upstream russh 0.62.1 (#187, #212, #214, #215, #227).
-- **v2.2.3 (2026/05/25):** Sync both internal russh forks to upstream stable and patch RUSTSEC-2026-0009 (a `time` stack-exhaustion DoS), raising the minimum supported Rust to 1.88 (#207, #208).
-- **v2.2.2 (2026/05/25):** Keep idle SSH sessions alive by lowering the default `--server-alive-interval` to 30s and leaving the client inactivity timeout disabled (#206).
-- **v2.2.1 (2026/05/19):** Dependency upgrade pass and russh fork sync picking up both halves of CVE-2026-46673, plus a bssh-russh dev-deps fix so its inline tests compile (#203, #204, #205).
-- **v2.2.0 (2026/05/18):** Collect `--password` once and share it across parallel tasks, add `BSSH_PASSWORD`, resolve all cargo-audit findings, and drop five redundant dependencies (#198, #199, #200, #201).
-- **v2.1.4 (2026/05/10):** Stream SFTP transfers in 255 KiB chunks (~160x lower memory, ~11x faster 1 GiB upload) and pipeline up to 64 concurrent requests (#195, #196, #197).
-- **v2.1.3 (2026/04/30):** Fix SCP/SFTP path doubling and chroot config, vendor `russh-sftp` with a serde_bytes perf fix (+29% upload), and forward-port unreleased upstream russh fixes (#186).
+- **v3.0.0 (2026/09/01):** Made single-destination sessions byte-transparent, applied SSH configuration at runtime, added OpenSSH configuration, session, forwarding, and multiplexing options, and restored seven colliding short flags to their OpenSSH meanings. The pinned OpenSSH suite passes 60 tests on macOS and 61 on Ubuntu.
+- **v2.4.3 (2026/08/24):** Fix bssh-to-bssh SFTP downloads above 255 KiB, upgrade to russh 0.63.1 with two security fixes and host-certificate refusal, sync bssh-russh-sftp 2.4.0, and repair release automation for API-key notarization and Homebrew updates.
+- **v2.4.2 (2026/08/14):** Republish the macOS binaries with a Developer ID signature and Apple notarization. The v2.4.1 and earlier macOS builds are killed on launch and deleted by macOS because their signing certificate was revoked. No source changes.
+- **v2.4.1 (2026/08/03):** Close the four host key and forwarding known issues from v2.4.0: `accept-new` no longer disables verification without a home directory or an unusable known_hosts file, first-use recording is serialized across processes, `@cert-authority` lines can be rejected, forwarding targets keep their hostnames for the server to resolve, SOCKS4 honors `-4`/`-6`, and SOCKS5 accepts IPv6 destination literals.
+- **v2.4.0 (2026/08/03):** Implement real TOFU verification for the default `accept-new` host key mode, make `bssh ping` report a 0/1/255 exit code, wire up the `-4`/`-6` flags and ssh_config `AddressFamily` across connect, forwarding, and jump chains, resolve ssh_config settings per target host, and accept bracketed IPv6 host literals.
+- **v2.3.1 (2026/07/29):** Restore keyboard protocols leaked by disconnected PTY applications, preserve an outer TUI's keyboard state, raise the MSRV and Debian/Launchpad toolchain to Rust 1.96, and make Homebrew formula updates safer.
+- **v2.3.0 (2026/07/18):** Roughly double bssh-server SFTP write throughput, fix the paramiko prefetch deadlock (with TCP_NODELAY), make `sftp.root`/`scp.root` chroot usable, make server SSH compression configurable, and drop the vendored `bssh-russh` fork for upstream russh 0.62.1.
+- **v2.2.3 (2026/05/25):** Sync both internal russh forks to upstream stable and patch RUSTSEC-2026-0009 (a `time` stack-exhaustion DoS), raising the minimum supported Rust to 1.88.
+- **v2.2.2 (2026/05/25):** Keep idle SSH sessions alive by lowering the default `--server-alive-interval` to 30s and leaving the client inactivity timeout disabled.
+- **v2.2.1 (2026/05/19):** Dependency upgrade pass and russh fork sync picking up both halves of CVE-2026-46673, plus a bssh-russh dev-deps fix so its inline tests compile.
+- **v2.2.0 (2026/05/18):** Collect `--password` once and share it across parallel tasks, add `BSSH_PASSWORD`, resolve all cargo-audit findings, and drop five redundant dependencies.
+- **v2.1.4 (2026/05/10):** Stream SFTP transfers in 255 KiB chunks (~160x lower memory, ~11x faster 1 GiB upload) and pipeline up to 64 concurrent requests.
+- **v2.1.3 (2026/04/30):** Fix SCP/SFTP path doubling and chroot config, vendor `russh-sftp` with a serde_bytes perf fix (+29% upload), and forward-port unreleased upstream russh fixes.
 
 _See [CHANGELOG.md](./CHANGELOG.md) for the complete version history._
 
@@ -51,7 +51,7 @@ _See [CHANGELOG.md](./CHANGELOG.md) for the complete version history._
 ## Platform Support
 
 - **Linux and macOS**: Fully supported, including SSH agent authentication (`--use-agent`), PTY-based interactive sessions, and every CLI feature documented here.
-- **Windows (native)**: Not currently supported as a client. The `bssh` crate does not build for a Windows target today because of unconditional Unix-only dependencies (`nix`, `signal-hook`, `libc`) and un-gated PTY/agent code; there is no Windows CI job or release artifact. Use **WSL2** to run `bssh` on Windows in the meantime. See [#213](https://github.com/lablup/bssh/issues/213) for the current status and the known blockers to native Windows client support.
+- **Windows (native)**: Not currently supported as a client. The `bssh` crate does not build for a Windows target today because of unconditional Unix-only dependencies (`nix`, `signal-hook`, `libc`) and un-gated PTY/agent code; there is no Windows CI job or release artifact. Use **WSL2** to run `bssh` on Windows.
 
 ## Installation
 
@@ -551,39 +551,26 @@ bssh --cluster production upload local.txt /tmp/
 bssh -H "host1,host2" download /etc/hosts ./backups/
 ```
 
-## Breaking Changes in v1.2.0
+## Exit Code Strategies
 
-**⚠️ Exit Code Behavior Changed**: v1.2.0 now returns the main rank's exit code by default (matching MPI standard tools like mpirun/srun/mpiexec).
+By default, bssh returns the main rank's exit code, matching MPI-oriented
+tools such as `mpirun`, `srun`, and `mpiexec`. Choose an explicit strategy
+when a workflow must account for every node.
 
-### What Changed
+| Strategy | Behavior | Use case |
+|----------|----------|----------|
+| Default | Return the main rank's actual exit code | MPI workloads and CI/CD |
+| `--require-all-success` | Return 0 only when every node succeeds; otherwise return 1 | Health checks |
+| `--check-all-nodes` | Return the main rank's code, or 1 if the main rank succeeds but another node fails | Cluster validation |
 
-| Version | Behavior | Use Case |
-|---------|----------|----------|
-| **v1.0-v1.1** | Returns 0 if all succeed, 1 if any fails | Health checks |
-| **v1.2.0+** (default) | Returns main rank's actual exit code | MPI workloads, CI/CD |
-
-### Migration Guide
-
-**MPI Workloads** - ✅ No changes needed:
+### Examples
 ```bash
-# Now returns actual exit codes: 0, 139 (SIGSEGV), 137 (OOM), etc.
-bssh exec "mpirun ./simulation"
+# Preserve the main rank's actual exit status.
+bssh -H "node[1-8]" "mpirun ./simulation"
+
+# Fail the health check if any node fails.
+bssh --require-all-success -H "node[1-8]" "health-check"
 ```
-
-**Health Checks** - Add `--require-all-success` flag:
-```bash
-# v1.0-v1.1
-bssh exec "health-check"
-
-# v1.2.0+ (preserve old behavior)
-bssh --require-all-success exec "health-check"
-```
-
-### Available Strategies
-
-- **Default**: Return main rank's exit code (MPI standard)
-- **`--require-all-success`**: Return 0 only if all nodes succeed
-- **`--check-all-nodes`**: Return main rank code, or 1 if main OK but others failed
 
 See [examples/mpi_exit_code.sh](examples/mpi_exit_code.sh) and [examples/health_check.sh](examples/health_check.sh) for detailed examples.
 

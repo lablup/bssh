@@ -200,6 +200,14 @@ mod tests {
     fn test_cli_parsing() {
         // Verify CLI structure is valid
         Cli::command().debug_assert();
+
+        let help = Cli::command().render_long_help().to_string();
+        for internal_reference in ["issue #", "PR #", "/issues/", "/pull/"] {
+            assert!(
+                !help.contains(internal_reference),
+                "help contains internal tracking reference {internal_reference:?}"
+            );
+        }
     }
 
     #[test]

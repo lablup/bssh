@@ -189,9 +189,9 @@ compression (\fBzlib\fR, \fBzlib@openssh.com\fR). It defaults to \fBfalse\fR,
 advertising only \fBnone\fR so clients use the uncompressed transport,
 because the bundled russh library's delayed-zlib (\fBzlib@openssh.com\fR)
 transport currently desyncs a few packets after compression activates,
-dropping clients that negotiate it (Cyberduck, \fBsftp -C\fR) mid-session;
-see https://github.com/lablup/bssh/issues/215. Enable it only if the
-upstream russh bug is fixed or your clients never negotiate compression.
+dropping clients that negotiate it (Cyberduck, \fBsftp -C\fR) mid-session.
+Enable it only after verifying compression interoperability with every
+deployed client.
 .TP
 .B auth
 Authentication methods and settings (methods, publickey, password)

@@ -836,8 +836,8 @@ impl Client {
     /// 1. Requesting PTY with proper terminal modes via `channel.request_pty()`
     /// 2. Requesting shell via `channel.request_shell()`
     ///
-    /// This change fixes issue #40: PTY should be requested once with proper terminal
-    /// modes by PtySession::initialize() rather than twice with empty modes.
+    /// PTY allocation is requested once with the terminal modes supplied by
+    /// `PtySession::initialize()`, rather than twice with an empty first request.
     pub async fn request_interactive_shell(
         &self,
         _term_type: &str,

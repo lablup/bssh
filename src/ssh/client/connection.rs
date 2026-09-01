@@ -70,7 +70,6 @@ fn client_jump_spec<'a>(
 /// `Display` already says everything the context layer would, and the
 /// messages it does return add remediation guidance without echoing the
 /// cause and carry no trailing period (which would render as `".: "`).
-/// See issue #238.
 fn connect_error_message(e: &crate::ssh::tokio_client::Error) -> Option<String> {
     match e {
         crate::ssh::tokio_client::Error::KeyAuthFailed => {

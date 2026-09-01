@@ -138,7 +138,7 @@ impl fmt::Display for ControlPersist {
     }
 }
 
-/// Commands accepted by OpenSSH-compatible `-O` handling in issue #286.
+/// Commands accepted by OpenSSH-compatible `-O` control handling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[non_exhaustive]
 #[serde(rename_all = "snake_case")]

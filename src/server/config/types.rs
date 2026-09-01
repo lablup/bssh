@@ -131,11 +131,9 @@ pub struct ServerSettings {
     ///
     /// **Caveat:** russh's delayed-zlib (`zlib@openssh.com`) transport
     /// currently desyncs a few packets after compression activates post-auth,
-    /// dropping clients that negotiate it (Cyberduck, `sftp -C`) mid-session
-    /// (reproduced on russh 0.61.1 and 0.62.1; see
-    /// <https://github.com/lablup/bssh/issues/215>). Enable this only if you
-    /// have verified the underlying russh bug is fixed or your clients never
-    /// negotiate compression.
+    /// dropping clients that negotiate it (Cyberduck, `sftp -C`) mid-session.
+    /// Enable this only after verifying compression interoperability with
+    /// every deployed client.
     ///
     /// Default: false
     #[serde(default)]
@@ -146,9 +144,9 @@ pub struct ServerSettings {
     /// Larger packets amortize the per-packet cipher, copy, and scheduling
     /// overhead of the SSH transport: with the russh library default of
     /// 32768, a 256 KiB SFTP write is fragmented into 8 CHANNEL_DATA packets,
-    /// roughly halving single-connection SFTP throughput on slower CPUs (see
-    /// <https://github.com/lablup/bssh/issues/187>). Values above 65535 are
-    /// clamped because russh rejects packets larger than a TCP frame.
+    /// roughly halving single-connection SFTP throughput on slower CPUs.
+    /// Values above 65535 are clamped because russh rejects packets larger
+    /// than a TCP frame.
     ///
     /// Default: 65535
     #[serde(default = "default_maximum_packet_size")]

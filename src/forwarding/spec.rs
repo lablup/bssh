@@ -146,8 +146,8 @@ impl ForwardingSpec {
     ///
     /// Unlike `-L` and `-D`, the bind address here names a listener on the
     /// *remote* side, which the server creates and which the local `-4`/`-6`
-    /// flags therefore do not govern. The implicit default stays IPv4
-    /// loopback; see issue #246 for the decision.
+    /// flags therefore do not govern. The implicit default remains IPv4
+    /// loopback for compatibility with OpenSSH listener behavior.
     pub fn parse_remote(spec: &str) -> Result<ForwardingType> {
         let spec = Self::normalize_stream_spec(spec)?;
         let parts = Self::split_stream_fields(&spec)?;

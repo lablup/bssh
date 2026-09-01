@@ -207,7 +207,8 @@ impl BsshServer {
             tracing::warn!(
                 "SSH transport compression enabled; russh's delayed-zlib \
                  (zlib@openssh.com) desync may drop clients that negotiate \
-                 compression mid-session (see issue #215)"
+                 compression mid-session; enable it only after testing every \
+                 deployed client"
             );
             russh::Preferred::DEFAULT
         } else {
@@ -447,8 +448,8 @@ impl russh::server::Server for BsshServerRunner {
 }
 
 /// Whether a session error is an ordinary client-side disconnect (abrupt
-/// client exit, network cut) rather than a server fault. These used to be
-/// logged at ERROR, which was noise (issue #227). russh's `Error::IO` is
+/// client exit, network cut) rather than a server fault. Logging these expected
+/// disconnects at ERROR would create operational noise. russh's `Error::IO` is
 /// `#[error(transparent)]`, which forwards `source()` past the contained
 /// io::Error, so the io::Error never appears in the anyhow chain on its own;
 /// it has to be matched through `russh::Error` as well.

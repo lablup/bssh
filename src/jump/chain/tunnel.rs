@@ -439,8 +439,7 @@ mod tests {
         assert_eq!(addr.to_string(), "127.0.0.1:22");
     }
 
-    /// Regression test for the chain-duplication defect issue #238 established
-    /// a convention against: `resolve_handler_address`'s own error must not
+    /// Regression coverage ensures that `resolve_handler_address`'s own error does not
     /// restate `host:port`, since every call site already wraps it with a
     /// `.with_context()` that names the host and port.
     #[test]

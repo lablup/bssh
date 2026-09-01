@@ -169,7 +169,7 @@ impl SshClient {
     /// password (when `--password` is used). Callers in the `download`
     /// glob-resolution path MUST forward `FileTransferParams::ssh_password`
     /// here — otherwise the user is prompted twice (once by the dispatcher,
-    /// once by this connection). See issue #200.
+    /// once by this connection).
     #[allow(clippy::too_many_arguments)]
     pub async fn connect_and_execute_with_host_check(
         &mut self,

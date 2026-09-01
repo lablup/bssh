@@ -229,7 +229,7 @@ pub struct Cli {
 
     #[arg(
         long,
-        help = "Require all nodes to succeed (v1.0-v1.1 behavior)\nDefault: return main rank's exit code (v1.2+)\nUseful for health checks and monitoring where all nodes must be operational"
+        help = "Require every node to succeed\nReturns 0 only when all nodes succeed; otherwise returns 1\nUseful for health checks and monitoring where all nodes must be operational"
     )]
     pub require_all_success: bool,
 
@@ -1115,6 +1115,25 @@ fn migration_long_takes_value(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn help_uses_current_user_facing_terms() {
+        let help = Cli::command().render_long_help().to_string();
+
+        for internal_reference in ["issue #", "PR #", "/issues/", "/pull/"] {
+            assert!(
+                !help.contains(internal_reference),
+                "help contains internal tracking reference {internal_reference:?}"
+            );
+        }
+        for historical_version in ["v1.0-v1.1", "v1.2+"] {
+            assert!(
+                !help.contains(historical_version),
+                "help describes current behavior using historical version {historical_version:?}"
+            );
+        }
+    }
 
     #[test]
     fn identity_flag_is_repeatable_and_preserves_order() {

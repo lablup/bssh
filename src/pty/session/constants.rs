@@ -14,9 +14,9 @@
 
 //! Terminal constants and key sequence definitions
 //!
-//! NOTE: Many key sequence constants are currently unused since we switched to
-//! raw byte passthrough (see issue #87), but are kept for reference and potential
-//! future debugging use.
+//! NOTE: Many key sequence constants are currently unused because PTY input now
+//! uses raw byte passthrough, but they are kept for reference and potential future
+//! debugging use.
 
 // Allow dead code for unused key sequence constants
 #![allow(dead_code)]
