@@ -178,6 +178,7 @@ pub struct Cli {
     #[arg(
         short = 'E',
         value_name = "log_file",
+        overrides_with = "log_file",
         help = "Append bssh diagnostics and debug logs to the specified file (SSH-compatible)"
     )]
     pub log_file: Option<PathBuf>,
@@ -308,7 +309,7 @@ pub struct Cli {
         short = 'O',
         long = "control-command",
         value_name = "command",
-        value_parser = ["check", "forward", "cancel", "exit", "stop"],
+        value_parser = ["check", "forward", "cancel", "exit", "stop", "proxy"],
         conflicts_with = "stdio_forward",
         help = "Send a control command to an existing connection master"
     )]
@@ -1252,6 +1253,10 @@ mod tests {
         assert_eq!(repeated.control_master, 2);
         assert_eq!(repeated.control_command.as_deref(), Some("check"));
         assert_eq!(repeated.ssh_config_overrides()[0], "ControlMaster=ask");
+
+        let proxy =
+            Cli::try_parse_from(["bssh", "-Oproxy", "--control-path=/tmp/c", "target"]).unwrap();
+        assert_eq!(proxy.control_command.as_deref(), Some("proxy"));
 
         let repeated_more = Cli::try_parse_from(["bssh", "-MMM", "target"]).unwrap();
         assert_eq!(repeated_more.control_master, 3);

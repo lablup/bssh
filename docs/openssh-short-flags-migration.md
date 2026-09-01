@@ -60,7 +60,13 @@ Use `-S` to select a connection-sharing socket:
 ```bash
 bssh -M -S ~/.ssh/bssh-%C user@host
 bssh -S ~/.ssh/bssh-%C user@host uptime
+bssh -O proxy -S ~/.ssh/bssh-%C user@host uptime
 ```
+
+`-O proxy` requires an existing bssh control master and opens the requested
+session on that master's authenticated transport. bssh control sockets are not
+wire-compatible with OpenSSH control sockets; each client must use a master
+created by the same program.
 
 Use the long bssh options when selecting clusters or changing multi-node
 output behavior:

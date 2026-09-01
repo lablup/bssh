@@ -245,7 +245,11 @@ async fn try_existing_control_master(
     control: &ResolvedControlInvocation,
     background_worker: Option<&BackgroundWorker>,
 ) -> Result<Option<i32>> {
-    if let Some(command) = cli.control_command.as_deref() {
+    // OpenSSH's `-O proxy` exposes a raw SSH connection through its mux
+    // socket. bssh's private control protocol provides the equivalent user
+    // behavior by opening the requested session on the existing transport.
+    let proxy_session = cli.control_command.as_deref() == Some("proxy");
+    if let Some(command) = cli.control_command.as_deref().filter(|_| !proxy_session) {
         let command = command.parse::<ControlCommand>()?;
         let forwards = if matches!(command, ControlCommand::Forward | ControlCommand::Cancel) {
             control.forwarding_directives.clone()
@@ -263,7 +267,7 @@ async fn try_existing_control_master(
         }
         return Ok(Some(EXIT_SUCCESS));
     }
-    if !control.policy.master.tries_existing() {
+    if !proxy_session && !control.policy.master.tries_existing() {
         return Ok(None);
     }
     if control.fork_after_authentication {
@@ -292,6 +296,10 @@ async fn try_existing_control_master(
     )
     .await?
     {
+        AttachOutcome::NoMaster if proxy_session => anyhow::bail!(
+            "-O proxy requires a running control master at '{}'",
+            control.path.display()
+        ),
         AttachOutcome::NoMaster => Ok(None),
         AttachOutcome::ExitStatus(status) => Ok(Some(i32::try_from(status).unwrap_or(255))),
     }

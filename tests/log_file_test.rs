@@ -45,6 +45,20 @@ fn parses_separated_and_attached_log_file_options() {
 }
 
 #[test]
+fn repeated_log_file_option_uses_the_last_value() {
+    let parsed = Cli::try_parse_from([
+        "bssh",
+        "-E",
+        "/tmp/first.log",
+        "-E/tmp/last.log",
+        "example.com",
+    ])
+    .expect("repeated -E should parse like OpenSSH");
+
+    assert_eq!(parsed.log_file, Some(PathBuf::from("/tmp/last.log")));
+}
+
+#[test]
 fn human_diagnostics_are_routed_and_repeated_runs_append() {
     let directory = tempdir().expect("failed to create temporary directory");
     let log = directory.path().join("bssh.log");

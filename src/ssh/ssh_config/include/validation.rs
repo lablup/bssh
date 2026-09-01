@@ -73,6 +73,18 @@ fn validate_opened_metadata(path: &Path, metadata: &std::fs::Metadata) -> Result
     Ok(())
 }
 
+#[cfg(unix)]
+fn is_openssh_null_config(path: &Path, metadata: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::FileTypeExt as _;
+
+    path == Path::new("/dev/null") && metadata.file_type().is_char_device()
+}
+
+#[cfg(not(unix))]
+fn is_openssh_null_config(_path: &Path, _metadata: &std::fs::Metadata) -> bool {
+    false
+}
+
 /// Open, validate with `fstat`, and read from the same handle.
 pub(crate) async fn read_config_file(
     path: &Path,
@@ -110,7 +122,7 @@ where
     })?;
     if check_permissions {
         validate_opened_metadata(path, &metadata)?;
-    } else if !metadata.is_file() {
+    } else if !metadata.is_file() && !is_openssh_null_config(path, &metadata) {
         anyhow::bail!(
             "SSH config path is not a regular file: {}",
             escape_path(path)
@@ -186,5 +198,17 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(content, "User safe\n");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exact_null_device_is_an_empty_root_config_only() {
+        let path = Path::new("/dev/null");
+
+        assert_eq!(
+            read_config_file(path, false, false).await.unwrap(),
+            Some(String::new())
+        );
+        assert!(read_config_file(path, true, false).await.is_err());
     }
 }

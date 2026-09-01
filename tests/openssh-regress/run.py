@@ -10,6 +10,7 @@ import os
 import platform
 import re
 import signal
+import shlex
 import shutil
 import subprocess
 import sys
@@ -29,6 +30,7 @@ DEFAULT_SELECTION = HERE / "selection.tsv"
 PIN_FILE = HERE / "openssh-version"
 MAX_CAPTURE_BYTES = 1024 * 1024
 MAX_LOG_BYTES = 16 * 1024 * 1024
+CLIENT_WRAPPER_BYTES = 1024 * 1024
 TRUNCATION_NOTICE = b"\n...[output truncated by harness]...\n"
 FAILURE_PATTERN = re.compile(
     r"(?:^|\b)(?:FAIL(?:ED)?|FATAL|ERROR|Error|error|timed out|unexpected argument)(?:\b|:)",
@@ -233,12 +235,32 @@ def make_value(makefile: Path, name: str, default: str = "") -> str:
     return match.group(1).strip().strip(chr(34)) if match else default
 
 
+def prepare_client_wrapper(tree: Path, client: Path) -> Path:
+    """Create a stable-size executable wrapper for the SSH client under test.
+
+    OpenSSH's test-exec.sh copies the SSH executable into its generic data
+    fixture. A Rust debug binary can contain hundreds of MiB of symbols, which
+    turns ordinary transfer tests into accidental stress tests. The padded
+    wrapper keeps that fixture deterministic while still execing the exact
+    requested client.
+    """
+    wrapper = tree / "regress" / ".bssh-openssh-client"
+    wrapper.parent.mkdir(parents=True, exist_ok=True)
+    contents = f'#!/bin/sh\nexec {shlex.quote(str(client))} "$@"\n#'.encode()
+    if len(contents) < CLIENT_WRAPPER_BYTES:
+        contents += b"x" * (CLIENT_WRAPPER_BYTES - len(contents) - 1) + b"\n"
+    wrapper.write_bytes(contents)
+    wrapper.chmod(0o700)
+    return wrapper
+
+
 def reference_environment(tree: Path, client: Path) -> dict[str, str]:
     makefile = tree / "Makefile"
     env = os.environ.copy()
+    client_wrapper = prepare_client_wrapper(tree, client)
     helpers = {
         "TEST_SSH_SCP": "scp",
-        "TEST_SSH_SSH": str(client),
+        "TEST_SSH_SSH": str(client_wrapper),
         "TEST_SSH_SSHD": "sshd",
         "TEST_SSH_SSHD_SESSION": "sshd-session",
         "TEST_SSH_SSHD_AUTH": "sshd-auth",

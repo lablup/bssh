@@ -16,6 +16,8 @@ make openssh-regress
 
 The first full invocation builds `target/debug/bssh`, clones `V_10_3_P1` under `target/openssh-regress/`, configures and builds the reference binaries, and runs every selected test. Later invocations reuse both build trees. Use `--bssh` or `--openssh-tree` with `tests/openssh-regress/run.py` to supply prebuilt trees, `--timeout` to change the base per-test limit, and repeated `--test NAME` arguments for focused diagnosis. The manifest may declare a higher minimum for an upstream test whose normal runtime exceeds the base limit. `forward-control` uses 180 seconds after a measured run completed in about 158 seconds, and `sshsig` uses the same minimum after completing in 96 seconds locally but exceeding 120 seconds on a shared Linux CI runner.
 
+Each client runs through a padded 1 MiB shell wrapper. OpenSSH's upstream `test-exec.sh` copies its SSH executable into the generic transfer fixture; using the Rust debug binary directly would make that fixture hundreds of MiB on some platforms and turn compatibility checks into debug-symbol transfer benchmarks. The wrapper executes the exact candidate or reference client while keeping fixture size stable across platforms.
+
 `make openssh-regress-update` writes the full per-test table to `tests/openssh-regress/results.json` and updates the current platform's minimum passing and eligible-result floors in `baseline.json`. Review both diffs before committing them. Never update the baseline merely to make an unexplained regression green.
 
 ## Interpret results

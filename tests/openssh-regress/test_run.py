@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import sys
 import tempfile
 import unittest
@@ -35,7 +36,10 @@ class ManifestTests(unittest.TestCase):
             for row in selection
             if row.timeout_seconds is not None
         }
-        self.assertEqual(timeout_overrides, {"forward-control": 180, "sshsig": 180})
+        self.assertEqual(
+            timeout_overrides,
+            {"forward-control": 180, "sshsig": 180},
+        )
         self.assertNotIn("pubkey-priority", {row.test for row in selection})
 
     def test_pin_includes_an_immutable_commit(self) -> None:
@@ -96,9 +100,18 @@ class EnvironmentTests(unittest.TestCase):
             (tree / "Makefile").write_text(
                 "TEST_SHELL = /bin/sh\nTEST_MALLOC_OPTIONS = CFGJRSUX\n", encoding="utf-8"
             )
-            client = tree / "candidate-bssh"
+            client = tree / "candidate bssh"
 
             env = openssh_regress.reference_environment(tree, client)
+
+            wrapper = Path(env["TEST_SSH_SSH"])
+            self.assertEqual(wrapper.stat().st_size, openssh_regress.CLIENT_WRAPPER_BYTES)
+            self.assertTrue(os.access(wrapper, os.X_OK))
+            self.assertTrue(
+                wrapper.read_text(encoding="utf-8").startswith(
+                    f'#!/bin/sh\nexec \'{client}\' "$@"\n#'
+                )
+            )
 
         expected = {
             "TEST_SSH_SCP",
@@ -117,7 +130,6 @@ class EnvironmentTests(unittest.TestCase):
             "TEST_SSH_SFTPSERVER",
         }
         self.assertTrue(expected.issubset(env))
-        self.assertEqual(env["TEST_SSH_SSH"], str(client))
         self.assertEqual(env["MALLOC_OPTIONS"], "CFGJRSUX")
 
     def test_process_timeout_terminates_the_process_group(self) -> None:
