@@ -1,3 +1,16 @@
+bssh (3.0.1-1~jammy1) jammy; urgency=medium
+
+  * v3.0.1
+  ### Changed
+  - Replace developer-only references in active help, runtime warnings,
+    manpages, current release notes, and public documentation with
+    behavior-focused guidance.
+  ### Tests
+  - Add rendered-help regression checks for bssh, bssh-server, and
+    bssh-keygen.
+
+ -- Jeongkyu Shin <inureyes@gmail.com>  Tue, 01 Sep 2026 18:35:06 +0900
+
 bssh (3.0.0-1~jammy1) jammy; urgency=medium
 
   * v3.0.0

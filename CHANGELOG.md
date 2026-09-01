@@ -5,6 +5,16 @@ All notable changes to bssh will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.1] - 2026-09-01
+
+Made user-facing guidance self-contained without changing command behavior.
+
+### Changed
+- **Replaced developer-only references with behavior-focused guidance.** Active CLI help, runtime warnings, manpages, README, current release notes, and public Rust documentation now describe current behavior and operator actions without requiring project history.
+
+### Tests
+- **Guarded rendered help for all three binaries.** Regression checks reject internal issue and pull request references in the help produced by `bssh`, `bssh-server`, and `bssh-keygen`.
+
 ## [3.0.0] - 2026-09-01
 
 Moved single-destination mode onto an OpenSSH-compatible command-line and runtime contract measured against the pinned OpenSSH `V_10_3_P1` regression suite.
@@ -1073,6 +1083,7 @@ None
 - russh library for native SSH implementation
 - Cross-platform support (Linux and macOS)
 
+[3.0.1]: https://github.com/lablup/bssh/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/lablup/bssh/compare/v2.4.3...v3.0.0
 [2.4.3]: https://github.com/lablup/bssh/compare/v2.4.2...v2.4.3
 [2.4.2]: https://github.com/lablup/bssh/compare/v2.4.1...v2.4.2
