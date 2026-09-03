@@ -406,11 +406,7 @@ pub(super) fn parse_authentication_option(
             #[cfg(target_os = "macos")]
             {
                 if value {
-                    tracing::debug!(
-                        "UseKeychain enabled at line {} (Note: Currently supports parsing only. \
-                         Keychain integration will be implemented in a future release)",
-                        line_number
-                    );
+                    tracing::debug!("UseKeychain enabled at line {line_number}");
                 }
                 host.use_keychain = Some(value);
             }

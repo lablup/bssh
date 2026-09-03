@@ -668,7 +668,6 @@ async fn load_policy_private_key(
     let _prompt_guard = AUTH_PROMPT_MUTEX.lock().await;
 
     #[cfg(target_os = "macos")]
-    #[cfg(target_os = "macos")]
     if use_keychain {
         #[cfg(test)]
         record_key_user_interaction();
@@ -680,8 +679,13 @@ async fn load_policy_private_key(
         .await;
         match retrieved {
             Ok(Some(passphrase)) => {
-                return russh::keys::load_secret_key(key_file_path, Some(&passphrase))
-                    .map_err(super::Error::KeyInvalid);
+                match russh::keys::load_secret_key(key_file_path, Some(&passphrase)) {
+                    Ok(key) => return Ok(key),
+                    Err(error) => tracing::warn!(
+                        "Stored Keychain passphrase could not decrypt '{}': {error}; prompting for a replacement",
+                        key_file_path.display()
+                    ),
+                }
             }
             Ok(None) => {}
             Err(error @ super::Error::AuthenticationPromptTimeout { .. }) => return Err(error),
@@ -709,6 +713,9 @@ async fn load_policy_private_key(
     .await?;
     let passphrase = Zeroizing::new(passphrase);
 
+    let key = russh::keys::load_secret_key(key_file_path, Some(&passphrase))
+        .map_err(super::Error::KeyInvalid)?;
+
     #[cfg(target_os = "macos")]
     if use_keychain {
         let stored = bounded_auth_prompt("macOS Keychain storage", async {
@@ -725,7 +732,7 @@ async fn load_policy_private_key(
         }
     }
 
-    russh::keys::load_secret_key(key_file_path, Some(&passphrase)).map_err(super::Error::KeyInvalid)
+    Ok(key)
 }
 async fn default_hashes<H: Handler>(
     handle: &mut Handle<H>,
@@ -1804,6 +1811,47 @@ mod policy_execution_tests {
             0,
             "BatchMode must skip Keychain and passphrase prompts, and a later key must stay lazy"
         );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn use_keychain_decrypts_an_encrypted_policy_key() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let key_path = directory.path().join("encrypted-key");
+        let expected =
+            russh::keys::PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap();
+        let encrypted = expected
+            .clone()
+            .encrypt(&mut rand::rng(), "keychain-test-passphrase")
+            .unwrap();
+        std::fs::write(
+            &key_path,
+            encrypted.to_openssh(LineEnding::LF).unwrap().as_bytes(),
+        )
+        .unwrap();
+
+        if let Err(error) =
+            crate::ssh::keychain_macos::store_passphrase(&key_path, "keychain-test-passphrase")
+                .await
+        {
+            let message = format!("{error:#}");
+            if message.contains("authorization was canceled")
+                || message.contains("Keychain access is denied")
+                || message.contains("Keychain is locked")
+            {
+                eprintln!("skipping Keychain-backed test: {message}");
+                return;
+            }
+            panic!("failed to prepare Keychain-backed test: {message}");
+        }
+
+        let loaded = load_policy_private_key(&key_path, None, true, true).await;
+        let cleanup = crate::ssh::keychain_macos::delete_passphrase(&key_path).await;
+        let loaded = loaded.expect("UseKeychain should decrypt the configured key");
+        cleanup.expect("test Keychain entry should be deleted");
+
+        assert_eq!(loaded.public_key(), expected.public_key());
     }
 
     #[tokio::test(start_paused = true)]
