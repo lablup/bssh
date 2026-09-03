@@ -64,6 +64,27 @@ fn dump_exits_without_proxy_agent_prompt_or_connection_side_effects() {
     assert!(stdout.contains("identityagent /missing/agent.sock\n"));
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn use_keychain_is_reported_as_runtime_supported() {
+    let directory = tempdir().expect("temporary directory should be created");
+    let config = directory.path().join("config");
+    fs::write(&config, "Host target\n  UseKeychain yes\n").expect("config should be written");
+
+    let output = run(&["-G", "-F", path(&config), "target"]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        output.stderr.is_empty(),
+        "runtime-supported UseKeychain emitted a diagnostic: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(String::from_utf8_lossy(&output.stdout).contains("usekeychain yes\n"));
+}
+
 #[test]
 fn match_and_include_restore_parent_scope_for_destination() {
     let directory = tempdir().expect("temporary directory should be created");

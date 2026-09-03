@@ -1383,6 +1383,7 @@ Host example.com
     let hosts = parse(content).unwrap();
     assert_eq!(hosts.len(), 1);
     assert_eq!(hosts[0].use_keychain, Some(true));
+    assert!(!hosts[0].unimplemented_options.contains_key("usekeychain"));
 }
 
 #[test]
