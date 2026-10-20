@@ -184,7 +184,7 @@ struct DirEntryInfo {
 const MAX_HANDLES: usize = 1000;
 
 /// Maximum read buffer size per request.  Matches the SFTP standard
-/// `MAX_READ_LENGTH` (255 KiB) used by `bssh-russh-sftp` and OpenSSH
+/// `MAX_READ_LENGTH` (255 KiB) used by `russh-sftp` and OpenSSH
 /// `sftp-server`.  The previous 64 KiB cap silently truncated client `READ`
 /// requests for 256 KiB chunks down to 64 KiB, multiplying request count 4×
 /// for the same byte stream and dragging down sustained download throughput.
@@ -199,7 +199,7 @@ const LIMITS_EXTENSION_VERSION: &str = "1";
 /// Maximum write payload size advertised to clients via `limits@openssh.com`.
 ///
 /// The server's packet reader still enforces the true frame ceiling from
-/// `russh_sftp::server::Config::max_client_packet_len`; advertising the same
+/// `sftp_loop::Config::max_client_packet_len`; advertising the same
 /// 255 KiB payload ceiling used for reads leaves room for SFTP write packet
 /// overhead and keeps pipelined uploads below that frame ceiling.
 const MAX_ADVERTISED_WRITE_SIZE: u32 = MAX_READ_SIZE;
@@ -429,7 +429,7 @@ impl SftpHandler {
 
     /// Build the limits advertised through OpenSSH's `limits@openssh.com`.
     fn limits_extension() -> LimitsExtension {
-        let server_config = russh_sftp::server::Config::default();
+        let server_config = super::sftp_loop::Config::default();
         let max_write_len =
             (MAX_ADVERTISED_WRITE_SIZE as usize).min(server_config.max_write_coalesce_len);
 

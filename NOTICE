@@ -10,27 +10,25 @@ bssh is part of the Backend.AI project family developed by Lablup Inc.
 (https://www.lablup.com).
 
 ================================================================================
-Bundled third-party source
+Adapted third-party source
 ================================================================================
 
-This product vendors modified source code from the project below. It lives
-under crates/ as a thin fork that tracks an upstream release verbatim and adds
-the bssh-specific patches noted here. The upstream project is licensed under
-the Apache License, Version 2.0.
+Parts of bssh are adapted from the project below, which is licensed under the
+Apache License, Version 2.0.
 
 --------------------------------------------------------------------------------
-russh-sftp  (vendored as crates/bssh-russh-sftp, Cargo package "bssh-russh-sftp")
+russh-sftp
 --------------------------------------------------------------------------------
 
-Upstream : https://github.com/AspectUnk/russh-sftp  (tracking release 2.3.0)
+Upstream : https://github.com/AspectUnk/russh-sftp
 License  : Apache-2.0
 
     Copyright the russh-sftp authors and contributors (AspectUnk)
 
-The vendored copy is unmodified upstream source plus pipelined SFTP file I/O
-helpers (write_all_pipelined / read_to_writer_pipelined) that keep multiple
-requests in flight to hide per-request round-trip latency
-(patches/pipelined-file-io.patch).
+src/server/sftp_loop.rs adapts russh-sftp's server request dispatch and adds
+request read-ahead and sequential write coalescing. src/ssh/tokio_client/
+sftp_client.rs implements pipelined file transfers on russh-sftp's public
+RawSftpSession API. bssh otherwise depends on the unmodified russh-sftp crate.
 
 ================================================================================
 Linked third-party crates

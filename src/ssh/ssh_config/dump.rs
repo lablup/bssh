@@ -627,7 +627,7 @@ fn host_key_names(config: &SshHostConfig) -> String {
     config
         .resolved_host_key_algorithms
         .as_deref()
-        .unwrap_or(russh::Preferred::DEFAULT.key.as_ref())
+        .unwrap_or(crate::ssh::tokio_client::algorithms::default_host_key_algorithms())
         .iter()
         .map(ToString::to_string)
         .collect::<Vec<_>>()
