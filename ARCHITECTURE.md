@@ -605,7 +605,7 @@ SSH server implementation using the russh library for accepting incoming connect
   - Handle limit enforcement to prevent resource exhaustion
   - Read size capping to prevent memory exhaustion
   - Pipelined downloads tolerate legal short `READ` replies by re-requesting the missing byte range before ordered reassembly, and clamp advertised transfer ceilings to the negotiated packet payload budget
-  - Sessions run on bssh's own request loop (`src/server/sftp_loop.rs`) instead of `russh_sftp::server::run`: a byte-bounded read-ahead queue (8 MiB) keeps the transport draining while the handler waits on file I/O, and consecutive sequential `SSH_FXP_WRITE`s to one handle are merged into a single handler call of up to 256 KiB, with one status reply per request id
+  - Sessions run on bssh's own request loop (`src/server/sftp_loop.rs`) instead of `russh_sftp::server::run`: a read-ahead queue keeps the transport draining while the handler waits on file I/O and pauses at 8 MiB, throttling clients through the SSH channel window like OpenSSH's `sftp-server`; it keeps reading only while a response write is blocked (avoiding the #227 deadlock), and a client that fills 64 MiB that way without reading its replies is disconnected, and consecutive sequential `SSH_FXP_WRITE`s to one handle are merged into a single handler call of up to 256 KiB, with one status reply per request id
 
 - **ScpHandler**: SCP protocol handler (`src/server/scp.rs`)
   - Implements SCP server protocol for file transfers via the `scp` command
