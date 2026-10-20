@@ -19,11 +19,12 @@
 //! - Recursive directory upload/download
 //! - Support for glob patterns
 
-use russh_sftp::{client::SftpSession, protocol::OpenFlags};
+use russh_sftp::protocol::OpenFlags;
 use std::path::Path;
 use tokio::io::AsyncWriteExt;
 
 use super::connection::Client;
+use super::sftp_client::SftpClient;
 
 /// Maximum number of concurrent SFTP `WRITE`/`READ` requests held in flight per
 /// transfer.  Mirrors OpenSSH `sftp(1)`'s default (`-R 64`) — large enough to
@@ -50,7 +51,7 @@ impl Client {
             // start sftp session
             let channel = self.get_channel().await?;
             channel.request_subsystem(true, "sftp").await?;
-            let sftp = SftpSession::new(channel.into_stream()).await?;
+            let sftp = SftpClient::new(channel.into_stream()).await?;
 
             // Stream local file with multiple SFTP WRITE requests in flight to
             // hide per-request RTT and avoid loading the entire file in memory.
@@ -58,16 +59,13 @@ impl Client {
                 .await
                 .map_err(super::Error::IoError)?;
 
-            let mut file = sftp
-                .open_with_flags(
-                    dest_file_path,
-                    OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE | OpenFlags::READ,
-                )
-                .await?;
-            file.write_all_pipelined(&mut local_file, MAX_INFLIGHT_REQUESTS)
-                .await?;
-            file.flush().await.map_err(super::Error::IoError)?;
-            file.shutdown().await.map_err(super::Error::IoError)?;
+            sftp.upload_from(
+                &mut local_file,
+                dest_file_path,
+                OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE | OpenFlags::READ,
+                MAX_INFLIGHT_REQUESTS,
+            )
+            .await?;
 
             Ok(())
         }
@@ -92,7 +90,7 @@ impl Client {
             // start sftp session
             let channel = self.get_channel().await?;
             channel.request_subsystem(true, "sftp").await?;
-            let sftp = SftpSession::new(channel.into_stream()).await?;
+            let sftp = SftpClient::new(channel.into_stream()).await?;
 
             // Stream remote file with multiple SFTP READ requests in flight; chunks
             // are reassembled in offset order before being written to disk.
@@ -106,10 +104,7 @@ impl Client {
             remote_file
                 .read_to_writer_pipelined(&mut local_file, MAX_INFLIGHT_REQUESTS)
                 .await?;
-            remote_file
-                .shutdown()
-                .await
-                .map_err(super::Error::IoError)?;
+            remote_file.close().await?;
             local_file.flush().await.map_err(super::Error::IoError)?;
 
             Ok(())
@@ -144,7 +139,7 @@ impl Client {
             // Start SFTP session
             let channel = self.get_channel().await?;
             channel.request_subsystem(true, "sftp").await?;
-            let sftp = SftpSession::new(channel.into_stream()).await?;
+            let sftp = SftpClient::new(channel.into_stream()).await?;
 
             // Create remote directory if it doesn't exist
             let _ = sftp.create_dir(&remote_dir).await; // Ignore error if already exists
@@ -164,7 +159,7 @@ impl Client {
     #[allow(clippy::only_used_in_recursion)]
     fn upload_dir_recursive<'a>(
         &'a self,
-        sftp: &'a SftpSession,
+        sftp: &'a SftpClient,
         local_dir: &'a Path,
         remote_dir: &'a str,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), super::Error>> + Send + 'a>>
@@ -194,21 +189,13 @@ impl Client {
                         .await
                         .map_err(super::Error::IoError)?;
 
-                    let mut remote_file = sftp
-                        .open_with_flags(
-                            &remote_path,
-                            OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE,
-                        )
-                        .await?;
-
-                    remote_file
-                        .write_all_pipelined(&mut local_file, MAX_INFLIGHT_REQUESTS)
-                        .await?;
-                    remote_file.flush().await.map_err(super::Error::IoError)?;
-                    remote_file
-                        .shutdown()
-                        .await
-                        .map_err(super::Error::IoError)?;
+                    sftp.upload_from(
+                        &mut local_file,
+                        &remote_path,
+                        OpenFlags::CREATE | OpenFlags::TRUNCATE | OpenFlags::WRITE,
+                        MAX_INFLIGHT_REQUESTS,
+                    )
+                    .await?;
                 }
             }
 
@@ -233,7 +220,7 @@ impl Client {
             // Start SFTP session
             let channel = self.get_channel().await?;
             channel.request_subsystem(true, "sftp").await?;
-            let sftp = SftpSession::new(channel.into_stream()).await?;
+            let sftp = SftpClient::new(channel.into_stream()).await?;
 
             // Create local directory if it doesn't exist
             tokio::fs::create_dir_all(local_dir)
@@ -255,7 +242,7 @@ impl Client {
     #[allow(clippy::only_used_in_recursion)]
     fn download_dir_recursive<'a>(
         &'a self,
-        sftp: &'a SftpSession,
+        sftp: &'a SftpClient,
         remote_dir: &'a str,
         local_dir: &'a Path,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), super::Error>> + Send + 'a>>
@@ -265,13 +252,8 @@ impl Client {
             let entries = sftp.read_dir(remote_dir).await?;
 
             for entry in entries {
-                let name = entry.file_name();
-                let metadata = entry.metadata();
-
-                // Skip . and .. (already handled by iterator)
-                if name == "." || name == ".." {
-                    continue;
-                }
+                let name = entry.name;
+                let metadata = entry.attrs;
 
                 let remote_path = format!("{remote_dir}/{name}");
                 let local_path = local_dir.join(&name);
@@ -295,10 +277,7 @@ impl Client {
                     remote_file
                         .read_to_writer_pipelined(&mut local_file, MAX_INFLIGHT_REQUESTS)
                         .await?;
-                    remote_file
-                        .shutdown()
-                        .await
-                        .map_err(super::Error::IoError)?;
+                    remote_file.close().await?;
                     local_file.flush().await.map_err(super::Error::IoError)?;
                 }
             }

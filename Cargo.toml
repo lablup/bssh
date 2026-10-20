@@ -2,7 +2,6 @@
 resolver = "3"
 members = [
     ".",
-    "crates/bssh-russh-sftp",
 ]
 
 [package]
@@ -34,11 +33,10 @@ tokio = { version = "1.52.3", features = ["full"] }
 # src/ssh/tokio_client/connection.rs refuses certificates because bssh
 # verifies no CA signatures.
 russh = "0.64.1"
-# Use our internal russh-sftp fork tracking upstream 3.0.1
-# (adds pipelined File I/O helpers and the server read-ahead / write-coalescing
-# loop; the serde_bytes perf fix and read pipelining in `File`'s AsyncRead
-# impl are upstream)
-russh-sftp = { package = "bssh-russh-sftp", version = "3.0.1", path = "crates/bssh-russh-sftp" }
+# Upstream russh-sftp. bssh's pipelined client transfers live in
+# src/ssh/tokio_client/sftp_client.rs and its read-ahead / write-coalescing
+# server loop in src/server/sftp_loop.rs, both on russh-sftp's public API.
+russh-sftp = "3.0.1"
 clap = { version = "4.6.1", features = ["derive", "env"] }
 anyhow = "1.0.102"
 thiserror = "2.0.18"

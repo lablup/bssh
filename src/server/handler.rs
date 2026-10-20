@@ -1351,7 +1351,7 @@ impl russh::server::Handler for SshHandler {
                 );
 
                 // Run SFTP server on the channel stream
-                russh_sftp::server::run(channel.into_stream(), sftp_handler).await;
+                super::sftp_loop::run(channel.into_stream(), sftp_handler).await;
 
                 tracing::info!(
                     user = %username,
