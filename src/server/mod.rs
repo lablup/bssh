@@ -203,6 +203,13 @@ impl BsshServer {
         // opt back in via the `compression` config option once the upstream
         // russh bug is fixed. See https://github.com/lablup/bssh/issues/215
         // and https://github.com/lablup/bssh/issues/220.
+        // Like the client, never offer SHA-1 `ssh-rsa` host-key signatures.
+        let base_preferred = russh::Preferred {
+            key: std::borrow::Cow::Borrowed(
+                crate::ssh::tokio_client::algorithms::default_host_key_algorithms(),
+            ),
+            ..russh::Preferred::DEFAULT
+        };
         let preferred = if self.config.compression {
             tracing::warn!(
                 "SSH transport compression enabled; russh's delayed-zlib \
@@ -210,12 +217,12 @@ impl BsshServer {
                  compression mid-session; enable it only after testing every \
                  deployed client"
             );
-            russh::Preferred::DEFAULT
+            base_preferred
         } else {
             const NO_COMPRESSION: &[russh::compression::Name] = &[russh::compression::NONE];
             russh::Preferred {
                 compression: std::borrow::Cow::Borrowed(NO_COMPRESSION),
-                ..russh::Preferred::DEFAULT
+                ..base_preferred
             }
         };
 
@@ -577,6 +584,28 @@ mod tests {
                 .contains(&russh::compression::ZLIB_LEGACY),
             "opt-in advertisement must include zlib@openssh.com"
         );
+    }
+
+    #[test]
+    fn test_build_russh_config_never_offers_sha1_rsa_host_signatures() {
+        let key = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/test_keys/ssh_host_ed25519_key"
+        );
+        for compression in [false, true] {
+            let config = ServerConfig::builder()
+                .host_key(key)
+                .compression(compression)
+                .build();
+            let russh_config = BsshServer::new(config)
+                .build_russh_config()
+                .expect("config should build with a valid host key");
+            let keys = russh_config.preferred.key.as_ref();
+            assert!(!keys.contains(&ssh_key::Algorithm::Rsa { hash: None }));
+            assert!(keys.contains(&ssh_key::Algorithm::Rsa {
+                hash: Some(ssh_key::HashAlg::Sha512)
+            }));
+        }
     }
 
     #[test]

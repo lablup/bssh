@@ -920,6 +920,7 @@ impl SshConnectionConfig {
         };
         let preferred = russh::Preferred {
             compression: std::borrow::Cow::Borrowed(compression_order),
+            key: Cow::Borrowed(super::algorithms::default_host_key_algorithms()),
             ..russh::Preferred::DEFAULT
         };
         let preferred = russh::Preferred {
@@ -1407,11 +1408,87 @@ impl Drop for AgentForwardingLease {
     }
 }
 
+/// A verified UpdateHostKeys announcement waiting for the server's proof.
+struct PendingHostkeyProof {
+    hostname: String,
+    keys: Vec<russh::keys::PublicKey>,
+    known_hosts_paths: Vec<String>,
+    identities: Vec<(String, u16)>,
+    current_key: russh::keys::PublicKey,
+    hash_known_hosts: bool,
+    proof_in_flight: Arc<AtomicBool>,
+}
+
+impl PendingHostkeyProof {
+    /// Ask the server to prove the announced keys and rewrite known_hosts.
+    ///
+    /// russh verifies every signature against the session ID before
+    /// `hostkeys_prove` succeeds. This must run outside the session task:
+    /// awaiting the proof from a handler callback would deadlock.
+    async fn run(self, handle: &Handle<ClientHandler>) {
+        let result = match tokio::time::timeout(
+            Duration::from_secs(5),
+            handle.hostkeys_prove(self.keys.clone()),
+        )
+        .await
+        {
+            Ok(proof) => {
+                let identities = self
+                    .identities
+                    .iter()
+                    .map(|(hostname, port)| (hostname.as_str(), *port))
+                    .collect::<Vec<_>>();
+                super::hostkey_rotation::apply_hostkeys_proof(
+                    &self.known_hosts_paths,
+                    &identities,
+                    &self.current_key,
+                    &self.keys,
+                    proof,
+                    self.hash_known_hosts,
+                )
+                .await
+            }
+            Err(_) => Err("host-key proof request timed out after 5 seconds".to_string()),
+        };
+        if let Err(error) = result {
+            tracing::warn!(
+                "Ignoring unsafe or unproven host-key announcement for '{}': {}",
+                self.hostname,
+                error
+            );
+        }
+        self.proof_in_flight.store(false, Ordering::Release);
+    }
+}
+
+/// Connects host-key announcements seen by the handler to the session handle
+/// that can request their proof.
+///
+/// OpenSSH announces host keys right after authentication, usually before the
+/// [`Client`] that owns the handle exists. An announcement made before
+/// [`HostkeyRotationTasks::attach`] waits in `pending`; later ones start
+/// their proof immediately.
+#[derive(Default)]
+struct HostkeyProofSlot {
+    handle: Option<std::sync::Weak<Handle<ClientHandler>>>,
+    pending: Option<PendingHostkeyProof>,
+}
+
+impl std::fmt::Debug for HostkeyProofSlot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HostkeyProofSlot")
+            .field("attached", &self.handle.is_some())
+            .field("pending", &self.pending.is_some())
+            .finish()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct HostkeyRotationTasks {
     enabled: bool,
     tasks: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
     protocol_barrier_complete: Arc<tokio::sync::Mutex<bool>>,
+    proof_slot: Arc<Mutex<HostkeyProofSlot>>,
 }
 
 impl HostkeyRotationTasks {
@@ -1420,6 +1497,7 @@ impl HostkeyRotationTasks {
             enabled,
             tasks: Arc::new(Mutex::new(Vec::new())),
             protocol_barrier_complete: Arc::new(tokio::sync::Mutex::new(false)),
+            proof_slot: Arc::new(Mutex::new(HostkeyProofSlot::default())),
         }
     }
 
@@ -1428,6 +1506,44 @@ impl HostkeyRotationTasks {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .push(task);
+    }
+
+    fn spawn_proof(&self, job: PendingHostkeyProof, handle: Arc<Handle<ClientHandler>>) {
+        self.track(tokio::spawn(async move { job.run(&handle).await }));
+    }
+
+    /// Start the proof now if the session handle is attached, or keep it until
+    /// [`Self::attach`] supplies one.
+    fn submit(&self, job: PendingHostkeyProof) {
+        let mut slot = self
+            .proof_slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match slot.handle.as_ref().and_then(std::sync::Weak::upgrade) {
+            Some(handle) => {
+                drop(slot);
+                self.spawn_proof(job, handle);
+            }
+            None => slot.pending = Some(job),
+        }
+    }
+
+    /// Register the session handle and start any proof announced before it.
+    fn attach(&self, handle: &Arc<Handle<ClientHandler>>) {
+        if !self.enabled {
+            return;
+        }
+        let pending = {
+            let mut slot = self
+                .proof_slot
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            slot.handle = Some(Arc::downgrade(handle));
+            slot.pending.take()
+        };
+        if let Some(job) = pending {
+            self.spawn_proof(job, Arc::clone(handle));
+        }
     }
 
     async fn synchronize_protocol(&self, handle: &Handle<ClientHandler>) {
@@ -1975,6 +2091,7 @@ impl Client {
 
     /// Wait for any verified UpdateHostKeys rewrite already announced by the server.
     pub async fn flush_hostkey_updates(&self) {
+        self.hostkey_rotation.attach(&self.connection_handle);
         self.hostkey_rotation
             .synchronize_protocol(&self.connection_handle)
             .await;
@@ -2314,7 +2431,7 @@ impl KnownHostRuntimePolicy {
             host_key_algorithms: config
                 .host_key_preferences
                 .clone()
-                .unwrap_or_else(|| russh::Preferred::DEFAULT.key.as_ref().to_vec()),
+                .unwrap_or_else(|| super::algorithms::default_host_key_algorithms().to_vec()),
         }
     }
 }
@@ -2360,7 +2477,6 @@ pub struct ClientHandler {
     server_check: ServerCheckMethod,
     policy: KnownHostRuntimePolicy,
     verified_server_key: Arc<Mutex<Option<russh::keys::PublicKey>>>,
-    verified_server_algorithm: Arc<Mutex<Option<ssh_key::Algorithm>>>,
     rotation_allowed: Arc<AtomicBool>,
     proof_in_flight: Arc<AtomicBool>,
     hostkey_rotation: HostkeyRotationTasks,
@@ -2395,7 +2511,6 @@ impl ClientHandler {
             server_check,
             policy,
             verified_server_key: Arc::new(Mutex::new(None)),
-            verified_server_algorithm: Arc::new(Mutex::new(None)),
             rotation_allowed: Arc::new(AtomicBool::new(false)),
             proof_in_flight: Arc::new(AtomicBool::new(false)),
             hostkey_rotation,
@@ -2939,8 +3054,48 @@ where
     }
 }
 
+fn compression_name(compression: &russh::compression::Compression) -> &'static str {
+    match compression {
+        russh::compression::Compression::None => "none",
+        russh::compression::Compression::Zlib => "zlib",
+        russh::compression::Compression::ZlibOpenSSH => "zlib@openssh.com",
+    }
+}
+
+/// OpenSSH-style `-vv` lines describing one completed key exchange.
+fn kex_diagnostic_lines(names: &russh::Names) -> [String; 4] {
+    [
+        format!("kex: algorithm: {}", names.kex.as_ref()),
+        format!("kex: host key algorithm: {}", names.key.as_str()),
+        format!(
+            "kex: client->server cipher: {} MAC: {} compression: {}",
+            names.cipher.as_ref(),
+            names.client_mac.as_ref(),
+            compression_name(&names.client_compression),
+        ),
+        format!(
+            "kex: server->client cipher: {} MAC: {} compression: {}",
+            names.cipher.as_ref(),
+            names.server_mac.as_ref(),
+            compression_name(&names.server_compression),
+        ),
+    ]
+}
+
 impl Handler for ClientHandler {
     type Error = super::Error;
+
+    fn kex_done(
+        &mut self,
+        _shared_secret: Option<&[u8]>,
+        names: &russh::Names,
+        _session: &mut russh::client::Session,
+    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
+        for line in kex_diagnostic_lines(names) {
+            tracing::debug!("{line}");
+        }
+        std::future::ready(Ok(()))
+    }
 
     fn auth_banner(
         &mut self,
@@ -3087,17 +3242,7 @@ impl Handler for ClientHandler {
         // an unverified certificate's embedded key against ordinary
         // known_hosts entries.
         let server_public_key = match server_key {
-            russh::keys::PublicKeyOrCertificate::PublicKey { key, hash_alg } => {
-                let algorithm = match key.algorithm() {
-                    ssh_key::Algorithm::Rsa { .. } => ssh_key::Algorithm::Rsa { hash: *hash_alg },
-                    algorithm => algorithm,
-                };
-                *self
-                    .verified_server_algorithm
-                    .lock()
-                    .map_err(|_| super::Error::ServerCheckFailed)? = Some(algorithm);
-                key
-            }
+            russh::keys::PublicKeyOrCertificate::PublicKey { key, .. } => key,
             russh::keys::PublicKeyOrCertificate::Certificate(cert) => {
                 if matches!(method, ServerCheckMethod::NoCheck) {
                     return Ok(true);
@@ -3248,7 +3393,7 @@ impl Handler for ClientHandler {
     fn openssh_ext_host_keys_announced(
         &mut self,
         keys: Vec<russh::keys::PublicKey>,
-        session: &mut russh::client::Session,
+        _session: &mut russh::client::Session,
     ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
         match self.policy.update_host_keys {
             UpdateHostKeysPolicy::No => return std::future::ready(Ok(())),
@@ -3274,12 +3419,8 @@ impl Handler for ClientHandler {
         if !self.rotation_allowed.load(Ordering::Acquire) || keys.is_empty() {
             return std::future::ready(Ok(()));
         }
-        if keys.len() > super::hostkey_rotation::MAX_ANNOUNCED_KEYS {
-            tracing::warn!(
-                "Ignoring {} announced host keys because the proof request is limited to {} keys",
-                keys.len(),
-                super::hostkey_rotation::MAX_ANNOUNCED_KEYS
-            );
+        if let Err(error) = super::hostkey_rotation::validate_announced_keys(&keys) {
+            tracing::warn!("Ignoring host-key announcement: {error}");
             return std::future::ready(Ok(()));
         }
         if self
@@ -3326,59 +3467,20 @@ impl Handler for ClientHandler {
                 return std::future::ready(Err(super::Error::ServerCheckFailed));
             }
         };
-        let negotiated_algorithm = match self.verified_server_algorithm.lock() {
-            Ok(guard) => guard.clone(),
-            Err(_) => {
-                self.proof_in_flight.store(false, Ordering::Release);
-                return std::future::ready(Err(super::Error::ServerCheckFailed));
-            }
-        };
         let Some(current_key) = current_key else {
             self.proof_in_flight.store(false, Ordering::Release);
             return std::future::ready(Ok(()));
         };
 
-        let (sender, receiver) = tokio::sync::oneshot::channel();
-        if let Err(error) = session.request_hostkeys_prove(sender, &keys) {
-            self.proof_in_flight.store(false, Ordering::Release);
-            tracing::warn!("Could not request announced host-key proof: {error}");
-            return std::future::ready(Ok(()));
-        }
-
-        let hash_known_hosts = self.policy.hash_known_hosts;
-        let proof_in_flight = Arc::clone(&self.proof_in_flight);
-        let task = tokio::spawn(async move {
-            let result = match tokio::time::timeout(Duration::from_secs(5), receiver).await {
-                Ok(Ok(Some(proof))) => {
-                    let identity_refs = identities
-                        .iter()
-                        .map(|(hostname, port)| (hostname.as_str(), *port))
-                        .collect::<Vec<_>>();
-                    super::hostkey_rotation::apply_hostkeys_proof(
-                        &paths,
-                        &identity_refs,
-                        &current_key,
-                        &keys,
-                        &proof,
-                        negotiated_algorithm.as_ref(),
-                        hash_known_hosts,
-                    )
-                    .await
-                }
-                Ok(Ok(None)) => Err("server rejected or malformed the host-key proof".to_string()),
-                Ok(Err(_)) => Err("host-key proof channel closed without a reply".to_string()),
-                Err(_) => Err("host-key proof request timed out after 5 seconds".to_string()),
-            };
-            if let Err(error) = result {
-                tracing::warn!(
-                    "Ignoring unsafe or unproven host-key announcement for '{}': {}",
-                    hostname,
-                    error
-                );
-            }
-            proof_in_flight.store(false, Ordering::Release);
+        self.hostkey_rotation.submit(PendingHostkeyProof {
+            hostname,
+            keys,
+            known_hosts_paths: paths,
+            identities,
+            current_key,
+            hash_known_hosts: self.policy.hash_known_hosts,
+            proof_in_flight: Arc::clone(&self.proof_in_flight),
         });
-        self.hostkey_rotation.track(task);
         std::future::ready(Ok(()))
     }
 }
