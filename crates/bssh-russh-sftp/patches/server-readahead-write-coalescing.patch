@@ -168,8 +168,7 @@
 +    // Holds a packet dequeued by the coalescer that did not merge into the
 +    // current write; it must be processed next to preserve ordering.
 +    let mut pending: Option<Queued> = None;
- 
--    Ok(())
++
 +    'session: loop {
 +        let queued = match pending.take() {
 +            Some(queued) => queued,
@@ -197,7 +196,8 @@
 +                Err(mpsc::error::TryRecvError::Disconnected) => break 'session,
 +            },
 +        };
-+
+ 
+-    Ok(())
 +        match queued {
 +            Queued::ReadError(Error::UnexpectedEof) => break 'session,
 +            Queued::ReadError(err @ Error::UnexpectedBehavior(_)) => {

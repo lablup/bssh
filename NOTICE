@@ -22,15 +22,18 @@ the Apache License, Version 2.0.
 russh-sftp  (vendored as crates/bssh-russh-sftp, Cargo package "bssh-russh-sftp")
 --------------------------------------------------------------------------------
 
-Upstream : https://github.com/AspectUnk/russh-sftp  (tracking release 2.3.0)
+Upstream : https://github.com/AspectUnk/russh-sftp  (tracking release 3.0.1)
 License  : Apache-2.0
 
     Copyright the russh-sftp authors and contributors (AspectUnk)
 
-The vendored copy is unmodified upstream source plus pipelined SFTP file I/O
-helpers (write_all_pipelined / read_to_writer_pipelined) that keep multiple
-requests in flight to hide per-request round-trip latency
-(patches/pipelined-file-io.patch).
+The vendored copy is unmodified upstream source plus the bssh patches under
+crates/bssh-russh-sftp/patches/: pipelined SFTP file I/O helpers
+(write_all_pipelined / read_to_writer_pipelined) that keep multiple requests
+in flight to hide per-request round-trip latency (pipelined-file-io.patch), a
+server request read-ahead loop with sequential write coalescing
+(server-readahead-write-coalescing.patch), and limits@openssh.com reply
+encoding (limits-extension-into-bytes.patch).
 
 ================================================================================
 Linked third-party crates

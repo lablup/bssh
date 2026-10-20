@@ -15,8 +15,11 @@ use tokio::io::AsyncWriteExt;
 const BSSH_MAX_READ_LEN: u64 = 261_120;
 const BSSH_MAX_HANDLES: u64 = 1_000;
 const MAX_INFLIGHT: usize = 64;
-const READ_OVERHEAD_LEN: u32 = 9;
-const WRITE_OVERHEAD_LEN: u32 = 21;
+// Mirror russh-sftp's client framing overhead, which counts the 4-byte packet
+// length: packet_len + type + id + data_len for reads, plus handle_len and
+// offset for writes (the handle bytes themselves are added per call).
+const READ_OVERHEAD_LEN: u32 = 13;
+const WRITE_OVERHEAD_LEN: u32 = 25;
 const SMALL_CLIENT_PACKET_LEN: u32 = 1_024;
 
 async fn sftp_session_with_handler<H>(handler: H) -> SftpSession

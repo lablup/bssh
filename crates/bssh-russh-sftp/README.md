@@ -1,6 +1,6 @@
 # bssh-russh-sftp
 
-**Temporary fork of [russh-sftp](https://crates.io/crates/russh-sftp) (tracking upstream `2.4.0`) adding pipelined SFTP file I/O and a read-ahead server loop.**
+**Temporary fork of [russh-sftp](https://crates.io/crates/russh-sftp) (tracking upstream `3.0.1`) adding pipelined SFTP file I/O and a read-ahead server loop.**
 
 This crate exists so bssh can ship faster bulk SFTP transfers independently, while keeping the public crate name usable through Cargo's `package = "bssh-russh-sftp"` dependency alias.
 
@@ -13,6 +13,8 @@ Two helpers on `client::fs::File` keep many SFTP requests in flight at once, hid
 - `File::write_all_pipelined(reader, max_inflight)` streams a reader to the remote file with up to `max_inflight` concurrent `SSH_FXP_WRITE`s.
 - `File::read_to_writer_pipelined(writer, max_inflight)` streams the remote file to a writer with up to `max_inflight` concurrent `SSH_FXP_READ`s, reassembling chunks in offset order so the output matches a sequential read.
 
+Both size each request from the server's `limits@openssh.com` read/write lengths, clamped to the packet ceiling. Upstream 3.0 also pipelines reads inside `File`'s `AsyncRead` impl (`Config::max_concurrent_reads`, default 16); these helpers remain because they take a caller-chosen depth (bssh uses 64) and full-size write chunks instead of upstream's 32 KiB `max_write_packet_len` default.
+
 Re-applied on sync from `patches/pipelined-file-io.patch`.
 
 ### Server: request read-ahead and write coalescing (`src/server/mod.rs`)
@@ -21,20 +23,26 @@ The serial request loop is replaced by a byte-bounded intake queue plus a proces
 
 Re-applied on sync from `patches/server-readahead-write-coalescing.patch`.
 
+### Server: `limits@openssh.com` replies (`src/extensions.rs`)
+
+`LimitsExtension` gains the `TryInto<Bytes>` impl that the other extension replies already have, so the bssh server can answer `limits@openssh.com` and advertise its read and write lengths.
+
+Re-applied on sync from `patches/limits-extension-into-bytes.patch`.
+
 > The `serde_bytes` packet-serialization performance fix that originally motivated this fork was upstreamed in russh-sftp 2.1.2; it is kept for reference under `patches/historical/`.
 
 ## Usage
 
 ```toml
 [dependencies]
-russh-sftp = { package = "bssh-russh-sftp", version = "2.4.0" }
+russh-sftp = { package = "bssh-russh-sftp", version = "3.0.1" }
 ```
 
 ## Sync with Upstream
 
 ```bash
 cd crates/bssh-russh-sftp
-./sync-upstream.sh 2.4.0   # omit the version to use upstream's default branch
+./sync-upstream.sh 3.0.1   # omit the version to use upstream's default branch
 ```
 
 `sync-upstream.sh` copies upstream `src` verbatim and re-applies every patch directly under `patches/` (anything under `patches/historical/` is excluded), then verifies each patch is present in the result, builds, and runs the fork tests.
