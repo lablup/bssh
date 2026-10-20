@@ -45,3 +45,10 @@ gloo-timers = { version = "0.4.0", features = ["futures"] }
 
 [features]
 async-trait = ["dep:async-trait"]
+
+# The vendored src/ tracks upstream verbatim and sync-upstream.sh replaces it
+# wholesale, so std deprecations there (e.g. Atomic*::fetch_update, renamed
+# try_update in Rust 1.99) are upstream's to migrate. Keep them from failing
+# `clippy -D warnings` on newer toolchains without editing vendored code.
+[lints.rust]
+deprecated = "allow"

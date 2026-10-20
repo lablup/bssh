@@ -1,5 +1,7 @@
 //! OpenSSH-style algorithm list resolution for the russh transport.
 
+use std::sync::LazyLock;
+
 use glob::Pattern;
 use russh::{cipher, kex, mac};
 use ssh_key::Algorithm;
@@ -218,8 +220,24 @@ fn supported_key_algorithms() -> Vec<Algorithm> {
     supported
 }
 
+/// russh's default host-key order without the SHA-1 `ssh-rsa` signature.
+///
+/// OpenSSH no longer offers `ssh-rsa` by default; bssh matches that for both
+/// its client and server. `HostKeyAlgorithms +ssh-rsa` still opts back in.
+pub(crate) fn default_host_key_algorithms() -> &'static [Algorithm] {
+    static DEFAULTS: LazyLock<Vec<Algorithm>> = LazyLock::new(|| {
+        russh::Preferred::DEFAULT
+            .key
+            .iter()
+            .filter(|algorithm| **algorithm != Algorithm::Rsa { hash: None })
+            .cloned()
+            .collect()
+    });
+    &DEFAULTS
+}
+
 pub(crate) fn resolve_host_keys(values: &[String]) -> Result<Vec<Algorithm>, String> {
-    let defaults = russh::Preferred::DEFAULT.key.as_ref();
+    let defaults = default_host_key_algorithms();
     let supported = supported_key_algorithms();
     resolve_policy(
         "host key algorithm",
@@ -243,10 +261,7 @@ fn public_key_names(algorithms: &[Algorithm]) -> Vec<String> {
 }
 
 pub(crate) fn default_pubkey_algorithms() -> Vec<String> {
-    public_key_names(russh::Preferred::DEFAULT.key.as_ref())
-        .into_iter()
-        .filter(|name| name != "ssh-rsa" && name != "ssh-rsa-cert-v01@openssh.com")
-        .collect()
+    public_key_names(default_host_key_algorithms())
 }
 
 pub(crate) fn resolve_pubkey_algorithms(values: &[String]) -> Result<Vec<String>, String> {
@@ -345,7 +360,7 @@ mod tests {
 
     #[test]
     fn host_key_modifiers_use_defaults_as_the_base_and_all_supported_as_candidates() {
-        let defaults = russh::Preferred::DEFAULT.key.as_ref();
+        let defaults = default_host_key_algorithms();
 
         let appended = resolve_host_keys(&[String::from("+ssh-rsa")]).unwrap();
         assert!(

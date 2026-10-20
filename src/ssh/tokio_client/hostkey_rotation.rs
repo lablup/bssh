@@ -27,123 +27,59 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use hmac::{Hmac, KeyInit, Mac};
 use russh::keys::PublicKey;
 use sha1::Sha1;
-use ssh_key::{Algorithm as SshAlgorithm, HashAlg, Signature};
 
 use super::host_verification::{KNOWN_HOSTS_LOCK, acquire_known_hosts_file_lock, glob_match};
 
-const HOSTKEYS_PROVE_DOMAIN: &[u8] = b"hostkeys-prove-00@openssh.com";
 pub(crate) const MAX_ANNOUNCED_KEYS: usize = 64;
 
-pub(crate) fn verify_hostkeys_proof(
-    keys: &[PublicKey],
-    proof: &russh::client::HostKeysProof,
-    negotiated_host_key_algorithm: Option<&SshAlgorithm>,
-) -> Result<Vec<PublicKey>, String> {
-    if keys.is_empty() {
-        return Ok(Vec::new());
-    }
+/// Reject announcements that are too large to prove or that repeat a key.
+pub(crate) fn validate_announced_keys(keys: &[PublicKey]) -> Result<(), String> {
     if keys.len() > MAX_ANNOUNCED_KEYS {
         return Err(format!(
             "server announced {} host keys, exceeding the {MAX_ANNOUNCED_KEYS}-key limit",
             keys.len()
         ));
     }
-    if proof.signatures.len() != keys.len() {
-        return Err(format!(
-            "server returned {} proofs for {} announced keys",
-            proof.signatures.len(),
-            keys.len()
-        ));
-    }
-
     let mut seen = HashSet::new();
-    let mut verified = Vec::with_capacity(keys.len());
-    for (key, encoded_signature) in keys.iter().zip(&proof.signatures) {
+    for key in keys {
         let key_blob = key
             .to_bytes()
             .map_err(|error| format!("could not encode announced key: {error}"))?;
-        if !seen.insert(key_blob.clone()) {
+        if !seen.insert(key_blob) {
             return Err("server announced a duplicate host key".to_string());
         }
-        let signature = Signature::try_from(encoded_signature.as_slice())
-            .map_err(|error| format!("malformed host-key proof signature: {error}"))?;
-        if let Err(error) =
-            enforce_rsa_proof_algorithm(key, &signature, negotiated_host_key_algorithm)
-        {
-            tracing::debug!("Skipping untrusted announced host key: {error}");
-            continue;
-        }
-        let message = hostkeys_proof_message(&proof.session_id, &key_blob)?;
-        signature::Verifier::verify(key, &message, &signature)
-            .map_err(|_| "host-key proof signature did not verify".to_string())?;
-        verified.push(key.clone());
     }
-    Ok(verified)
+    Ok(())
 }
 
-fn enforce_rsa_proof_algorithm(
-    key: &PublicKey,
-    signature: &Signature,
-    negotiated_host_key_algorithm: Option<&SshAlgorithm>,
-) -> Result<(), String> {
-    if !matches!(key.algorithm(), SshAlgorithm::Rsa { .. }) {
-        return Ok(());
-    }
-
-    let signature_algorithm = signature.algorithm();
-    let allowed = match negotiated_host_key_algorithm {
-        Some(algorithm @ SshAlgorithm::Rsa { .. }) => signature_algorithm == *algorithm,
-        _ => matches!(
-            signature_algorithm,
-            SshAlgorithm::Rsa {
-                hash: Some(HashAlg::Sha256 | HashAlg::Sha512)
-            }
-        ),
-    };
-    if allowed {
-        Ok(())
-    } else {
-        Err(format!(
-            "untrusted RSA host-key proof signature algorithm '{}'",
-            signature_algorithm.as_str()
-        ))
-    }
-}
-
+/// Rewrite known_hosts only when russh verified the server's
+/// `hostkeys-prove-00@openssh.com` reply for every announced key.
 pub(crate) async fn apply_hostkeys_proof(
     known_hosts_paths: &[String],
     identities: &[(&str, u16)],
     current_key: &PublicKey,
     announced_keys: &[PublicKey],
-    proof: &russh::client::HostKeysProof,
-    negotiated_host_key_algorithm: Option<&SshAlgorithm>,
+    proof: Result<(), russh::Error>,
     hash_known_hosts: bool,
 ) -> Result<(), String> {
-    let proven = verify_hostkeys_proof(announced_keys, proof, negotiated_host_key_algorithm)?;
+    match proof {
+        Ok(()) => {}
+        Err(russh::Error::RequestDenied) => {
+            return Err("server refused to prove the announced host keys".to_string());
+        }
+        Err(russh::Error::WrongServerSig) => {
+            return Err("host-key proof signature did not verify".to_string());
+        }
+        Err(error) => return Err(format!("host-key proof failed: {error}")),
+    }
     rotate_proven_host_keys(
         known_hosts_paths,
         identities,
         current_key,
-        &proven,
+        announced_keys,
         hash_known_hosts,
     )
     .await
-}
-
-fn hostkeys_proof_message(session_id: &[u8], key_blob: &[u8]) -> Result<Vec<u8>, String> {
-    let mut message =
-        Vec::with_capacity(HOSTKEYS_PROVE_DOMAIN.len() + session_id.len() + key_blob.len() + 12);
-    encode_ssh_string(&mut message, HOSTKEYS_PROVE_DOMAIN)?;
-    encode_ssh_string(&mut message, session_id)?;
-    encode_ssh_string(&mut message, key_blob)?;
-    Ok(message)
-}
-
-fn encode_ssh_string(output: &mut Vec<u8>, value: &[u8]) -> Result<(), String> {
-    let length = u32::try_from(value.len()).map_err(|_| "SSH string is too large".to_string())?;
-    output.extend_from_slice(&length.to_be_bytes());
-    output.extend_from_slice(value);
-    Ok(())
 }
 
 pub(crate) async fn rotate_proven_host_keys(
@@ -653,57 +589,17 @@ mod tests {
         PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap()
     }
 
-    fn proof_for(keys: &[PrivateKey], session_id: &[u8]) -> russh::client::HostKeysProof {
-        let signatures = keys
-            .iter()
-            .map(|key| {
-                let blob = key.public_key().to_bytes().unwrap();
-                let message = hostkeys_proof_message(session_id, &blob).unwrap();
-                let signature: Signature = signature::Signer::try_sign(key, &message).unwrap();
-                Vec::<u8>::try_from(signature).unwrap()
-            })
-            .collect();
-        russh::client::HostKeysProof {
-            session_id: session_id.to_vec(),
-            signatures,
-        }
-    }
-
     #[test]
-    fn verifies_every_signature_and_rejects_malicious_announcements() {
-        let keys = [private_key(), private_key()];
-        let public = keys
-            .iter()
-            .map(|key| key.public_key().clone())
+    fn announcement_validation_rejects_duplicates_and_oversized_sets() {
+        let first = private_key().public_key().clone();
+        let second = private_key().public_key().clone();
+        assert!(validate_announced_keys(&[first.clone(), second]).is_ok());
+        assert!(validate_announced_keys(&[first.clone(), first]).is_err());
+
+        let oversized = (0..=MAX_ANNOUNCED_KEYS)
+            .map(|_| private_key().public_key().clone())
             .collect::<Vec<_>>();
-        let proof = proof_for(&keys, b"session");
-        assert_eq!(
-            verify_hostkeys_proof(&public, &proof, Some(&SshAlgorithm::Ed25519)).unwrap(),
-            public
-        );
-
-        let mut malicious = proof;
-        malicious.signatures[1][0] ^= 0x80;
-        assert!(verify_hostkeys_proof(&public, &malicious, Some(&SshAlgorithm::Ed25519)).is_err());
-    }
-
-    #[test]
-    fn skips_legacy_rsa_sha1_proof_without_rsa_negotiation() {
-        let rsa = PrivateKey::random(&mut rand::rng(), Algorithm::Rsa { hash: None }).unwrap();
-        let signature = Signature::new(SshAlgorithm::Rsa { hash: None }, vec![0_u8; 256]).unwrap();
-        let proof = russh::client::HostKeysProof {
-            session_id: b"session".to_vec(),
-            signatures: vec![Vec::<u8>::try_from(signature).unwrap()],
-        };
-        assert!(
-            verify_hostkeys_proof(
-                &[rsa.public_key().clone()],
-                &proof,
-                Some(&SshAlgorithm::Ed25519),
-            )
-            .unwrap()
-            .is_empty()
-        );
+        assert!(validate_announced_keys(&oversized).is_err());
     }
 
     #[tokio::test]
@@ -899,27 +795,60 @@ mod tests {
         );
         std::fs::write(&first, &original).unwrap();
         std::fs::write(&second, &original).unwrap();
-        let mut proof = proof_for(std::slice::from_ref(&announced), b"session");
-        proof.signatures[0][0] ^= 0x80;
+        let paths = [
+            first.to_string_lossy().into_owned(),
+            second.to_string_lossy().into_owned(),
+        ];
 
-        assert!(
-            apply_hostkeys_proof(
-                &[
-                    first.to_string_lossy().into_owned(),
-                    second.to_string_lossy().into_owned(),
-                ],
-                &[("node.example", 22)],
-                current.public_key(),
-                std::slice::from_ref(announced.public_key()),
-                &proof,
-                Some(&SshAlgorithm::Ed25519),
-                false,
-            )
-            .await
-            .is_err()
-        );
+        for proof in [
+            Err(russh::Error::WrongServerSig),
+            Err(russh::Error::RequestDenied),
+            Err(russh::Error::Disconnect),
+        ] {
+            assert!(
+                apply_hostkeys_proof(
+                    &paths,
+                    &[("node.example", 22)],
+                    current.public_key(),
+                    std::slice::from_ref(announced.public_key()),
+                    proof,
+                    false,
+                )
+                .await
+                .is_err()
+            );
+        }
         assert_eq!(std::fs::read_to_string(first).unwrap(), original);
         assert_eq!(std::fs::read_to_string(second).unwrap(), original);
+    }
+
+    #[tokio::test]
+    async fn verified_proof_rotates_the_announced_keys() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("known_hosts");
+        let current = private_key().public_key().clone();
+        let announced = private_key().public_key().clone();
+        std::fs::write(
+            &path,
+            format!("node.example {}\n", current.to_openssh().unwrap()),
+        )
+        .unwrap();
+
+        apply_hostkeys_proof(
+            &[path.to_string_lossy().into_owned()],
+            &[("node.example", 22)],
+            &current,
+            std::slice::from_ref(&announced),
+            Ok(()),
+            false,
+        )
+        .await
+        .unwrap();
+
+        let found =
+            russh::keys::known_hosts::known_host_keys_path("node.example", 22, &path).unwrap();
+        assert!(found.iter().any(|(_, key)| key == &current));
+        assert!(found.iter().any(|(_, key)| key == &announced));
     }
 
     #[tokio::test]
