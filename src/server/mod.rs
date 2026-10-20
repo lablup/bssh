@@ -55,6 +55,7 @@ pub mod scp;
 pub mod security;
 pub mod session;
 pub mod sftp;
+pub mod sftp_loop;
 pub mod shell;
 
 use std::net::SocketAddr;

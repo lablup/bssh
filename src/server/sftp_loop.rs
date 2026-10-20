@@ -1,21 +1,34 @@
-mod handler;
-mod reply;
+// Copyright 2025 Lablup Inc. and Jeongkyu Shin
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+//! SFTP server request loop with read-ahead and sequential write coalescing.
+//!
+//! This replaces `russh_sftp::server::run`, whose serial
+//! read -> process -> write -> flush loop leaves the transport idle while the
+//! handler waits on file I/O. It drives any [`russh_sftp::server::Handler`]
+//! using only russh-sftp's public protocol types.
+
+use std::io;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use bytes::Bytes;
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
+use russh_sftp::protocol::{Packet, Status, StatusCode};
+use russh_sftp::server::{Handler, StatusReply};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc;
-
-pub use self::handler::Handler;
-pub use self::reply::StatusReply;
-
-use crate::{
-    error::Error,
-    protocol::{Packet, Status, StatusCode},
-    utils::read_packet,
-};
+use tracing::{debug, warn};
 
 macro_rules! into_wrap {
     ($id:expr, $handler:expr, $var:ident; $($arg:ident),*) => {
@@ -77,6 +90,51 @@ impl Default for Config {
     }
 }
 
+/// Why the intake side stopped producing a frame.
+#[derive(Debug)]
+enum ReadError {
+    /// The client closed the stream.
+    Eof,
+    /// The request backlog exceeded `Config::max_buffered_request_bytes`.
+    BacklogExceeded(usize),
+    /// Any other framing or I/O failure; the session keeps reading.
+    Other(String),
+}
+
+impl std::fmt::Display for ReadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Eof => f.write_str("unexpected EOF on stream"),
+            Self::BacklogExceeded(budget) => {
+                write!(f, "request backlog exceeded {budget} buffered bytes")
+            }
+            Self::Other(message) => f.write_str(message),
+        }
+    }
+}
+
+/// Read one length-prefixed SFTP frame, rejecting frames above `max_length`.
+async fn read_packet<S: AsyncRead + Unpin>(
+    stream: &mut S,
+    max_length: u32,
+) -> Result<Bytes, ReadError> {
+    let io_error = |error: io::Error| match error.kind() {
+        io::ErrorKind::UnexpectedEof => ReadError::Eof,
+        _ => ReadError::Other(format!("I/O: {error}")),
+    };
+    let length = stream.read_u32().await.map_err(io_error)?;
+    if length > max_length {
+        return Err(ReadError::Other(
+            "Bad message: packet length limit exceeded".to_owned(),
+        ));
+    }
+
+    let mut buf = vec![0; length as usize];
+    stream.read_exact(&mut buf).await.map_err(io_error)?;
+
+    Ok(Bytes::from(buf))
+}
+
 async fn process_request<H>(packet: Packet, handler: &mut H) -> Packet
 where
     H: Handler + Send,
@@ -116,10 +174,10 @@ enum Queued {
     /// `BadMessage` (id 0), matching the previous serial-loop behavior.
     Malformed,
     /// The reader failed to obtain a frame (I/O error or EOF).
-    ReadError(Error),
+    ReadError(ReadError),
 }
 
-fn decode(item: Result<Bytes, Error>) -> Queued {
+fn decode(item: Result<Bytes, ReadError>) -> Queued {
     match item {
         Ok(mut bytes) => match Packet::try_from(&mut bytes) {
             Ok(packet) => Queued::Request(packet),
@@ -132,13 +190,12 @@ fn decode(item: Result<Bytes, Error>) -> Queued {
 /// Encode and send one response packet without flushing. Flushing is deferred
 /// to the moment the request queue runs empty so a burst of pipelined
 /// requests is answered with one flush instead of one per request.
-async fn send_response<W>(writer: &mut W, response: Packet) -> Result<(), Error>
+async fn send_response<W>(writer: &mut W, response: Packet) -> io::Result<()>
 where
     W: AsyncWrite + Unpin,
 {
-    let bytes = Bytes::try_from(response)?;
-    writer.write_all(&bytes).await?;
-    Ok(())
+    let bytes = Bytes::try_from(response).map_err(|error| io::Error::other(error.to_string()))?;
+    writer.write_all(&bytes).await
 }
 
 /// Drive one SFTP session over `stream` until EOF.
@@ -172,7 +229,7 @@ where
 {
     let (mut read_half, mut write_half) = tokio::io::split(stream);
 
-    let (tx, mut rx) = mpsc::unbounded_channel::<Result<Bytes, Error>>();
+    let (tx, mut rx) = mpsc::unbounded_channel::<Result<Bytes, ReadError>>();
     let queued_bytes = Arc::new(AtomicUsize::new(0));
     let max_packet_len = cfg.max_client_packet_len;
     let budget = cfg.max_buffered_request_bytes;
@@ -182,15 +239,13 @@ where
             let item = read_packet(&mut read_half, max_packet_len).await;
             // Stop on EOF; keep reading after other errors to preserve the
             // previous loop's behavior (it warned and retried).
-            let stop = matches!(item, Err(Error::UnexpectedEof));
+            let stop = matches!(item, Err(ReadError::Eof));
             let len = item.as_ref().map_or(0, Bytes::len);
             if reader_queued.fetch_add(len, Ordering::Relaxed) + len > budget {
                 // A client this far ahead of the processor is flooding, not
                 // pipelining; terminate instead of stalling intake (which
                 // could deadlock the whole session, see the doc above).
-                let _ = tx.send(Err(Error::UnexpectedBehavior(format!(
-                    "request backlog exceeded {budget} buffered bytes"
-                ))));
+                let _ = tx.send(Err(ReadError::BacklogExceeded(budget)));
                 break;
             }
             if tx.send(item).is_err() || stop {
@@ -200,7 +255,7 @@ where
     });
 
     // Return a dequeued item's framed length to the byte budget.
-    let release = |item: &Result<Bytes, Error>| {
+    let release = |item: &Result<Bytes, ReadError>| {
         if let Ok(bytes) = item {
             queued_bytes.fetch_sub(bytes.len(), Ordering::Relaxed);
         }
@@ -239,8 +294,8 @@ where
         };
 
         match queued {
-            Queued::ReadError(Error::UnexpectedEof) => break 'session,
-            Queued::ReadError(err @ Error::UnexpectedBehavior(_)) => {
+            Queued::ReadError(ReadError::Eof) => break 'session,
+            Queued::ReadError(err @ ReadError::BacklogExceeded(_)) => {
                 // Reader-side budget overflow: the session is being flooded.
                 warn!("sftp: terminating session: {err}");
                 break 'session;
@@ -331,7 +386,7 @@ where
     debug!("sftp stream ended");
 }
 
-/// Run processing stream as SFTP
+/// Serve SFTP on `stream` with the default [`Config`].
 pub async fn run<S, H>(stream: S, handler: H)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -340,7 +395,7 @@ where
     run_with_config(stream, handler, Config::default()).await
 }
 
-/// Run processing stream as SFTP with custom configuration
+/// Serve SFTP on `stream`. The session runs on a spawned task.
 pub async fn run_with_config<S, H>(stream: S, mut handler: H, cfg: Config)
 where
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -361,7 +416,7 @@ mod tests {
     use tokio::io::AsyncReadExt;
 
     use super::*;
-    use crate::protocol::{Handle, OpenFlags, Write};
+    use russh_sftp::protocol::{Handle, OpenFlags, Write};
 
     /// Call log entry for the mock handler's write method.
     #[derive(Debug, Clone, PartialEq)]
@@ -404,7 +459,7 @@ mod tests {
             id: u32,
             filename: String,
             _pflags: OpenFlags,
-            _attrs: crate::protocol::FileAttributes,
+            _attrs: russh_sftp::protocol::FileAttributes,
         ) -> impl std::future::Future<Output = Result<Handle, Self::Error>> + Send {
             let shared = Arc::clone(&self.shared);
             async move {
@@ -471,8 +526,8 @@ mod tests {
             _handle: String,
             _offset: u64,
             len: u32,
-        ) -> Result<crate::protocol::Data, Self::Error> {
-            Ok(crate::protocol::Data {
+        ) -> Result<russh_sftp::protocol::Data, Self::Error> {
+            Ok(russh_sftp::protocol::Data {
                 id,
                 data: vec![0u8; len as usize],
             })
@@ -485,11 +540,11 @@ mod tests {
 
     /// OPEN request used as a queue-priming barrier (see [`MockHandler`]).
     fn open_packet(id: u32, filename: &str) -> Bytes {
-        encode(Packet::Open(crate::protocol::Open {
+        encode(Packet::Open(russh_sftp::protocol::Open {
             id,
             filename: filename.to_string(),
             pflags: OpenFlags::WRITE,
-            attrs: crate::protocol::FileAttributes::default(),
+            attrs: russh_sftp::protocol::FileAttributes::default(),
         }))
     }
 
@@ -503,7 +558,7 @@ mod tests {
     }
 
     fn read_request_packet(id: u32, handle: &str, offset: u64, len: u32) -> Bytes {
-        encode(Packet::Read(crate::protocol::Read {
+        encode(Packet::Read(russh_sftp::protocol::Read {
             id,
             handle: handle.to_string(),
             offset,
@@ -593,7 +648,7 @@ mod tests {
                 part.to_vec(),
             ));
         }
-        requests.push(encode(Packet::Close(crate::protocol::Close {
+        requests.push(encode(Packet::Close(russh_sftp::protocol::Close {
             id: 99,
             handle: "h".to_string(),
         })));

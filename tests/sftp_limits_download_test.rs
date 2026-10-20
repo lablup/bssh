@@ -3,8 +3,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use bssh::server::sftp::{SftpError, SftpHandler};
+use bssh::server::sftp_loop;
 use bssh::shared::auth_types::UserInfo;
-use russh_sftp::client::{Config as ClientConfig, RawSftpSession, SftpSession};
+use bssh::ssh::tokio_client::sftp_client::SftpClient;
+use russh_sftp::client::{Config as ClientConfig, RawSftpSession};
 use russh_sftp::extensions::{self, LimitsExtension};
 use russh_sftp::protocol::{
     Attrs, Data, ExtendedReply, FileAttributes, Handle, OpenFlags, Packet, Status, StatusCode,
@@ -22,36 +24,36 @@ const READ_OVERHEAD_LEN: u32 = 13;
 const WRITE_OVERHEAD_LEN: u32 = 25;
 const SMALL_CLIENT_PACKET_LEN: u32 = 1_024;
 
-async fn sftp_session_with_handler<H>(handler: H) -> SftpSession
+async fn sftp_session_with_handler<H>(handler: H) -> SftpClient
 where
     H: russh_sftp::server::Handler + Send + 'static,
 {
     sftp_session_with_handler_and_configs(
         handler,
         ClientConfig::default(),
-        russh_sftp::server::Config::default(),
+        sftp_loop::Config::default(),
     )
     .await
 }
 
-async fn sftp_session_with_handler_and_config<H>(handler: H, cfg: ClientConfig) -> SftpSession
+async fn sftp_session_with_handler_and_config<H>(handler: H, cfg: ClientConfig) -> SftpClient
 where
     H: russh_sftp::server::Handler + Send + 'static,
 {
-    sftp_session_with_handler_and_configs(handler, cfg, russh_sftp::server::Config::default()).await
+    sftp_session_with_handler_and_configs(handler, cfg, sftp_loop::Config::default()).await
 }
 
 async fn sftp_session_with_handler_and_configs<H>(
     handler: H,
     cfg: ClientConfig,
-    server_cfg: russh_sftp::server::Config,
-) -> SftpSession
+    server_cfg: sftp_loop::Config,
+) -> SftpClient
 where
     H: russh_sftp::server::Handler + Send + 'static,
 {
     let (client, server) = tokio::io::duplex(1 << 20);
-    russh_sftp::server::run_with_config(server, handler, server_cfg).await;
-    SftpSession::new_with_config(client, cfg)
+    sftp_loop::run_with_config(server, handler, server_cfg).await;
+    SftpClient::new_with_config(client, cfg)
         .await
         .expect("SFTP session should initialize")
 }
@@ -61,7 +63,7 @@ where
     H: russh_sftp::server::Handler + Send + 'static,
 {
     let (client, server) = tokio::io::duplex(1 << 20);
-    russh_sftp::server::run(server, handler).await;
+    sftp_loop::run(server, handler).await;
     RawSftpSession::new(client)
 }
 
@@ -75,7 +77,7 @@ fn payload(size: usize) -> Vec<u8> {
         .collect()
 }
 
-async fn upload_payload(sftp: &SftpSession, path: &str, payload: &[u8]) {
+async fn upload_payload(sftp: &SftpClient, path: &str, payload: &[u8]) {
     let mut remote = sftp
         .open_with_flags(
             path,
@@ -110,7 +112,7 @@ async fn upload_payload(sftp: &SftpSession, path: &str, payload: &[u8]) {
         .expect("remote upload handle should close");
 }
 
-async fn download_payload(sftp: &SftpSession, path: &str) -> Vec<u8> {
+async fn download_payload(sftp: &SftpClient, path: &str) -> Vec<u8> {
     let mut remote = sftp
         .open(path)
         .await
@@ -290,7 +292,7 @@ async fn bssh_server_advertises_limits_extension() {
     let limits = raw.limits().await.expect("limits extension should reply");
     assert_eq!(
         limits.max_packet_len,
-        u64::from(russh_sftp::server::Config::default().max_client_packet_len)
+        u64::from(sftp_loop::Config::default().max_client_packet_len)
     );
     assert_eq!(limits.max_read_len, BSSH_MAX_READ_LEN);
     assert_eq!(limits.max_write_len, BSSH_MAX_READ_LEN);
@@ -376,9 +378,9 @@ async fn client_clamps_advertised_write_limit_to_packet_payload() {
             max_packet_len: SMALL_CLIENT_PACKET_LEN,
             ..ClientConfig::default()
         },
-        russh_sftp::server::Config {
+        sftp_loop::Config {
             max_write_coalesce_len: 0,
-            ..russh_sftp::server::Config::default()
+            ..sftp_loop::Config::default()
         },
     )
     .await;

@@ -395,7 +395,6 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "bcrypt",
- "bssh-russh-sftp",
  "bytes",
  "chrono",
  "clap",
@@ -423,6 +422,7 @@ dependencies = [
  "regex",
  "rpassword",
  "russh",
+ "russh-sftp",
  "rustls-native-certs",
  "rustyline",
  "secrecy",
@@ -453,26 +453,6 @@ dependencies = [
  "whoami",
  "windows-sys 0.61.2",
  "zeroize",
-]
-
-[[package]]
-name = "bssh-russh-sftp"
-version = "3.0.1"
-dependencies = [
- "async-trait",
- "bitflags 2.13.1",
- "bytes",
- "chrono",
- "dashmap",
- "futures",
- "gloo-timers",
- "log",
- "serde",
- "serde_bytes",
- "thiserror 2.0.20",
- "tokio",
- "tokio-util",
- "wasm-bindgen-futures",
 ]
 
 [[package]]
@@ -3811,6 +3791,26 @@ dependencies = [
  "nix 0.31.3",
  "ssh-encoding",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "russh-sftp"
+version = "3.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9bb17f72aba4314656b359ffba72c68dcbd70ed9e97497898b75498fe7198042"
+dependencies = [
+ "bitflags 2.13.1",
+ "bytes",
+ "chrono",
+ "dashmap",
+ "gloo-timers",
+ "log",
+ "serde",
+ "serde_bytes",
+ "thiserror 2.0.20",
+ "tokio",
+ "tokio-util",
+ "wasm-bindgen-futures",
 ]
 
 [[package]]

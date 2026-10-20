@@ -28,6 +28,7 @@ mod hostkey_rotation;
 mod known_hosts_command;
 mod proxy_command;
 mod session;
+pub mod sftp_client;
 mod sshfp;
 // `pub(crate)` so the client-facing error message builders in `ssh::client` can
 // reuse `known_hosts_entry_name` instead of duplicating the `[host]:port` rule.
