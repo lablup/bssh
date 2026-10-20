@@ -71,9 +71,12 @@ mkdir -p "$PATCH_DIR"
 #                       read_to_writer_pipelined)
 #   server/mod.rs     - request read-ahead intake queue and sequential-write
 #                       coalescing (issue lablup/bssh#227)
+#   extensions.rs     - serialize LimitsExtension so the server can answer
+#                       limits@openssh.com (lablup/bssh#273)
 PATCH_TARGETS=(
     "client/fs/file.rs:pipelined-file-io.patch"
     "server/mod.rs:server-readahead-write-coalescing.patch"
+    "extensions.rs:limits-extension-into-bytes.patch"
 )
 
 # Guard against exactly the failure this list exists to prevent: any src file
