@@ -179,9 +179,8 @@ pub struct SshHostConfig {
     pub identities_only: Option<bool>,
     pub add_keys_to_agent: Option<String>, // yes/no/ask/confirm
     pub identity_agent: Option<String>,    // socket path or "none"
-    /// UseKeychain option (macOS only) - specifies whether to integrate with macOS Keychain
-    /// Note: This is an Apple-specific patch to OpenSSH. Currently supports parsing only.
-    /// Keychain integration will be implemented in a future release.
+    /// UseKeychain option (macOS only) - integrates private-key passphrases with macOS Keychain.
+    /// This is an Apple-specific OpenSSH extension.
     #[cfg(target_os = "macos")]
     pub use_keychain: Option<bool>,
     // Security & algorithm management

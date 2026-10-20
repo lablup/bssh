@@ -407,18 +407,18 @@ Host example.com
 
     #[test]
     #[cfg(target_os = "macos")]
-    fn test_use_keychain_override() {
+    fn test_use_keychain_host_specific_value_precedes_global_default() {
         let content = r#"
-Host *
-    UseKeychain no
-
 Host example.com
     UseKeychain yes
+
+Host *
+    UseKeychain no
 "#;
         let hosts = parse(content).unwrap();
         let config = find_host_config(&hosts, "example.com");
 
-        // The first matching block wins (yes)
+        // OpenSSH uses the first value obtained, so specific blocks precede defaults.
         assert_eq!(config.use_keychain, Some(true));
     }
 
@@ -443,8 +443,8 @@ Host example.com
 
     #[test]
     #[cfg(target_os = "macos")]
-    fn test_use_keychain_last_match_wins() {
-        // SSH config merges all matching blocks, with later values overriding earlier ones
+    fn test_use_keychain_first_match_wins() {
+        // SSH config merges all matching blocks while preserving the first value obtained.
         let content = r#"
 Host example.com
     UseKeychain yes
@@ -455,8 +455,8 @@ Host example.com
         let hosts = parse(content).unwrap();
         let config = find_host_config(&hosts, "example.com");
 
-        // Should use the last matching value (no) due to merge logic
-        assert_eq!(config.use_keychain, Some(false));
+        // OpenSSH keeps the first value obtained across matching blocks.
+        assert_eq!(config.use_keychain, Some(true));
     }
 
     #[test]

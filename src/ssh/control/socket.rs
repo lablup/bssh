@@ -216,8 +216,12 @@ mod tests {
         let connect = connect_control_socket(&path);
         let accept = listener.accept();
         let (client, accepted) = tokio::join!(connect, accept);
-        client.unwrap();
-        verify_same_user(&accepted.unwrap().0).unwrap();
+        // Keep both endpoints connected while querying peer credentials.
+        // macOS getpeereid can return ENOTCONN once the peer has closed.
+        let client = client.unwrap();
+        let (server, _) = accepted.unwrap();
+        verify_same_user(&server).unwrap();
+        drop((client, server));
 
         drop(guard);
         assert!(!path.exists());

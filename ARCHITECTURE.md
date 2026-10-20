@@ -856,6 +856,16 @@ but not with themselves; omit the key (plain `#[serial]`) when in doubt.
 - Password authentication (discouraged in production)
 - Public key authentication preferred
 
+#### macOS `UseKeychain`
+
+On macOS, the resolved `UseKeychain yes` SSH configuration option enables passphrase lookup and storage for encrypted private-key authentication. Keychain access is deferred until an encrypted key actually needs a passphrase, is skipped entirely by `BatchMode yes`, and is serialized with terminal passphrase prompts during normal completion. The existing authentication timeout bounds the async wait, not the lifetime of a blocking OS Keychain dialog or terminal read; cancellation does not forcibly dismiss those operations.
+
+bssh owns generic-password records under the `bssh-ssh-key-passphrase` service and uses the canonical private-key path as the account. This namespace is intentionally separate from the Data Protection Keychain access group used by Apple's `/usr/bin/ssh`; that access group requires an Apple-only code-signing entitlement, so third-party binaries cannot reuse entries created by `ssh-add --apple-use-keychain`. A retrieved passphrase is accepted only if it decrypts the key. Missing or stale records fall back to the terminal prompt, and a newly entered passphrase is stored only after successful decryption.
+
+The cached-passphrase fallback and decrypt-before-store sequence share a platform-independent helper with injected prompt and storage operations, so stale credentials, rejected input, and storage failures are regression-tested without terminal or Keychain side effects. Terminal input is wrapped in `Zeroizing` inside the blocking worker before it is returned, including when the async caller has already timed out or been cancelled.
+
+Other platforms accept the Apple-specific keyword for portable configuration parsing but ignore its runtime behavior and recommend `IgnoreUnknown UseKeychain` when the same file must also work with upstream OpenSSH clients.
+
 ### Host Verification
 
 - known_hosts file verification

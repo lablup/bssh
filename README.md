@@ -975,7 +975,8 @@ These options provide essential authentication management, security enforcement,
 **Platform Notes:**
 - **UseKeychain** is an Apple-specific patch to OpenSSH and only available on macOS
 - Fully integrated with macOS Keychain via Security Framework for secure passphrase storage and retrieval
-- Passphrases are automatically stored after successful authentication and retrieved from Keychain on subsequent connections
+- Passphrases are stored only after they successfully decrypt the private key and are retrieved from Keychain on subsequent connections
+- bssh stores passphrases in its own `bssh-ssh-key-passphrase` Keychain service. Apple's `/usr/bin/ssh` uses an entitlement-protected access group, so entries created by `ssh-add --apple-use-keychain` cannot be read directly by third-party binaries and the first bssh connection may still prompt once.
 - For cross-platform configurations, use `IgnoreUnknown UseKeychain` to prevent errors on non-macOS systems
 
 ### SSH Config Examples

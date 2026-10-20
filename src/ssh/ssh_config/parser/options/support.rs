@@ -109,7 +109,7 @@ pub(super) const ACCEPTED_KEYWORDS: &[(&str, &str, KeywordSupport)] = &[
         Runtime(Authentication),
     ),
     ("enablesshkeysign", "enablesshkeysign", Unimplemented),
-    ("usekeychain", "usekeychain", Unimplemented),
+    ("usekeychain", "usekeychain", Runtime(Authentication)),
     (
         "stricthostkeychecking",
         "stricthostkeychecking",
@@ -306,8 +306,8 @@ mod tests {
     use std::collections::HashSet;
 
     const ACCEPTED_SPELLING_COUNT: usize = 108;
-    const RUNTIME_SPELLING_COUNT: usize = 58;
-    const UNIMPLEMENTED_SPELLING_COUNT: usize = 50;
+    const RUNTIME_SPELLING_COUNT: usize = 59;
+    const UNIMPLEMENTED_SPELLING_COUNT: usize = 49;
 
     #[test]
     fn accepted_keywords_and_aliases_have_one_consistent_classification() {
@@ -360,6 +360,7 @@ mod tests {
             ("passwordauthentication", Authentication),
             ("preferredauthentications", Authentication),
             ("numberofpasswordprompts", Authentication),
+            ("usekeychain", Authentication),
             ("stricthostkeychecking", HostVerification),
             ("userknownhostsfile", HostVerification),
             ("globalknownhostsfile", HostVerification),
@@ -434,7 +435,6 @@ mod tests {
             "hostbasedauthentication",
             "hostbasedacceptedalgorithms",
             "enablesshkeysign",
-            "usekeychain",
             "casignaturealgorithms",
             "nohostauthenticationforlocalhost",
             "visualhostkey",

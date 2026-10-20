@@ -78,6 +78,8 @@ pub fn render_resolved_config(original_host: &str, config: &SshHostConfig) -> Re
         config.hostbased_authentication.unwrap_or(false),
     )?;
     output.bool("identitiesonly", config.identities_only.unwrap_or(false))?;
+    #[cfg(target_os = "macos")]
+    output.bool("usekeychain", config.use_keychain.unwrap_or(false))?;
     output.bool(
         "kbdinteractiveauthentication",
         config.keyboard_interactive_authentication.unwrap_or(true),

@@ -1013,7 +1013,14 @@ When enabled, passphrases are automatically retrieved from and stored in the mac
 .RS
 .IP \[bu] 2
 .B Implementation:
-Fully integrated with macOS Keychain via Security Framework. Passphrases are securely stored after successful authentication and retrieved on subsequent connections.
+Fully integrated with macOS Keychain via Security Framework. Passphrases are securely stored after successful private-key decryption and retrieved on subsequent connections.
+.IP \[bu] 2
+.B Interoperability:
+bssh uses its own
+.I bssh-ssh-key-passphrase
+Keychain service. Entries created by
+.I ssh-add --apple-use-keychain
+belong to an Apple entitlement-protected access group and cannot be read directly by third-party binaries, so bssh may prompt once before storing its own entry.
 .IP \[bu] 2
 .B Cross-platform compatibility:
 Use
