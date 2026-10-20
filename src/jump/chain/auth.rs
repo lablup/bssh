@@ -254,6 +254,10 @@ mod tests {
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
 
+        let _home = EnvGuard::set("HOME", temp_dir.path());
+        std::fs::create_dir_all(temp_dir.path().join(".ssh")).unwrap();
+        let default_key_path = create_test_ssh_key(&temp_dir, ".ssh/id_ed25519");
+
         // Create jump host's own key
         let jump_key_path = create_test_ssh_key(&temp_dir, "jump_host_key");
         let jump_key_str = jump_key_path.to_string_lossy().to_string();
@@ -283,23 +287,25 @@ mod tests {
         assert!(result.is_ok(), "Should succeed with jump host's key");
         let auth_method = result.unwrap();
 
-        // Verify it used the jump host's key, not the cluster key
-        match auth_method {
-            AuthMethod::PrivateKeyFileWithPolicy { key_file_path, .. } => {
-                let path_str = key_file_path.to_string_lossy();
-                assert!(
-                    path_str.contains("jump_host_key"),
-                    "Should use jump host's key (jump_host_key), got: {path_str}"
-                );
-                assert!(
-                    !path_str.contains("cluster_key"),
-                    "Should NOT use cluster key, got: {path_str}"
-                );
-            }
-            other => {
-                panic!("Expected PrivateKeyFile, got {:?}", other);
-            }
-        }
+        // Default keys remain fallback candidates; the jump key must be first
+        // and the overridden cluster key must not be included at all.
+        let AuthMethod::Methods(methods) = auth_method else {
+            panic!("Expected explicit and default identity plan, got {auth_method:?}");
+        };
+        let paths: Vec<_> = methods
+            .iter()
+            .map(|method| match method {
+                AuthMethod::PrivateKeyFileWithPolicy { key_file_path, .. } => key_file_path,
+                other => panic!("Unexpected authentication candidate: {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            paths,
+            vec![
+                &jump_key_path.canonicalize().unwrap(),
+                &default_key_path.canonicalize().unwrap()
+            ]
+        );
     }
 
     /// Test: Falls back to cluster key when jump host has no ssh_key
@@ -310,6 +316,9 @@ mod tests {
         let _sock = EnvGuard::remove("SSH_AUTH_SOCK");
 
         let temp_dir = TempDir::new().expect("Failed to create temp dir");
+        let _home = EnvGuard::set("HOME", temp_dir.path());
+        std::fs::create_dir_all(temp_dir.path().join(".ssh")).unwrap();
+        let default_key_path = create_test_ssh_key(&temp_dir, ".ssh/id_ed25519");
         let cluster_key_path = create_test_ssh_key(&temp_dir, "cluster_key");
 
         // Create jump host WITHOUT its own ssh_key
@@ -332,18 +341,22 @@ mod tests {
         assert!(result.is_ok(), "Should succeed with cluster key");
         let auth_method = result.unwrap();
 
-        // Verify it used the cluster key
-        match auth_method {
-            AuthMethod::PrivateKeyFileWithPolicy { key_file_path, .. } => {
-                let path_str = key_file_path.to_string_lossy();
-                assert!(
-                    path_str.contains("cluster_key"),
-                    "Should use cluster key, got: {path_str}"
-                );
-            }
-            other => {
-                panic!("Expected PrivateKeyFile, got {:?}", other);
-            }
-        }
+        let AuthMethod::Methods(methods) = auth_method else {
+            panic!("Expected cluster and default identity plan, got {auth_method:?}");
+        };
+        let paths: Vec<_> = methods
+            .iter()
+            .map(|method| match method {
+                AuthMethod::PrivateKeyFileWithPolicy { key_file_path, .. } => key_file_path,
+                other => panic!("Unexpected authentication candidate: {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            paths,
+            vec![
+                &cluster_key_path.canonicalize().unwrap(),
+                &default_key_path.canonicalize().unwrap()
+            ]
+        );
     }
 }

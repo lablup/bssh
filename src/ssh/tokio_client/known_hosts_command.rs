@@ -413,9 +413,13 @@ mod tests {
     #[tokio::test]
     #[cfg(unix)]
     async fn timeout_is_fail_closed() {
-        let error = run_known_hosts_command("/usr/bin/sleep 10", &context())
+        let error = run_known_hosts_command("/bin/sleep 10", &context())
             .await
             .unwrap_err();
-        assert!(error.to_string().contains("timed out"));
+        assert!(
+            matches!(error, Error::KnownHostsCommandFailed { .. })
+                && error.to_string().contains("timed out"),
+            "expected timeout rather than spawn or execution failure: {error}"
+        );
     }
 }
