@@ -99,16 +99,9 @@ impl InteractiveCommand {
         let connect_timeout = Duration::from_secs(SSH_CONNECT_TIMEOUT_SECS);
         let ssh_config = ssh_config.clone().with_session_purpose(session_purpose);
 
-        // SECURITY: Add a small delay before connection attempts to prevent rapid-fire attempts
-        // This helps mitigate brute-force attacks and prevents triggering fail2ban too quickly
-        // Using exponential backoff would be ideal for retries, but since we don't retry here,
-        // a fixed small delay is sufficient to prevent abuse
-        const RATE_LIMIT_DELAY: Duration = Duration::from_millis(100);
-        tokio::time::sleep(RATE_LIMIT_DELAY).await;
-
-        // SECURITY: Capture start time for timing attack mitigation
-        let start_time = std::time::Instant::now();
-
+        // No pre-connect delay or minimum-duration padding: the server owns
+        // authentication timing, and the padding this path used to add only
+        // made every interactive connection about 0.6 s slower than OpenSSH.
         // Use connect_with_ssh_config to properly apply keepalive settings
         let result = timeout(
             connect_timeout,
@@ -132,7 +125,7 @@ impl InteractiveCommand {
         // This matches SSH key failures as well as SSH agent authentication failures
         // Also handles the case where russh disconnects during authentication failure
         // (which returns SshError(Disconnect) instead of KeyAuthFailed)
-        let result = match result {
+        match result {
             Err(ref err)
                 if allow_password_fallback
                     && !ssh_config.auth_policy.batch_mode
@@ -174,19 +167,7 @@ impl InteractiveCommand {
                 .with_context(|| format!("SSH connection failed to {host}:{port}"))
             }
             other => other.with_context(|| format!("SSH connection failed to {host}:{port}")),
-        };
-
-        // SECURITY: Normalize timing to prevent timing attacks
-        // Ensure all authentication attempts take at least 500ms to complete
-        // This prevents attackers from inferring whether authentication failed due to
-        // invalid username vs invalid password based on response time
-        const MIN_AUTH_DURATION: Duration = Duration::from_millis(500);
-        let elapsed = start_time.elapsed();
-        if elapsed < MIN_AUTH_DURATION {
-            tokio::time::sleep(MIN_AUTH_DURATION - elapsed).await;
         }
-
-        result
     }
 
     fn session_purpose(&self) -> SessionPurpose {
