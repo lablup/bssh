@@ -18,5 +18,6 @@ pub mod exec;
 pub mod interactive;
 pub mod interactive_signal;
 pub mod list;
+pub mod network_ping;
 pub mod ping;
 pub mod upload;

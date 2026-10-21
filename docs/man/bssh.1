@@ -440,6 +440,21 @@ List available clusters from configuration
 Test connectivity to hosts
 
 .TP
+.B network-ping, nping
+Test direct ICMP reachability without opening an SSH connection.
+.RS
+Usage: bssh [global options] network-ping [\fB-c\fR \fICOUNT\fR] [\fB--timeout\fR \fISECONDS\fR] [\fB--interval\fR \fISECONDS\fR]
+.br
+The defaults are 4 requests, a 2 second per-request reply timeout, and a 0.2 second interval. The interval cannot be less than 0.2 seconds. The global \fB--parallel\fR limit controls host concurrency.
+.br
+The timeout option is deliberately long-only because the OpenSSH-compatible root \fB-W\fR option keeps its stdio-forward meaning. The \fB-c\fR option after network-ping is the request count; root \fB-c\fR before the subcommand retains its cipher meaning. The command uses normal output only; TUI, stream, and output-directory modes do not apply.
+.br
+ssh_config HostName aliases are expanded, then the first resolver-order address allowed by \fB-4\fR, \fB-6\fR, or AddressFamily is selected and reported. ICMP originates directly from the local machine, so ProxyJump and ProxyCommand are ignored with a warning. There is no TCP or HTTP fallback.
+.br
+Unprivileged ICMP datagram sockets are preferred. Restricted Linux systems may require a suitable ping_group_range or CAP_NET_RAW; macOS normally permits ping sockets without elevation. Permission failures are reported explicitly.
+.RE
+
+.TP
 .B upload
 Upload files to remote hosts using SFTP (supports glob patterns)
 .RS
@@ -1976,6 +1991,26 @@ No host was reachable, or bssh failed before it could attempt any connection
 Command-line usage errors are rejected by the argument parser before this
 contract applies and keep the parser's own exit code 2, as they do for every
 subcommand.
+
+.SS network-ping Subcommand
+The
+.BR network-ping
+subcommand reports direct ICMP reachability rather than SSH service or authentication health. A host counts as reachable after at least one echo reply. Packet loss is calculated as lost requests divided by sent requests (for example, 3 replies from 4 requests is 25% loss), and latency uses min/avg/max/population-standard-deviation. Its exit codes are:
+
+.TP
+.B 0
+Every targeted host answered at least once
+
+.TP
+.B 1
+At least one host answered and at least one did not
+
+.TP
+.B 255
+No host answered, or bssh failed during DNS or ICMP socket setup
+
+.PP
+Argument parser failures, including zero count/timeout/parallel, parallelism above 4096, a non-finite duration, an interval below 0.2 seconds, or a duration above 3600 seconds, retain exit status 2.
 
 .SH OUTPUT FILES
 When using the
