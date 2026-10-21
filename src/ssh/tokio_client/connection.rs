@@ -2621,8 +2621,66 @@ pub(crate) struct KnownHostRuntimePolicy {
     host_key_algorithms: Vec<ssh_key::Algorithm>,
     /// Resolved `CASignatureAlgorithms` names a host CA may sign with.
     ca_signature_algorithms: Vec<String>,
-    /// Expanded `RevokedHostKeys` path, if configured.
-    revoked_host_keys: Option<String>,
+    /// Expanded `RevokedHostKeys` file, if configured.
+    revoked_host_keys: RevokedHostKeysPolicy,
+}
+
+/// `RevokedHostKeys` as applied at runtime.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+enum RevokedHostKeysPolicy {
+    /// Not configured, or explicitly `none`.
+    #[default]
+    Disabled,
+    /// Check presented keys against this file.
+    File(String),
+    /// Configured, but the path could not be expanded (an unset environment
+    /// variable or an unsupported token). The revocation list cannot be
+    /// consulted, so every host key is refused rather than accepted
+    /// unchecked.
+    Unusable(String),
+}
+
+impl RevokedHostKeysPolicy {
+    fn from_template(
+        template: Option<&str>,
+        config: &SshConnectionConfig,
+        target_host: &str,
+        port: u16,
+        username: &str,
+    ) -> Self {
+        let Some(template) = template else {
+            return Self::Disabled;
+        };
+        if template.eq_ignore_ascii_case("none") || template == "/dev/null" {
+            return Self::Disabled;
+        }
+        match crate::ssh::known_hosts::expand_known_hosts_path(
+            template,
+            config,
+            target_host,
+            port,
+            username,
+        ) {
+            Some(path) => Self::File(path),
+            None => Self::Unusable(template.to_string()),
+        }
+    }
+
+    /// The file to consult, or an error when the configured list cannot be
+    /// applied.
+    fn file(&self) -> Result<Option<&str>, super::Error> {
+        match self {
+            Self::Disabled => Ok(None),
+            Self::File(path) => Ok(Some(path)),
+            Self::Unusable(template) => {
+                tracing::error!("RevokedHostKeys {template} cannot be expanded; refusing host key");
+                crate::diagnosticln!(
+                    "RevokedHostKeys {template} cannot be expanded; refusing host key"
+                );
+                Err(super::Error::ServerCheckFailed)
+            }
+        }
+    }
 }
 
 impl KnownHostRuntimePolicy {
@@ -2643,7 +2701,7 @@ impl KnownHostRuntimePolicy {
             host_key_algorithms: Vec::new(),
             ca_signature_algorithms: super::algorithms::resolve_ca_signature_algorithms(&[])
                 .unwrap_or_default(),
-            revoked_host_keys: None,
+            revoked_host_keys: RevokedHostKeysPolicy::Disabled,
         }
     }
 
@@ -2690,15 +2748,13 @@ impl KnownHostRuntimePolicy {
                 tracing::error!("Invalid CASignatureAlgorithms: {error}");
                 Vec::new()
             }),
-            revoked_host_keys: config.revoked_host_keys.as_deref().and_then(|template| {
-                crate::ssh::known_hosts::expand_known_hosts_path(
-                    template,
-                    config,
-                    target_host,
-                    port,
-                    username,
-                )
-            }),
+            revoked_host_keys: RevokedHostKeysPolicy::from_template(
+                config.revoked_host_keys.as_deref(),
+                config,
+                target_host,
+                port,
+                username,
+            ),
         }
     }
 }
@@ -3567,6 +3623,7 @@ impl Handler for ClientHandler {
         } else {
             self.host.port()
         };
+        let revoked_host_keys = self.policy.revoked_host_keys.file()?;
 
         // A host certificate is validated against the configured CA lines
         // first. Only when no CA vouches for the host is its certified key
@@ -3585,7 +3642,7 @@ impl Handler for ClientHandler {
                     port,
                     &paths,
                     &self.policy.ca_signature_algorithms,
-                    self.policy.revoked_host_keys.as_deref(),
+                    revoked_host_keys,
                 )? {
                     super::host_certificate::CertificateVerdict::Accepted => {
                         tracing::debug!(
@@ -3611,7 +3668,7 @@ impl Handler for ClientHandler {
                 }
             }
         };
-        if let Some(revoked_host_keys) = self.policy.revoked_host_keys.as_deref() {
+        if let Some(revoked_host_keys) = revoked_host_keys {
             super::host_certificate::ensure_not_revoked_by_file(
                 revoked_host_keys,
                 server_public_key,
@@ -4365,6 +4422,57 @@ mod known_host_policy_tests {
                     russh::keys::known_hosts::known_host_keys_path(identity, 22, &path).unwrap();
                 assert!(keys.iter().any(|(_, key)| key == &offered));
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod revoked_host_keys_policy_tests {
+    use super::*;
+
+    fn policy(template: Option<&str>) -> RevokedHostKeysPolicy {
+        RevokedHostKeysPolicy::from_template(
+            template,
+            &SshConnectionConfig::default(),
+            "node1.example.com",
+            22,
+            "user",
+        )
+    }
+
+    #[test]
+    fn none_and_dev_null_disable_revocation() {
+        for template in [None, Some("none"), Some("NONE"), Some("/dev/null")] {
+            let policy = policy(template);
+            assert_eq!(policy, RevokedHostKeysPolicy::Disabled, "{template:?}");
+            assert!(matches!(policy.file(), Ok(None)));
+        }
+    }
+
+    #[test]
+    fn expanded_path_is_consulted() {
+        let policy = policy(Some("/etc/ssh/revoked_%h"));
+        assert_eq!(
+            policy.file().unwrap(),
+            Some("/etc/ssh/revoked_node1.example.com")
+        );
+    }
+
+    #[test]
+    fn unexpandable_path_fails_closed_instead_of_disabling_revocation() {
+        for template in [
+            "${BSSH_TEST_UNSET_REVOKED_HOST_KEYS_7F3A}/revoked",
+            "/etc/ssh/revoked_%Z",
+        ] {
+            let policy = policy(Some(template));
+            assert!(
+                matches!(policy, RevokedHostKeysPolicy::Unusable(_)),
+                "{template}: {policy:?}"
+            );
+            assert!(matches!(
+                policy.file(),
+                Err(super::super::Error::ServerCheckFailed)
+            ));
         }
     }
 }

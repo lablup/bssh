@@ -455,7 +455,7 @@ fn scan_known_hosts_markers(
 /// does not match the port-qualified form is also tried against the bare
 /// hostname: a `@revoked` line commonly omits the port, and failing to honor
 /// a revocation is worse than an unnecessary rejection.
-pub(super) fn marker_host_matches(
+fn marker_host_matches(
     host_port: &str,
     hostname: &str,
     pattern_field: &str,
@@ -2872,7 +2872,10 @@ mod tests {
     }
 }
 
-fn command_host_field_matches(host_field: &str, identity: &str) -> bool {
+/// Match a known_hosts host field against `identity` with OpenSSH
+/// semantics: comma-separated globs, hashed `|1|` entries, and `!pattern`
+/// negations that veto an otherwise positive match.
+pub(super) fn command_host_field_matches(host_field: &str, identity: &str) -> bool {
     let mut positive = false;
     for raw_pattern in host_field.split(',') {
         let raw_pattern = raw_pattern.trim();

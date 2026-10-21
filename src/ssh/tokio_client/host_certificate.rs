@@ -40,7 +40,9 @@ use russh::keys::PublicKey;
 use russh::keys::ssh_key::certificate::CertType;
 use russh::keys::ssh_key::{Certificate, HashAlg};
 
-use super::host_verification::{known_hosts_entry_name, marker_host_matches, revoked_marker_line};
+use super::host_verification::{
+    command_host_field_matches, glob_match, known_hosts_entry_name, revoked_marker_line,
+};
 
 /// Outcome of validating a presented host certificate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,10 +102,12 @@ pub(super) fn verify_host_certificate(
     if certificate.valid_principals().is_empty() {
         return Err(reject(&hostname, "Certificate lacks principal list"));
     }
+    // OpenSSH matches host principals as patterns (`*.example.com`), not
+    // only as literal names.
     if !certificate
         .valid_principals()
         .iter()
-        .any(|principal| principal.eq_ignore_ascii_case(&hostname))
+        .any(|principal| glob_match(&hostname, principal))
     {
         return Err(reject(
             &hostname,
@@ -166,7 +170,7 @@ fn find_cert_authority(
             }
         };
         for (index, raw_line) in contents.lines().enumerate() {
-            let mut fields = raw_line.split(' ').filter(|field| !field.is_empty());
+            let mut fields = raw_line.split_whitespace();
             if fields.next() != Some("@cert-authority") {
                 continue;
             }
@@ -175,7 +179,9 @@ fn find_cert_authority(
             else {
                 continue;
             };
-            if !marker_host_matches(&host_port, hostname, host_field, false) {
+            // Negated (`!host`) patterns exclude a host from the CA's scope,
+            // and hashed (`|1|`) fields are matched by HMAC, as in OpenSSH.
+            if !command_host_field_matches(host_field, &host_port) {
                 continue;
             }
             match russh::keys::parse_public_key_base64(key_field) {
@@ -364,6 +370,76 @@ mod tests {
             CertificateVerdict::NoMatchingAuthority,
             "a CA line for another host pattern must not vouch for this host"
         );
+    }
+
+    #[test]
+    fn negated_and_hashed_ca_host_patterns_follow_openssh() {
+        let (ca, subject) = (generate_key(), generate_key());
+        let cert = build_certificate(&subject, &ca, CertificateShape::default());
+
+        let (_dir, negated) = known_hosts_with(&[ca_line("*.example.com,!node1.example.com", &ca)]);
+        let verdict = verify_host_certificate(
+            &cert,
+            "node1.example.com",
+            22,
+            &[negated],
+            &defaults(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(
+            verdict,
+            CertificateVerdict::NoMatchingAuthority,
+            "a negated pattern must exclude the host from the CA's scope"
+        );
+
+        let hashed =
+            super::super::hostkey_rotation::hash_host_pattern("node1.example.com").unwrap();
+        let (_dir, path) = known_hosts_with(&[ca_line(&hashed, &ca).replacen(' ', "\t", 2)]);
+        let verdict =
+            verify_host_certificate(&cert, "node1.example.com", 22, &[path], &defaults(), None)
+                .unwrap();
+        assert_eq!(
+            verdict,
+            CertificateVerdict::Accepted,
+            "a hashed, tab-separated @cert-authority line must vouch for its host"
+        );
+    }
+
+    #[test]
+    fn wildcard_principal_matches_like_openssh() {
+        let (ca, subject) = (generate_key(), generate_key());
+        let cert = build_certificate(
+            &subject,
+            &ca,
+            CertificateShape {
+                principal: "*.example.com",
+                ..CertificateShape::default()
+            },
+        );
+        let (_dir, path) = known_hosts_with(&[ca_line("*.example.com", &ca)]);
+        let paths = [path];
+        assert_eq!(
+            verify_host_certificate(&cert, "node1.example.com", 22, &paths, &defaults(), None)
+                .unwrap(),
+            CertificateVerdict::Accepted
+        );
+        assert!(matches!(
+            verify_host_certificate(&cert, "node1.example.net", 22, &paths, &defaults(), None),
+            Ok(CertificateVerdict::NoMatchingAuthority)
+        ));
+        let (_dir, any_host) = known_hosts_with(&[ca_line("*", &ca)]);
+        assert!(matches!(
+            verify_host_certificate(
+                &cert,
+                "node1.example.net",
+                22,
+                &[any_host],
+                &defaults(),
+                None
+            ),
+            Err(super::super::Error::ServerCheckFailed)
+        ));
     }
 
     #[test]

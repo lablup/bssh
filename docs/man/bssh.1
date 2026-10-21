@@ -885,13 +885,13 @@ Host key signature algorithms offered to the server, in preference order, with t
 .br
 A presented host certificate is accepted only when a
 .B @cert-authority
-line in a known_hosts file names the host (or its HostKeyAlias) with the signing CA key, the certificate is a host certificate whose principals include that name, it is inside its validity window, it carries no critical options, its CA signature uses an algorithm permitted by CASignatureAlgorithms, and neither the CA key nor the certified key is revoked by a
+line in a known_hosts file names the host (or its HostKeyAlias) with the signing CA key (negated !pattern entries exclude a host, and hashed host fields are matched), the certificate is a host certificate with a principal matching that name (principals may be wildcard patterns), it is inside its validity window, it carries no critical options, its CA signature uses an algorithm permitted by CASignatureAlgorithms, and neither the CA key nor the certified key is revoked by a
 .B @revoked
 line or by RevokedHostKeys. If no @cert-authority line matches, the certified key is checked as a plain host key under the usual StrictHostKeyChecking rules. A certificate from a matching CA that fails any other check is refused outright. UpdateHostKeys is not applied to certificate-authenticated hosts.
 
 .TP
 .B RevokedHostKeys
-Path to a file listing revoked host keys and host CA keys, one OpenSSH public key per line. A matching key or certificate is refused. The file may use the same percent tokens as UserKnownHostsFile. Binary key revocation lists (KRL) are not supported: a KRL file, or a file that cannot be read, refuses every host key until it is replaced.
+Path to a file listing revoked host keys and host CA keys, one OpenSSH public key per line. A matching key or certificate is refused. The file may use the same percent tokens as UserKnownHostsFile; a path that cannot be expanded (an unset environment variable or an unsupported token) refuses every host key. The value none disables the check. Binary key revocation lists (KRL) are not supported: a KRL file, or a file that cannot be read, refuses every host key until it is replaced.
 
 .TP
 .B HostKeyAlias
