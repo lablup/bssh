@@ -600,6 +600,7 @@ fn connection_config(
         clear_all: false,
         exit_on_failure,
         address_family: AddressFamily::V4,
+        permit_remote_open: Vec::new(),
     })
 }
 

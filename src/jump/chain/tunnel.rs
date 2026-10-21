@@ -134,11 +134,15 @@ pub(super) async fn connect_through_tunnel(
     )
     .await?;
 
+    let original_host = ssh_connection_config
+        .original_host
+        .as_deref()
+        .unwrap_or(&jump_host.host);
     let policy = KnownHostRuntimePolicy::from_config(
         ssh_connection_config,
         &jump_host.effective_user(),
         &jump_host.host,
-        &jump_host.host,
+        original_host,
         jump_host.effective_port(),
     );
     let mut config = ssh_connection_config.to_russh_config();
@@ -180,11 +184,14 @@ pub(super) async fn connect_through_tunnel(
     );
 
     let handler =
-        ClientHandler::new_with_policy(jump_host.host.clone(), socket_addr, check_method, policy);
+        ClientHandler::new_with_policy(jump_host.host.clone(), socket_addr, check_method, policy)
+            .with_suppress_auth_banner(ssh_connection_config.suppress_auth_banner)
+            .with_kex_diagnostics(ssh_connection_config.emit_kex_diagnostics);
     let fatal_transport = handler.fatal_transport_state();
     let hostkey_rotation = handler.hostkey_rotation_tasks();
     let remote_forward_registry = handler.remote_forward_registry();
     let agent_forwarding = handler.agent_forwarding_state();
+    let connection_info = handler.connection_info_state();
 
     // Connect through the stream
     let handle = tokio::time::timeout(
@@ -243,6 +250,7 @@ pub(super) async fn connect_through_tunnel(
         hostkey_rotation,
         remote_forward_registry,
         agent_forwarding,
+        connection_info,
     )
     .await;
 
@@ -340,11 +348,14 @@ pub(super) async fn connect_to_destination(
         socket_addr,
         check_method,
         policy,
-    );
+    )
+    .with_suppress_auth_banner(ssh_connection_config.suppress_auth_banner)
+    .with_kex_diagnostics(ssh_connection_config.emit_kex_diagnostics);
     let fatal_transport = handler.fatal_transport_state();
     let hostkey_rotation = handler.hostkey_rotation_tasks();
     let remote_forward_registry = handler.remote_forward_registry();
     let agent_forwarding = handler.agent_forwarding_state();
+    let connection_info = handler.connection_info_state();
 
     // Connect through the stream
     let handle = tokio::time::timeout(
@@ -391,6 +402,7 @@ pub(super) async fn connect_to_destination(
         hostkey_rotation,
         remote_forward_registry,
         agent_forwarding,
+        connection_info,
     )
     .await;
     client

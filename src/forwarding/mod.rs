@@ -61,6 +61,7 @@ pub struct ForwardingPlan {
     pub clear_all: bool,
     pub exit_on_failure: bool,
     pub address_family: AddressFamily,
+    pub permit_remote_open: Vec<String>,
 }
 
 impl Default for ForwardingPlan {
@@ -70,6 +71,7 @@ impl Default for ForwardingPlan {
             clear_all: false,
             exit_on_failure: false,
             address_family: AddressFamily::Any,
+            permit_remote_open: Vec::new(),
         }
     }
 }
@@ -92,8 +94,18 @@ impl ForwardingPlan {
                     ForwardingSpec::parse_local(spec, self.address_family)
                         .with_context(|| format!("Invalid LocalForward specification: {spec}"))?
                 }
-                ForwardingDirective::Remote(spec) => ForwardingSpec::parse_remote(spec)
-                    .with_context(|| format!("Invalid RemoteForward specification: {spec}"))?,
+                ForwardingDirective::Remote(spec) => {
+                    let mut forward = ForwardingSpec::parse_remote(spec)
+                        .with_context(|| format!("Invalid RemoteForward specification: {spec}"))?;
+                    if let ForwardingType::RemoteDynamic {
+                        permitted_destinations,
+                        ..
+                    } = &mut forward
+                    {
+                        permitted_destinations.clone_from(&self.permit_remote_open);
+                    }
+                    forward
+                }
                 ForwardingDirective::Dynamic(spec) => {
                     ForwardingSpec::parse_dynamic(spec, self.address_family)
                         .with_context(|| format!("Invalid DynamicForward specification: {spec}"))?
@@ -127,6 +139,12 @@ pub enum ForwardingType {
         local_host: String,
         local_port: u16,
     },
+    /// Remote dynamic SOCKS forwarding (`-R [bind_address:]port`).
+    RemoteDynamic {
+        bind_addr: IpAddr,
+        bind_port: u16,
+        permitted_destinations: Vec<String>,
+    },
     /// Dynamic port forwarding (-D)
     /// Format: [bind_address:]port
     Dynamic {
@@ -140,6 +158,8 @@ pub enum ForwardingType {
 /// SOCKS protocol version for dynamic forwarding
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum SocksVersion {
+    /// Detect SOCKS4 or SOCKS5 from the client greeting, matching OpenSSH `-D`.
+    Auto,
     V4,
     V5,
 }
@@ -199,6 +219,8 @@ pub struct ForwardingConfig {
     /// separately, at specification parse time, by
     /// [`parse_bind_spec_with_family`].
     pub address_family: AddressFamily,
+    /// `PermitRemoteOpen` rules for remote dynamic SOCKS forwarding.
+    pub permit_remote_open: Vec<String>,
 }
 
 impl Default for ForwardingConfig {
@@ -212,6 +234,7 @@ impl Default for ForwardingConfig {
             max_reconnect_delay_ms: 30000,
             buffer_size: 8192,
             address_family: AddressFamily::Any,
+            permit_remote_open: Vec::new(),
         }
     }
 }
@@ -246,6 +269,15 @@ impl fmt::Display for ForwardingType {
                     SocketAddr::new(*bind_addr, *bind_port)
                 )
             }
+            ForwardingType::RemoteDynamic {
+                bind_addr,
+                bind_port,
+                ..
+            } => write!(
+                f,
+                "remote SOCKS proxy on {}",
+                SocketAddr::new(*bind_addr, *bind_port)
+            ),
             ForwardingType::Dynamic {
                 bind_addr,
                 bind_port,

@@ -42,9 +42,9 @@ const MAX_HOSTNAME_LENGTH: usize = 253;
 
 struct PreparedIdentity {
     path: PathBuf,
+    agent_public_path: Option<PathBuf>,
     algorithm: Option<russh::keys::ssh_key::Algorithm>,
     public_key: Option<russh::keys::ssh_key::public::KeyData>,
-    public_only: bool,
 }
 /// Context for determining SSH authentication method.
 ///
@@ -335,28 +335,69 @@ impl AuthContext {
     ) -> Result<Option<PreparedIdentity>> {
         let unresolved = |path: PathBuf| PreparedIdentity {
             path,
+            agent_public_path: None,
             algorithm: None,
             public_key: None,
-            public_only: false,
         };
         let canonical_path = match path.canonicalize() {
             Ok(path) if path.is_file() => path,
-            Ok(_) | Err(_) if required => {
-                tracing::warn!(
-                    "Identity file '{}' is not accessible; later authentication methods will still be tried",
-                    path.display()
-                );
-                return Ok(Some(unresolved(path.to_path_buf())));
+            Ok(_) | Err(_) => {
+                // OpenSSH keeps an IdentityFile eligible for agent
+                // authentication when its private half is unavailable but a
+                // readable `<identity>.pub` companion remains. This is the
+                // normal shape after a key has been loaded into ssh-agent and
+                // the private file has deliberately been moved offline. In
+                // particular, IdentitiesOnly=yes must still allow that one
+                // listed public identity instead of suppressing the agent
+                // altogether.
+                let mut companion = path.as_os_str().to_os_string();
+                companion.push(".pub");
+                let companion = PathBuf::from(companion);
+                let Ok(canonical_companion) = companion.canonicalize() else {
+                    if required {
+                        tracing::warn!(
+                            "Identity file '{}' is not accessible; later authentication methods will still be tried",
+                            path.display()
+                        );
+                        return Ok(Some(unresolved(path.to_path_buf())));
+                    }
+                    return Ok(None);
+                };
+                if !canonical_companion.is_file() {
+                    if required {
+                        tracing::warn!(
+                            "Identity file '{}' is not accessible; later authentication methods will still be tried",
+                            path.display()
+                        );
+                        return Ok(Some(unresolved(path.to_path_buf())));
+                    }
+                    return Ok(None);
+                }
+                let Ok(public_key) = russh::keys::load_public_key(&canonical_companion) else {
+                    if required {
+                        tracing::warn!(
+                            "Identity file '{}' is not accessible and its public companion is invalid; later authentication methods will still be tried",
+                            path.display()
+                        );
+                        return Ok(Some(unresolved(path.to_path_buf())));
+                    }
+                    return Ok(None);
+                };
+                return Ok(Some(PreparedIdentity {
+                    path: path.to_path_buf(),
+                    agent_public_path: Some(canonical_companion),
+                    algorithm: Some(public_key.algorithm()),
+                    public_key: Some(public_key.key_data().clone()),
+                }));
             }
-            _ => return Ok(None),
         };
 
         if let Ok(public_key) = russh::keys::load_public_key(&canonical_path) {
             return Ok(Some(PreparedIdentity {
+                agent_public_path: Some(canonical_path.clone()),
                 path: canonical_path,
                 algorithm: Some(public_key.algorithm()),
                 public_key: Some(public_key.key_data().clone()),
-                public_only: true,
             }));
         }
 
@@ -394,9 +435,9 @@ impl AuthContext {
 
         Ok(Some(PreparedIdentity {
             path: canonical_path,
+            agent_public_path: None,
             algorithm,
             public_key,
-            public_only: false,
         }))
     }
 
@@ -505,7 +546,7 @@ impl AuthContext {
             ) {
                 let identity = all_identities[index];
                 #[cfg(not(target_os = "windows"))]
-                if identity.public_only {
+                if identity.agent_public_path.is_some() {
                     explicit_certificates.push(AuthMethod::with_agent_certificate_file(
                         certificate_path,
                         accepted.clone(),
@@ -604,7 +645,7 @@ impl AuthContext {
 
         for (identity, certificate_paths) in identities.iter().zip(certificates) {
             #[cfg(not(target_os = "windows"))]
-            if identity.public_only {
+            if let Some(public_path) = &identity.agent_public_path {
                 if self.use_agent || std::env::var_os("SSH_AUTH_SOCK").is_some() {
                     for certificate_path in certificate_paths {
                         methods.push(AuthMethod::with_agent_certificate_file(
@@ -613,7 +654,7 @@ impl AuthContext {
                         ));
                     }
                     methods.push(AuthMethod::with_agent_public_key_file(
-                        &identity.path,
+                        public_path,
                         accepted.clone(),
                     ));
                 }
@@ -1238,6 +1279,106 @@ mod tests {
             .unwrap();
 
         assert_eq!(method_names(auth), ["agent-key:listed-key.pub"]);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    #[serial]
+    async fn identities_only_uses_public_companion_when_private_identity_is_offline() {
+        let home = TempDir::new().unwrap();
+        std::fs::create_dir(home.path().join(".ssh")).unwrap();
+        let _home = EnvGuard::set("HOME", home.path());
+        let socket_path = home.path().join("agent.sock");
+        std::fs::write(&socket_path, []).unwrap();
+        let _socket = EnvGuard::set("SSH_AUTH_SOCK", &socket_path);
+        let private_path = home.path().join("listed-key");
+        let public_path = home.path().join("listed-key.pub");
+        let key = write_test_key(&private_path);
+        std::fs::write(&public_path, key.public_key().to_openssh().unwrap()).unwrap();
+        std::fs::remove_file(&private_path).unwrap();
+        let policy = SshAuthenticationPolicy {
+            identity_files: vec![private_path],
+            identities_only: true,
+            preferred_authentications: vec!["publickey".into()],
+            ..SshAuthenticationPolicy::default()
+        };
+
+        let auth = AuthContext::new("user".into(), "host".into())
+            .unwrap()
+            .with_policy(policy)
+            .determine_method()
+            .await
+            .unwrap();
+
+        assert_eq!(method_names(auth), ["agent-key:listed-key.pub"]);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    #[serial]
+    async fn explicit_cli_identity_uses_public_companion_when_private_identity_is_offline() {
+        let home = TempDir::new().unwrap();
+        let _socket = EnvGuard::remove("SSH_AUTH_SOCK");
+        let private_path = home.path().join("cli-key");
+        let public_path = home.path().join("cli-key.pub");
+        let key = write_test_key(&private_path);
+        std::fs::write(&public_path, key.public_key().to_openssh().unwrap()).unwrap();
+        std::fs::remove_file(&private_path).unwrap();
+        let policy = SshAuthenticationPolicy {
+            cli_identity_files: vec![private_path],
+            identities_only: true,
+            preferred_authentications: vec!["publickey".into()],
+            ..SshAuthenticationPolicy::default()
+        };
+
+        let auth = AuthContext::new("user".into(), "host".into())
+            .unwrap()
+            .with_agent(true)
+            .with_policy(policy)
+            .determine_method()
+            .await
+            .unwrap();
+
+        assert_eq!(method_names(auth), ["agent-key:cli-key.pub"]);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    #[serial]
+    async fn offline_cli_identity_preserves_base_path_for_automatic_certificate() {
+        let home = TempDir::new().unwrap();
+        let _socket = EnvGuard::remove("SSH_AUTH_SOCK");
+        let private_path = home.path().join("cli-key");
+        let public_path = home.path().join("cli-key.pub");
+        let certificate_path = home.path().join("cli-key-cert.pub");
+        let subject = write_test_key(&private_path);
+        std::fs::write(&public_path, subject.public_key().to_openssh().unwrap()).unwrap();
+        let ca = russh::keys::PrivateKey::random(
+            &mut rand::rng(),
+            russh::keys::ssh_key::Algorithm::Ed25519,
+        )
+        .unwrap();
+        write_user_certificate(&certificate_path, &subject, &ca);
+        std::fs::remove_file(&private_path).unwrap();
+        let policy = SshAuthenticationPolicy {
+            cli_identity_files: vec![private_path],
+            identities_only: true,
+            preferred_authentications: vec!["publickey".into()],
+            ..SshAuthenticationPolicy::default()
+        };
+
+        let auth = AuthContext::new("user".into(), "host".into())
+            .unwrap()
+            .with_agent(true)
+            .with_policy(policy)
+            .determine_method()
+            .await
+            .unwrap();
+
+        assert_eq!(
+            method_names(auth),
+            ["agent-cert:cli-key-cert.pub", "agent-key:cli-key.pub"]
+        );
     }
 
     #[cfg(not(target_os = "windows"))]

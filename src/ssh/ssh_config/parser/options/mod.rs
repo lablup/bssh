@@ -45,13 +45,14 @@ pub fn parse_option(
     args: &[String],
     source: DiagnosticSource<'_>,
     reported_diagnostics: &mut HashSet<String>,
+    emit_diagnostics: bool,
 ) -> Result<()> {
     let line_number = source.number();
     let Some(spec) = support::keyword_spec(accepted_keyword) else {
         host.unknown_options
             .entry(accepted_keyword.to_string())
             .or_insert_with(|| args.to_vec());
-        if reported_diagnostics.insert(format!("unknown:{accepted_keyword}")) {
+        if reported_diagnostics.insert(format!("unknown:{accepted_keyword}")) && emit_diagnostics {
             let keyword = escape_field(accepted_keyword);
             let location = source.location();
             crate::warningln!("Unknown SSH config option '{keyword}' at {location}");
@@ -71,7 +72,7 @@ pub fn parse_option(
                 .entry(keyword.to_string())
                 .or_insert_with(|| args.to_vec());
         }
-        if reported_diagnostics.insert(format!("unsupported:{keyword}")) {
+        if reported_diagnostics.insert(format!("unsupported:{keyword}")) && emit_diagnostics {
             let location = source.location();
             crate::warningln!(
                 "Unsupported SSH config option '{keyword}' at {location}; bssh parses this value for inspection but does not implement its runtime behavior"

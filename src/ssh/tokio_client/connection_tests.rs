@@ -225,6 +225,22 @@ fn auth_banner_suppression_resolves_from_quiet_cli_or_log_level() {
 }
 
 #[test]
+fn debug_log_level_enables_kex_diagnostics_without_changing_info() {
+    let ssh_config =
+        SshConfig::parse("Host debug\n    LogLevel DEBUG3\nHost normal\n    LogLevel INFO\n")
+            .unwrap();
+    let resolver = SshConnectionConfigResolver::new().with_ssh_config(Some(ssh_config));
+
+    assert!(resolver.resolve_for_host("debug").emit_kex_diagnostics);
+    assert!(!resolver.resolve_for_host("normal").emit_kex_diagnostics);
+
+    let quiet_cli = resolver.with_cli_quiet(true);
+    let quiet_debug = quiet_cli.resolve_for_host("debug");
+    assert!(quiet_debug.suppress_auth_banner);
+    assert!(!quiet_debug.emit_kex_diagnostics);
+}
+
+#[test]
 fn stdio_forward_defaults_clear_forwards_but_preserves_explicit_no() {
     let implicit =
         SshConfig::parse("Host target\n    LocalForward 127.0.0.1:2200 example.com:22\n").unwrap();

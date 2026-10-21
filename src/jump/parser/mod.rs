@@ -21,6 +21,7 @@ mod main_parser;
 
 pub use config::{ABSOLUTE_MAX_JUMP_HOSTS, DEFAULT_MAX_JUMP_HOSTS, get_max_jump_hosts};
 pub use host::JumpHost;
+pub(crate) use main_parser::canonicalize_jump_hosts;
 pub use main_parser::parse_jump_hosts;
 
 /// Parse jump hosts and set SSH key for all hosts in the chain

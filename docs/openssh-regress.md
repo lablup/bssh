@@ -2,6 +2,8 @@
 
 The compatibility harness runs a pinned subset of the OpenSSH portable regression suite with bssh as the client and the pinned OpenSSH build as the server and reference client. The tag and immutable commit pin are stored together in `tests/openssh-regress/openssh-version`; changing that file deliberately starts a fresh reference build.
 
+For fixture coverage versus command/wire interoperability and remaining scope, see the [compatibility status ledger](openssh-compatibility-status.md).
+
 ## Run locally
 
 The full run needs a C toolchain, OpenSSL development headers, zlib development headers, Git, Make, Python 3.11 or newer, and the Rust toolchain declared by this repository. On Debian or Ubuntu, install `build-essential autoconf automake libssl-dev zlib1g-dev`; macOS runners can use the Xcode command-line tools and Homebrew `autoconf`, `automake`, and `openssl@3`.

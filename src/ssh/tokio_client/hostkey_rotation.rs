@@ -330,11 +330,7 @@ fn host_field_matches(host_field: &str, identity: &str) -> bool {
 }
 
 fn pattern_matches(pattern: &str, identity: &str) -> bool {
-    if pattern.starts_with("|1|") {
-        host_pattern_matches(pattern, identity)
-    } else {
-        glob_match(identity, pattern)
-    }
+    host_pattern_matches(pattern, identity)
 }
 
 struct ParsedKnownHostsLine<'a> {
@@ -455,7 +451,7 @@ pub(crate) fn host_pattern_matches(pattern: &str, identity: &str) -> bool {
         hmac.update(identity.as_bytes());
         hmac.verify_slice(&expected).is_ok()
     } else {
-        pattern.eq_ignore_ascii_case(identity)
+        glob_match(identity, pattern)
     }
 }
 

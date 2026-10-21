@@ -37,7 +37,7 @@ use bssh::{
             AttachOutcome, ControlCommand, ControlPathContext, ControlPolicy, ControlResponseKind,
             SessionOpenRequest, attach_session, connect_control_socket, expand_control_path,
             prepare_attached_session, remove_stale_control_socket, send_control_command,
-            start_control_master_with_bootstrap_session,
+            start_control_master_with_bootstrap_session_and_forwarding_policy,
         },
         tokio_client::{AddressFamily, ProxyMode, SshConnectionConfigResolver},
     },
@@ -97,8 +97,10 @@ struct ResolvedControlInvocation {
     session_policy: SessionPolicy,
     session_request: SessionOpenRequest,
     forwarding_directives: Vec<bssh::forwarding::ForwardingDirective>,
+    permit_remote_open: Vec<String>,
     address_family: AddressFamily,
     jump_spec: Option<String>,
+    quiet_notifications: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -201,6 +203,18 @@ fn resolve_control_invocation(
         node.host.clone(),
         node.port,
         node.username.clone(),
+    )
+    .with_original_remote_host(
+        resolved_connection
+            .original_host
+            .as_deref()
+            .unwrap_or_else(|| node.config_host()),
+    )
+    .with_host_key_alias(
+        resolved_connection
+            .host_key_alias
+            .as_deref()
+            .unwrap_or_else(|| node.config_host()),
     );
     if let Some(ProxyMode::Jump(jump)) = resolved_connection.proxy_mode.as_ref() {
         path_context = path_context.with_jump_host(jump);
@@ -236,8 +250,17 @@ fn resolve_control_invocation(
         session_policy,
         session_request,
         forwarding_directives: resolved_connection.forwarding_plan.directives.clone(),
+        permit_remote_open: resolved_connection
+            .forwarding_plan
+            .permit_remote_open
+            .clone(),
         address_family: resolved_connection.address_family,
         jump_spec,
+        quiet_notifications: cli.quiet
+            || effective
+                .log_level
+                .as_deref()
+                .is_some_and(|level| level.eq_ignore_ascii_case("quiet")),
     }))
 }
 
@@ -246,12 +269,16 @@ async fn try_existing_control_master(
     control: &ResolvedControlInvocation,
     background_worker: Option<&BackgroundWorker>,
 ) -> Result<Option<i32>> {
+    let control_command = cli
+        .control_command
+        .as_deref()
+        .map(str::parse::<ControlCommand>)
+        .transpose()?;
     // OpenSSH's `-O proxy` exposes a raw SSH connection through its mux
     // socket. bssh's private control protocol provides the equivalent user
     // behavior by opening the requested session on the existing transport.
-    let proxy_session = cli.control_command.as_deref() == Some("proxy");
-    if let Some(command) = cli.control_command.as_deref().filter(|_| !proxy_session) {
-        let command = command.parse::<ControlCommand>()?;
+    let proxy_session = matches!(control_command, Some(ControlCommand::Proxy));
+    if let Some(command) = control_command.filter(|command| *command != ControlCommand::Proxy) {
         let forwards = if matches!(command, ControlCommand::Forward | ControlCommand::Cancel) {
             control.forwarding_directives.clone()
         } else {
@@ -261,9 +288,20 @@ async fn try_existing_control_master(
             send_control_command(&control.path, command, forwards, control.address_family).await?;
         match response {
             ControlResponseKind::Alive { pid } => {
-                println!("Master running (pid={pid})");
+                eprint!("Master running (pid={pid})\r\n");
             }
-            ControlResponseKind::Ok => {}
+            ControlResponseKind::Info { message } => {
+                print!("{message}");
+            }
+            ControlResponseKind::Ok => {
+                if !control.quiet_notifications {
+                    match command {
+                        ControlCommand::Exit => eprint!("Exit request sent.\r\n"),
+                        ControlCommand::Stop => eprint!("Stop listening request sent.\r\n"),
+                        _ => {}
+                    }
+                }
+            }
             response => anyhow::bail!("unexpected control command response: {response:?}"),
         }
         return Ok(Some(EXIT_SUCCESS));
@@ -425,11 +463,12 @@ async fn handle_control_master(
     let bootstrap_session = !control.fork_after_authentication
         && control.policy.persist.is_enabled()
         && background_worker.is_some();
-    let master = match start_control_master_with_bootstrap_session(
+    let master = match start_control_master_with_bootstrap_session_and_forwarding_policy(
         &control.path,
         client.clone(),
         control.policy.master.requires_confirmation(),
         bootstrap_session,
+        control.permit_remote_open.clone(),
     ) {
         Ok(master) => master,
         Err(error) => {

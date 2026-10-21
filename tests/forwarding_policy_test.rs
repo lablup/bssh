@@ -57,7 +57,7 @@ fn generic_and_dedicated_cli_forwards_preserve_one_argv_order() {
 
     let mut config = SshConfig::new();
     config
-        .apply_cli_options(&cli.ssh_config_overrides())
+        .apply_cli_options(&cli.ssh_config_overrides().unwrap())
         .expect("apply generic forwarding options");
     let resolved = SshConnectionConfigResolver::new()
         .with_ssh_config(Some(config))
@@ -181,7 +181,7 @@ fn cli_clear_and_exit_policy_override_forwarding_setup() {
     cli.record_forwarding_order(&args);
     let mut config = SshConfig::new();
     config
-        .apply_cli_options(&cli.ssh_config_overrides())
+        .apply_cli_options(&cli.ssh_config_overrides().unwrap())
         .expect("apply forwarding policy overrides");
 
     let resolved = SshConnectionConfigResolver::new()

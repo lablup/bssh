@@ -94,6 +94,18 @@ fn remote_command_conflicts_and_session_request_kinds_are_exact() {
     let policy =
         SessionPolicy::resolve(&config, &node(), None, CliTtyMode::Default, false).unwrap();
     assert_eq!(policy.request, SessionRequest::None);
+
+    config.session_type = Some("default".into());
+    config.remote_command = Some("NoNe".into());
+    let policy = SessionPolicy::resolve(
+        &config,
+        &node(),
+        Some("scp -f file"),
+        CliTtyMode::Default,
+        false,
+    )
+    .unwrap();
+    assert_eq!(policy.request, SessionRequest::Exec("scp -f file".into()));
 }
 
 #[test]
@@ -414,4 +426,32 @@ fn expanded_shell_values_and_command_size_remain_bounded() {
     assert!(SessionPolicy::resolve(&config, &node(), None, CliTtyMode::Default, false).is_err());
     config.remote_command = Some("x".repeat(MAX_EXPANDED_COMMAND_BYTES + 1));
     assert!(SessionPolicy::resolve(&config, &node(), None, CliTtyMode::Default, false).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn local_command_rejects_spaced_remote_user_before_shell_execution() {
+    let directory = tempfile::tempdir().unwrap();
+    let marker = directory.path().join("remote-user-injection");
+    let hostile_node = Node::new(
+        "127.0.0.1".into(),
+        22,
+        format!("touch {}", marker.display()),
+    );
+    let config = SshHostConfig {
+        permit_local_command: Some(true),
+        local_command: Some("%r".into()),
+        ..Default::default()
+    };
+
+    let error = SessionPolicy::resolve(
+        &config,
+        &hostile_node,
+        Some("true"),
+        CliTtyMode::Default,
+        false,
+    )
+    .expect_err("whitespace in a raw LocalCommand token must fail closed");
+    assert!(error.to_string().contains("Unsafe remote user"));
+    assert!(!marker.exists());
 }

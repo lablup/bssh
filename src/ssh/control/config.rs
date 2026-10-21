@@ -148,6 +148,9 @@ pub enum ControlCommand {
     Cancel,
     Exit,
     Stop,
+    Proxy,
+    ConnectionInfo,
+    Channels,
 }
 
 impl FromStr for ControlCommand {
@@ -160,6 +163,9 @@ impl FromStr for ControlCommand {
             "cancel" => Ok(Self::Cancel),
             "exit" => Ok(Self::Exit),
             "stop" => Ok(Self::Stop),
+            "proxy" => Ok(Self::Proxy),
+            "conninfo" => Ok(Self::ConnectionInfo),
+            "channels" => Ok(Self::Channels),
             _ => Err(ControlConfigError::InvalidControlCommand(value.to_string())),
         }
     }
@@ -173,6 +179,9 @@ impl fmt::Display for ControlCommand {
             Self::Cancel => "cancel",
             Self::Exit => "exit",
             Self::Stop => "stop",
+            Self::Proxy => "proxy",
+            Self::ConnectionInfo => "conninfo",
+            Self::Channels => "channels",
         })
     }
 }
@@ -227,7 +236,9 @@ pub enum ControlConfigError {
     InvalidControlPersist(String),
     #[error("ControlPersist duration '{0}' is too large")]
     ControlPersistOverflow(String),
-    #[error("invalid control command '{0}'; expected check, forward, cancel, exit, or stop")]
+    #[error(
+        "invalid control command '{0}'; expected check, forward, cancel, exit, stop, proxy, conninfo, or channels"
+    )]
     InvalidControlCommand(String),
 }
 
@@ -357,7 +368,9 @@ mod tests {
 
     #[test]
     fn command_scope_is_deliberately_bounded() {
-        for command in ["check", "forward", "cancel", "exit", "stop"] {
+        for command in [
+            "check", "forward", "cancel", "exit", "stop", "proxy", "conninfo", "channels",
+        ] {
             assert_eq!(
                 command
                     .parse::<ControlCommand>()
@@ -366,7 +379,7 @@ mod tests {
                 command
             );
         }
-        for command in ["proxy", "channels", "conninfo", "", "CHECK"] {
+        for command in ["", "CHECK"] {
             assert!(command.parse::<ControlCommand>().is_err());
         }
     }

@@ -88,10 +88,7 @@ pub fn execute_match_command(command: &str, context: &MatchContext) -> Result<bo
 /// the explicitly authorized OpenSSH shell behavior must not leak out of the
 /// host-aware `-G` preprocessing path.
 pub(super) fn execute_match_command_direct(command: &str, context: &MatchContext) -> Result<bool> {
-    validate_direct_exec_command(command)?;
-    let expanded_command = expand_variables(command, &context.variables);
-    let parts = shell_words::split(&expanded_command)
-        .with_context(|| format!("Failed to parse Match exec command: {expanded_command}"))?;
+    let parts = direct_exec_argv(command, context)?;
     let Some((program, args)) = parts.split_first() else {
         anyhow::bail!("Empty Match exec command");
     };
@@ -153,6 +150,15 @@ pub(super) fn execute_match_command_direct(command: &str, context: &MatchContext
     }
 }
 
+fn direct_exec_argv(command: &str, context: &MatchContext) -> Result<Vec<String>> {
+    validate_direct_exec_command(command)?;
+    let mut parts = shell_words::split(command).context("Failed to parse Match exec command")?;
+    for argument in parts.iter_mut().skip(1) {
+        *argument = expand_variables(argument, &context.variables);
+    }
+    Ok(parts)
+}
+
 fn validate_direct_exec_command(command: &str) -> Result<()> {
     const MAX_COMMAND_LENGTH: usize = 1024;
     if command.len() > MAX_COMMAND_LENGTH {
@@ -182,6 +188,9 @@ fn validate_direct_exec_command(command: &str) -> Result<()> {
 
     let parts = shell_words::split(command).context("Failed to parse Match exec command")?;
     let first_word = parts.first().map_or("", String::as_str);
+    if first_word.contains('%') {
+        anyhow::bail!("Match exec direct mode does not expand tokens in argv[0]");
+    }
     const BLOCKED_COMMANDS: &[&str] = &[
         "sh", "bash", "zsh", "ksh", "csh", "fish", "python", "python2", "python3", "perl", "ruby",
         "php", "node", "nc", "netcat", "ncat", "socat", "wget", "curl", "fetch", "chmod", "chown",
@@ -332,6 +341,22 @@ mod tests {
         let command = "echo %u@%h";
         let expanded = expand_variables(command, &variables);
         assert_eq!(expanded, "echo testuser@example.com");
+    }
+
+    #[test]
+    fn direct_exec_keeps_expanded_whitespace_in_one_argument_and_rejects_dynamic_programs() {
+        let directory = tempfile::tempdir().unwrap();
+        let marker = directory.path().join("dynamic-program-ran");
+        let hostile = format!("touch {}", marker.display());
+        let context = MatchContext::new(hostile.clone(), None).unwrap();
+
+        let argv = direct_exec_argv("test %h = expected", &context).unwrap();
+        assert_eq!(argv, ["test", hostile.as_str(), "=", "expected"]);
+
+        let error = execute_match_command_direct("%h", &context)
+            .expect_err("direct mode must not derive argv[0] from a percent token");
+        assert!(error.to_string().contains("argv[0]"));
+        assert!(!marker.exists());
     }
 
     #[test]

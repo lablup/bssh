@@ -12,7 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::tokio_client::{ServerCheckMethod, SshConnectionConfig};
+use super::tokio_client::{ProxyMode, ServerCheckMethod, SshConnectionConfig};
+use sha1::{Digest as _, Sha1};
+use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -127,12 +129,14 @@ fn configured_check_method(
 ) -> ServerCheckMethod {
     let user_files = expand_known_hosts_files(
         connection_config.user_known_hosts_files.as_deref(),
+        connection_config,
         hostname,
         port,
         remote_username,
     );
     let global_files = expand_known_hosts_files(
         connection_config.global_known_hosts_files.as_deref(),
+        connection_config,
         hostname,
         port,
         remote_username,
@@ -161,6 +165,7 @@ fn wrap_host_key_alias(method: ServerCheckMethod, alias: Option<&str>) -> Server
 
 fn expand_known_hosts_files(
     templates: Option<&[String]>,
+    connection_config: &SshConnectionConfig,
     hostname: &str,
     port: u16,
     remote_username: &str,
@@ -168,12 +173,15 @@ fn expand_known_hosts_files(
     templates
         .into_iter()
         .flatten()
-        .filter_map(|template| expand_known_hosts_path(template, hostname, port, remote_username))
+        .filter_map(|template| {
+            expand_known_hosts_path(template, connection_config, hostname, port, remote_username)
+        })
         .collect()
 }
 
 fn expand_known_hosts_path(
     template: &str,
+    connection_config: &SshConnectionConfig,
     hostname: &str,
     port: u16,
     remote_username: &str,
@@ -187,11 +195,74 @@ fn expand_known_hosts_path(
         .or_else(|_| std::env::var("USERNAME"))
         .or_else(|_| std::env::var("LOGNAME"))
         .unwrap_or_else(|_| whoami::username().unwrap_or_else(|_| "user".to_string()));
+    let local_hostname = whoami::hostname().unwrap_or_else(|_| "localhost".to_string());
+    let local_hostname_short = local_hostname.split('.').next().unwrap_or(&local_hostname);
+    let original_host = connection_config
+        .original_host
+        .as_deref()
+        .unwrap_or(hostname);
+    let host_key_alias = connection_config
+        .host_key_alias
+        .as_deref()
+        .unwrap_or(original_host);
+    let jump_host = match connection_config.proxy_mode.as_ref() {
+        Some(ProxyMode::Jump(jump)) => jump.as_str(),
+        _ => "",
+    };
     let port = port.to_string();
+    let mut hasher = Sha1::new();
+    for value in [
+        local_hostname.as_str(),
+        hostname,
+        port.as_str(),
+        remote_username,
+        jump_host,
+    ] {
+        hasher.update(value.as_bytes());
+    }
+    let mut connection_hash = String::with_capacity(40);
+    for byte in hasher.finalize() {
+        let _ = write!(connection_hash, "{byte:02x}");
+    }
     let mut expanded = String::with_capacity(template.len());
-    let mut chars = template.chars();
+    let mut chars = template.chars().peekable();
 
     while let Some(ch) = chars.next() {
+        if ch == '$' && chars.peek() == Some(&'$') {
+            chars.next();
+            expanded.push('$');
+            continue;
+        }
+        if ch == '$' && chars.peek() == Some(&'{') {
+            chars.next();
+            let mut name = String::new();
+            loop {
+                match chars.next() {
+                    Some('}') => break,
+                    Some(character) => name.push(character),
+                    None => {
+                        tracing::warn!(
+                            "Ignoring known_hosts path with an unterminated environment token: {template}"
+                        );
+                        return None;
+                    }
+                }
+            }
+            if !valid_environment_name(&name) {
+                tracing::warn!(
+                    "Ignoring known_hosts path with an invalid environment variable name: {template}"
+                );
+                return None;
+            }
+            let Ok(value) = std::env::var(&name) else {
+                tracing::warn!(
+                    "Ignoring known_hosts path because environment variable ${{{name}}} is not set: {template}"
+                );
+                return None;
+            };
+            expanded.push_str(&value);
+            continue;
+        }
         if ch != '%' {
             expanded.push(ch);
             continue;
@@ -202,6 +273,7 @@ fn expand_known_hosts_path(
         };
         match token {
             '%' => expanded.push('%'),
+            'C' => expanded.push_str(&connection_hash),
             'd' => {
                 let Some(home) = home.as_deref() else {
                     tracing::warn!(
@@ -212,6 +284,11 @@ fn expand_known_hosts_path(
                 expanded.push_str(home);
             }
             'h' => expanded.push_str(hostname),
+            'i' => expanded.push_str(&local_uid()),
+            'k' => expanded.push_str(host_key_alias),
+            'L' => expanded.push_str(local_hostname_short),
+            'l' => expanded.push_str(&local_hostname),
+            'n' => expanded.push_str(original_host),
             'p' => expanded.push_str(&port),
             'r' => expanded.push_str(remote_username),
             'u' => expanded.push_str(&local_username),
@@ -253,6 +330,25 @@ fn expand_known_hosts_path(
     }
 
     Some(expanded)
+}
+
+fn valid_environment_name(name: &str) -> bool {
+    let mut characters = name.chars();
+    characters
+        .next()
+        .is_some_and(|character| character == '_' || character.is_ascii_alphabetic())
+        && characters.all(|character| character == '_' || character.is_ascii_alphanumeric())
+}
+
+#[cfg(unix)]
+fn local_uid() -> String {
+    // SAFETY: getuid has no arguments, dereferences no pointers, and cannot fail.
+    unsafe { libc::getuid() }.to_string()
+}
+
+#[cfg(not(unix))]
+fn local_uid() -> String {
+    "0".to_string()
 }
 
 /// Mode for host key checking
@@ -302,6 +398,7 @@ pub(crate) fn user_known_hosts_paths(
     }
     expand_known_hosts_files(
         connection_config.user_known_hosts_files.as_deref(),
+        connection_config,
         hostname,
         port,
         remote_username,
@@ -324,6 +421,7 @@ pub(crate) fn read_known_hosts_paths(
     }
     expand_known_hosts_files(
         connection_config.user_known_hosts_files.as_deref(),
+        connection_config,
         hostname,
         port,
         remote_username,
@@ -331,6 +429,7 @@ pub(crate) fn read_known_hosts_paths(
     .into_iter()
     .chain(expand_known_hosts_files(
         connection_config.global_known_hosts_files.as_deref(),
+        connection_config,
         hostname,
         port,
         remote_username,
@@ -564,13 +663,54 @@ mod tests {
     #[test]
     fn expands_home_directory_tokens_and_tilde() {
         let home = dirs::home_dir().expect("test environment must have a home directory");
+        let config = SshConnectionConfig::new();
         assert_eq!(
-            expand_known_hosts_path("%d/.ssh/custom", "node", 22, "remote"),
+            expand_known_hosts_path("%d/.ssh/custom", &config, "node", 22, "remote"),
             Some(home.join(".ssh/custom").to_string_lossy().into_owned())
         );
         assert_eq!(
-            expand_known_hosts_path("~/.ssh/other", "node", 22, "remote"),
+            expand_known_hosts_path("~/.ssh/other", &config, "node", 22, "remote"),
             Some(home.join(".ssh/other").to_string_lossy().into_owned())
+        );
+    }
+
+    #[test]
+    fn expands_full_known_hosts_token_set_and_environment() {
+        let config = SshConnectionConfig::new()
+            .with_original_host("alias")
+            .with_host_key_alias(Some("key-alias".to_string()))
+            .with_proxy_mode(Some(ProxyMode::Jump("jump.example".to_string())));
+        let local_host = whoami::hostname().unwrap_or_else(|_| "localhost".to_string());
+        let local_short = local_host.split('.').next().unwrap_or(&local_host);
+        let home = std::env::var("HOME").expect("test environment must define HOME");
+        let mut hasher = Sha1::new();
+        for value in [
+            local_host.as_str(),
+            "effective.example",
+            "2222",
+            "remote",
+            "jump.example",
+        ] {
+            hasher.update(value.as_bytes());
+        }
+        let connection_hash = hasher
+            .finalize()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+
+        assert_eq!(
+            expand_known_hosts_path(
+                "${HOME}/%C-%i-%L-%l-%n-%k-%%-$$",
+                &config,
+                "effective.example",
+                2222,
+                "remote",
+            ),
+            Some(format!(
+                "{home}/{connection_hash}-{}-{local_short}-{local_host}-alias-key-alias-%-$",
+                local_uid()
+            ))
         );
     }
 }

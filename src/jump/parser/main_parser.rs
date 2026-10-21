@@ -25,6 +25,7 @@ use super::host_parser::parse_single_jump_host;
 /// Supports the OpenSSH -J syntax:
 /// * Single host: `hostname`, `user@hostname`, `hostname:port`, `user@hostname:port`
 /// * Multiple hosts: Comma-separated list of the above
+/// * SSH URI: `ssh://user@hostname:port`
 ///
 /// # Examples
 /// ```rust
@@ -77,4 +78,24 @@ pub fn parse_jump_hosts(jump_spec: &str) -> Result<Vec<JumpHost>> {
     }
 
     Ok(jump_hosts)
+}
+
+/// Validate and canonicalize a command-line ProxyJump value.
+///
+/// OpenSSH accepts an SSH URI on the command line but prints and executes the
+/// equivalent `[user@]host[:port]` spelling. Config-file values remain raw so
+/// aliases with shell metacharacters retain OpenSSH's source distinction.
+pub(crate) fn canonicalize_jump_hosts(jump_spec: &str) -> Result<String> {
+    if jump_spec.eq_ignore_ascii_case("none") || jump_spec.eq_ignore_ascii_case("direct") {
+        return Ok(jump_spec.to_ascii_lowercase());
+    }
+    let jump_hosts = parse_jump_hosts(jump_spec)?;
+    if jump_hosts.is_empty() {
+        anyhow::bail!("ProxyJump requires a non-empty value");
+    }
+    Ok(jump_hosts
+        .iter()
+        .map(JumpHost::to_connection_string)
+        .collect::<Vec<_>>()
+        .join(","))
 }

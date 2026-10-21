@@ -25,7 +25,7 @@ impl ForwardingRuntimeState {
     fn forwarding_id(&self, spec: &ForwardingType) -> Option<ForwardingId> {
         self.configured
             .iter()
-            .find(|forwarding| &forwarding.spec == spec)
+            .find(|forwarding| same_forwarding_endpoint(&forwarding.spec, spec))
             .map(|forwarding| forwarding.id)
     }
 
@@ -49,6 +49,24 @@ impl ForwardingRuntimeState {
         };
         self.address_family = None;
         shutdown_result
+    }
+}
+
+fn same_forwarding_endpoint(left: &ForwardingType, right: &ForwardingType) -> bool {
+    match (left, right) {
+        (
+            ForwardingType::RemoteDynamic {
+                bind_addr: left_addr,
+                bind_port: left_port,
+                ..
+            },
+            ForwardingType::RemoteDynamic {
+                bind_addr: right_addr,
+                bind_port: right_port,
+                ..
+            },
+        ) => left_addr == right_addr && left_port == right_port,
+        _ => left == right,
     }
 }
 
@@ -93,6 +111,7 @@ impl ForwardingRuntime {
             auto_reconnect: false,
             max_reconnect_attempts: 1,
             address_family: plan.address_family,
+            permit_remote_open: plan.permit_remote_open.clone(),
             ..ForwardingConfig::default()
         };
         let mut manager = ForwardingManager::new(config);
@@ -164,6 +183,7 @@ impl ForwardingRuntime {
                 auto_reconnect: false,
                 max_reconnect_attempts: 1,
                 address_family: plan.address_family,
+                permit_remote_open: plan.permit_remote_open.clone(),
                 ..ForwardingConfig::default()
             };
             let mut manager = ForwardingManager::new(config);
@@ -327,5 +347,31 @@ mod tests {
         state.untrack(first_id);
         assert_eq!(state.forwarding_id(&first), None);
         assert_eq!(state.forwarding_id(&second), Some(second_id));
+    }
+
+    #[test]
+    fn remote_dynamic_tracking_identity_excludes_destination_policy() {
+        let id = ForwardingId::new_v4();
+        let configured = ForwardingType::RemoteDynamic {
+            bind_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            bind_port: 1080,
+            permitted_destinations: vec!["example.com:443".to_string()],
+        };
+        let same_listener = ForwardingType::RemoteDynamic {
+            bind_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            bind_port: 1080,
+            permitted_destinations: vec!["none".to_string()],
+        };
+        let different_listener = ForwardingType::RemoteDynamic {
+            bind_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+            bind_port: 1081,
+            permitted_destinations: vec!["example.com:443".to_string()],
+        };
+        let mut state = ForwardingRuntimeState::default();
+
+        state.track(configured, id);
+
+        assert_eq!(state.forwarding_id(&same_listener), Some(id));
+        assert_eq!(state.forwarding_id(&different_listener), None);
     }
 }

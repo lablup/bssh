@@ -234,7 +234,8 @@ fn gssapi_credential_delegation_disable_is_enforced_but_enable_is_retained_as_un
 fn forward_agent_accepts_explicit_and_environment_selected_sockets() {
     let hosts = parse(
         "Host explicit\n    ForwardAgent /tmp/agent.sock\n\
-         Host environment\n    ForwardAgent $FORWARD_AGENT_SOCK\n",
+         Host environment\n    ForwardAgent $FORWARD_AGENT_SOCK\n\
+         Host braced\n    ForwardAgent ${FORWARD_AGENT_SOCK}\n",
     )
     .unwrap();
 
@@ -247,6 +248,11 @@ fn forward_agent_accepts_explicit_and_environment_selected_sockets() {
     assert_eq!(
         hosts[1].forward_agent_socket_path.as_deref(),
         Some("$FORWARD_AGENT_SOCK")
+    );
+    assert_eq!(hosts[2].forward_agent, Some(true));
+    assert_eq!(
+        hosts[2].forward_agent_socket_path.as_deref(),
+        Some("${FORWARD_AGENT_SOCK}")
     );
     assert!(parse("Host invalid\n    ForwardAgent $9INVALID\n").is_err());
 }
@@ -784,7 +790,8 @@ Host other.com
 
 #[test]
 fn test_parse_permit_remote_open_multiple_declarations() {
-    // Multiple PermitRemoteOpen lines should accumulate
+    // PermitRemoteOpen is one first-obtained list. A later declaration must
+    // not silently broaden the first restriction.
     let content = r#"
 Host example.com
     PermitRemoteOpen localhost:8080
@@ -792,9 +799,15 @@ Host example.com
 "#;
     let hosts = parse(content).unwrap();
     assert_eq!(hosts.len(), 1);
-    assert_eq!(hosts[0].permit_remote_open.len(), 2);
-    assert_eq!(hosts[0].permit_remote_open[0], "localhost:8080");
-    assert_eq!(hosts[0].permit_remote_open[1], "db.internal:5432");
+    assert_eq!(hosts[0].permit_remote_open, vec!["localhost:8080"]);
+}
+
+#[test]
+fn test_parse_permit_remote_open_rejects_mixed_sentinels() {
+    for value in ["none localhost:8080", "localhost:8080 any", "none any"] {
+        let result = parse(&format!("Host example.com\n    PermitRemoteOpen {value}\n"));
+        assert!(result.is_err(), "mixed policy must be rejected: {value}");
+    }
 }
 
 #[test]

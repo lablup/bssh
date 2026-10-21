@@ -452,7 +452,7 @@ fn apply_value(
     query: &mut Option<String>,
 ) -> Result<()> {
     let option = match name {
-        "option" => value.to_string(),
+        "option" => canonicalize_proxy_jump_option(value)?,
         "login" => config_option("User", &literal_user(value)?)?,
         "port" => {
             value
@@ -461,7 +461,11 @@ fn apply_value(
             format!("Port={value}")
         }
         "identity" => config_option("IdentityFile", value)?,
-        "jump-host" => config_option("ProxyJump", value)?,
+        "jump-host" => config_option(
+            "ProxyJump",
+            &crate::jump::parser::canonicalize_jump_hosts(value)
+                .context("Invalid ProxyJump command-line value")?,
+        )?,
         "cipher" => {
             set_priority(
                 priority_overrides,
@@ -507,6 +511,23 @@ fn apply_value(
     };
     overrides.push(option);
     Ok(())
+}
+
+pub(crate) fn canonicalize_proxy_jump_option(value: &str) -> Result<String> {
+    let trimmed = value.trim_start();
+    let separator = trimmed.find(|character: char| character == '=' || character.is_whitespace());
+    let Some(separator) = separator else {
+        return Ok(value.to_string());
+    };
+    let keyword = &trimmed[..separator];
+    if !keyword.eq_ignore_ascii_case("ProxyJump") {
+        return Ok(value.to_string());
+    }
+    let jump_spec = trimmed[separator..]
+        .trim_start_matches(|character: char| character == '=' || character.is_whitespace());
+    let canonical = crate::jump::parser::canonicalize_jump_hosts(jump_spec)
+        .context("Invalid ProxyJump command-line value")?;
+    config_option("ProxyJump", &canonical)
 }
 
 fn config_option(keyword: &str, value: &str) -> Result<String> {
@@ -1102,6 +1123,53 @@ mod tests {
             SshDumpInvocation::from_argv(&args(&["bssh", "-G", "--", "-alias"])).unwrap();
         assert_eq!(terminated.destination, "-alias");
         assert!(SshDumpInvocation::from_argv(&args(&["bssh", "-G", "-"])).is_ok());
+    }
+
+    #[test]
+    fn proxy_jump_cli_values_are_validated_and_canonicalized() {
+        for argv in [
+            args(&[
+                "bssh",
+                "-GF",
+                "/dev/null",
+                "-J",
+                "ssh://user@host:2223",
+                "target",
+            ]),
+            args(&[
+                "bssh",
+                "-GF",
+                "/dev/null",
+                "-oProxyJump=ssh://user@host:2223",
+                "target",
+            ]),
+        ] {
+            let parsed = SshDumpInvocation::from_argv(&argv).unwrap();
+            assert_eq!(parsed.overrides, ["ProxyJump=user@host:2223"]);
+        }
+
+        for invalid in [
+            "host;with;semicolon",
+            "host'with'quote",
+            "host`with`backtick",
+            "host$with$dollar",
+            "host(with)brace",
+            "user;with;semicolon@host",
+            "user'with'quote@host",
+            "user`with`backtick@host",
+            "user(with)brace@host",
+        ] {
+            let direct = args(&["bssh", "-GF", "/dev/null", "-J", invalid, "target"]);
+            assert!(SshDumpInvocation::from_argv(&direct).is_err(), "{invalid}");
+            let generic = args(&[
+                "bssh",
+                "-GF",
+                "/dev/null",
+                &format!("-oProxyJump={invalid}"),
+                "target",
+            ]);
+            assert!(SshDumpInvocation::from_argv(&generic).is_err(), "{invalid}");
+        }
     }
 
     #[test]

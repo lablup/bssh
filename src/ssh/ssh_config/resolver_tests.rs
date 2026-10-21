@@ -16,6 +16,7 @@
 
 #[cfg(test)]
 mod tests {
+    use crate::ssh::ssh_config::SshConfig;
     use crate::ssh::ssh_config::parser::parse;
     use crate::ssh::ssh_config::resolver::find_host_config;
 
@@ -91,7 +92,7 @@ Host example.com
     }
 
     #[test]
-    fn test_permit_remote_open_merging_across_host_blocks() {
+    fn test_permit_remote_open_keeps_first_obtained_list_across_host_blocks() {
         let content = r#"
 Host *
     PermitRemoteOpen localhost:8080
@@ -102,29 +103,33 @@ Host example.com
         let hosts = parse(content).unwrap();
         let config = find_host_config(&hosts, "example.com");
 
-        // Should have both entries (appending behavior)
-        assert_eq!(config.permit_remote_open.len(), 2);
-        assert_eq!(config.permit_remote_open[0], "localhost:8080");
-        assert_eq!(config.permit_remote_open[1], "db.internal:5432");
+        assert_eq!(config.permit_remote_open, vec!["localhost:8080"]);
     }
 
     #[test]
-    fn test_permit_remote_open_deduplication() {
+    fn test_permit_remote_open_none_cannot_be_broadened_by_later_blocks() {
         let content = r#"
 Host *
-    PermitRemoteOpen localhost:8080
+    PermitRemoteOpen none
 
 Host example.com
-    PermitRemoteOpen localhost:8080
-    PermitRemoteOpen db.internal:5432
+    PermitRemoteOpen any
 "#;
         let hosts = parse(content).unwrap();
         let config = find_host_config(&hosts, "example.com");
 
-        // Should deduplicate localhost:8080
-        assert_eq!(config.permit_remote_open.len(), 2);
-        assert_eq!(config.permit_remote_open[0], "localhost:8080");
-        assert_eq!(config.permit_remote_open[1], "db.internal:5432");
+        assert_eq!(config.permit_remote_open, vec!["none"]);
+    }
+
+    #[test]
+    fn test_cli_permit_remote_open_none_cannot_be_broadened_by_file() {
+        let mut config = SshConfig::parse("Host example.com\n    PermitRemoteOpen any\n").unwrap();
+        config
+            .apply_cli_options(&["PermitRemoteOpen=none".to_string()])
+            .unwrap();
+
+        let resolved = config.find_host_config("example.com");
+        assert_eq!(resolved.permit_remote_open, vec!["none"]);
     }
 
     #[test]
@@ -298,8 +303,7 @@ Host secure.example.com
     CASignatureAlgorithms ssh-ed25519,rsa-sha2-512,rsa-sha2-256
     GatewayPorts clientspecified
     ExitOnForwardFailure yes
-    PermitRemoteOpen localhost:8080
-    PermitRemoteOpen db.internal:5432
+    PermitRemoteOpen localhost:8080 db.internal:5432
     HostbasedAuthentication yes
     HostbasedAcceptedAlgorithms ssh-ed25519,rsa-sha2-512
 "#;

@@ -167,6 +167,28 @@ impl JumpHostChain {
             .with_session_purpose(self.session_purpose)
     }
 
+    /// Materialize a ProxyJump alias without losing fields explicitly supplied
+    /// by `-J`. The alias remains the resolver lookup key while `HostName`,
+    /// `User`, and `Port` become the actual hop endpoint.
+    fn resolved_jump_host(&self, jump_host: &JumpHost) -> JumpHost {
+        let Some(resolver) = self.ssh_connection_config_resolver.as_ref() else {
+            return jump_host.clone();
+        };
+        let Some((_raw_host, user, port, _identity_file)) =
+            resolver.resolve_jump_host(&jump_host.host)
+        else {
+            return jump_host.clone();
+        };
+        let host = resolver.effective_hostname(&jump_host.host);
+
+        JumpHost::with_ssh_key(
+            host,
+            jump_host.user.clone().or(user),
+            jump_host.port.or(port),
+            jump_host.ssh_key.clone(),
+        )
+    }
+
     pub(crate) fn destination_connection_config(&self) -> SshConnectionConfig {
         self.ssh_connection_config
             .clone()
@@ -320,10 +342,11 @@ impl JumpHostChain {
         debug!("Connected to first jump host: {}", self.jump_hosts[0]);
 
         // Step 2: Chain through intermediate jump hosts
-        for (i, jump_host) in self.jump_hosts.iter().skip(1).enumerate() {
+        for (i, jump_alias) in self.jump_hosts.iter().skip(1).enumerate() {
             let ssh_connection_config = self
-                .connection_config_for_jump_host(&jump_host.host)
+                .connection_config_for_jump_host(&jump_alias.host)
                 .without_forwarding();
+            let jump_host = self.resolved_jump_host(jump_alias);
             debug!(
                 "Connecting to intermediate jump host {} of {}: {}",
                 i + 2,
@@ -333,7 +356,7 @@ impl JumpHostChain {
 
             current_client = tunnel::connect_through_tunnel(
                 &current_client,
-                jump_host,
+                &jump_host,
                 dest_key_path,
                 dest_use_agent,
                 dest_use_password,
@@ -344,7 +367,7 @@ impl JumpHostChain {
                 &ssh_connection_config,
             )
             .await
-            .with_context(|| intermediate_jump_hop_context(jump_host, i + 2))?;
+            .with_context(|| intermediate_jump_hop_context(&jump_host, i + 2))?;
 
             debug!("Connected through jump host: {}", jump_host);
         }
@@ -398,10 +421,11 @@ impl JumpHostChain {
         use_agent: bool,
         use_password: bool,
     ) -> Result<crate::ssh::tokio_client::Client> {
-        let jump_host = &self.jump_hosts[0];
+        let jump_alias = &self.jump_hosts[0];
         let ssh_connection_config = self
-            .connection_config_for_jump_host(&jump_host.host)
+            .connection_config_for_jump_host(&jump_alias.host)
             .without_forwarding();
+        let jump_host = self.resolved_jump_host(jump_alias);
 
         debug!(
             "Connecting to first jump host: {} ({}:{})",
@@ -435,7 +459,7 @@ impl JumpHostChain {
         }
 
         let auth_method = auth::determine_auth_method(
-            jump_host,
+            &jump_host,
             key_path,
             use_agent,
             use_password,
@@ -562,6 +586,45 @@ mod tests {
 
         assert!(message.contains("hop 3"));
         assert!(message.contains("relay.example.com"));
+    }
+
+    #[test]
+    fn test_chain_materializes_jump_alias_endpoint_and_preserves_cli_fields() {
+        let ssh_config = SshConfig::parse(
+            r#"
+Host bastion
+    HostName 127.0.0.1
+    User config-user
+    Port 2200
+    IdentityFile /tmp/config-key
+Host templated
+    HostName %h.internal
+"#,
+        )
+        .expect("valid ssh_config");
+        let resolver = SshConnectionConfigResolver::new().with_ssh_config(Some(ssh_config));
+        let chain = JumpHostChain::new(vec![]).with_ssh_connection_config_resolver(resolver);
+
+        let from_alias = chain.resolved_jump_host(&JumpHost::new("bastion".into(), None, None));
+        assert_eq!(from_alias.host, "127.0.0.1");
+        assert_eq!(from_alias.user.as_deref(), Some("config-user"));
+        assert_eq!(from_alias.port, Some(2200));
+        assert_eq!(
+            from_alias.ssh_key, None,
+            "auth policy owns config identities"
+        );
+
+        let explicit = chain.resolved_jump_host(&JumpHost::new(
+            "bastion".into(),
+            Some("cli-user".into()),
+            Some(2222),
+        ));
+        assert_eq!(explicit.host, "127.0.0.1");
+        assert_eq!(explicit.user.as_deref(), Some("cli-user"));
+        assert_eq!(explicit.port, Some(2222));
+
+        let templated = chain.resolved_jump_host(&JumpHost::new("templated".into(), None, None));
+        assert_eq!(templated.host, "templated.internal");
     }
 
     #[test]

@@ -865,7 +865,7 @@ If jump host authentication fails due to username mismatch, specify the username
 
 ## SSH Configuration Support
 
-bssh fully supports OpenSSH-compatible configuration files via the `-F` flag or default SSH config locations (`~/.ssh/config`, `/etc/ssh/ssh_config`). In addition to standard SSH directives, bssh supports advanced options for certificate-based authentication and port forwarding control.
+bssh reads OpenSSH-style configuration through `-F` or the default locations (`~/.ssh/config`, `/etc/ssh/ssh_config`), including certificate authentication and forwarding directives. Runtime support is tracked per keyword; accepted but unimplemented directives emit explicit warnings. See the [compatibility status ledger](docs/openssh-compatibility-status.md) for remaining semantic and protocol gaps.
 
 ### Certificate Authentication Options
 

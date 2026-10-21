@@ -192,6 +192,18 @@ pub(crate) fn parse_cli_options(
     options: &[String],
     reported_diagnostics: &mut HashSet<String>,
 ) -> Result<Option<SshHostConfig>> {
+    parse_cli_options_with_emission(options, reported_diagnostics, true)
+}
+
+pub(crate) fn parse_cli_options_silently(options: &[String]) -> Result<Option<SshHostConfig>> {
+    parse_cli_options_with_emission(options, &mut HashSet::new(), false)
+}
+
+fn parse_cli_options_with_emission(
+    options: &[String],
+    reported_diagnostics: &mut HashSet<String>,
+    emit_diagnostics: bool,
+) -> Result<Option<SshHostConfig>> {
     const MAX_LINE_LENGTH: usize = 8192;
     const MAX_VALUE_LENGTH: usize = 4096;
 
@@ -218,12 +230,13 @@ pub(crate) fn parse_cli_options(
         if keyword.is_empty() {
             anyhow::bail!("-o option #{option_number} has no keyword");
         }
-        parse_option_first(
+        parse_option_first_with_emission(
             &mut overlay,
             &keyword,
             &args,
             DiagnosticSource::CliOption { option_number },
             reported_diagnostics,
+            emit_diagnostics,
         )
         .with_context(|| format!("Invalid -o option #{option_number} ({keyword})"))?;
     }
@@ -482,8 +495,26 @@ fn parse_option_first(
     source: DiagnosticSource<'_>,
     reported_diagnostics: &mut HashSet<String>,
 ) -> Result<()> {
+    parse_option_first_with_emission(target, keyword, args, source, reported_diagnostics, true)
+}
+
+fn parse_option_first_with_emission(
+    target: &mut SshHostConfig,
+    keyword: &str,
+    args: &[String],
+    source: DiagnosticSource<'_>,
+    reported_diagnostics: &mut HashSet<String>,
+    emit_diagnostics: bool,
+) -> Result<()> {
     let mut parsed = SshHostConfig::default();
-    options::parse_option(&mut parsed, keyword, args, source, reported_diagnostics)?;
+    options::parse_option(
+        &mut parsed,
+        keyword,
+        args,
+        source,
+        reported_diagnostics,
+        emit_diagnostics,
+    )?;
     merge_host_config(target, &parsed);
     Ok(())
 }

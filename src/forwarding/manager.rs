@@ -307,7 +307,7 @@ impl ForwardingManager {
                     )
                     .await
                 }
-                ForwardingType::Remote { .. } => {
+                ForwardingType::Remote { .. } | ForwardingType::RemoteDynamic { .. } => {
                     super::remote::RemoteForwarder::run(
                         session_id,
                         spec.clone(),

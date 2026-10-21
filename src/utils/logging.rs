@@ -90,6 +90,7 @@ pub fn init_logging(verbosity: u8) -> Arc<Mutex<LogBuffer>> {
             .with_env_filter(filter)
             .with_target(true)
             .with_ansi(colors_enabled(OutputStream::Stderr))
+            .with_writer(DiagnosticMakeWriter)
             .init();
     }
 
@@ -106,6 +107,7 @@ pub fn init_logging_console_only(verbosity: u8) {
         .with_env_filter(filter)
         .with_target(true)
         .with_ansi(colors_enabled(OutputStream::Stderr))
+        .with_writer(DiagnosticMakeWriter)
         .init();
 }
 

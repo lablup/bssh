@@ -127,6 +127,11 @@ pub struct SshConnectionConfig {
     /// `LogLevel QUIET`.
     pub suppress_auth_banner: bool,
 
+    /// Emit OpenSSH-compatible key-exchange diagnostics requested by a
+    /// `LogLevel DEBUG*` ssh_config value even when CLI verbosity did not
+    /// globally enable debug tracing.
+    pub emit_kex_diagnostics: bool,
+
     /// Interactive and bulk socket traffic classes selected by `IPQoS`.
     pub ip_qos: IpQosPolicy,
 
@@ -144,6 +149,8 @@ pub struct SshConnectionConfig {
 
     /// Explicit known-hosts identity selected by `HostKeyAlias`.
     pub host_key_alias: Option<String>,
+    /// Original destination spelling used by `%n` path expansion.
+    pub original_host: Option<String>,
     /// Hash host patterns when writing known_hosts.
     pub hash_known_hosts: bool,
     /// Verify the resolved peer address as an additional known-host identity.
@@ -185,11 +192,13 @@ impl Default for SshConnectionConfig {
             bind_interface: None,
             forward_agent_socket_path: None,
             suppress_auth_banner: false,
+            emit_kex_diagnostics: false,
             ip_qos: IpQosPolicy::default(),
             session_purpose: SessionPurpose::Bulk,
             user_known_hosts_files: None,
             global_known_hosts_files: None,
             host_key_alias: None,
+            original_host: None,
             hash_known_hosts: false,
             check_host_ip: false,
             known_hosts_command: None,
@@ -373,7 +382,11 @@ impl SshConnectionConfigResolver {
 
     pub fn resolve_for_host(&self, hostname: &str) -> SshConnectionConfig {
         if let Some(config) = &self.fixed_config {
-            return config.clone();
+            let mut config = config.clone();
+            config
+                .original_host
+                .get_or_insert_with(|| hostname.to_string());
+            return config;
         }
 
         let keepalive_interval = self
@@ -438,6 +451,16 @@ impl SshConnectionConfigResolver {
                 .as_ref()
                 .and_then(|config| config.log_level.as_deref())
                 .is_some_and(|level| level.eq_ignore_ascii_case("quiet"));
+        let emit_kex_diagnostics = !self.cli_quiet
+            && host_config
+                .as_ref()
+                .and_then(|config| config.log_level.as_deref())
+                .is_some_and(|level| {
+                    matches!(
+                        level.to_ascii_lowercase().as_str(),
+                        "debug" | "debug1" | "debug2" | "debug3"
+                    )
+                });
         let ip_qos = host_config
             .as_ref()
             .and_then(|config| config.ipqos)
@@ -606,6 +629,10 @@ impl SshConnectionConfigResolver {
                 .and_then(|config| config.exit_on_forward_failure)
                 .unwrap_or(self.stdio_forward),
             address_family,
+            permit_remote_open: host_config
+                .as_ref()
+                .map(|config| config.permit_remote_open.clone())
+                .unwrap_or_default(),
         };
         let rekey_limit = host_config
             .as_ref()
@@ -625,9 +652,11 @@ impl SshConnectionConfigResolver {
             .with_source_binding(bind_address, bind_interface)
             .with_forward_agent_socket_path(forward_agent_socket_path)
             .with_suppress_auth_banner(suppress_auth_banner)
+            .with_kex_diagnostics(emit_kex_diagnostics)
             .with_ip_qos(ip_qos)
             .with_known_hosts_files(user_known_hosts_files, global_known_hosts_files)
             .with_host_key_alias(host_key_alias)
+            .with_original_host(hostname)
             .with_known_host_policy(
                 hash_known_hosts,
                 check_host_ip,
@@ -647,6 +676,15 @@ impl SshConnectionConfigResolver {
             .with_auth_policy(auth_policy)
             .with_forwarding_plan(forwarding_plan)
             .with_rekey_limit(rekey_limit)
+    }
+
+    /// Resolve an ssh_config alias used as one hop of a ProxyJump chain.
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn resolve_jump_host(
+        &self,
+        alias: &str,
+    ) -> Option<(String, Option<String>, Option<u16>, Option<String>)> {
+        self.ssh_config.as_ref()?.resolve_jump_host(alias)
     }
 
     fn resolve_proxy_mode(
@@ -739,6 +777,13 @@ impl SshConnectionConfig {
         self
     }
 
+    /// Preserve the destination spelling supplied by the caller for `%n`.
+    #[must_use]
+    pub fn with_original_host(mut self, hostname: impl Into<String>) -> Self {
+        self.original_host = Some(hostname.into());
+        self
+    }
+
     #[must_use]
     pub fn with_known_host_policy(
         mut self,
@@ -768,6 +813,13 @@ impl SshConnectionConfig {
     #[must_use]
     pub fn with_suppress_auth_banner(mut self, suppress: bool) -> Self {
         self.suppress_auth_banner = suppress;
+        self
+    }
+
+    /// Set whether ssh_config requested OpenSSH-style key-exchange diagnostics.
+    #[must_use]
+    pub fn with_kex_diagnostics(mut self, enabled: bool) -> Self {
+        self.emit_kex_diagnostics = enabled;
         self
     }
 
@@ -1354,6 +1406,73 @@ pub struct Client {
     forwarding_runtime: Arc<ForwardingRuntime>,
     remote_forward_registry: RemoteForwardRegistry,
     agent_forwarding: AgentForwardingState,
+    connection_info: ConnectionInfoState,
+}
+
+/// Transport metadata from the most recently completed key exchange.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConnectionInfo {
+    pub local_address: Option<SocketAddr>,
+    pub remote_address: SocketAddr,
+    pub kex_algorithm: Option<String>,
+    pub host_key_algorithm: Option<String>,
+    pub cipher_client_to_server: Option<String>,
+    pub cipher_server_to_client: Option<String>,
+    pub mac_client_to_server: Option<String>,
+    pub mac_server_to_client: Option<String>,
+    pub compression_client_to_server: Option<String>,
+    pub compression_server_to_client: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ConnectionInfoState(Arc<Mutex<ConnectionInfo>>);
+
+impl ConnectionInfoState {
+    fn new(remote_address: SocketAddr) -> Self {
+        Self(Arc::new(Mutex::new(ConnectionInfo {
+            local_address: None,
+            remote_address,
+            kex_algorithm: None,
+            host_key_algorithm: None,
+            cipher_client_to_server: None,
+            cipher_server_to_client: None,
+            mac_client_to_server: None,
+            mac_server_to_client: None,
+            compression_client_to_server: None,
+            compression_server_to_client: None,
+        })))
+    }
+
+    fn set_local_address(&self, address: Option<SocketAddr>) {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .local_address = address;
+    }
+
+    fn update_names(&self, names: &russh::Names) {
+        let mut info = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        info.kex_algorithm = Some(names.kex.as_ref().to_string());
+        info.host_key_algorithm = Some(names.key.as_str().to_string());
+        info.cipher_client_to_server = Some(names.cipher.as_ref().to_string());
+        info.cipher_server_to_client = Some(names.cipher.as_ref().to_string());
+        info.mac_client_to_server = Some(names.client_mac.as_ref().to_string());
+        info.mac_server_to_client = Some(names.server_mac.as_ref().to_string());
+        info.compression_client_to_server =
+            Some(compression_name(&names.client_compression).to_string());
+        info.compression_server_to_client =
+            Some(compression_name(&names.server_compression).to_string());
+    }
+
+    fn snapshot(&self) -> ConnectionInfo {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
 }
 
 /// Session-scoped permission for server-initiated agent channels.
@@ -1653,9 +1772,15 @@ struct DirectCarrierOptions<'a> {
     bind_interface: Option<&'a str>,
     ip_qos: IpQosValue,
     suppress_auth_banner: bool,
+    emit_kex_diagnostics: bool,
 }
 
 impl Client {
+    /// Return a snapshot of the connected transport and negotiated algorithms.
+    pub fn connection_info(&self) -> ConnectionInfo {
+        self.connection_info.snapshot()
+    }
+
     /// Open a ssh connection to a remote host with default keepalive settings.
     ///
     /// `addr` is an address of the remote host. Anything which implements
@@ -1751,6 +1876,7 @@ impl Client {
                     policy.clone(),
                     proxy,
                     ssh_config.suppress_auth_banner,
+                    ssh_config.emit_kex_diagnostics,
                 )
                 .await;
                 match result {
@@ -1812,6 +1938,7 @@ impl Client {
                 bind_interface: ssh_config.bind_interface.as_deref(),
                 ip_qos: ssh_config.selected_ip_qos(),
                 suppress_auth_banner: ssh_config.suppress_auth_banner,
+                emit_kex_diagnostics: ssh_config.emit_kex_diagnostics,
             },
         )
         .await?;
@@ -1835,6 +1962,7 @@ impl Client {
         policy: KnownHostRuntimePolicy,
         proxy: &ProxyCommandConfig,
         suppress_auth_banner: bool,
+        emit_kex_diagnostics: bool,
     ) -> Result<Self, super::Error> {
         let proxy_session = spawn_proxy_command(proxy, host, port, username)?;
         let process = Arc::clone(&proxy_session.process);
@@ -1857,11 +1985,13 @@ impl Client {
             server_check,
             policy,
         )
-        .with_suppress_auth_banner(suppress_auth_banner);
+        .with_suppress_auth_banner(suppress_auth_banner)
+        .with_kex_diagnostics(emit_kex_diagnostics);
         let fatal_transport = handler.fatal_transport_state();
         let hostkey_rotation = handler.hostkey_rotation_tasks();
         let remote_forward_registry = handler.remote_forward_registry();
         let agent_forwarding = handler.agent_forwarding_state();
+        let connection_info = handler.connection_info_state();
         let mut handle = match russh::client::connect_stream(config, proxy_session.stream, handler)
             .await
         {
@@ -1899,6 +2029,7 @@ impl Client {
             forwarding_runtime: Arc::new(ForwardingRuntime::default()),
             remote_forward_registry,
             agent_forwarding,
+            connection_info,
         };
         client.flush_hostkey_updates().await;
         Ok(client)
@@ -1933,6 +2064,7 @@ impl Client {
                 bind_interface: None,
                 ip_qos: IpQosValue::None,
                 suppress_auth_banner: false,
+                emit_kex_diagnostics: false,
             },
         )
         .await
@@ -1968,6 +2100,7 @@ impl Client {
             bind_interface,
             ip_qos,
             suppress_auth_banner,
+            emit_kex_diagnostics,
         } = carrier;
         let connection_attempts = connection_attempts.max(1);
         let target_host = addr.hostname();
@@ -2065,13 +2198,17 @@ impl Client {
             configure_tcp_keepalive(&stream, address, ka)?;
         }
 
+        let local_address = stream.local_addr().ok();
         let handler =
             ClientHandler::new_with_policy(target_host.clone(), address, server_check, policy)
-                .with_suppress_auth_banner(suppress_auth_banner);
+                .with_suppress_auth_banner(suppress_auth_banner)
+                .with_kex_diagnostics(emit_kex_diagnostics);
+        handler.connection_info.set_local_address(local_address);
         let fatal_transport = handler.fatal_transport_state();
         let hostkey_rotation = handler.hostkey_rotation_tasks();
         let remote_forward_registry = handler.remote_forward_registry();
         let agent_forwarding = handler.agent_forwarding_state();
+        let connection_info = handler.connection_info_state();
         let mut handle = russh::client::connect_stream(Arc::new(config), stream, handler)
             .await
             .map_err(|error| {
@@ -2096,6 +2233,7 @@ impl Client {
             forwarding_runtime: Arc::new(ForwardingRuntime::default()),
             remote_forward_registry,
             agent_forwarding,
+            connection_info,
         };
         client.flush_hostkey_updates().await;
         Ok(client)
@@ -2171,9 +2309,11 @@ impl Client {
             forwarding_runtime: Arc::new(ForwardingRuntime::default()),
             remote_forward_registry,
             agent_forwarding,
+            connection_info: ConnectionInfoState::new(address),
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn from_authenticated_handle_with_policy_state(
         handle: Arc<Handle<ClientHandler>>,
         username: String,
@@ -2182,6 +2322,7 @@ impl Client {
         hostkey_rotation: HostkeyRotationTasks,
         remote_forward_registry: RemoteForwardRegistry,
         agent_forwarding: AgentForwardingState,
+        connection_info: ConnectionInfoState,
     ) -> Self {
         let client = Self {
             connection_handle: handle.clone(),
@@ -2194,6 +2335,7 @@ impl Client {
             forwarding_runtime: Arc::new(ForwardingRuntime::default()),
             remote_forward_registry,
             agent_forwarding,
+            connection_info,
         };
         client.flush_hostkey_updates().await;
         client
@@ -2496,6 +2638,8 @@ pub struct ClientHandler {
     remote_forward_registry: RemoteForwardRegistry,
     agent_forwarding: AgentForwardingState,
     suppress_auth_banner: bool,
+    emit_kex_diagnostics: bool,
+    connection_info: ConnectionInfoState,
 }
 
 impl ClientHandler {
@@ -2530,11 +2674,18 @@ impl ClientHandler {
             remote_forward_registry: RemoteForwardRegistry::default(),
             agent_forwarding: AgentForwardingState::default(),
             suppress_auth_banner: false,
+            emit_kex_diagnostics: false,
+            connection_info: ConnectionInfoState::new(host),
         }
     }
 
-    fn with_suppress_auth_banner(mut self, suppress: bool) -> Self {
+    pub(crate) fn with_suppress_auth_banner(mut self, suppress: bool) -> Self {
         self.suppress_auth_banner = suppress;
+        self
+    }
+
+    pub(crate) fn with_kex_diagnostics(mut self, enabled: bool) -> Self {
+        self.emit_kex_diagnostics = enabled;
         self
     }
 
@@ -2552,6 +2703,10 @@ impl ClientHandler {
 
     pub(crate) fn agent_forwarding_state(&self) -> AgentForwardingState {
         self.agent_forwarding.clone()
+    }
+
+    pub(crate) fn connection_info_state(&self) -> ConnectionInfoState {
+        self.connection_info.clone()
     }
 
     async fn run_known_hosts_lookup(
@@ -3075,22 +3230,23 @@ fn compression_name(compression: &russh::compression::Compression) -> &'static s
 }
 
 /// OpenSSH-style `-vv` lines describing one completed key exchange.
-fn kex_diagnostic_lines(names: &russh::Names) -> [String; 4] {
+fn kex_diagnostic_lines(names: &russh::Names) -> [String; 5] {
     [
-        format!("kex: algorithm: {}", names.kex.as_ref()),
-        format!("kex: host key algorithm: {}", names.key.as_str()),
+        format!("debug1: kex: algorithm: {}", names.kex.as_ref()),
+        format!("debug1: kex: host key algorithm: {}", names.key.as_str()),
         format!(
-            "kex: client->server cipher: {} MAC: {} compression: {}",
+            "debug1: kex: client->server cipher: {} MAC: {} compression: {}",
             names.cipher.as_ref(),
             names.client_mac.as_ref(),
             compression_name(&names.client_compression),
         ),
         format!(
-            "kex: server->client cipher: {} MAC: {} compression: {}",
+            "debug1: kex: server->client cipher: {} MAC: {} compression: {}",
             names.cipher.as_ref(),
             names.server_mac.as_ref(),
             compression_name(&names.server_compression),
         ),
+        "debug1: SSH2_MSG_NEWKEYS sent".to_string(),
     ]
 }
 
@@ -3103,8 +3259,11 @@ impl Handler for ClientHandler {
         names: &russh::Names,
         _session: &mut russh::client::Session,
     ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
-        for line in kex_diagnostic_lines(names) {
-            tracing::debug!("{line}");
+        self.connection_info.update_names(names);
+        if self.emit_kex_diagnostics || tracing::enabled!(tracing::Level::DEBUG) {
+            for line in kex_diagnostic_lines(names) {
+                crate::diagnosticln!("{line}");
+            }
         }
         std::future::ready(Ok(()))
     }
@@ -3147,16 +3306,23 @@ impl Handler for ClientHandler {
         channel: russh::Channel<russh::client::Msg>,
         connected_address: &str,
         connected_port: u32,
-        _originator_address: &str,
-        _originator_port: u32,
+        originator_address: &str,
+        originator_port: u32,
         reply: russh::client::ChannelOpenHandle,
         _session: &mut russh::client::Session,
     ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
         let registry = self.remote_forward_registry.clone();
         let connected_address = connected_address.to_string();
+        let originator_address = originator_address.to_string();
         async move {
             if registry
-                .route(&connected_address, connected_port, channel)
+                .route(
+                    &connected_address,
+                    connected_port,
+                    &originator_address,
+                    originator_port,
+                    channel,
+                )
                 .await
             {
                 reply.accept().await;

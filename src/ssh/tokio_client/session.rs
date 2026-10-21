@@ -40,7 +40,8 @@ impl Client {
         policy: &SessionPolicy,
         sender: Sender<CommandOutput>,
     ) -> Result<u32, super::Error> {
-        self.execute_session_streaming_with_input(policy, sender, tokio::io::stdin())
+        let input = super::process_stdin::open().map_err(super::Error::IoError)?;
+        self.execute_session_streaming_with_input(policy, sender, input)
             .await
     }
 

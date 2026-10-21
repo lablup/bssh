@@ -72,7 +72,12 @@ impl ControlRequest {
                 ControlCommand::Forward | ControlCommand::Cancel if forwards.is_empty() => {
                     Err(ControlProtocolError::MissingForwarding(*command))
                 }
-                ControlCommand::Check | ControlCommand::Exit | ControlCommand::Stop
+                ControlCommand::Check
+                | ControlCommand::Exit
+                | ControlCommand::Stop
+                | ControlCommand::Proxy
+                | ControlCommand::ConnectionInfo
+                | ControlCommand::Channels
                     if !forwards.is_empty() =>
                 {
                     Err(ControlProtocolError::UnexpectedForwarding(*command))
@@ -143,13 +148,14 @@ pub struct ControlResponse {
     pub kind: ControlResponseKind,
 }
 
-/// Result variants needed by #286's session and five control commands.
+/// Results returned by shared sessions and OpenSSH-compatible control commands.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum ControlResponseKind {
     Ok,
     Alive { pid: u32 },
+    Info { message: String },
     SessionOpened { session_id: u64 },
     ExitStatus { session_id: u64, status: u32 },
     Error { code: String, message: String },

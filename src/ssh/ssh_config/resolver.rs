@@ -464,23 +464,10 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
     if base.exit_on_forward_failure.is_none() && overlay.exit_on_forward_failure.is_some() {
         base.exit_on_forward_failure = overlay.exit_on_forward_failure;
     }
-    if !overlay.permit_remote_open.is_empty() {
-        // For PermitRemoteOpen, we append them with deduplication and limit
-        const MAX_PERMIT_REMOTE_OPEN: usize = 1000; // Reasonable limit to prevent memory exhaustion
-
-        for entry in &overlay.permit_remote_open {
-            // Skip if already present (deduplication)
-            if !base.permit_remote_open.contains(entry) {
-                if base.permit_remote_open.len() >= MAX_PERMIT_REMOTE_OPEN {
-                    tracing::warn!(
-                        "Maximum number of PermitRemoteOpen entries ({}) reached, ignoring additional entries",
-                        MAX_PERMIT_REMOTE_OPEN
-                    );
-                    break;
-                }
-                base.permit_remote_open.push(entry.clone());
-            }
-        }
+    if base.permit_remote_open.is_empty() && !overlay.permit_remote_open.is_empty() {
+        // PermitRemoteOpen is one first-obtained list. Multiple destinations
+        // belong to that list; later matching blocks must not widen it.
+        base.permit_remote_open = overlay.permit_remote_open.clone();
     }
     if base.hostbased_authentication.is_none() && overlay.hostbased_authentication.is_some() {
         base.hostbased_authentication = overlay.hostbased_authentication;

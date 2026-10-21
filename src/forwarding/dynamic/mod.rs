@@ -31,15 +31,11 @@
 
 mod connection;
 mod forwarder;
-mod socks;
+pub(crate) mod socks;
 mod stats;
 
 pub use forwarder::DynamicForwarder;
 pub use stats::DynamicForwarderStats;
-
-// Re-export SOCKS protocol handlers for tests
-#[cfg(test)]
-pub use socks::{handle_socks4_connection, handle_socks5_connection};
 
 #[cfg(test)]
 mod tests {

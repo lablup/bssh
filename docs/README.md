@@ -106,7 +106,7 @@ sudo mandb
 
 ### bssh (Client)
 
-A high-performance SSH client that can be used as a drop-in replacement for OpenSSH while also providing parallel execution capabilities for cluster management.
+A high-performance SSH client with measured OpenSSH compatibility and parallel execution capabilities for cluster management. See the [compatibility status ledger](./openssh-compatibility-status.md) for remaining command and protocol gaps.
 
 ```bash
 # Single host (SSH compatibility)

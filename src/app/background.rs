@@ -14,6 +14,8 @@
 //! of a persistent control master.
 
 use std::path::PathBuf;
+#[cfg(unix)]
+use std::time::Duration;
 
 #[cfg(unix)]
 use std::io::Write as _;
@@ -37,6 +39,12 @@ const WORKER_SOCKET_ENV: &str = "BSSH_INTERNAL_BACKGROUND_SOCKET";
 const WORKER_PARENT_ENV: &str = "BSSH_INTERNAL_BACKGROUND_PARENT";
 #[cfg(unix)]
 const MAX_EVENT_BYTES: usize = 1024 * 1024;
+#[cfg(unix)]
+const MAX_PORTABLE_SOCKET_PATH_BYTES: usize = 100;
+#[cfg(unix)]
+const SUPERVISOR_ACK: u8 = 0xa5;
+#[cfg(unix)]
+const SUPERVISOR_ACK_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// A lifecycle transition sent by the authenticated worker to its supervisor.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -94,6 +102,7 @@ impl BackgroundWorker {
                     self.socket_path.display()
                 )
             })?;
+        wait_for_supervisor_ack(&mut stream).await?;
         detach_process()?;
         write_event(&mut stream, event).await?;
         stream.shutdown().await?;
@@ -111,7 +120,7 @@ impl BackgroundWorker {
 #[cfg(unix)]
 pub async fn supervise(args: &[String]) -> Result<i32> {
     let socket_dir = create_socket_directory()?;
-    let socket_path = socket_dir.join("ready.sock");
+    let socket_path = socket_dir.join("s");
     let listener = UnixListener::bind(&socket_path).with_context(|| {
         format!(
             "Could not bind background supervisor socket '{}'",
@@ -146,6 +155,10 @@ pub async fn supervise(args: &[String]) -> Result<i32> {
         accepted = listener.accept() => {
             let (mut stream, _) = accepted.context("Could not accept background worker readiness")?;
             verify_same_user(&stream).context("Rejected background worker owned by another user")?;
+            stream
+                .write_u8(SUPERVISOR_ACK)
+                .await
+                .context("Could not acknowledge authenticated background worker")?;
             let event = read_event(&mut stream).await?;
             match event {
                 BackgroundEvent::Detached { exit_code } => Ok(exit_code),
@@ -162,6 +175,18 @@ pub async fn supervise(args: &[String]) -> Result<i32> {
             }
         }
     }
+}
+
+#[cfg(unix)]
+async fn wait_for_supervisor_ack(stream: &mut UnixStream) -> Result<()> {
+    let acknowledgement = tokio::time::timeout(SUPERVISOR_ACK_TIMEOUT, stream.read_u8())
+        .await
+        .context("Timed out waiting for background supervisor authentication")??;
+    anyhow::ensure!(
+        acknowledgement == SUPERVISOR_ACK,
+        "Background supervisor sent an invalid authentication acknowledgement"
+    );
+    Ok(())
 }
 
 #[cfg(not(unix))]
@@ -199,17 +224,27 @@ async fn read_event(stream: &mut UnixStream) -> Result<BackgroundEvent> {
 fn create_socket_directory() -> Result<PathBuf> {
     use std::os::unix::fs::DirBuilderExt as _;
 
-    let directory = std::env::temp_dir().join(format!(
-        "bssh-background-{}-{}",
-        std::process::id(),
-        uuid::Uuid::new_v4()
-    ));
+    let nonce = uuid::Uuid::new_v4().simple().to_string();
+    let component = format!("bssh-{}-{}", std::process::id(), &nonce[..12]);
+    let temp_directory = std::env::temp_dir();
+    let parent = socket_parent_for(&temp_directory, &component);
+    let directory = parent.join(component);
     let mut builder = std::fs::DirBuilder::new();
     builder.mode(0o700);
     builder
         .create(&directory)
         .with_context(|| format!("Could not create '{}'", directory.display()))?;
     Ok(directory)
+}
+
+#[cfg(unix)]
+fn socket_parent_for<'a>(temp_directory: &'a Path, component: &str) -> &'a Path {
+    let candidate = temp_directory.join(component).join("s");
+    if candidate.as_os_str().as_encoded_bytes().len() < MAX_PORTABLE_SOCKET_PATH_BYTES {
+        temp_directory
+    } else {
+        Path::new("/tmp")
+    }
 }
 
 #[cfg(unix)]
@@ -297,6 +332,18 @@ mod tests {
     use super::*;
     use bssh::ssh::SessionRequest;
 
+    #[test]
+    fn socket_parent_avoids_long_platform_temp_paths() {
+        let short = Path::new("/tmp");
+        assert_eq!(socket_parent_for(short, "bssh-123-0123456789ab"), short);
+
+        let long = PathBuf::from(format!("/{}", "x".repeat(120)));
+        assert_eq!(
+            socket_parent_for(&long, "bssh-123-0123456789ab"),
+            Path::new("/tmp")
+        );
+    }
+
     #[tokio::test]
     async fn event_frame_round_trips_and_preserves_session_policy() {
         let (mut writer, mut reader) = UnixStream::pair().expect("unix stream pair");
@@ -329,5 +376,43 @@ mod tests {
         let write = tokio::spawn(async move { write_event(&mut writer, &event).await });
         assert_eq!(read_event(&mut reader).await.unwrap(), expected);
         write.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn worker_waits_for_authenticated_supervisor_acknowledgement() {
+        let (mut supervisor, mut worker) = UnixStream::pair().expect("unix stream pair");
+        let waiting = tokio::spawn(async move { wait_for_supervisor_ack(&mut worker).await });
+
+        tokio::task::yield_now().await;
+        assert!(
+            !waiting.is_finished(),
+            "worker must not detach before the supervisor authenticates it"
+        );
+        supervisor
+            .write_u8(SUPERVISOR_ACK)
+            .await
+            .expect("write supervisor acknowledgement");
+        waiting
+            .await
+            .expect("join acknowledgement waiter")
+            .expect("accept authenticated supervisor acknowledgement");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn worker_supervisor_acknowledgement_wait_is_bounded() {
+        let (_supervisor, mut worker) = UnixStream::pair().expect("unix stream pair");
+        let waiting = tokio::spawn(async move { wait_for_supervisor_ack(&mut worker).await });
+
+        tokio::time::advance(SUPERVISOR_ACK_TIMEOUT).await;
+
+        let error = waiting
+            .await
+            .expect("join acknowledgement waiter")
+            .expect_err("silent supervisor acknowledgement must time out");
+        assert!(
+            error
+                .to_string()
+                .contains("Timed out waiting for background supervisor authentication")
+        );
     }
 }

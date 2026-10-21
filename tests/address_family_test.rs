@@ -175,8 +175,9 @@ fn no_flag_keeps_the_ipv4_forwarding_listen_default() {
     for forward in &forwards {
         let bind_addr = match forward {
             ForwardingType::Local { bind_addr, .. } => *bind_addr,
-            ForwardingType::Dynamic { bind_addr, .. } => *bind_addr,
-            ForwardingType::Remote { bind_addr, .. } => *bind_addr,
+            ForwardingType::Dynamic { bind_addr, .. }
+            | ForwardingType::Remote { bind_addr, .. }
+            | ForwardingType::RemoteDynamic { bind_addr, .. } => *bind_addr,
         };
         assert_eq!(
             bind_addr,

@@ -45,9 +45,11 @@ fn version_matches_openssh_stream_contract() {
 fn algorithm_queries_match_the_selectable_transport_surface() {
     let ciphers = bssh().args(["-Q", "cipher"]).output().unwrap();
     let macs = bssh().args(["-Q", "mac"]).output().unwrap();
-    assert!(ciphers.status.success() && macs.status.success());
+    let compression = bssh().args(["-Q", "compression"]).output().unwrap();
+    assert!(ciphers.status.success() && macs.status.success() && compression.status.success());
     let ciphers = String::from_utf8(ciphers.stdout).unwrap();
     let macs = String::from_utf8(macs.stdout).unwrap();
+    let compression = String::from_utf8(compression.stdout).unwrap();
     assert!(ciphers.lines().any(|value| value == "aes128-cbc"));
     assert!(
         macs.lines()
@@ -59,6 +61,7 @@ fn algorithm_queries_match_the_selectable_transport_surface() {
             .any(|value| matches!(value, "clear" | "none"))
     );
     assert!(!macs.lines().any(|value| value == "none"));
+    assert_eq!(compression, "none\nzlib\n");
 }
 
 #[test]
