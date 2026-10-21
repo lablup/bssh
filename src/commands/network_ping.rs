@@ -15,7 +15,8 @@
 //! Direct-origin ICMP connectivity checks for the `network-ping` subcommand.
 
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::fmt;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU16, Ordering};
 use std::time::Duration;
@@ -96,7 +97,7 @@ impl LatencyAccumulator {
 #[derive(Debug, Clone, PartialEq)]
 struct HostNetworkPingResult {
     node: Node,
-    address: Option<IpAddr>,
+    address: Option<ResolvedTarget>,
     sent: u16,
     received: u16,
     statistics: Option<LatencyStats>,
@@ -104,7 +105,7 @@ struct HostNetworkPingResult {
 }
 
 impl HostNetworkPingResult {
-    fn failed(node: Node, address: Option<IpAddr>, error: impl Into<String>) -> Self {
+    fn failed(node: Node, address: Option<ResolvedTarget>, error: impl Into<String>) -> Self {
         Self {
             node,
             address,
@@ -166,6 +167,44 @@ struct ProbeSettings {
     interval: Duration,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+struct ResolvedTarget {
+    address: IpAddr,
+    scope_id: u32,
+}
+
+impl From<IpAddr> for ResolvedTarget {
+    fn from(address: IpAddr) -> Self {
+        Self {
+            address,
+            scope_id: 0,
+        }
+    }
+}
+
+impl From<SocketAddr> for ResolvedTarget {
+    fn from(address: SocketAddr) -> Self {
+        Self {
+            address: address.ip(),
+            scope_id: match address {
+                SocketAddr::V4(_) => 0,
+                SocketAddr::V6(address) => address.scope_id(),
+            },
+        }
+    }
+}
+
+impl fmt::Display for ResolvedTarget {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match (self.address, self.scope_id) {
+            (IpAddr::V6(address), scope_id) if scope_id != 0 => {
+                write!(formatter, "{address}%{scope_id}")
+            }
+            (address, _) => address.fmt(formatter),
+        }
+    }
+}
+
 #[derive(Debug)]
 struct ProbeSamples {
     sent: u16,
@@ -176,8 +215,8 @@ struct ProbeSamples {
 
 #[async_trait]
 trait NetworkProbe: Send + Sync {
-    async fn resolve(&self, host: &str, family: AddressFamily) -> Result<IpAddr>;
-    async fn probe(&self, address: IpAddr, settings: ProbeSettings) -> Result<ProbeSamples>;
+    async fn resolve(&self, host: &str, family: AddressFamily) -> Result<ResolvedTarget>;
+    async fn probe(&self, target: ResolvedTarget, settings: ProbeSettings) -> Result<ProbeSamples>;
 }
 
 #[derive(Default)]
@@ -185,7 +224,7 @@ struct IcmpNetworkProbe {
     ipv4_client: OnceCell<Result<Client, String>>,
     ipv6_client: OnceCell<Result<Client, String>>,
     next_identifier: AtomicU16,
-    address_locks: Mutex<HashMap<IpAddr, Arc<Mutex<()>>>>,
+    address_locks: Mutex<HashMap<ResolvedTarget, Arc<Mutex<()>>>>,
 }
 
 impl IcmpNetworkProbe {
@@ -212,37 +251,40 @@ impl IcmpNetworkProbe {
 
 #[async_trait]
 impl NetworkProbe for IcmpNetworkProbe {
-    async fn resolve(&self, host: &str, family: AddressFamily) -> Result<IpAddr> {
+    async fn resolve(&self, host: &str, family: AddressFamily) -> Result<ResolvedTarget> {
         if let Ok(address) = host.parse::<IpAddr>() {
             anyhow::ensure!(
                 family.matches_ip(address),
                 "no {} address found for {host}",
                 family.display_name()
             );
-            return Ok(address);
+            return Ok(address.into());
         }
 
         let addresses = timeout(DNS_LOOKUP_TIMEOUT, lookup_host((host, 0)))
             .await
             .with_context(|| format!("DNS lookup for {host} timed out after 10 seconds"))?
             .with_context(|| format!("failed to resolve {host}"))?;
-        first_eligible_address(addresses.map(|socket_address| socket_address.ip()), family)
+        first_eligible_target(addresses, family)
             .with_context(|| format!("no {} address found for {host}", family.display_name()))
     }
 
-    async fn probe(&self, address: IpAddr, settings: ProbeSettings) -> Result<ProbeSamples> {
+    async fn probe(&self, target: ResolvedTarget, settings: ProbeSettings) -> Result<ProbeSamples> {
         let address_lock = {
             let mut locks = self.address_locks.lock().await;
-            Arc::clone(locks.entry(address).or_default())
+            Arc::clone(locks.entry(target).or_default())
         };
         let _address_guard = address_lock.lock().await;
-        let client = self.client(address).await?;
+        let client = self.client(target.address).await?;
         let mut pinger = client
             .pinger(
-                address,
+                target.address,
                 PingIdentifier(self.next_identifier.fetch_add(1, Ordering::Relaxed)),
             )
             .await;
+        if target.address.is_ipv6() {
+            pinger.scope_id(target.scope_id);
+        }
         pinger.timeout(settings.timeout);
 
         let mut latencies = LatencyAccumulator::default();
@@ -289,13 +331,14 @@ impl AddressFamilyExt for AddressFamily {
     }
 }
 
-fn first_eligible_address(
-    addresses: impl IntoIterator<Item = IpAddr>,
+fn first_eligible_target(
+    addresses: impl IntoIterator<Item = SocketAddr>,
     family: AddressFamily,
-) -> Option<IpAddr> {
+) -> Option<ResolvedTarget> {
     addresses
         .into_iter()
-        .find(|address| family.matches_ip(*address))
+        .find(|address| family.matches_ip(address.ip()))
+        .map(ResolvedTarget::from)
 }
 
 async fn probe_node<P: NetworkProbe>(
@@ -305,15 +348,15 @@ async fn probe_node<P: NetworkProbe>(
     family: AddressFamily,
     settings: ProbeSettings,
 ) -> HostNetworkPingResult {
-    let address = match probe.resolve(target_host, family).await {
-        Ok(address) => address,
+    let target = match probe.resolve(target_host, family).await {
+        Ok(target) => target,
         Err(error) => return HostNetworkPingResult::failed(node, None, format!("{error:#}")),
     };
 
-    match probe.probe(address, settings).await {
+    match probe.probe(target, settings).await {
         Ok(samples) => HostNetworkPingResult {
             node,
-            address: Some(address),
+            address: Some(target),
             sent: samples.sent,
             received: samples.received,
             statistics: samples.statistics,
@@ -323,7 +366,7 @@ async fn probe_node<P: NetworkProbe>(
                     .unwrap_or_else(|| "no ICMP echo reply received".to_string())
             }),
         },
-        Err(error) => HostNetworkPingResult::failed(node, Some(address), format!("{error:#}")),
+        Err(error) => HostNetworkPingResult::failed(node, Some(target), format!("{error:#}")),
     }
 }
 

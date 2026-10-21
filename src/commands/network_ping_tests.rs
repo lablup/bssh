@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use std::collections::HashMap;
+use std::net::{Ipv6Addr, SocketAddrV6};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::*;
@@ -27,18 +28,22 @@ struct FakeProbe {
 
 #[async_trait]
 impl NetworkProbe for FakeProbe {
-    async fn resolve(&self, host: &str, family: AddressFamily) -> Result<IpAddr> {
+    async fn resolve(&self, host: &str, family: AddressFamily) -> Result<ResolvedTarget> {
         let address = *self.addresses.get(host).context("unknown fake host")?;
         anyhow::ensure!(family.matches_ip(address), "family mismatch");
-        Ok(address)
+        Ok(address.into())
     }
 
-    async fn probe(&self, address: IpAddr, settings: ProbeSettings) -> Result<ProbeSamples> {
+    async fn probe(&self, target: ResolvedTarget, settings: ProbeSettings) -> Result<ProbeSamples> {
         let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
         self.peak.fetch_max(active, Ordering::SeqCst);
         tokio::task::yield_now().await;
         self.active.fetch_sub(1, Ordering::SeqCst);
-        let latencies = self.samples.get(&address).cloned().unwrap_or_default();
+        let latencies = self
+            .samples
+            .get(&target.address)
+            .cloned()
+            .unwrap_or_default();
         Ok(ProbeSamples {
             sent: settings.count,
             received: u16::try_from(latencies.len()).unwrap_or(u16::MAX),
@@ -96,21 +101,28 @@ fn loss_calculation_reports_three_of_four_as_twenty_five_percent() {
 
 #[test]
 fn address_selection_preserves_resolver_order_with_a_hard_family_filter() {
-    let v6_first = [
-        IpAddr::from([0, 0, 0, 0, 0, 0, 0, 1]),
-        IpAddr::from([127, 0, 0, 1]),
+    let addresses = [
+        SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::LOCALHOST, 0, 0, 7)),
+        SocketAddr::from(([127, 0, 0, 1], 0)),
     ];
     assert_eq!(
-        first_eligible_address(v6_first, AddressFamily::Any),
-        Some(v6_first[0])
+        first_eligible_target(addresses, AddressFamily::Any),
+        Some(ResolvedTarget {
+            address: addresses[0].ip(),
+            scope_id: 7,
+        })
+    );
+    assert_eq!(ResolvedTarget::from(addresses[0]).to_string(), "::1%7");
+    assert_eq!(
+        first_eligible_target(addresses, AddressFamily::V4),
+        Some(addresses[1].into())
     );
     assert_eq!(
-        first_eligible_address(v6_first, AddressFamily::V4),
-        Some(v6_first[1])
-    );
-    assert_eq!(
-        first_eligible_address(v6_first, AddressFamily::V6),
-        Some(v6_first[0])
+        first_eligible_target(addresses, AddressFamily::V6),
+        Some(ResolvedTarget {
+            address: addresses[0].ip(),
+            scope_id: 7,
+        })
     );
 }
 
@@ -137,7 +149,7 @@ async fn probe_resolves_the_expanded_hostname_not_the_ssh_alias() {
     )
     .await;
 
-    assert_eq!(result.address, Some(address));
+    assert_eq!(result.address, Some(address.into()));
     assert!(result.is_reachable());
 }
 
@@ -172,7 +184,7 @@ async fn run_expands_cluster_alias_through_ssh_config_hostname() {
     .await;
 
     assert_eq!(results.len(), 1);
-    assert_eq!(results[0].address, Some(address));
+    assert_eq!(results[0].address, Some(address.into()));
     assert!(results[0].is_reachable());
 }
 
