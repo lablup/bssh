@@ -129,7 +129,8 @@ pub(super) fn parse_security_option(
 
             let resolved = crate::ssh::tokio_client::algorithms::resolve_host_keys(&algorithms)
                 .map_err(anyhow::Error::msg)?;
-            host.resolved_host_key_algorithms = Some(resolved);
+            host.resolved_host_key_algorithms = Some(resolved.keys);
+            host.resolved_host_key_certificates = Some(resolved.certificates);
             host.host_key_algorithms = algorithms;
         }
         "kexalgorithms" => {
@@ -453,7 +454,16 @@ pub(super) fn parse_security_option(
                 );
             }
 
+            // Names are resolved (with modifiers) by the -G renderer and by
+            // the runtime certificate policy, which fails closed on an
+            // unknown name; parsing stays lenient like the other lists.
             host.ca_signature_algorithms = algorithms;
+        }
+        "revokedhostkeys" => {
+            if args.len() != 1 {
+                anyhow::bail!("RevokedHostKeys requires exactly one value at line {line_number}");
+            }
+            host.revoked_host_keys = Some(args[0].clone());
         }
         "nohostauthenticationforlocalhost" => {
             if args.is_empty() {

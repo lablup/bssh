@@ -22,7 +22,9 @@
 //! let spec = ForwardingSpec::parse_dynamic("1080", AddressFamily::V6).unwrap();
 //! ```
 
-use super::{ForwardingType, SocksVersion, parse_bind_spec_with_family};
+use super::{
+    ForwardingType, SocksVersion, StreamEndpoint, StreamListener, parse_bind_spec_with_family,
+};
 use crate::ssh::tokio_client::AddressFamily;
 use anyhow::{Context, Result};
 use std::net::{IpAddr, Ipv4Addr};
@@ -90,6 +92,84 @@ impl ForwardingSpec {
         }
     }
 
+    /// OpenSSH treats any field containing `/` as a Unix-domain socket path.
+    fn is_path_field(field: &str) -> bool {
+        field.contains('/')
+    }
+
+    /// Resolve a `-L`/`-R` specification that names a Unix-domain socket on
+    /// at least one side, following OpenSSH's `parse_forward` field rules:
+    ///
+    /// - `listen_path:connect_path`
+    /// - `[bind_address:]port:connect_path`
+    /// - `listen_path:host:hostport`
+    ///
+    /// Returns `Ok(None)` when no field is a path, so the TCP-only grammar
+    /// applies instead.
+    fn parse_stream_fields(
+        spec: &str,
+        parts: &[String],
+        remote: bool,
+        address_family: AddressFamily,
+    ) -> Result<Option<(StreamListener, StreamEndpoint)>> {
+        if !parts.iter().any(|part| Self::is_path_field(part)) {
+            return Ok(None);
+        }
+        let is_path = |index: usize| Self::is_path_field(&parts[index]);
+        let unix_listener = |index: usize| StreamListener::Unix {
+            path: parts[index].clone(),
+        };
+        let unix_endpoint = |index: usize| StreamEndpoint::Unix {
+            path: parts[index].clone(),
+        };
+        let tcp_listener = |host: Option<usize>, port: usize| -> Result<StreamListener> {
+            let (bind_addr, bind_port) = match (host, remote) {
+                (Some(host), true) => Self::remote_bind(&parts[host], &parts[port])?,
+                (Some(host), false) => {
+                    let bind_spec = Self::bind_spec(&parts[host], &parts[port]);
+                    let bound = parse_bind_spec_with_family(&bind_spec, address_family)?;
+                    (bound.ip(), bound.port())
+                }
+                (None, _) => (
+                    if remote {
+                        IpAddr::V4(Ipv4Addr::LOCALHOST)
+                    } else {
+                        address_family.loopback()
+                    },
+                    parts[port]
+                        .parse::<u16>()
+                        .with_context(|| format!("Invalid listen port: {}", parts[port]))?,
+                ),
+            };
+            Ok(StreamListener::Tcp {
+                bind_addr,
+                bind_port,
+            })
+        };
+        let tcp_endpoint = |host: usize, port: usize| -> Result<StreamEndpoint> {
+            Ok(StreamEndpoint::Tcp {
+                host: parts[host].clone(),
+                port: parts[port]
+                    .parse::<u16>()
+                    .with_context(|| format!("Invalid connect port: {}", parts[port]))?,
+            })
+        };
+        let resolved = match parts.len() {
+            2 if is_path(0) && is_path(1) => (unix_listener(0), unix_endpoint(1)),
+            2 if is_path(1) => (tcp_listener(None, 0)?, unix_endpoint(1)),
+            3 if is_path(0) && !is_path(1) && !is_path(2) => {
+                (unix_listener(0), tcp_endpoint(1, 2)?)
+            }
+            3 if is_path(2) && !is_path(0) && !is_path(1) => {
+                (tcp_listener(Some(0), 1)?, unix_endpoint(2))
+            }
+            _ => anyhow::bail!(
+                "Invalid forwarding specification '{spec}': expected listen_path:connect_path, [bind_address:]port:connect_path, or listen_path:host:hostport"
+            ),
+        };
+        Ok(Some(resolved))
+    }
+
     fn remote_bind(host: &str, port: &str) -> Result<(IpAddr, u16)> {
         let port = port
             .parse::<u16>()
@@ -121,6 +201,11 @@ impl ForwardingSpec {
         let spec = Self::normalize_stream_spec(spec)?;
         let parts = Self::split_stream_fields(&spec)?;
         Self::reject_empty_fields(&spec, &parts, false)?;
+        if let Some((listen, connect)) =
+            Self::parse_stream_fields(&spec, &parts, false, address_family)?
+        {
+            return Ok(ForwardingType::LocalStream { listen, connect });
+        }
 
         match parts.len() {
             3 => {
@@ -179,6 +264,11 @@ impl ForwardingSpec {
         let parts = Self::split_stream_fields(&spec)?;
         let allow_empty_remote_bind = matches!(parts.len(), 2 | 4);
         Self::reject_empty_fields(&spec, &parts, allow_empty_remote_bind)?;
+        if let Some((listen, connect)) =
+            Self::parse_stream_fields(&spec, &parts, true, AddressFamily::Any)?
+        {
+            return Ok(ForwardingType::RemoteStream { listen, connect });
+        }
 
         match parts.len() {
             1 => {
@@ -325,8 +415,62 @@ impl ForwardingSpec {
                     return Err(anyhow::anyhow!("Dynamic bind port cannot be 0"));
                 }
             }
+            ForwardingType::LocalStream { listen, connect } => {
+                Self::validate_stream_listener(listen, false)?;
+                Self::validate_stream_endpoint(connect)?;
+            }
+            ForwardingType::RemoteStream { listen, connect } => {
+                Self::validate_stream_listener(listen, true)?;
+                Self::validate_stream_endpoint(connect)?;
+            }
         }
         Ok(())
+    }
+
+    /// Reject a Unix-domain socket path that cannot be bound or connected:
+    /// empty, carrying a NUL byte, or longer than `sockaddr_un` allows.
+    pub fn validate_socket_path(path: &str) -> Result<()> {
+        if path.is_empty() {
+            anyhow::bail!("Unix-domain socket path cannot be empty");
+        }
+        if path.contains('\0') {
+            anyhow::bail!("Unix-domain socket path cannot contain NUL bytes");
+        }
+        if path.len() >= super::streamlocal::MAX_SOCKET_PATH_LEN {
+            anyhow::bail!(
+                "Unix-domain socket path is too long ({} bytes; the limit is {})",
+                path.len(),
+                super::streamlocal::MAX_SOCKET_PATH_LEN - 1
+            );
+        }
+        Ok(())
+    }
+
+    fn validate_stream_listener(listen: &StreamListener, remote: bool) -> Result<()> {
+        match listen {
+            StreamListener::Tcp { bind_port, .. } => {
+                if *bind_port == 0 && !remote {
+                    anyhow::bail!("Local bind port cannot be 0");
+                }
+                Ok(())
+            }
+            StreamListener::Unix { path } => Self::validate_socket_path(path),
+        }
+    }
+
+    fn validate_stream_endpoint(connect: &StreamEndpoint) -> Result<()> {
+        match connect {
+            StreamEndpoint::Tcp { host, port } => {
+                if *port == 0 {
+                    anyhow::bail!("Connect port cannot be 0");
+                }
+                if host.is_empty() {
+                    anyhow::bail!("Connect host cannot be empty");
+                }
+                Ok(())
+            }
+            StreamEndpoint::Unix { path } => Self::validate_socket_path(path),
+        }
     }
 
     /// Check if a bind port requires elevated privileges (< 1024)
@@ -336,6 +480,22 @@ impl ForwardingSpec {
             ForwardingType::Remote { bind_port, .. } => *bind_port,
             ForwardingType::RemoteDynamic { bind_port, .. } => *bind_port,
             ForwardingType::Dynamic { bind_port, .. } => *bind_port,
+            ForwardingType::LocalStream {
+                listen: StreamListener::Tcp { bind_port, .. },
+                ..
+            }
+            | ForwardingType::RemoteStream {
+                listen: StreamListener::Tcp { bind_port, .. },
+                ..
+            } => *bind_port,
+            ForwardingType::LocalStream {
+                listen: StreamListener::Unix { .. },
+                ..
+            }
+            | ForwardingType::RemoteStream {
+                listen: StreamListener::Unix { .. },
+                ..
+            } => return false,
         };
 
         bind_port < 1024
@@ -632,6 +792,130 @@ mod tests {
             remote_port: 80,
         };
         assert!(!ForwardingSpec::requires_root(&unprivileged));
+    }
+
+    #[test]
+    fn unix_domain_forwarding_specs_follow_openssh_field_rules() {
+        // listen_path:host:hostport
+        assert_eq!(
+            ForwardingSpec::parse_local("/tmp/unix-1.fwd:localhost:4242", AddressFamily::Any)
+                .unwrap(),
+            ForwardingType::LocalStream {
+                listen: StreamListener::Unix {
+                    path: "/tmp/unix-1.fwd".into()
+                },
+                connect: StreamEndpoint::Tcp {
+                    host: "localhost".into(),
+                    port: 4242
+                },
+            }
+        );
+        // listen_path:connect_path
+        assert_eq!(
+            ForwardingSpec::parse_local("/tmp/unix-2.fwd:/tmp/unix-1.fwd", AddressFamily::Any)
+                .unwrap(),
+            ForwardingType::LocalStream {
+                listen: StreamListener::Unix {
+                    path: "/tmp/unix-2.fwd".into()
+                },
+                connect: StreamEndpoint::Unix {
+                    path: "/tmp/unix-1.fwd".into()
+                },
+            }
+        );
+        // port:connect_path honors the address family for the implicit bind.
+        assert_eq!(
+            ForwardingSpec::parse_local("8080:/var/run/docker.sock", AddressFamily::V6).unwrap(),
+            ForwardingType::LocalStream {
+                listen: StreamListener::Tcp {
+                    bind_addr: IpAddr::V6(Ipv6Addr::LOCALHOST),
+                    bind_port: 8080
+                },
+                connect: StreamEndpoint::Unix {
+                    path: "/var/run/docker.sock".into()
+                },
+            }
+        );
+        // bind_address:port:connect_path
+        assert_eq!(
+            ForwardingSpec::parse_local("127.0.0.2:8080:/var/run/x.sock", AddressFamily::Any)
+                .unwrap(),
+            ForwardingType::LocalStream {
+                listen: StreamListener::Tcp {
+                    bind_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
+                    bind_port: 8080
+                },
+                connect: StreamEndpoint::Unix {
+                    path: "/var/run/x.sock".into()
+                },
+            }
+        );
+        // Remote forms: the listener lives on the server.
+        assert_eq!(
+            ForwardingSpec::parse_remote("/tmp/unix-3.fwd:/tmp/unix-2.fwd").unwrap(),
+            ForwardingType::RemoteStream {
+                listen: StreamListener::Unix {
+                    path: "/tmp/unix-3.fwd".into()
+                },
+                connect: StreamEndpoint::Unix {
+                    path: "/tmp/unix-2.fwd".into()
+                },
+            }
+        );
+        assert_eq!(
+            ForwardingSpec::parse_remote("/tmp/unix-1.fwd:localhost:4242").unwrap(),
+            ForwardingType::RemoteStream {
+                listen: StreamListener::Unix {
+                    path: "/tmp/unix-1.fwd".into()
+                },
+                connect: StreamEndpoint::Tcp {
+                    host: "localhost".into(),
+                    port: 4242
+                },
+            }
+        );
+        assert_eq!(
+            ForwardingSpec::parse_remote("*:9000:/tmp/local.sock").unwrap(),
+            ForwardingType::RemoteStream {
+                listen: StreamListener::Tcp {
+                    bind_addr: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+                    bind_port: 9000
+                },
+                connect: StreamEndpoint::Unix {
+                    path: "/tmp/local.sock".into()
+                },
+            }
+        );
+        // ssh_config two-argument form.
+        assert!(matches!(
+            ForwardingSpec::parse_local("/tmp/a.sock /tmp/b.sock", AddressFamily::Any).unwrap(),
+            ForwardingType::LocalStream { .. }
+        ));
+        // A path in the middle of three fields is not a valid shape.
+        assert!(ForwardingSpec::parse_local("8080:/tmp/x.sock:80", AddressFamily::Any).is_err());
+        // Paths are validated like OpenSSH's sockaddr_un limit.
+        let long = format!("/tmp/{}", "x".repeat(200));
+        assert!(
+            ForwardingSpec::validate(&ForwardingType::LocalStream {
+                listen: StreamListener::Unix { path: long },
+                connect: StreamEndpoint::Tcp {
+                    host: "localhost".into(),
+                    port: 22
+                },
+            })
+            .is_err()
+        );
+        assert!(!ForwardingSpec::requires_root(
+            &ForwardingType::LocalStream {
+                listen: StreamListener::Unix {
+                    path: "/tmp/a.sock".into()
+                },
+                connect: StreamEndpoint::Tcp {
+                    host: "localhost".into(),
+                    port: 22
+                },
+            }
+        ));
     }
 
     #[test]

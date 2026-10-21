@@ -338,6 +338,7 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
     if base.host_key_algorithms.is_empty() && !overlay.host_key_algorithms.is_empty() {
         base.host_key_algorithms = overlay.host_key_algorithms.clone();
         base.resolved_host_key_algorithms = overlay.resolved_host_key_algorithms.clone();
+        base.resolved_host_key_certificates = overlay.resolved_host_key_certificates.clone();
     }
     if base.kex_algorithms.is_empty() && !overlay.kex_algorithms.is_empty() {
         base.kex_algorithms = overlay.kex_algorithms.clone();
@@ -457,6 +458,9 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
     }
     if base.ca_signature_algorithms.is_empty() && !overlay.ca_signature_algorithms.is_empty() {
         base.ca_signature_algorithms = overlay.ca_signature_algorithms.clone();
+    }
+    if base.revoked_host_keys.is_none() && overlay.revoked_host_keys.is_some() {
+        base.revoked_host_keys = overlay.revoked_host_keys.clone();
     }
     if base.gateway_ports.is_none() && overlay.gateway_ports.is_some() {
         base.gateway_ports = overlay.gateway_ports.clone();

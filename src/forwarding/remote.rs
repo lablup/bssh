@@ -10,14 +10,17 @@ use std::time::Duration;
 use anyhow::{Context, Result};
 use russh::{Channel, client::Msg};
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite};
-use tokio::net::TcpStream;
+use tokio::net::{TcpStream, UnixStream};
 use tokio::sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore, mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use super::tunnel::Tunnel;
-use super::{ForwardingConfig, ForwardingMessage, ForwardingStatus, ForwardingType};
+use super::{
+    ForwardingConfig, ForwardingMessage, ForwardingStatus, ForwardingType, StreamEndpoint,
+    StreamListener,
+};
 use crate::forwarding::dynamic::socks::{
     handle_socks4_connection_with, handle_socks5_connection_with,
 };
@@ -26,7 +29,7 @@ use crate::ssh::tokio_client::{AddressFamily, Client};
 type ForwardKey = (String, u32);
 
 #[derive(Debug)]
-struct RemoteForwardTarget {
+pub(super) struct RemoteForwardTarget {
     mode: RemoteForwardMode,
     cancel: CancellationToken,
     closed: AtomicBool,
@@ -45,9 +48,35 @@ enum RemoteForwardMode {
         permitted_destinations: Vec<String>,
         address_family: AddressFamily,
     },
+    /// Connect to a local Unix-domain socket.
+    Unix {
+        path: String,
+    },
 }
 
 impl RemoteForwardTarget {
+    /// Target for the connect side of a Unix-domain forwarding.
+    pub(super) fn for_endpoint(
+        endpoint: StreamEndpoint,
+        cancel: CancellationToken,
+        connect_timeout: Duration,
+        max_connections: usize,
+    ) -> Self {
+        match endpoint {
+            StreamEndpoint::Tcp { host, port } => {
+                Self::new_tcp(host, port, cancel, connect_timeout, max_connections)
+            }
+            StreamEndpoint::Unix { path } => Self {
+                mode: RemoteForwardMode::Unix { path },
+                cancel,
+                closed: AtomicBool::new(false),
+                tasks: Mutex::new(Vec::new()),
+                connect_timeout,
+                connection_semaphore: Arc::new(Semaphore::new(max_connections)),
+            },
+        }
+    }
+
     fn new_tcp(
         local_host: String,
         local_port: u16,
@@ -122,6 +151,25 @@ impl RemoteForwardTarget {
                             }
                             Err(_) => {
                                 tracing::warn!("Remote forward timed out connecting to {address}");
+                                return;
+                            }
+                        },
+                        _ = target.cancel.cancelled() => return,
+                    };
+                    Tunnel::run(stream, channel, target.cancel.clone())
+                        .await
+                        .map(|_| ())
+                }
+                RemoteForwardMode::Unix { path } => {
+                    let stream = tokio::select! {
+                        result = tokio::time::timeout(target.connect_timeout, UnixStream::connect(path)) => match result {
+                            Ok(Ok(stream)) => stream,
+                            Ok(Err(error)) => {
+                                tracing::warn!("Remote forward could not connect to Unix socket {path}: {error}");
+                                return;
+                            }
+                            Err(_) => {
+                                tracing::warn!("Remote forward timed out connecting to Unix socket {path}");
                                 return;
                             }
                         },
@@ -390,9 +438,37 @@ where
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RemoteForwardRegistry {
     targets: Arc<RwLock<HashMap<ForwardKey, Arc<RemoteForwardTarget>>>>,
+    /// `streamlocal-forward@openssh.com` listeners keyed by remote socket path.
+    unix_targets: Arc<RwLock<HashMap<String, Arc<RemoteForwardTarget>>>>,
 }
 
 impl RemoteForwardRegistry {
+    pub(super) async fn register_unix(
+        &self,
+        path: String,
+        target: Arc<RemoteForwardTarget>,
+    ) -> Result<()> {
+        let mut targets = self.unix_targets.write().await;
+        if targets.contains_key(&path) {
+            anyhow::bail!("Remote forwarding {path:?} is already registered");
+        }
+        targets.insert(path, target);
+        Ok(())
+    }
+
+    /// Route a `forwarded-streamlocal@openssh.com` channel to the local
+    /// target registered for `socket_path`.
+    pub(crate) async fn route_streamlocal(&self, socket_path: &str, channel: Channel<Msg>) -> bool {
+        let target = self.unix_targets.read().await.get(socket_path).cloned();
+        let Some(target) = target else {
+            return false;
+        };
+        target
+            .route(channel, SocketAddr::from(([0, 0, 0, 0], 0)))
+            .await;
+        true
+    }
+
     async fn register(
         &self,
         address: String,
@@ -462,8 +538,12 @@ impl RemoteForwardRegistry {
         true
     }
 
-    async fn unregister(&self, target: &Arc<RemoteForwardTarget>) {
+    pub(super) async fn unregister(&self, target: &Arc<RemoteForwardTarget>) {
         self.targets
+            .write()
+            .await
+            .retain(|_, current| !Arc::ptr_eq(current, target));
+        self.unix_targets
             .write()
             .await
             .retain(|_, current| !Arc::ptr_eq(current, target));
@@ -490,7 +570,9 @@ impl RemoteForwarder {
         let _ = (session_id, ssh_client, config, cancel, messages);
         if !matches!(
             &spec,
-            ForwardingType::Remote { .. } | ForwardingType::RemoteDynamic { .. }
+            ForwardingType::Remote { .. }
+                | ForwardingType::RemoteDynamic { .. }
+                | ForwardingType::RemoteStream { .. }
         ) {
             anyhow::bail!("Invalid forwarding type for RemoteForwarder");
         }
@@ -560,6 +642,36 @@ impl RemoteForwarder {
                 )),
                 "dynamic SOCKS destinations".to_string(),
             ),
+            ForwardingType::RemoteStream {
+                listen: StreamListener::Unix { path },
+                connect,
+            } => {
+                return super::streamlocal::run_remote_unix_listener(
+                    session_id, path, connect, ssh_client, config, cancel, messages,
+                )
+                .await;
+            }
+            ForwardingType::RemoteStream {
+                listen:
+                    StreamListener::Tcp {
+                        bind_addr,
+                        bind_port,
+                    },
+                connect,
+            } => {
+                let description = connect.to_string();
+                (
+                    bind_addr,
+                    bind_port,
+                    Arc::new(RemoteForwardTarget::for_endpoint(
+                        connect,
+                        cancel.clone(),
+                        request_timeout,
+                        config.max_connections,
+                    )),
+                    description,
+                )
+            }
             _ => anyhow::bail!("Invalid forwarding type for RemoteForwarder"),
         };
 

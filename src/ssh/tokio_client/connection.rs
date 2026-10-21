@@ -167,6 +167,13 @@ pub struct SshConnectionConfig {
     pub mac_preferences: Option<Vec<russh::mac::Name>>,
     pub kex_preferences: Option<Vec<russh::kex::Name>>,
     pub host_key_preferences: Option<Vec<ssh_key::Algorithm>>,
+    /// Certificate host-key algorithms from `HostKeyAlgorithms`; `None`
+    /// advertises the certificate form of every default plain algorithm.
+    pub host_key_certificate_preferences: Option<Vec<ssh_key::Algorithm>>,
+    /// Raw `CASignatureAlgorithms` policy (with modifiers) for host certificates.
+    pub ca_signature_algorithms: Vec<String>,
+    /// `RevokedHostKeys` file template, expanded like a known_hosts path.
+    pub revoked_host_keys: Option<String>,
     /// Whether known-host key types may reorder the default or modified preference list.
     pub order_host_key_algorithms: bool,
     /// Public-key signature policy for the authentication follow-up.
@@ -209,6 +216,9 @@ impl Default for SshConnectionConfig {
             mac_preferences: None,
             kex_preferences: None,
             host_key_preferences: None,
+            host_key_certificate_preferences: None,
+            ca_signature_algorithms: Vec::new(),
+            revoked_host_keys: None,
             order_host_key_algorithms: true,
             pubkey_accepted_algorithms: None,
             auth_policy: SshAuthenticationPolicy::default(),
@@ -508,6 +518,16 @@ impl SshConnectionConfigResolver {
         let host_key_preferences = host_config
             .as_ref()
             .and_then(|config| config.resolved_host_key_algorithms.clone());
+        let host_key_certificate_preferences = host_config
+            .as_ref()
+            .and_then(|config| config.resolved_host_key_certificates.clone());
+        let ca_signature_algorithms = host_config
+            .as_ref()
+            .map(|config| config.ca_signature_algorithms.clone())
+            .unwrap_or_default();
+        let revoked_host_keys = host_config
+            .as_ref()
+            .and_then(|config| config.revoked_host_keys.clone());
         let order_host_key_algorithms = host_config.as_ref().is_none_or(|config| {
             config.host_key_algorithms.is_empty()
                 || config.host_key_algorithms[0].starts_with('+')
@@ -672,6 +692,11 @@ impl SshConnectionConfigResolver {
                 host_key_preferences,
             )
             .with_known_host_algorithm_ordering(order_host_key_algorithms)
+            .with_host_certificate_policy(
+                host_key_certificate_preferences,
+                ca_signature_algorithms,
+                revoked_host_keys,
+            )
             .with_pubkey_accepted_algorithms(pubkey_accepted_algorithms)
             .with_auth_policy(auth_policy)
             .with_forwarding_plan(forwarding_plan)
@@ -930,6 +955,22 @@ impl SshConnectionConfig {
         self
     }
 
+    /// Set the host-certificate policy: which certificate algorithms are
+    /// advertised, which CA signature algorithms are accepted, and the
+    /// `RevokedHostKeys` file.
+    #[must_use]
+    pub fn with_host_certificate_policy(
+        mut self,
+        certificates: Option<Vec<ssh_key::Algorithm>>,
+        ca_signature_algorithms: Vec<String>,
+        revoked_host_keys: Option<String>,
+    ) -> Self {
+        self.host_key_certificate_preferences = certificates;
+        self.ca_signature_algorithms = ca_signature_algorithms;
+        self.revoked_host_keys = revoked_host_keys;
+        self
+    }
+
     /// Expose the resolved user-authentication signature policy.
     #[must_use]
     pub fn with_pubkey_accepted_algorithms(mut self, algorithms: Option<Vec<String>>) -> Self {
@@ -1008,6 +1049,13 @@ impl SshConnectionConfig {
                 .clone()
                 .map(Cow::Owned)
                 .unwrap_or(preferred.key),
+            host_key_certificates: self
+                .host_key_certificate_preferences
+                .clone()
+                .map(Cow::Owned)
+                .unwrap_or(Cow::Borrowed(
+                    super::algorithms::default_host_key_certificates(),
+                )),
             ..preferred
         };
 
@@ -2483,6 +2531,46 @@ impl Client {
                 ))
             })
     }
+
+    /// Open a `direct-streamlocal@openssh.com` channel to a Unix-domain
+    /// socket on the server.
+    pub async fn open_direct_streamlocal_channel(
+        &self,
+        socket_path: &str,
+    ) -> Result<russh::Channel<russh::client::Msg>, super::Error> {
+        self.connection_handle
+            .channel_open_direct_streamlocal(socket_path)
+            .await
+            .map_err(|source| self.session_error_or(super::Error::ChannelOpen { source }))
+    }
+
+    /// Ask the server to listen on a Unix-domain socket
+    /// (`streamlocal-forward@openssh.com`).
+    pub async fn request_streamlocal_forward(
+        &self,
+        socket_path: String,
+    ) -> Result<(), super::Error> {
+        self.connection_handle
+            .streamlocal_forward(socket_path.clone())
+            .await
+            .map_err(|error| {
+                super::Error::PortForwardRequestFailed(format!("{socket_path}: {error}"))
+            })
+    }
+
+    /// Cancel a remote Unix-domain listener
+    /// (`cancel-streamlocal-forward@openssh.com`).
+    pub async fn cancel_streamlocal_forward(
+        &self,
+        socket_path: String,
+    ) -> Result<(), super::Error> {
+        self.connection_handle
+            .cancel_streamlocal_forward(socket_path.clone())
+            .await
+            .map_err(|error| {
+                super::Error::PortForwardRequestFailed(format!("cancel {socket_path}: {error}"))
+            })
+    }
 }
 
 impl Debug for Client {
@@ -2531,6 +2619,10 @@ pub(crate) struct KnownHostRuntimePolicy {
     rotation_paths: Option<Vec<String>>,
     known_hosts_paths: Vec<String>,
     host_key_algorithms: Vec<ssh_key::Algorithm>,
+    /// Resolved `CASignatureAlgorithms` names a host CA may sign with.
+    ca_signature_algorithms: Vec<String>,
+    /// Expanded `RevokedHostKeys` path, if configured.
+    revoked_host_keys: Option<String>,
 }
 
 impl KnownHostRuntimePolicy {
@@ -2549,6 +2641,9 @@ impl KnownHostRuntimePolicy {
             rotation_paths: None,
             known_hosts_paths: Vec::new(),
             host_key_algorithms: Vec::new(),
+            ca_signature_algorithms: super::algorithms::resolve_ca_signature_algorithms(&[])
+                .unwrap_or_default(),
+            revoked_host_keys: None,
         }
     }
 
@@ -2586,6 +2681,24 @@ impl KnownHostRuntimePolicy {
                 .host_key_preferences
                 .clone()
                 .unwrap_or_else(|| super::algorithms::default_host_key_algorithms().to_vec()),
+            // An unresolvable policy selects no algorithm, so every host
+            // certificate is refused rather than one silently accepted.
+            ca_signature_algorithms: super::algorithms::resolve_ca_signature_algorithms(
+                &config.ca_signature_algorithms,
+            )
+            .unwrap_or_else(|error| {
+                tracing::error!("Invalid CASignatureAlgorithms: {error}");
+                Vec::new()
+            }),
+            revoked_host_keys: config.revoked_host_keys.as_deref().and_then(|template| {
+                crate::ssh::known_hosts::expand_known_hosts_path(
+                    template,
+                    config,
+                    target_host,
+                    port,
+                    username,
+                )
+            }),
         }
     }
 }
@@ -2630,8 +2743,8 @@ pub struct ClientHandler {
     host: SocketAddr,
     server_check: ServerCheckMethod,
     policy: KnownHostRuntimePolicy,
-    verified_server_key: Arc<Mutex<Option<russh::keys::PublicKey>>>,
-    rotation_allowed: Arc<AtomicBool>,
+    pub(super) verified_server_key: Arc<Mutex<Option<russh::keys::PublicKey>>>,
+    pub(super) rotation_allowed: Arc<AtomicBool>,
     proof_in_flight: Arc<AtomicBool>,
     hostkey_rotation: HostkeyRotationTasks,
     fatal_transport: FatalTransportState,
@@ -2771,6 +2884,16 @@ impl ClientHandler {
             .map(Some)
     }
 
+    /// known_hosts files consulted for `@cert-authority` and `@revoked`
+    /// lines: the configured user and global stores, or the method's own
+    /// files when no ssh_config policy was resolved.
+    fn certificate_authority_paths(&self, method: &ServerCheckMethod) -> Vec<String> {
+        if !self.policy.known_hosts_paths.is_empty() {
+            return self.policy.known_hosts_paths.clone();
+        }
+        self.rotation_paths(method)
+    }
+
     fn rotation_paths(&self, method: &ServerCheckMethod) -> Vec<String> {
         if let Some(paths) = self.policy.rotation_paths.as_ref() {
             return paths.clone();
@@ -2899,6 +3022,14 @@ fn prefer_known_host_algorithms(config: &mut Config, known: &[ssh_key::Algorithm
     }
     let mut preferred = config.preferred.key.iter().cloned().collect::<Vec<_>>();
     preferred.sort_by_key(|algorithm| !matches_known(algorithm));
+    tracing::debug!(
+        "prefer hostkeyalgs: {}",
+        preferred
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(",")
+    );
     config.preferred.key = Cow::Owned(preferred);
 }
 
@@ -3335,6 +3466,27 @@ impl Handler for ClientHandler {
         }
     }
 
+    fn server_channel_open_forwarded_streamlocal(
+        &mut self,
+        channel: russh::Channel<russh::client::Msg>,
+        socket_path: &str,
+        reply: russh::client::ChannelOpenHandle,
+        _session: &mut russh::client::Session,
+    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
+        let registry = self.remote_forward_registry.clone();
+        let socket_path = socket_path.to_string();
+        async move {
+            if registry.route_streamlocal(&socket_path, channel).await {
+                reply.accept().await;
+            } else {
+                reply
+                    .reject(russh::ChannelOpenFailure::AdministrativelyProhibited)
+                    .await;
+            }
+            Ok(())
+        }
+    }
+
     fn server_channel_open_agent_forward(
         &mut self,
         channel: russh::Channel<russh::client::Msg>,
@@ -3416,23 +3568,57 @@ impl Handler for ClientHandler {
             self.host.port()
         };
 
-        // bssh does not yet validate OpenSSH host certificates. Never compare
-        // an unverified certificate's embedded key against ordinary
-        // known_hosts entries.
+        // A host certificate is validated against the configured CA lines
+        // first. Only when no CA vouches for the host is its certified key
+        // compared against ordinary known_hosts entries, as OpenSSH does.
+        let downgraded_certificate_key;
         let server_public_key = match server_key {
             russh::keys::PublicKeyOrCertificate::PublicKey { key, .. } => key,
             russh::keys::PublicKeyOrCertificate::Certificate(cert) => {
                 if matches!(method, ServerCheckMethod::NoCheck) {
                     return Ok(true);
                 }
-                tracing::error!(
-                    "Host '{}' presented an unverifiable OpenSSH host certificate (key ID '{}')",
+                let paths = self.certificate_authority_paths(method);
+                match super::host_certificate::verify_host_certificate(
+                    cert,
                     hostname,
-                    cert.key_id()
-                );
-                return Err(super::Error::ServerCheckFailed);
+                    port,
+                    &paths,
+                    &self.policy.ca_signature_algorithms,
+                    self.policy.revoked_host_keys.as_deref(),
+                )? {
+                    super::host_certificate::CertificateVerdict::Accepted => {
+                        tracing::debug!(
+                            "Host '{hostname}' is known and matches the host certificate '{}'",
+                            cert.key_id()
+                        );
+                        *self
+                            .verified_server_key
+                            .lock()
+                            .map_err(|_| super::Error::ServerCheckFailed)? =
+                            Some(russh::keys::PublicKey::new(cert.public_key().clone(), ""));
+                        // OpenSSH skips UpdateHostKeys when the host proved
+                        // itself with a certificate.
+                        self.rotation_allowed.store(false, Ordering::Release);
+                        return Ok(true);
+                    }
+                    super::host_certificate::CertificateVerdict::NoMatchingAuthority => {
+                        tracing::debug!("No matching CA found. Retry with plain key");
+                        downgraded_certificate_key =
+                            russh::keys::PublicKey::new(cert.public_key().clone(), "");
+                        &downgraded_certificate_key
+                    }
+                }
             }
         };
+        if let Some(revoked_host_keys) = self.policy.revoked_host_keys.as_deref() {
+            super::host_certificate::ensure_not_revoked_by_file(
+                revoked_host_keys,
+                server_public_key,
+                hostname,
+                port,
+            )?;
+        }
 
         // DNSSEC is evaluated before any KnownHostsCommand lookup or accept-new
         // write. Only a DNSSEC-secure, consistently matching RRset accepts

@@ -438,7 +438,7 @@ pub struct Cli {
         long = "local-forward",
         value_name = "local_forward_spec",
         action = clap::ArgAction::Append,
-        help = "Local port forwarding [bind_address:]port:host:hostport\nBinds a local port to forward connections to a remote destination via SSH.\nMultiple -L options can be specified for multiple forwards.\nExample: -L 8080:example.com:80 (localhost:8080 → example.com:80)"
+        help = "Local port forwarding [bind_address:]port:host:hostport\nBinds a local port to forward connections to a remote destination via SSH.\nA Unix-domain socket path may replace either side: local_socket:host:hostport,\nlocal_socket:remote_socket, or [bind_address:]port:remote_socket.\nMultiple -L options can be specified for multiple forwards.\nExample: -L 8080:example.com:80 (localhost:8080 → example.com:80)"
     )]
     pub local_forwards: Vec<String>,
 
@@ -447,7 +447,7 @@ pub struct Cli {
         long = "remote-forward",
         value_name = "remote_forward_spec",
         action = clap::ArgAction::Append,
-        help = "Remote port forwarding [bind_address:]port:host:hostport\nRequests the SSH server to bind a port and forward connections to local destination.\nMultiple -R options can be specified for multiple forwards.\nExample: -R 8080:localhost:80 (remote:8080 → localhost:80)"
+        help = "Remote port forwarding [bind_address:]port:host:hostport\nRequests the SSH server to bind a port and forward connections to local destination.\nA Unix-domain socket path may replace either side: remote_socket:host:hostport,\nremote_socket:local_socket, or [bind_address:]port:local_socket.\nMultiple -R options can be specified for multiple forwards.\nExample: -R 8080:localhost:80 (remote:8080 → localhost:80)"
     )]
     pub remote_forwards: Vec<String>,
 

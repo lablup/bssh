@@ -132,7 +132,7 @@ pub(super) const ACCEPTED_KEYWORDS: &[(&str, &str, KeywordSupport)] = &[
     (
         "casignaturealgorithms",
         "casignaturealgorithms",
-        Unimplemented,
+        Runtime(HostVerification),
     ),
     (
         "nohostauthenticationforlocalhost",
@@ -286,7 +286,11 @@ pub(super) const ACCEPTED_KEYWORDS: &[(&str, &str, KeywordSupport)] = &[
     ("tunnel", "tunnel", Unimplemented),
     ("warnweakcrypto", "warnweakcrypto", Unimplemented),
     ("xauthlocation", "xauthlocation", Unimplemented),
-    ("revokedhostkeys", "revokedhostkeys", Unimplemented),
+    (
+        "revokedhostkeys",
+        "revokedhostkeys",
+        Runtime(HostVerification),
+    ),
 ];
 
 pub(super) fn keyword_spec(keyword: &str) -> Option<KeywordSpec> {
@@ -306,8 +310,8 @@ mod tests {
     use std::collections::HashSet;
 
     const ACCEPTED_SPELLING_COUNT: usize = 108;
-    const RUNTIME_SPELLING_COUNT: usize = 60;
-    const UNIMPLEMENTED_SPELLING_COUNT: usize = 48;
+    const RUNTIME_SPELLING_COUNT: usize = 62;
+    const UNIMPLEMENTED_SPELLING_COUNT: usize = 46;
 
     #[test]
     fn accepted_keywords_and_aliases_have_one_consistent_classification() {
@@ -368,6 +372,7 @@ mod tests {
             ("kexalgorithms", Transport),
             ("ciphers", Transport),
             ("macs", Transport),
+            ("casignaturealgorithms", HostVerification),
             ("hashknownhosts", HostVerification),
             ("checkhostip", HostVerification),
             ("hostkeyalias", HostVerification),
@@ -408,6 +413,7 @@ mod tests {
             ("forkafterauthentication", Session),
             ("sessiontype", Session),
             ("stdinnull", Session),
+            ("revokedhostkeys", HostVerification),
         ];
         let runtime = ACCEPTED_KEYWORDS
             .iter()
@@ -436,7 +442,6 @@ mod tests {
             "hostbasedauthentication",
             "hostbasedacceptedalgorithms",
             "enablesshkeysign",
-            "casignaturealgorithms",
             "nohostauthenticationforlocalhost",
             "visualhostkey",
             "requiredrsasize",
@@ -473,7 +478,6 @@ mod tests {
             "tunnel",
             "warnweakcrypto",
             "xauthlocation",
-            "revokedhostkeys",
         ];
         let unimplemented = ACCEPTED_KEYWORDS
             .iter()

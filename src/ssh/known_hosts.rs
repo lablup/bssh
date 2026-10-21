@@ -179,7 +179,7 @@ fn expand_known_hosts_files(
         .collect()
 }
 
-fn expand_known_hosts_path(
+pub(crate) fn expand_known_hosts_path(
     template: &str,
     connection_config: &SshConnectionConfig,
     hostname: &str,

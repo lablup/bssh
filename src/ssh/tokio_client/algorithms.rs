@@ -236,15 +236,106 @@ pub(crate) fn default_host_key_algorithms() -> &'static [Algorithm] {
     &DEFAULTS
 }
 
-pub(crate) fn resolve_host_keys(values: &[String]) -> Result<Vec<Algorithm>, String> {
-    let defaults = default_host_key_algorithms();
-    let supported = supported_key_algorithms();
-    resolve_policy(
+/// Host-key algorithm policy split into the plain and certificate lists
+/// russh advertises separately. Certificate names are advertised ahead of
+/// plain names, matching OpenSSH's default `HostKeyAlgorithms` order.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct HostKeyAlgorithms {
+    pub keys: Vec<Algorithm>,
+    pub certificates: Vec<Algorithm>,
+}
+
+const CERTIFICATE_SUFFIX: &str = "-cert-v01@openssh.com";
+
+/// Certificate names first, then plain names, as OpenSSH orders them.
+fn host_key_names(algorithms: &[Algorithm]) -> Vec<String> {
+    let mut names: Vec<String> = algorithms
+        .iter()
+        .map(|algorithm| algorithm.to_certificate_type().to_string())
+        .collect();
+    names.extend(algorithms.iter().map(ToString::to_string));
+    names
+}
+
+/// Certificate algorithms advertised by default: the certificate form of
+/// every default plain algorithm, as OpenSSH does.
+pub(crate) fn default_host_key_certificates() -> &'static [Algorithm] {
+    default_host_key_algorithms()
+}
+
+pub(crate) fn resolve_host_keys(values: &[String]) -> Result<HostKeyAlgorithms, String> {
+    let defaults = host_key_names(default_host_key_algorithms());
+    let supported = host_key_names(&supported_key_algorithms());
+    let resolved = resolve_policy(
         "host key algorithm",
         values,
-        defaults,
+        &defaults,
         &supported,
-        AsRef::as_ref,
+        String::as_str,
+    )?;
+    let mut policy = HostKeyAlgorithms::default();
+    for name in resolved {
+        let (parsed, list) = if name.ends_with(CERTIFICATE_SUFFIX) {
+            (certificate_algorithm(&name), &mut policy.certificates)
+        } else {
+            (Algorithm::new(&name), &mut policy.keys)
+        };
+        let algorithm =
+            parsed.map_err(|error| format!("unsupported host key algorithm {name}: {error}"))?;
+        if !list.contains(&algorithm) {
+            list.push(algorithm);
+        }
+    }
+    Ok(policy)
+}
+
+/// Parse a `*-cert-v01@openssh.com` name into the plain algorithm it wraps.
+/// The SHA-2 RSA certificate names are not known to ssh-key's parser, and
+/// the `sk-*@openssh.com` names share their `@openssh.com` suffix with the
+/// certificate suffix, so this cannot be a plain suffix strip.
+fn certificate_algorithm(name: &str) -> Result<Algorithm, ssh_key::Error> {
+    match name {
+        "rsa-sha2-256-cert-v01@openssh.com" => Ok(Algorithm::Rsa {
+            hash: Some(russh::keys::HashAlg::Sha256),
+        }),
+        "rsa-sha2-512-cert-v01@openssh.com" => Ok(Algorithm::Rsa {
+            hash: Some(russh::keys::HashAlg::Sha512),
+        }),
+        other => Algorithm::new_certificate(other),
+    }
+}
+
+/// OpenSSH's default `CASignatureAlgorithms`.
+pub(crate) const DEFAULT_CA_SIGNATURE_ALGORITHMS: &[&str] = &[
+    "ssh-ed25519",
+    "ecdsa-sha2-nistp256",
+    "ecdsa-sha2-nistp384",
+    "ecdsa-sha2-nistp521",
+    "sk-ssh-ed25519@openssh.com",
+    "sk-ecdsa-sha2-nistp256@openssh.com",
+    "webauthn-sk-ecdsa-sha2-nistp256@openssh.com",
+    "rsa-sha2-512",
+    "rsa-sha2-256",
+];
+
+/// Resolve `CASignatureAlgorithms` (with `+`, `-`, `^` modifiers) into the
+/// signature algorithm names a certificate authority may use.
+pub(crate) fn resolve_ca_signature_algorithms(values: &[String]) -> Result<Vec<String>, String> {
+    let defaults: Vec<String> = DEFAULT_CA_SIGNATURE_ALGORITHMS
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect();
+    if values.is_empty() {
+        return Ok(defaults);
+    }
+    let mut supported = defaults.clone();
+    supported.push("ssh-rsa".to_string());
+    resolve_policy(
+        "CA signature algorithm",
+        values,
+        &defaults,
+        &supported,
+        String::as_str,
     )
 }
 
@@ -363,6 +454,11 @@ mod tests {
         let defaults = default_host_key_algorithms();
 
         let appended = resolve_host_keys(&[String::from("+ssh-rsa")]).unwrap();
+        assert_eq!(
+            appended.certificates, defaults,
+            "certificate algorithms follow the default plain list"
+        );
+        let appended = appended.keys;
         assert!(
             defaults
                 .iter()
@@ -379,8 +475,15 @@ mod tests {
         );
 
         let removed = resolve_host_keys(&[String::from("-ssh-*")]).unwrap();
+        assert!(
+            removed
+                .certificates
+                .iter()
+                .all(|algorithm| !algorithm.as_ref().starts_with("ssh-")),
+            "the glob removes certificate forms too"
+        );
         assert_eq!(
-            removed,
+            removed.keys,
             defaults
                 .iter()
                 .filter(|algorithm| !algorithm.as_ref().starts_with("ssh-"))
@@ -390,7 +493,9 @@ mod tests {
 
         let nondefault = Algorithm::SkEd25519;
         assert!(!defaults.contains(&nondefault));
-        let prepended = resolve_host_keys(&[format!("^{}", nondefault.as_ref())]).unwrap();
+        let prepended = resolve_host_keys(&[format!("^{}", nondefault.as_ref())])
+            .unwrap()
+            .keys;
         assert_eq!(prepended.first(), Some(&nondefault));
         assert_eq!(
             prepended
@@ -400,6 +505,60 @@ mod tests {
             1
         );
         assert_eq!(&prepended[1..], defaults);
+    }
+
+    #[test]
+    fn explicit_certificate_host_key_algorithms_are_split_from_plain_ones() {
+        let only_cert =
+            resolve_host_keys(&[String::from("ssh-ed25519-cert-v01@openssh.com")]).unwrap();
+        assert!(only_cert.keys.is_empty());
+        assert_eq!(only_cert.certificates, vec![Algorithm::Ed25519]);
+
+        let mixed = resolve_host_keys(&[
+            String::from("rsa-sha2-512-cert-v01@openssh.com"),
+            String::from("ssh-ed25519"),
+            String::from("rsa-sha2-256"),
+        ])
+        .unwrap();
+        assert_eq!(
+            mixed.certificates,
+            vec![Algorithm::Rsa {
+                hash: Some(russh::keys::HashAlg::Sha512)
+            }]
+        );
+        assert_eq!(
+            mixed.keys,
+            vec![
+                Algorithm::Ed25519,
+                Algorithm::Rsa {
+                    hash: Some(russh::keys::HashAlg::Sha256)
+                }
+            ]
+        );
+        assert!(resolve_host_keys(&[String::from("ssh-dss-cert-v02@openssh.com")]).is_err());
+
+        let sk = resolve_host_keys(&[
+            String::from("sk-ssh-ed25519-cert-v01@openssh.com"),
+            String::from("sk-ecdsa-sha2-nistp256-cert-v01@openssh.com"),
+        ])
+        .unwrap();
+        assert_eq!(
+            sk.certificates,
+            vec![Algorithm::SkEd25519, Algorithm::SkEcdsaSha2NistP256]
+        );
+        assert!(sk.keys.is_empty());
+    }
+
+    #[test]
+    fn ca_signature_algorithms_default_and_modifiers() {
+        let defaults = resolve_ca_signature_algorithms(&[]).unwrap();
+        assert_eq!(defaults.first().map(String::as_str), Some("ssh-ed25519"));
+        assert!(!defaults.iter().any(|name| name == "ssh-rsa"));
+        let with_sha1 = resolve_ca_signature_algorithms(&[String::from("+ssh-rsa")]).unwrap();
+        assert_eq!(with_sha1.last().map(String::as_str), Some("ssh-rsa"));
+        let only = resolve_ca_signature_algorithms(&[String::from("ssh-ed25519")]).unwrap();
+        assert_eq!(only, vec!["ssh-ed25519".to_string()]);
+        assert!(resolve_ca_signature_algorithms(&[String::from("ssh-dss")]).is_err());
     }
 
     #[test]

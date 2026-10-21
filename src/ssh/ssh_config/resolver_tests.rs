@@ -132,6 +132,25 @@ Host example.com
         assert_eq!(resolved.permit_remote_open, vec!["none"]);
     }
 
+    /// A certificate-only HostKeyAlgorithms list must survive resolution as
+    /// an empty plain list plus the certificate list. Dropping the
+    /// certificate list would fall back to the default certificates and
+    /// silently widen an explicit restriction.
+    #[test]
+    fn test_certificate_only_host_key_algorithms_survive_resolution() {
+        let content = r#"
+Host example.com
+    HostKeyAlgorithms sk-ssh-ed25519-cert-v01@openssh.com
+"#;
+        let hosts = parse(content).unwrap();
+        let config = find_host_config(&hosts, "example.com");
+        assert_eq!(config.resolved_host_key_algorithms, Some(Vec::new()));
+        assert_eq!(
+            config.resolved_host_key_certificates,
+            Some(vec![ssh_key::Algorithm::SkEd25519])
+        );
+    }
+
     #[test]
     fn test_ca_signature_algorithms_keeps_first_obtained_list() {
         let content = r#"
