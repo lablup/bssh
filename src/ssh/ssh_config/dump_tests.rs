@@ -3,6 +3,10 @@ use std::collections::HashSet;
 
 #[test]
 fn resolved_dump_round_trips_with_typed_and_retained_values() {
+    // Several authentication tests temporarily repoint the process-wide HOME
+    // variable. Keep expansion and the expected-value lookup in one protected
+    // snapshot so a parallel test cannot make them observe different homes.
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let source = r#"
 Host target
     HostName final.example

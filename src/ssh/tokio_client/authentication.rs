@@ -1776,6 +1776,7 @@ mod policy_execution_tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn batch_mode_and_earlier_success_cause_zero_key_interactions() {
         KEY_USER_INTERACTION_COUNT.store(0, std::sync::atomic::Ordering::SeqCst);
         let directory = tempfile::TempDir::new().unwrap();
