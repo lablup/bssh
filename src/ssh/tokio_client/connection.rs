@@ -2698,7 +2698,9 @@ impl KnownHostRuntimePolicy {
             proxy_jump: String::new(),
             rotation_paths: None,
             known_hosts_paths: Vec::new(),
-            host_key_algorithms: Vec::new(),
+            // Without an ssh_config policy russh advertises the defaults, so
+            // a downgraded certificate key is checked against them.
+            host_key_algorithms: super::algorithms::default_host_key_algorithms().to_vec(),
             ca_signature_algorithms: super::algorithms::resolve_ca_signature_algorithms(&[])
                 .unwrap_or_default(),
             revoked_host_keys: RevokedHostKeysPolicy::Disabled,
@@ -2944,6 +2946,14 @@ impl ClientHandler {
     /// lines: the configured user and global stores, or the method's own
     /// files when no ssh_config policy was resolved.
     fn certificate_authority_paths(&self, method: &ServerCheckMethod) -> Vec<String> {
+        // A pinned key is an explicit statement of the one key to accept; a
+        // CA in known_hosts must not widen it to any certificate it signed.
+        if matches!(
+            method,
+            ServerCheckMethod::PublicKey(_) | ServerCheckMethod::PublicKeyFile(_)
+        ) {
+            return Vec::new();
+        }
         if !self.policy.known_hosts_paths.is_empty() {
             return self.policy.known_hosts_paths.clone();
         }
@@ -3063,6 +3073,19 @@ fn known_host_algorithms_from_paths(
         }
     }
     Ok(algorithms)
+}
+
+/// Whether a plain host key of type `offered` is allowed by the resolved
+/// plain `HostKeyAlgorithms` list. Any RSA signature variant admits an RSA
+/// key, as OpenSSH's `hostkey_accepted_by_hostkeyalgs` does.
+fn host_key_algorithm_permitted(
+    allowed: &[ssh_key::Algorithm],
+    offered: &ssh_key::Algorithm,
+) -> bool {
+    allowed.iter().any(|allowed| match (offered, allowed) {
+        (ssh_key::Algorithm::Rsa { .. }, ssh_key::Algorithm::Rsa { .. }) => true,
+        (offered, allowed) => offered == allowed,
+    })
 }
 
 fn prefer_known_host_algorithms(config: &mut Config, known: &[ssh_key::Algorithm]) {
@@ -3633,6 +3656,21 @@ impl Handler for ClientHandler {
             russh::keys::PublicKeyOrCertificate::PublicKey { key, .. } => key,
             russh::keys::PublicKeyOrCertificate::Certificate(cert) => {
                 if matches!(method, ServerCheckMethod::NoCheck) {
+                    // OpenSSH applies RevokedHostKeys before any
+                    // StrictHostKeyChecking decision, and to both the
+                    // certified key and its CA. A plain key is checked below;
+                    // wrapping a revoked key in a certificate must not skip it.
+                    if let Some(revoked_host_keys) = revoked_host_keys {
+                        let ca_key = russh::keys::PublicKey::new(cert.signature_key().clone(), "");
+                        let certified_key =
+                            russh::keys::PublicKey::new(cert.public_key().clone(), "");
+                        super::host_certificate::ensure_not_revoked_by_file(
+                            revoked_host_keys,
+                            &[&ca_key, &certified_key],
+                            hostname,
+                            port,
+                        )?;
+                    }
                     return Ok(true);
                 }
                 let paths = self.certificate_authority_paths(method);
@@ -3663,15 +3701,35 @@ impl Handler for ClientHandler {
                         tracing::debug!("No matching CA found. Retry with plain key");
                         downgraded_certificate_key =
                             russh::keys::PublicKey::new(cert.public_key().clone(), "");
+                        // OpenSSH re-applies HostKeyAlgorithms to the plain
+                        // key after the downgrade. A certificate-only policy
+                        // therefore never falls back to known_hosts or TOFU.
+                        let plain_algorithm = downgraded_certificate_key.algorithm();
+                        if !host_key_algorithm_permitted(
+                            &self.policy.host_key_algorithms,
+                            &plain_algorithm,
+                        ) {
+                            tracing::error!(
+                                "host key {plain_algorithm} not permitted by HostKeyAlgorithms"
+                            );
+                            crate::diagnosticln!(
+                                "host key {plain_algorithm} not permitted by HostKeyAlgorithms"
+                            );
+                            return Err(super::Error::ServerCheckFailed);
+                        }
+                        // verify_host_certificate already checked this key
+                        // against RevokedHostKeys.
                         &downgraded_certificate_key
                     }
                 }
             }
         };
-        if let Some(revoked_host_keys) = revoked_host_keys {
+        if let russh::keys::PublicKeyOrCertificate::PublicKey { .. } = server_key
+            && let Some(revoked_host_keys) = revoked_host_keys
+        {
             super::host_certificate::ensure_not_revoked_by_file(
                 revoked_host_keys,
-                server_public_key,
+                &[server_public_key],
                 hostname,
                 port,
             )?;
@@ -3829,12 +3887,7 @@ impl Handler for ClientHandler {
         let keys = keys
             .into_iter()
             .filter(|key| {
-                self.policy.host_key_algorithms.iter().any(|allowed| {
-                    match (key.algorithm(), allowed) {
-                        (ssh_key::Algorithm::Rsa { .. }, ssh_key::Algorithm::Rsa { .. }) => true,
-                        (offered, allowed) => offered == *allowed,
-                    }
-                })
+                host_key_algorithm_permitted(&self.policy.host_key_algorithms, &key.algorithm())
             })
             .collect::<Vec<_>>();
         if !self.rotation_allowed.load(Ordering::Acquire) || keys.is_empty() {
@@ -4474,5 +4527,158 @@ mod revoked_host_keys_policy_tests {
                 Err(super::super::Error::ServerCheckFailed)
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod host_certificate_policy_tests {
+    use super::*;
+    use russh::keys::ssh_key::certificate::{Builder, CertType};
+    use russh::keys::{PrivateKey, PublicKeyOrCertificate};
+
+    fn generate_key() -> PrivateKey {
+        PrivateKey::random(&mut rand::rng(), russh::keys::Algorithm::Ed25519).unwrap()
+    }
+
+    fn host_certificate(subject: &PrivateKey, ca: &PrivateKey) -> PublicKeyOrCertificate {
+        let mut builder =
+            Builder::new_with_random_nonce(&mut rand::rng(), subject.public_key(), 0, u64::MAX)
+                .unwrap();
+        builder.cert_type(CertType::Host).unwrap();
+        builder.valid_principal("node1.example.com").unwrap();
+        PublicKeyOrCertificate::Certificate(builder.sign(ca).unwrap())
+    }
+
+    fn handler(method: ServerCheckMethod, policy: KnownHostRuntimePolicy) -> ClientHandler {
+        ClientHandler::new_with_policy(
+            "node1.example.com".into(),
+            "127.0.0.1:22".parse().unwrap(),
+            method,
+            policy,
+        )
+    }
+
+    fn policy() -> KnownHostRuntimePolicy {
+        KnownHostRuntimePolicy::unconfigured("user", "node1.example.com", 22)
+    }
+
+    fn write(dir: &tempfile::TempDir, name: &str, contents: String) -> String {
+        let path = dir.path().join(name);
+        std::fs::write(&path, contents).unwrap();
+        path.to_str().unwrap().to_string()
+    }
+
+    /// OpenSSH re-applies HostKeyAlgorithms after dropping an untrusted
+    /// certificate to its plain key, so a certificate-only policy never
+    /// falls back to known_hosts or trust on first use.
+    #[tokio::test]
+    async fn certificate_only_policy_refuses_the_downgraded_plain_key() {
+        let (ca, subject) = (generate_key(), generate_key());
+        let cert = host_certificate(&subject, &ca);
+        let dir = tempfile::tempdir().unwrap();
+        let known_hosts = write(
+            &dir,
+            "known_hosts",
+            format!(
+                "node1.example.com {}\n",
+                subject.public_key().to_openssh().unwrap()
+            ),
+        );
+
+        let mut certificate_only = policy();
+        certificate_only.host_key_algorithms = Vec::new();
+        for method in [
+            ServerCheckMethod::KnownHostsFile(known_hosts.clone()),
+            ServerCheckMethod::AcceptNewInMemory,
+        ] {
+            let result = handler(method.clone(), certificate_only.clone())
+                .check_server_key(&cert)
+                .await;
+            assert!(
+                matches!(result, Err(super::super::Error::ServerCheckFailed)),
+                "{method:?}: a certificate-only HostKeyAlgorithms must not accept the plain key, got {result:?}"
+            );
+        }
+
+        let result = handler(ServerCheckMethod::KnownHostsFile(known_hosts), policy())
+            .check_server_key(&cert)
+            .await;
+        assert!(
+            matches!(result, Ok(true)),
+            "the default policy permits the plain key, got {result:?}"
+        );
+    }
+
+    /// A pinned key is not widened by a CA line in the configured
+    /// known_hosts stores.
+    #[tokio::test]
+    async fn pinned_key_ignores_certificate_authorities() {
+        let (ca, subject, pinned) = (generate_key(), generate_key(), generate_key());
+        let cert = host_certificate(&subject, &ca);
+        let dir = tempfile::tempdir().unwrap();
+        let known_hosts = write(
+            &dir,
+            "known_hosts",
+            format!(
+                "@cert-authority *.example.com {}\n",
+                ca.public_key().to_openssh().unwrap()
+            ),
+        );
+        let mut with_ca = policy();
+        with_ca.known_hosts_paths = vec![known_hosts];
+
+        let base64 = |key: &PrivateKey| {
+            key.public_key()
+                .to_openssh()
+                .unwrap()
+                .split_whitespace()
+                .nth(1)
+                .unwrap()
+                .to_string()
+        };
+        let result = handler(
+            ServerCheckMethod::PublicKey(base64(&pinned)),
+            with_ca.clone(),
+        )
+        .check_server_key(&cert)
+        .await;
+        assert!(
+            matches!(result, Ok(false)),
+            "a CA-signed certificate must not satisfy a pin on another key, got {result:?}"
+        );
+        let result = handler(ServerCheckMethod::PublicKey(base64(&subject)), with_ca)
+            .check_server_key(&cert)
+            .await;
+        assert!(
+            matches!(result, Ok(true)),
+            "the certified key still satisfies a pin on itself, got {result:?}"
+        );
+    }
+
+    /// RevokedHostKeys applies even with StrictHostKeyChecking=no, as in
+    /// OpenSSH, and wrapping the revoked key in a certificate does not skip it.
+    #[tokio::test]
+    async fn no_check_still_honors_revoked_host_keys_for_certificates() {
+        let (ca, subject) = (generate_key(), generate_key());
+        let cert = host_certificate(&subject, &ca);
+        let dir = tempfile::tempdir().unwrap();
+        let revoked = write(
+            &dir,
+            "revoked",
+            format!("{}\n", subject.public_key().to_openssh().unwrap()),
+        );
+        let mut revoking = policy();
+        revoking.revoked_host_keys = RevokedHostKeysPolicy::File(revoked);
+        let result = handler(ServerCheckMethod::NoCheck, revoking.clone())
+            .check_server_key(&cert)
+            .await;
+        assert!(
+            matches!(result, Err(super::super::Error::HostKeyRevoked { .. })),
+            "a revoked certified key is refused under NoCheck, got {result:?}"
+        );
+        let result = handler(ServerCheckMethod::NoCheck, policy())
+            .check_server_key(&cert)
+            .await;
+        assert!(matches!(result, Ok(true)), "{result:?}");
     }
 }

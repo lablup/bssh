@@ -41,7 +41,8 @@ use russh::keys::ssh_key::certificate::CertType;
 use russh::keys::ssh_key::{Certificate, HashAlg};
 
 use super::host_verification::{
-    command_host_field_matches, glob_match, known_hosts_entry_name, revoked_marker_line,
+    command_host_field_matches, glob_match_case_sensitive, known_hosts_entry_name,
+    revoked_marker_line,
 };
 
 /// Outcome of validating a presented host certificate.
@@ -79,9 +80,9 @@ pub(super) fn verify_host_certificate(
                 return Err(reject_revoked(&hostname, port, path, line));
             }
         }
-        if let Some(path) = revoked_host_keys {
-            ensure_not_revoked_by_file(path, key, &hostname, port)?;
-        }
+    }
+    if let Some(path) = revoked_host_keys {
+        ensure_not_revoked_by_file(path, &[&ca_key, &certified_key], &hostname, port)?;
     }
 
     let Some((path, line)) = find_cert_authority(&hostname, port, &ca_key, known_hosts_paths)?
@@ -97,27 +98,6 @@ pub(super) fn verify_host_certificate(
         return Err(reject(
             &hostname,
             "Certificate invalid: not a host certificate",
-        ));
-    }
-    if certificate.valid_principals().is_empty() {
-        return Err(reject(&hostname, "Certificate lacks principal list"));
-    }
-    // OpenSSH matches host principals as patterns (`*.example.com`), not
-    // only as literal names.
-    if !certificate
-        .valid_principals()
-        .iter()
-        .any(|principal| glob_match(&hostname, principal))
-    {
-        return Err(reject(
-            &hostname,
-            "Certificate invalid: name is not a listed principal",
-        ));
-    }
-    if !certificate.critical_options().is_empty() {
-        return Err(reject(
-            &hostname,
-            "Certificate contains unsupported critical options(s)",
         ));
     }
     let signature_algorithm = certificate.signature().algorithm().to_string();
@@ -139,6 +119,9 @@ pub(super) fn verify_host_certificate(
     if now >= certificate.valid_before() {
         return Err(reject(&hostname, "Certificate invalid: expired"));
     }
+    // The signature is verified before any principal is read. Until then the
+    // certificate is whatever the peer sent: anyone can copy a trusted CA's
+    // public key into it, so its principals are untrusted input.
     let ca_fingerprint = ca_key.fingerprint(HashAlg::Sha256);
     if let Err(error) = certificate.validate_at(now, [&ca_fingerprint]) {
         return Err(reject(
@@ -146,11 +129,38 @@ pub(super) fn verify_host_certificate(
             &format!("Certificate invalid: signature verification failed ({error})"),
         ));
     }
+    if certificate.valid_principals().is_empty() {
+        return Err(reject(&hostname, "Certificate lacks principal list"));
+    }
+    // OpenSSH 10.3 `sshkey_cert_check_host` matches host principals as
+    // case-sensitive patterns (`match_pattern`), not only as literal names.
+    if !certificate
+        .valid_principals()
+        .iter()
+        .any(|principal| glob_match_case_sensitive(&hostname, principal))
+    {
+        return Err(reject(
+            &hostname,
+            "Certificate invalid: name is not a listed principal",
+        ));
+    }
+    if !certificate.critical_options().is_empty() {
+        return Err(reject(
+            &hostname,
+            "Certificate contains unsupported critical options(s)",
+        ));
+    }
     Ok(CertificateVerdict::Accepted)
 }
 
 /// Find the first `@cert-authority` line naming `hostname`/`port` whose key
 /// is `ca_key`. Returns the path and line for diagnostics.
+///
+/// On a non-default port OpenSSH looks the CA up as `[host]:port` and, when
+/// nothing matches, retries with the bare host name ("checking without port
+/// identifier"), so a `*.example.com` CA line also covers port 2222. A line
+/// matching either form is accepted here, which gives the same result: a CA
+/// line naming a different key never matches in either lookup.
 fn find_cert_authority(
     hostname: &str,
     port: u16,
@@ -158,6 +168,10 @@ fn find_cert_authority(
     known_hosts_paths: &[String],
 ) -> Result<Option<(String, usize)>, super::Error> {
     let host_port = known_hosts_entry_name(hostname, port);
+    let names_host = |host_field: &str| {
+        command_host_field_matches(host_field, &host_port)
+            || (port != 22 && command_host_field_matches(host_field, hostname))
+    };
     for path in known_hosts_paths {
         let contents = match std::fs::read_to_string(path) {
             Ok(contents) => contents,
@@ -181,7 +195,7 @@ fn find_cert_authority(
             };
             // Negated (`!host`) patterns exclude a host from the CA's scope,
             // and hashed (`|1|`) fields are matched by HMAC, as in OpenSSH.
-            if !command_host_field_matches(host_field, &host_port) {
+            if !names_host(host_field) {
                 continue;
             }
             match russh::keys::parse_public_key_base64(key_field) {
@@ -201,7 +215,8 @@ fn find_cert_authority(
     Ok(None)
 }
 
-/// Reject `key` if the `RevokedHostKeys` file at `path` lists it.
+/// Reject any of `keys` that the `RevokedHostKeys` file at `path` lists.
+/// The file is read once for all keys.
 ///
 /// Only the plain-text key list format is supported. A binary KRL cannot be
 /// evaluated by bssh, so a KRL file fails closed: every host key is refused
@@ -209,7 +224,7 @@ fn find_cert_authority(
 /// closed, since the revocation policy cannot be applied.
 pub(super) fn ensure_not_revoked_by_file(
     path: &str,
-    key: &PublicKey,
+    keys: &[&PublicKey],
     hostname: &str,
     port: u16,
 ) -> Result<(), super::Error> {
@@ -239,7 +254,7 @@ pub(super) fn ensure_not_revoked_by_file(
             fields[0]
         };
         if let Ok(revoked) = russh::keys::parse_public_key_base64(key_field)
-            && revoked.key_data() == key.key_data()
+            && keys.iter().any(|key| revoked.key_data() == key.key_data())
         {
             return Err(reject_revoked(hostname, port, path, index + 1));
         }
@@ -559,6 +574,95 @@ mod tests {
     }
 
     #[test]
+    fn ca_lookup_retries_without_port_like_openssh() {
+        let (ca, subject) = (generate_key(), generate_key());
+        let cert = build_certificate(&subject, &ca, CertificateShape::default());
+        let (_dir, path) = known_hosts_with(&[ca_line("*.example.com", &ca)]);
+        assert_eq!(
+            verify_host_certificate(&cert, "node1.example.com", 2222, &[path], &defaults(), None)
+                .unwrap(),
+            CertificateVerdict::Accepted,
+            "a bare-host CA pattern covers a non-default port, as OpenSSH's portless retry does"
+        );
+        let (_dir, scoped) = known_hosts_with(&[ca_line("[node1.example.com]:2200", &ca)]);
+        assert_eq!(
+            verify_host_certificate(
+                &cert,
+                "node1.example.com",
+                2222,
+                &[scoped],
+                &defaults(),
+                None
+            )
+            .unwrap(),
+            CertificateVerdict::NoMatchingAuthority,
+            "a CA line scoped to another port does not vouch for this one"
+        );
+    }
+
+    #[test]
+    fn principals_match_case_sensitively_like_openssh() {
+        let (ca, subject) = (generate_key(), generate_key());
+        let cert = build_certificate(
+            &subject,
+            &ca,
+            CertificateShape {
+                principal: "NODE1.example.com",
+                ..CertificateShape::default()
+            },
+        );
+        let (_dir, path) = known_hosts_with(&[ca_line("*.example.com", &ca)]);
+        assert!(matches!(
+            verify_host_certificate(&cert, "node1.example.com", 22, &[path], &defaults(), None),
+            Err(super::super::Error::ServerCheckFailed)
+        ));
+    }
+
+    /// A forged certificate copies a trusted CA's public key but cannot carry
+    /// its signature. Its principals are attacker input and must never be
+    /// pattern-matched before the signature is verified, and the matcher
+    /// itself must not backtrack exponentially or recurse per `*`.
+    #[test]
+    fn forged_certificate_with_pathological_principal_is_rejected_quickly() {
+        let (ca, forger, subject) = (generate_key(), generate_key(), generate_key());
+        let hostile = format!("{}x", "*".repeat(64));
+        let mut builder =
+            Builder::new_with_random_nonce(&mut rand::rng(), subject.public_key(), 0, u64::MAX)
+                .unwrap();
+        builder.cert_type(CertType::Host).unwrap();
+        builder.valid_principal(hostile.as_str()).unwrap();
+        let forged = builder.sign(&forger).unwrap();
+        let mut bytes = forged.to_bytes().unwrap();
+        let forger_blob = forger.public_key().to_bytes().unwrap();
+        let ca_blob = ca.public_key().to_bytes().unwrap();
+        let at = bytes
+            .windows(forger_blob.len())
+            .position(|window| window == forger_blob.as_slice())
+            .unwrap();
+        bytes[at..at + forger_blob.len()].copy_from_slice(&ca_blob);
+        let forged = Certificate::from_bytes(&bytes).unwrap();
+        assert_eq!(forged.signature_key(), ca.public_key().key_data());
+
+        let (_dir, path) = known_hosts_with(&[ca_line("*.example.com", &ca)]);
+        let started = std::time::Instant::now();
+        let result =
+            verify_host_certificate(&forged, "node1.example.com", 22, &[path], &defaults(), None);
+        assert!(matches!(
+            result,
+            Err(super::super::Error::ServerCheckFailed)
+        ));
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+
+        let started = std::time::Instant::now();
+        assert!(!glob_match_case_sensitive("node1.example.com", &hostile));
+        let deep = format!("{}x", "*".repeat(200_000));
+        assert!(!glob_match_case_sensitive(&"a".repeat(253), &deep));
+        assert!(glob_match_case_sensitive("node1.example.com", "*.*.c?m"));
+        assert!(!glob_match_case_sensitive("node1.example.com", "*.*.c?"));
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    #[test]
     fn krl_and_unreadable_revocation_files_fail_closed() {
         let dir = tempfile::tempdir().unwrap();
         let krl = dir.path().join("krl");
@@ -566,7 +670,7 @@ mod tests {
         let key = generate_key();
         let result = ensure_not_revoked_by_file(
             krl.to_str().unwrap(),
-            key.public_key(),
+            &[key.public_key()],
             "node1.example.com",
             22,
         );
@@ -576,7 +680,7 @@ mod tests {
         ));
         let result = ensure_not_revoked_by_file(
             dir.path().join("missing").to_str().unwrap(),
-            key.public_key(),
+            &[key.public_key()],
             "node1.example.com",
             22,
         );
@@ -589,7 +693,7 @@ mod tests {
         assert!(
             ensure_not_revoked_by_file(
                 list.to_str().unwrap(),
-                key.public_key(),
+                &[key.public_key()],
                 "node1.example.com",
                 22
             )

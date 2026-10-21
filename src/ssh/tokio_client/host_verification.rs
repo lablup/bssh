@@ -477,27 +477,61 @@ fn marker_host_matches(
 /// is case-insensitive to agree with the hostname normalization elsewhere in
 /// this module.
 pub(super) fn glob_match(text: &str, pattern: &str) -> bool {
-    if !pattern.contains(['*', '?']) {
-        return text.eq_ignore_ascii_case(pattern);
-    }
-    let text: Vec<char> = text.chars().map(|c| c.to_ascii_lowercase()).collect();
-    let pattern: Vec<char> = pattern.chars().map(|c| c.to_ascii_lowercase()).collect();
-    glob_match_chars(&text, &pattern, 0, 0)
+    glob_match_with_case(text, pattern, false)
 }
 
-/// Recursive helper for [`glob_match`].
-fn glob_match_chars(text: &[char], pattern: &[char], ti: usize, pi: usize) -> bool {
-    if pi == pattern.len() {
-        return ti == text.len();
-    }
-    match pattern[pi] {
-        '*' => {
-            glob_match_chars(text, pattern, ti, pi + 1)
-                || (ti < text.len() && glob_match_chars(text, pattern, ti + 1, pi))
+/// Case-sensitive form of [`glob_match`], matching OpenSSH's `match_pattern`.
+/// Certificate principals are compared this way, as `sshkey_cert_check_host`
+/// does.
+pub(super) fn glob_match_case_sensitive(text: &str, pattern: &str) -> bool {
+    glob_match_with_case(text, pattern, true)
+}
+
+/// Iterative wildcard matcher.
+///
+/// Patterns can come from a peer (certificate principals are read before the
+/// certificate's trust is settled), so this must not recurse per `*` or
+/// backtrack exponentially. Only the most recent `*` is ever retried, which
+/// bounds the work by `text.len() * pattern.len()` and uses constant stack.
+fn glob_match_with_case(text: &str, pattern: &str, case_sensitive: bool) -> bool {
+    let same = |a: char, b: char| {
+        if case_sensitive {
+            a == b
+        } else {
+            a.eq_ignore_ascii_case(&b)
         }
-        '?' => ti < text.len() && glob_match_chars(text, pattern, ti + 1, pi + 1),
-        c => ti < text.len() && text[ti] == c && glob_match_chars(text, pattern, ti + 1, pi + 1),
+    };
+    let text: Vec<char> = text.chars().collect();
+    let pattern: Vec<char> = pattern.chars().collect();
+    let (mut ti, mut pi) = (0usize, 0usize);
+    // Position of the last `*` seen and the text index it is currently
+    // assumed to stop at.
+    let mut star: Option<(usize, usize)> = None;
+    while ti < text.len() {
+        match pattern.get(pi) {
+            Some('*') => {
+                star = Some((pi, ti));
+                pi += 1;
+            }
+            Some('?') => {
+                ti += 1;
+                pi += 1;
+            }
+            Some(&c) if same(c, text[ti]) => {
+                ti += 1;
+                pi += 1;
+            }
+            _ => match star {
+                Some((star_pi, star_ti)) => {
+                    pi = star_pi + 1;
+                    ti = star_ti + 1;
+                    star = Some((star_pi, star_ti + 1));
+                }
+                None => return false,
+            },
+        }
     }
+    pattern[pi..].iter().all(|&c| c == '*')
 }
 
 /// Line number of a `@revoked` marker naming `hostname`/`port` whose key is
