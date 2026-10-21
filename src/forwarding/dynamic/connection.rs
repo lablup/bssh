@@ -77,26 +77,30 @@ impl ConnectionHandler {
 
             stats.inc_active();
 
-            match socks_version {
-                SocksVersion::V4 => stats.inc_socks4(),
-                SocksVersion::V5 => stats.inc_socks5(),
-            };
-
-            debug!(
-                "Handling SOCKS{:?} connection from {}",
-                socks_version, peer_addr
-            );
-
             // Handle the SOCKS connection
-            let result = Self::handle_socks_connection(
-                tcp_stream,
-                peer_addr,
-                socks_version,
-                &ssh_client,
-                cancel_token,
-                buffer_size,
-                address_family,
-            )
+            let result = async {
+                let socks_version = Self::detect_socks_version(&tcp_stream, socks_version).await?;
+                match socks_version {
+                    SocksVersion::V4 => stats.inc_socks4(),
+                    SocksVersion::V5 => stats.inc_socks5(),
+                    SocksVersion::Auto => unreachable!("autodetection must select a protocol"),
+                };
+
+                debug!(
+                    "Handling SOCKS{:?} connection from {}",
+                    socks_version, peer_addr
+                );
+                Self::handle_socks_connection(
+                    tcp_stream,
+                    peer_addr,
+                    socks_version,
+                    &ssh_client,
+                    cancel_token,
+                    buffer_size,
+                    address_family,
+                )
+                .await
+            }
             .await;
 
             // Update statistics
@@ -119,6 +123,24 @@ impl ConnectionHandler {
         });
     }
 
+    async fn detect_socks_version(
+        tcp_stream: &TcpStream,
+        configured: SocksVersion,
+    ) -> anyhow::Result<SocksVersion> {
+        if configured != SocksVersion::Auto {
+            return Ok(configured);
+        }
+
+        let mut version = [0_u8; 1];
+        let read = tcp_stream.peek(&mut version).await?;
+        anyhow::ensure!(read == 1, "SOCKS client closed before sending a greeting");
+        match version[0] {
+            4 => Ok(SocksVersion::V4),
+            5 => Ok(SocksVersion::V5),
+            other => anyhow::bail!("Unsupported SOCKS protocol version: {other}"),
+        }
+    }
+
     /// Handle individual SOCKS connection
     #[allow(clippy::too_many_arguments)]
     async fn handle_socks_connection(
@@ -131,6 +153,9 @@ impl ConnectionHandler {
         address_family: AddressFamily,
     ) -> anyhow::Result<crate::forwarding::tunnel::TunnelStats> {
         match socks_version {
+            SocksVersion::Auto => {
+                unreachable!("SOCKS protocol must be detected before dispatch")
+            }
             SocksVersion::V4 => {
                 handle_socks4_connection(
                     tcp_stream,
@@ -218,6 +243,52 @@ mod tests {
     use super::*;
     use std::net::Ipv4Addr;
     use tokio::io::AsyncReadExt;
+
+    async fn tcp_pair() -> (TcpStream, TcpStream) {
+        let listener = tokio::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("bind SOCKS detection listener");
+        let address = listener.local_addr().expect("SOCKS detection address");
+        let client = TcpStream::connect(address)
+            .await
+            .expect("connect SOCKS client");
+        let (server, _) = listener.accept().await.expect("accept SOCKS client");
+        (client, server)
+    }
+
+    #[tokio::test]
+    async fn auto_detects_socks4_and_socks5_greetings() {
+        use tokio::io::AsyncWriteExt as _;
+
+        for (greeting, expected) in [(4_u8, SocksVersion::V4), (5_u8, SocksVersion::V5)] {
+            let (mut client, server) = tcp_pair().await;
+            client
+                .write_all(&[greeting])
+                .await
+                .expect("write SOCKS greeting");
+            assert_eq!(
+                ConnectionHandler::detect_socks_version(&server, SocksVersion::Auto)
+                    .await
+                    .expect("detect supported SOCKS greeting"),
+                expected
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn auto_rejects_unknown_socks_greetings() {
+        use tokio::io::AsyncWriteExt as _;
+
+        let (mut client, server) = tcp_pair().await;
+        client
+            .write_all(&[6])
+            .await
+            .expect("write unsupported SOCKS greeting");
+        let error = ConnectionHandler::detect_socks_version(&server, SocksVersion::Auto)
+            .await
+            .expect_err("unknown SOCKS greeting must fail closed");
+        assert_eq!(error.to_string(), "Unsupported SOCKS protocol version: 6");
+    }
 
     #[tokio::test]
     async fn saturated_dynamic_limit_rejects_immediately_and_recovers() {

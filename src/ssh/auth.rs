@@ -348,7 +348,34 @@ impl AuthContext {
                 );
                 return Ok(Some(unresolved(path.to_path_buf())));
             }
-            _ => return Ok(None),
+            _ => {
+                // OpenSSH keeps an IdentityFile eligible for agent
+                // authentication when its private half is unavailable but a
+                // readable `<identity>.pub` companion remains. This is the
+                // normal shape after a key has been loaded into ssh-agent and
+                // the private file has deliberately been moved offline. In
+                // particular, IdentitiesOnly=yes must still allow that one
+                // listed public identity instead of suppressing the agent
+                // altogether.
+                let mut companion = path.as_os_str().to_os_string();
+                companion.push(".pub");
+                let companion = PathBuf::from(companion);
+                let Ok(canonical_companion) = companion.canonicalize() else {
+                    return Ok(None);
+                };
+                if !canonical_companion.is_file() {
+                    return Ok(None);
+                }
+                let Ok(public_key) = russh::keys::load_public_key(&canonical_companion) else {
+                    return Ok(None);
+                };
+                return Ok(Some(PreparedIdentity {
+                    path: canonical_companion,
+                    algorithm: Some(public_key.algorithm()),
+                    public_key: Some(public_key.key_data().clone()),
+                    public_only: true,
+                }));
+            }
         };
 
         if let Ok(public_key) = russh::keys::load_public_key(&canonical_path) {
@@ -1232,6 +1259,38 @@ mod tests {
         let auth = AuthContext::new("user".into(), "host".into())
             .unwrap()
             .with_agent(true)
+            .with_policy(policy)
+            .determine_method()
+            .await
+            .unwrap();
+
+        assert_eq!(method_names(auth), ["agent-key:listed-key.pub"]);
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[tokio::test]
+    #[serial]
+    async fn identities_only_uses_public_companion_when_private_identity_is_offline() {
+        let home = TempDir::new().unwrap();
+        std::fs::create_dir(home.path().join(".ssh")).unwrap();
+        let _home = EnvGuard::set("HOME", home.path());
+        let socket_path = home.path().join("agent.sock");
+        std::fs::write(&socket_path, []).unwrap();
+        let _socket = EnvGuard::set("SSH_AUTH_SOCK", &socket_path);
+        let private_path = home.path().join("listed-key");
+        let public_path = home.path().join("listed-key.pub");
+        let key = write_test_key(&private_path);
+        std::fs::write(&public_path, key.public_key().to_openssh().unwrap()).unwrap();
+        std::fs::remove_file(&private_path).unwrap();
+        let policy = SshAuthenticationPolicy {
+            identity_files: vec![private_path],
+            identities_only: true,
+            preferred_authentications: vec!["publickey".into()],
+            ..SshAuthenticationPolicy::default()
+        };
+
+        let auth = AuthContext::new("user".into(), "host".into())
+            .unwrap()
             .with_policy(policy)
             .determine_method()
             .await

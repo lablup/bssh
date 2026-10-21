@@ -226,7 +226,11 @@ pub fn render_resolved_config(original_host: &str, config: &SshHostConfig) -> Re
     output.optional_command("localcommand", config.local_command.as_deref())?;
     output.percent_expanded_command("remotecommand", config.remote_command.as_deref(), &tokens)?;
     output.optional_command("knownhostscommand", config.known_hosts_command.as_deref())?;
-    if let Some(proxy_jump) = config.proxy_jump.as_deref() {
+    if let Some(proxy_jump) = config
+        .proxy_jump
+        .as_deref()
+        .filter(|value| !value.eq_ignore_ascii_case("none"))
+    {
         output.line("proxyjump", proxy_jump)?;
     } else {
         let proxy_command = config
@@ -625,11 +629,11 @@ fn kex_names(config: &SshHostConfig) -> String {
 
 fn host_key_names(config: &SshHostConfig) -> String {
     config
-        .resolved_host_key_algorithms
-        .as_deref()
-        .unwrap_or(crate::ssh::tokio_client::algorithms::default_host_key_algorithms())
+        .resolved_host_key_algorithm_names
+        .clone()
+        .unwrap_or_else(crate::ssh::tokio_client::algorithms::default_host_key_algorithm_names)
         .iter()
-        .map(ToString::to_string)
+        .map(String::as_str)
         .collect::<Vec<_>>()
         .join(",")
 }

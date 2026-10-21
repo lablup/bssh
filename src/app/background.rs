@@ -37,6 +37,8 @@ const WORKER_SOCKET_ENV: &str = "BSSH_INTERNAL_BACKGROUND_SOCKET";
 const WORKER_PARENT_ENV: &str = "BSSH_INTERNAL_BACKGROUND_PARENT";
 #[cfg(unix)]
 const MAX_EVENT_BYTES: usize = 1024 * 1024;
+#[cfg(unix)]
+const MAX_PORTABLE_SOCKET_PATH_BYTES: usize = 100;
 
 /// A lifecycle transition sent by the authenticated worker to its supervisor.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -111,7 +113,7 @@ impl BackgroundWorker {
 #[cfg(unix)]
 pub async fn supervise(args: &[String]) -> Result<i32> {
     let socket_dir = create_socket_directory()?;
-    let socket_path = socket_dir.join("ready.sock");
+    let socket_path = socket_dir.join("s");
     let listener = UnixListener::bind(&socket_path).with_context(|| {
         format!(
             "Could not bind background supervisor socket '{}'",
@@ -199,17 +201,27 @@ async fn read_event(stream: &mut UnixStream) -> Result<BackgroundEvent> {
 fn create_socket_directory() -> Result<PathBuf> {
     use std::os::unix::fs::DirBuilderExt as _;
 
-    let directory = std::env::temp_dir().join(format!(
-        "bssh-background-{}-{}",
-        std::process::id(),
-        uuid::Uuid::new_v4()
-    ));
+    let nonce = uuid::Uuid::new_v4().simple().to_string();
+    let component = format!("bssh-{}-{}", std::process::id(), &nonce[..12]);
+    let temp_directory = std::env::temp_dir();
+    let parent = socket_parent_for(&temp_directory, &component);
+    let directory = parent.join(component);
     let mut builder = std::fs::DirBuilder::new();
     builder.mode(0o700);
     builder
         .create(&directory)
         .with_context(|| format!("Could not create '{}'", directory.display()))?;
     Ok(directory)
+}
+
+#[cfg(unix)]
+fn socket_parent_for<'a>(temp_directory: &'a Path, component: &str) -> &'a Path {
+    let candidate = temp_directory.join(component).join("s");
+    if candidate.as_os_str().as_encoded_bytes().len() < MAX_PORTABLE_SOCKET_PATH_BYTES {
+        temp_directory
+    } else {
+        Path::new("/tmp")
+    }
 }
 
 #[cfg(unix)]
@@ -296,6 +308,18 @@ impl Drop for SocketDirectoryGuard {
 mod tests {
     use super::*;
     use bssh::ssh::SessionRequest;
+
+    #[test]
+    fn socket_parent_avoids_long_platform_temp_paths() {
+        let short = Path::new("/tmp");
+        assert_eq!(socket_parent_for(short, "bssh-123-0123456789ab"), short);
+
+        let long = PathBuf::from(format!("/{}", "x".repeat(120)));
+        assert_eq!(
+            socket_parent_for(&long, "bssh-123-0123456789ab"),
+            Path::new("/tmp")
+        );
+    }
 
     #[tokio::test]
     async fn event_frame_round_trips_and_preserves_session_policy() {

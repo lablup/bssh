@@ -186,21 +186,53 @@ pub async fn initialize_app(cli: &mut Cli, args: &[String]) -> Result<AppContext
     // Load configuration with priority
     let config = Config::load_with_priority(&cli.config).await?;
 
-    // Load SSH configuration with caching for improved performance
-    let mut ssh_config = if let Some(ref ssh_config_path) = cli.ssh_config {
-        SshConfig::load_from_file_cached(ssh_config_path)
+    let ssh_config_overrides = cli.ssh_config_overrides();
+    let ssh_destination = if cli.is_ssh_mode() {
+        cli.parse_destination_result()?
+            .map(|destination| destination.host.to_string())
+    } else {
+        None
+    };
+
+    // A single OpenSSH-style destination is an explicit trust boundary for
+    // on-disk ssh_config. Resolve it through the host-aware loader so Match
+    // exec runs exactly once during preprocessing and the generic resolver
+    // never gains shell authority. Cluster/library config remains on the
+    // cached direct-exec path.
+    let (mut ssh_config, overrides_preprocessed) = if let Some(hostname) =
+        ssh_destination.as_deref()
+    {
+        let config = if let Some(ref ssh_config_path) = cli.ssh_config {
+            SshConfig::load_explicit_for_config_dump_with_options(
+                ssh_config_path,
+                hostname,
+                &ssh_config_overrides,
+            )
             .await
             .with_context(|| format!("Failed to load SSH config from {ssh_config_path:?}"))?
+        } else {
+            SshConfig::load_default_for_config_dump_with_options(hostname, &ssh_config_overrides)
+                .await?
+        };
+        (config, true)
     } else {
-        SshConfig::load_default_cached().await.unwrap_or_else(|_| {
-            tracing::debug!("No SSH config found or failed to load, using empty config");
-            SshConfig::new()
-        })
+        let config = if let Some(ref ssh_config_path) = cli.ssh_config {
+            SshConfig::load_from_file_cached(ssh_config_path)
+                .await
+                .with_context(|| format!("Failed to load SSH config from {ssh_config_path:?}"))?
+        } else {
+            SshConfig::load_default_cached().await.unwrap_or_else(|_| {
+                tracing::debug!("No SSH config found or failed to load, using empty config");
+                SshConfig::new()
+            })
+        };
+        (config, false)
     };
-    let ssh_config_overrides = cli.ssh_config_overrides();
-    ssh_config
-        .apply_cli_options(&ssh_config_overrides)
-        .context("Failed to apply command-line SSH options")?;
+    if !overrides_preprocessed {
+        ssh_config
+            .apply_cli_options(&ssh_config_overrides)
+            .context("Failed to apply command-line SSH options")?;
+    }
 
     // Determine nodes to execute on
     let (nodes, actual_cluster_name) =

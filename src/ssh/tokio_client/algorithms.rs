@@ -220,6 +220,60 @@ fn supported_key_algorithms() -> Vec<Algorithm> {
     supported
 }
 
+fn host_key_names(algorithms: &[Algorithm]) -> Vec<String> {
+    algorithms
+        .iter()
+        .map(|algorithm| algorithm.to_certificate_type().to_string())
+        .chain(algorithms.iter().map(ToString::to_string))
+        .collect()
+}
+
+pub(crate) fn default_host_key_algorithm_names() -> Vec<String> {
+    host_key_names(default_host_key_algorithms())
+}
+
+pub(crate) fn resolve_host_key_names(values: &[String]) -> Result<Vec<String>, String> {
+    let defaults = default_host_key_algorithm_names();
+    let supported = host_key_names(&supported_key_algorithms());
+    resolve_policy(
+        "host key algorithm",
+        values,
+        &defaults,
+        &supported,
+        String::as_str,
+    )
+}
+
+fn host_key_name_algorithm(name: &str, supported: &[Algorithm]) -> Option<Algorithm> {
+    supported
+        .iter()
+        .find(|algorithm| {
+            algorithm.as_str() == name || algorithm.to_certificate_type().as_str() == name
+        })
+        .cloned()
+}
+
+fn resolve_host_key_kind(values: &[String], certificate: bool) -> Result<Vec<Algorithm>, String> {
+    let supported = supported_key_algorithms();
+    let mut algorithms = Vec::new();
+    for name in resolve_host_key_names(values)? {
+        if name.ends_with("-cert-v01@openssh.com") != certificate {
+            continue;
+        }
+        let algorithm = host_key_name_algorithm(&name, &supported).ok_or_else(|| {
+            unsupported(
+                "host key algorithm",
+                &name,
+                host_key_names(&supported).into_iter(),
+            )
+        })?;
+        if !algorithms.contains(&algorithm) {
+            algorithms.push(algorithm);
+        }
+    }
+    Ok(algorithms)
+}
+
 /// russh's default host-key order without the SHA-1 `ssh-rsa` signature.
 ///
 /// OpenSSH no longer offers `ssh-rsa` by default; bssh matches that for both
@@ -236,16 +290,20 @@ pub(crate) fn default_host_key_algorithms() -> &'static [Algorithm] {
     &DEFAULTS
 }
 
-pub(crate) fn resolve_host_keys(values: &[String]) -> Result<Vec<Algorithm>, String> {
-    let defaults = default_host_key_algorithms();
-    let supported = supported_key_algorithms();
-    resolve_policy(
-        "host key algorithm",
-        values,
-        defaults,
-        &supported,
-        AsRef::as_ref,
-    )
+/// Host key algorithms whose OpenSSH certificate variants are advertised by
+/// default. Certificates retain the same underlying signature algorithms as
+/// plain host keys; russh carries this list separately so callers opt into CA
+/// validation explicitly.
+pub(crate) fn default_host_key_certificate_algorithms() -> &'static [Algorithm] {
+    default_host_key_algorithms()
+}
+
+pub(crate) fn resolve_plain_host_keys(values: &[String]) -> Result<Vec<Algorithm>, String> {
+    resolve_host_key_kind(values, false)
+}
+
+pub(crate) fn resolve_host_key_certificates(values: &[String]) -> Result<Vec<Algorithm>, String> {
+    resolve_host_key_kind(values, true)
 }
 
 fn public_key_names(algorithms: &[Algorithm]) -> Vec<String> {
@@ -362,7 +420,7 @@ mod tests {
     fn host_key_modifiers_use_defaults_as_the_base_and_all_supported_as_candidates() {
         let defaults = default_host_key_algorithms();
 
-        let appended = resolve_host_keys(&[String::from("+ssh-rsa")]).unwrap();
+        let appended = resolve_plain_host_keys(&[String::from("+ssh-rsa")]).unwrap();
         assert!(
             defaults
                 .iter()
@@ -378,7 +436,7 @@ mod tests {
             1
         );
 
-        let removed = resolve_host_keys(&[String::from("-ssh-*")]).unwrap();
+        let removed = resolve_plain_host_keys(&[String::from("-ssh-*")]).unwrap();
         assert_eq!(
             removed,
             defaults
@@ -390,7 +448,7 @@ mod tests {
 
         let nondefault = Algorithm::SkEd25519;
         assert!(!defaults.contains(&nondefault));
-        let prepended = resolve_host_keys(&[format!("^{}", nondefault.as_ref())]).unwrap();
+        let prepended = resolve_plain_host_keys(&[format!("^{}", nondefault.as_ref())]).unwrap();
         assert_eq!(prepended.first(), Some(&nondefault));
         assert_eq!(
             prepended
@@ -400,6 +458,48 @@ mod tests {
             1
         );
         assert_eq!(&prepended[1..], defaults);
+    }
+
+    #[test]
+    fn host_key_certificate_policies_preserve_plain_and_certificate_kinds() {
+        let certificates =
+            resolve_host_key_certificates(&[String::from("ssh-ed25519-cert-v01@openssh.com")])
+                .unwrap();
+        let plain =
+            resolve_plain_host_keys(&[String::from("ssh-ed25519-cert-v01@openssh.com")]).unwrap();
+        assert_eq!(certificates, [Algorithm::Ed25519]);
+        assert!(plain.is_empty());
+
+        let certificates = resolve_host_key_certificates(&[String::from("ssh-ed25519")]).unwrap();
+        let plain = resolve_plain_host_keys(&[String::from("ssh-ed25519")]).unwrap();
+        assert!(certificates.is_empty());
+        assert_eq!(plain, [Algorithm::Ed25519]);
+
+        let certificates = resolve_host_key_certificates(&[
+            String::from("sk-ssh-ed25519-cert-v01@openssh.com"),
+            String::from("sk-ecdsa-sha2-nistp256-cert-v01@openssh.com"),
+            String::from("rsa-sha2-256-cert-v01@openssh.com"),
+            String::from("rsa-sha2-512-cert-v01@openssh.com"),
+            String::from("ssh-rsa-cert-v01@openssh.com"),
+        ])
+        .unwrap();
+        assert_eq!(
+            certificates,
+            [
+                Algorithm::SkEd25519,
+                Algorithm::SkEcdsaSha2NistP256,
+                Algorithm::Rsa {
+                    hash: Some(ssh_key::HashAlg::Sha256)
+                },
+                Algorithm::Rsa {
+                    hash: Some(ssh_key::HashAlg::Sha512)
+                },
+                Algorithm::Rsa { hash: None },
+            ]
+        );
+
+        let defaults = resolve_host_key_names(&[String::from("-ssh-rsa*")]).unwrap();
+        assert!(defaults.iter().all(|name| !name.starts_with("ssh-rsa")));
     }
 
     #[test]

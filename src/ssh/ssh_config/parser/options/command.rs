@@ -41,9 +41,10 @@ pub(super) fn parse_command_option(
                 anyhow::bail!("LocalCommand requires a value at line {line_number}");
             }
             let command = args.join(" ");
-            // LocalCommand accepts the default OpenSSH client token set plus %T.
-            // Expanded values are checked again at the runtime shell boundary.
-            validate_command_with_tokens(&command, "LocalCommand", line_number)?;
+            // LocalCommand is explicitly evaluated by the user's shell, just
+            // like OpenSSH. Preserve shell grammar while bounding its tokens
+            // and rejecting control characters.
+            validate_local_command(&command, line_number)?;
             host.local_command = Some(command);
         }
         "remotecommand" => {
@@ -375,6 +376,25 @@ fn validate_command_with_tokens(
     })
 }
 
+fn validate_local_command(command: &str, line_number: usize) -> Result<()> {
+    if command.trim().is_empty() {
+        anyhow::bail!("LocalCommand cannot be empty at line {line_number}");
+    }
+    if command
+        .chars()
+        .any(|character| matches!(character, '\0' | '\n' | '\r'))
+    {
+        anyhow::bail!("LocalCommand contains an invalid control character at line {line_number}");
+    }
+    validate_percent_tokens(
+        command,
+        "LocalCommand",
+        line_number,
+        PercentTokenSet::LocalCommand,
+        16 * 1024,
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -427,17 +447,25 @@ mod tests {
         assert!(validate_command_with_tokens("echo %x", "LocalCommand", 1).is_err());
         assert!(validate_command_with_tokens("echo %H", "LocalCommand", 1).is_err());
 
-        // Command with dangerous characters (after token substitution)
-        assert!(validate_command_with_tokens("echo test; rm -rf /", "LocalCommand", 1).is_err());
-
-        // Command injection attempt
-        assert!(validate_command_with_tokens("echo $(whoami)", "LocalCommand", 1).is_err());
-
         // Empty command
         assert!(validate_command_with_tokens("", "LocalCommand", 1).is_err());
 
         // Command with pipe
         assert!(validate_command_with_tokens("ls | grep test", "LocalCommand", 1).is_err());
+    }
+
+    #[test]
+    fn local_command_preserves_openssh_shell_grammar() {
+        for command in [
+            "echo value > /tmp/output",
+            "false || true",
+            "echo \"$(whoami)\" | cat",
+        ] {
+            assert!(validate_local_command(command, 1).is_ok(), "{command}");
+        }
+        for command in ["", "echo %x", "echo\0bad", "echo\nbad"] {
+            assert!(validate_local_command(command, 1).is_err(), "{command:?}");
+        }
     }
 
     #[test]

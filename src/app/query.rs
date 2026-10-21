@@ -24,6 +24,7 @@ pub fn is_supported_query(query: &str) -> bool {
             | "mac"
             | "kex"
             | "kexalgorithms"
+            | "compression"
             | "key"
             | "key-plain"
             | "key-cert"
@@ -56,6 +57,12 @@ pub fn handle_query(query: &str) {
             println!("curve25519-sha256\ncurve25519-sha256@libssh.org");
             println!("ecdh-sha2-nistp256\necdh-sha2-nistp384\necdh-sha2-nistp521");
         }
+        "compression" => {
+            // bssh can negotiate eager RFC 4253 zlib compression. Delayed
+            // zlib@openssh.com remains intentionally disabled because the
+            // underlying transport currently corrupts post-auth packets.
+            println!("none\nzlib");
+        }
         "key" | "key-plain" | "key-cert" | "key-sig" => {
             println!("ssh-ed25519");
             println!("ecdsa-sha2-nistp256\necdsa-sha2-nistp384\necdsa-sha2-nistp521");
@@ -70,6 +77,7 @@ pub fn handle_query(query: &str) {
             println!("  cipher-auth       - Authenticated encryption ciphers");
             println!("  mac               - Supported MAC algorithms");
             println!("  kex               - Supported key exchange algorithms");
+            println!("  compression       - Supported compression algorithms");
             println!("  key               - Supported key types");
             println!("  protocol-version  - SSH protocol version");
         }
@@ -90,5 +98,11 @@ mod tests {
         for query in ["kex", "KexAlgorithms", "kexalgorithms"] {
             assert!(is_supported_query(query));
         }
+    }
+
+    #[test]
+    fn compression_query_is_supported_without_claiming_delayed_zlib() {
+        assert!(is_supported_query("compression"));
+        assert!(is_supported_query("COMPRESSION"));
     }
 }

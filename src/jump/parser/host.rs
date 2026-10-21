@@ -72,11 +72,16 @@ impl JumpHost {
 
     /// Convert to a connection string for display purposes
     pub fn to_connection_string(&self) -> String {
+        let host = if self.host.contains(':') {
+            format!("[{}]", self.host)
+        } else {
+            self.host.clone()
+        };
         match (&self.user, &self.port) {
-            (Some(user), Some(port)) => format!("{}@{}:{}", user, self.host, port),
-            (Some(user), None) => format!("{}@{}", user, self.host),
-            (None, Some(port)) => format!("{}:{}", self.host, port),
-            (None, None) => self.host.clone(),
+            (Some(user), Some(port)) => format!("{user}@{host}:{port}"),
+            (Some(user), None) => format!("{user}@{host}"),
+            (None, Some(port)) => format!("{host}:{port}"),
+            (None, None) => host,
         }
     }
 }

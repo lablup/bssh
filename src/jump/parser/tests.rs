@@ -49,6 +49,18 @@ fn test_parse_single_jump_host_with_user_and_port() {
 }
 
 #[test]
+fn test_parse_single_jump_host_ssh_uri() {
+    let result = parse_single_jump_host("ssh://admin@example.com:2222").unwrap();
+    assert_eq!(result.host, "example.com");
+    assert_eq!(result.user.as_deref(), Some("admin"));
+    assert_eq!(result.port, Some(2222));
+    assert_eq!(result.to_connection_string(), "admin@example.com:2222");
+
+    assert!(parse_single_jump_host("ssh://example.com/path").is_err());
+    assert!(parse_single_jump_host("ssh://").is_err());
+}
+
+#[test]
 fn test_parse_single_jump_host_ipv6_brackets() {
     let result = parse_single_jump_host("[::1]").unwrap();
     assert_eq!(result.host, "::1");
@@ -70,6 +82,7 @@ fn test_parse_single_jump_host_ipv6_with_user_and_port() {
     assert_eq!(result.host, "::1");
     assert_eq!(result.user, Some("admin".to_string()));
     assert_eq!(result.port, Some(2222));
+    assert_eq!(result.to_connection_string(), "admin@[::1]:2222");
 }
 
 #[test]
@@ -155,6 +168,22 @@ fn test_jump_host_display() {
         Some(2222),
     );
     assert_eq!(format!("{host}"), "user@example.com:2222");
+}
+
+#[test]
+fn test_command_line_jump_hosts_are_canonicalized_and_validated() {
+    assert_eq!(
+        canonicalize_jump_hosts("ssh://user@host:2223").unwrap(),
+        "user@host:2223"
+    );
+    assert_eq!(
+        canonicalize_jump_hosts("jump1,ssh://user@jump2:2200").unwrap(),
+        "jump1,user@jump2:2200"
+    );
+    assert_eq!(canonicalize_jump_hosts("NONE").unwrap(), "none");
+    for invalid in ["host;command", "user`cmd`@host", "host(with)", ""] {
+        assert!(canonicalize_jump_hosts(invalid).is_err(), "{invalid}");
+    }
 }
 
 #[test]

@@ -134,11 +134,15 @@ pub(super) async fn connect_through_tunnel(
     )
     .await?;
 
+    let original_host = ssh_connection_config
+        .original_host
+        .as_deref()
+        .unwrap_or(&jump_host.host);
     let policy = KnownHostRuntimePolicy::from_config(
         ssh_connection_config,
         &jump_host.effective_user(),
         &jump_host.host,
-        &jump_host.host,
+        original_host,
         jump_host.effective_port(),
     );
     let mut config = ssh_connection_config.to_russh_config();

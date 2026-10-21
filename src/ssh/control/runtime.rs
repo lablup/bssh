@@ -7,11 +7,12 @@
 
 #[cfg(unix)]
 mod unix {
+    use std::collections::BTreeMap;
     use std::io::{self, BufRead as _, Write as _};
     use std::os::fd::AsRawFd as _;
     use std::path::Path;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex as StdMutex};
     use std::time::Duration;
 
     use anyhow::{Context, Result};
@@ -22,6 +23,7 @@ mod unix {
 
     use crate::forwarding::ForwardingPlan;
     use crate::ssh::tokio_client::{Client, CommandOutput};
+    use crate::ssh::{SessionPolicy, SessionRequest};
 
     use super::super::{
         CONTROL_PROTOCOL_VERSION, ControlCommand, ControlData, ControlDataStream, ControlMessage,
@@ -418,6 +420,7 @@ mod unix {
     ) -> Result<()> {
         let next_session = Arc::new(AtomicU64::new(1));
         let active = Arc::new(AtomicUsize::new(0));
+        let active_sessions = Arc::new(StdMutex::new(BTreeMap::new()));
         let confirmation = Arc::new(Mutex::new(()));
         let bootstrap_session = Arc::new(AtomicBool::new(allow_bootstrap_session));
         let handler_slots = Arc::new(Semaphore::new(MAX_CONTROL_CLIENTS));
@@ -442,6 +445,7 @@ mod unix {
                     let handler_signal = signal_tx.clone();
                     let handler_active = Arc::clone(&active);
                     let handler_active_tx = active_tx.clone();
+                    let handler_active_sessions = Arc::clone(&active_sessions);
                     let handler_next_session = Arc::clone(&next_session);
                     let handler_confirmation = Arc::clone(&confirmation);
                     let handler_bootstrap_session = Arc::clone(&bootstrap_session);
@@ -456,6 +460,7 @@ mod unix {
                             handler_signal,
                             handler_active,
                             handler_active_tx,
+                            handler_active_sessions,
                             handler_next_session,
                         )
                         .await
@@ -502,6 +507,7 @@ mod unix {
         signal: mpsc::Sender<MasterSignal>,
         active: Arc<AtomicUsize>,
         active_tx: watch::Sender<usize>,
+        active_sessions: Arc<StdMutex<BTreeMap<u64, ActiveSession>>>,
         next_session: Arc<AtomicU64>,
     ) -> Result<()> {
         let hello = read_initial_control_message(&mut stream, "hello").await?;
@@ -548,6 +554,7 @@ mod unix {
                     client,
                     active,
                     active_tx,
+                    active_sessions,
                     next_session.fetch_add(1, Ordering::Relaxed),
                 )
                 .await
@@ -562,6 +569,7 @@ mod unix {
                     clear_all: false,
                     exit_on_failure: true,
                     address_family,
+                    permit_remote_open: Vec::new(),
                 };
                 let result = match command {
                     ControlCommand::Check => {
@@ -574,9 +582,36 @@ mod unix {
                         )
                         .await;
                     }
+                    ControlCommand::Channels => {
+                        let message = format_active_sessions(&active_sessions);
+                        return send_response(
+                            &mut stream,
+                            request.request_id,
+                            ControlResponseKind::Info { message },
+                        )
+                        .await;
+                    }
                     ControlCommand::Forward => client.add_control_forwardings(&plan).await,
                     ControlCommand::Cancel => client.cancel_control_forwardings(&plan).await,
                     ControlCommand::Exit | ControlCommand::Stop => Ok(()),
+                    ControlCommand::ConnectionInfo => {
+                        let message = format_connection_info(&client);
+                        return send_response(
+                            &mut stream,
+                            request.request_id,
+                            ControlResponseKind::Info { message },
+                        )
+                        .await;
+                    }
+                    ControlCommand::Proxy => {
+                        return send_error(
+                            &mut stream,
+                            request.request_id,
+                            "invalid_operation",
+                            "proxy requests open a session and are not control commands",
+                        )
+                        .await;
+                    }
                 };
                 if let Err(error) = result {
                     return send_error(
@@ -657,23 +692,151 @@ mod unix {
     struct ActiveSessionGuard {
         active: Arc<AtomicUsize>,
         updates: watch::Sender<usize>,
+        session_id: u64,
+        sessions: Arc<StdMutex<BTreeMap<u64, ActiveSession>>>,
     }
 
     impl ActiveSessionGuard {
-        fn new(active: Arc<AtomicUsize>, updates: watch::Sender<usize>) -> Self {
+        fn new(
+            active: Arc<AtomicUsize>,
+            updates: watch::Sender<usize>,
+            session_id: u64,
+            sessions: Arc<StdMutex<BTreeMap<u64, ActiveSession>>>,
+            policy: &SessionPolicy,
+        ) -> Self {
             let count = active.fetch_add(1, Ordering::AcqRel) + 1;
             updates.send_replace(count);
-            Self { active, updates }
+            sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .insert(session_id, ActiveSession::from_policy(policy));
+            Self {
+                active,
+                updates,
+                session_id,
+                sessions,
+            }
         }
     }
 
     impl Drop for ActiveSessionGuard {
         fn drop(&mut self) {
+            self.sessions
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&self.session_id);
             let count = self.active.fetch_sub(1, Ordering::AcqRel) - 1;
             self.updates.send_replace(count);
         }
     }
 
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct ActiveSession {
+        request: String,
+        pty: bool,
+    }
+
+    impl ActiveSession {
+        fn from_policy(policy: &SessionPolicy) -> Self {
+            let request = match &policy.request {
+                SessionRequest::Exec(command) => format!("exec {}", compact_description(command)),
+                SessionRequest::Shell => "shell".to_string(),
+                SessionRequest::Subsystem(name) => {
+                    format!("subsystem {}", compact_description(name))
+                }
+                SessionRequest::None => "no-session".to_string(),
+            };
+            Self {
+                request,
+                pty: policy.request_pty,
+            }
+        }
+    }
+
+    fn compact_description(value: &str) -> String {
+        value
+            .chars()
+            .flat_map(char::escape_default)
+            .take(300)
+            .collect()
+    }
+
+    fn format_active_sessions(sessions: &StdMutex<BTreeMap<u64, ActiveSession>>) -> String {
+        let sessions = sessions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut lines = vec!["The following connections are open:".to_string()];
+        lines.extend(sessions.iter().map(|(id, session)| {
+            format!(
+                "  #{id} {} ({})",
+                session.request,
+                if session.pty { "pty" } else { "no-pty" }
+            )
+        }));
+        format!("{}\r\n", lines.join("\r\n"))
+    }
+
+    fn format_connection_info(client: &Client) -> String {
+        let info = client.connection_info();
+        let mut lines = vec![format!(
+            "Connection information for {} pid {}",
+            whoami::hostname().unwrap_or_else(|_| "unknown".to_string()),
+            std::process::id(),
+        )];
+        if let Some(local_address) = info.local_address {
+            lines.push(format!("  tcp {local_address} -> {}", info.remote_address));
+        } else {
+            lines.push(format!("  tcp -> {}", info.remote_address));
+        }
+        lines.push(format!(
+            "  kexalgorithm {}",
+            info.kex_algorithm.as_deref().unwrap_or("unavailable")
+        ));
+        lines.push(format!(
+            "  hostkeyalgorithm {}",
+            info.host_key_algorithm.as_deref().unwrap_or("unavailable")
+        ));
+        lines.push(format!(
+            "  cipher {}",
+            directional_names(
+                info.cipher_client_to_server.as_deref(),
+                info.cipher_server_to_client.as_deref(),
+            )
+        ));
+        lines.push(format!(
+            "  mac {}",
+            directional_names(
+                info.mac_client_to_server.as_deref(),
+                info.mac_server_to_client.as_deref(),
+            )
+        ));
+        let compression = directional_names(
+            info.compression_client_to_server.as_deref(),
+            info.compression_server_to_client.as_deref(),
+        );
+        lines.push(format!("  compression {compression}"));
+        lines.push("  rekey unavailable".to_string());
+        lines.push("  traffic unavailable in, unavailable out".to_string());
+        if compression
+            .split('/')
+            .any(|algorithm| algorithm != "none" && algorithm != "unavailable")
+        {
+            lines.push("    compressed traffic statistics unavailable".to_string());
+        }
+        format!("{}\r\n", lines.join("\r\n"))
+    }
+
+    fn directional_names(client_to_server: Option<&str>, server_to_client: Option<&str>) -> String {
+        match (client_to_server, server_to_client) {
+            (Some(client), Some(server)) if client == server => client.to_string(),
+            (Some(client), Some(server)) => format!("{client}/{server}"),
+            (Some(client), None) => format!("{client}/unavailable"),
+            (None, Some(server)) => format!("unavailable/{server}"),
+            (None, None) => "unavailable".to_string(),
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
     async fn handle_remote_session(
         mut stream: UnixStream,
         request_id: u64,
@@ -681,9 +844,16 @@ mod unix {
         client: Client,
         active: Arc<AtomicUsize>,
         active_tx: watch::Sender<usize>,
+        active_sessions: Arc<StdMutex<BTreeMap<u64, ActiveSession>>>,
         session_id: u64,
     ) -> Result<()> {
-        let _active = ActiveSessionGuard::new(active, active_tx);
+        let _active = ActiveSessionGuard::new(
+            active,
+            active_tx,
+            session_id,
+            active_sessions,
+            &session.policy,
+        );
         send_response(
             &mut stream,
             request_id,

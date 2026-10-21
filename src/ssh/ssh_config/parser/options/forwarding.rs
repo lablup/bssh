@@ -40,7 +40,7 @@ pub(super) fn parse_forwarding_option(
                 if path.contains('\0') {
                     anyhow::bail!("ForwardAgent socket path contains NUL at line {line_number}");
                 }
-                if let Some(name) = path.strip_prefix('$')
+                if let Some(name) = forward_agent_environment_name(path)
                     && (name.is_empty()
                         || !name.bytes().enumerate().all(|(index, byte)| {
                             byte == b'_'
@@ -121,10 +121,31 @@ pub(super) fn parse_forwarding_option(
             if args.is_empty() {
                 anyhow::bail!("PermitRemoteOpen requires at least one value at line {line_number}");
             }
-            // PermitRemoteOpen can have multiple host:port patterns or special values
-            // Support both space-separated and single value
-            host.permit_remote_open
-                .extend(args.iter().map(|s| s.to_string()));
+            // Like other scalar ssh_config options, PermitRemoteOpen keeps the
+            // first obtained value. One occurrence may contain multiple
+            // whitespace-separated destinations, but later occurrences must
+            // not broaden an earlier restriction.
+            if host.permit_remote_open.is_empty() {
+                const MAX_PERMIT_REMOTE_OPEN: usize = 1000;
+                let has_sentinel = args.iter().any(|value| {
+                    value.eq_ignore_ascii_case("any") || value.eq_ignore_ascii_case("none")
+                });
+                if has_sentinel && args.len() != 1 {
+                    anyhow::bail!(
+                        "PermitRemoteOpen special values 'any' and 'none' must be specified alone at line {line_number}"
+                    );
+                }
+                if args.len() > MAX_PERMIT_REMOTE_OPEN {
+                    tracing::warn!(
+                        "PermitRemoteOpen at line {} contains {} destinations, truncated to first {}",
+                        line_number,
+                        args.len(),
+                        MAX_PERMIT_REMOTE_OPEN
+                    );
+                }
+                host.permit_remote_open
+                    .extend(args.iter().take(MAX_PERMIT_REMOTE_OPEN).cloned());
+            }
         }
         "clearallforwardings" => {
             if args.is_empty() {
@@ -206,4 +227,13 @@ pub(super) fn parse_forwarding_option(
     }
 
     Ok(())
+}
+
+fn forward_agent_environment_name(path: &str) -> Option<&str> {
+    let name = path.strip_prefix('$')?;
+    Some(
+        name.strip_prefix('{')
+            .and_then(|name| name.strip_suffix('}'))
+            .unwrap_or(name),
+    )
 }

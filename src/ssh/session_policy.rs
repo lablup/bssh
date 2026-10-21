@@ -200,6 +200,7 @@ impl SessionPolicy {
         let configured_command = config
             .remote_command
             .as_deref()
+            .filter(|command| !command.eq_ignore_ascii_case("none"))
             .map(|command| {
                 expand_tokens(
                     command,

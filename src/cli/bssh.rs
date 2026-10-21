@@ -312,7 +312,9 @@ pub struct Cli {
         short = 'O',
         long = "control-command",
         value_name = "command",
-        value_parser = ["check", "forward", "cancel", "exit", "stop", "proxy"],
+        value_parser = [
+            "check", "forward", "cancel", "exit", "stop", "proxy", "conninfo", "channels"
+        ],
         conflicts_with = "stdio_forward",
         help = "Send a control command to an existing connection master"
     )]
@@ -877,6 +879,10 @@ impl Cli {
     pub fn ssh_config_overrides(&self) -> Vec<String> {
         let mut options = Vec::with_capacity(
             self.ssh_options.len()
+                + usize::from(self.get_effective_user().is_some())
+                + usize::from(
+                    self.port.is_some() || self.parse_destination().is_some_and(|v| v.2.is_some()),
+                )
                 + usize::from(self.cipher.is_some())
                 + usize::from(self.macs.is_some())
                 + usize::from(self.subsystem)
@@ -890,6 +896,13 @@ impl Cli {
                 + usize::from(self.control_master > 0)
                 + usize::from(self.control_path.is_some()),
         );
+        if let Some(user) = self.get_effective_user() {
+            options.push(format!("User={user}"));
+        }
+        let destination_port = self.parse_destination().and_then(|(_, _, port)| port);
+        if let Some(port) = self.port.or(destination_port) {
+            options.push(format!("Port={port}"));
+        }
         if self.control_master > 0 {
             let mode = if self.control_master == 1 {
                 "yes"
@@ -1394,6 +1407,38 @@ mod tests {
     }
 
     #[test]
+    fn destination_user_and_port_become_match_context_overrides() {
+        let destination = Cli::try_parse_from(["bssh", "dest-user@example.com:2222"]).unwrap();
+        assert_eq!(
+            &destination.ssh_config_overrides()[..2],
+            ["User=dest-user", "Port=2222"]
+        );
+
+        let dedicated = Cli::try_parse_from([
+            "bssh",
+            "-l",
+            "flag-user",
+            "-p",
+            "2200",
+            "-o",
+            "User=option-user",
+            "-o",
+            "Port=2300",
+            "dest-user@example.com:2222",
+        ])
+        .unwrap();
+        assert_eq!(
+            &dedicated.ssh_config_overrides()[..4],
+            [
+                "User=flag-user",
+                "Port=2200",
+                "User=option-user",
+                "Port=2300",
+            ]
+        );
+    }
+
+    #[test]
     fn multiplex_flags_preserve_openssh_priority_and_repetition() {
         let once = Cli::try_parse_from([
             "bssh",
@@ -1425,6 +1470,17 @@ mod tests {
         let proxy =
             Cli::try_parse_from(["bssh", "-Oproxy", "--control-path=/tmp/c", "target"]).unwrap();
         assert_eq!(proxy.control_command.as_deref(), Some("proxy"));
+
+        for command in ["conninfo", "channels"] {
+            let cli = Cli::try_parse_from([
+                "bssh",
+                &format!("-O{command}"),
+                "--control-path=/tmp/c",
+                "target",
+            ])
+            .unwrap();
+            assert_eq!(cli.control_command.as_deref(), Some(command));
+        }
 
         let repeated_more = Cli::try_parse_from(["bssh", "-MMM", "target"]).unwrap();
         assert_eq!(repeated_more.control_master, 3);

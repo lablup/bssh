@@ -23,11 +23,24 @@ use super::host::JumpHost;
 /// Handles the format: `[user@]hostname[:port]`
 /// * IPv6 addresses are supported: `[::1]:2222` or `user@[::1]:2222`
 /// * Port parsing is disambiguated from IPv6 colons
+/// * SSH URIs are accepted and normalized: `ssh://user@hostname:2222`
 pub fn parse_single_jump_host(host_spec: &str) -> Result<JumpHost> {
     // Handle empty specification
     if host_spec.is_empty() {
         anyhow::bail!("Empty jump host specification");
     }
+
+    let host_spec = if let Some(authority) = host_spec.strip_prefix("ssh://") {
+        if authority.is_empty() {
+            anyhow::bail!("SSH jump URI is missing a host");
+        }
+        if authority.contains(['/', '?', '#']) {
+            anyhow::bail!("SSH jump URI must contain only user, host, and port");
+        }
+        authority
+    } else {
+        host_spec
+    };
 
     // Split on '@' to separate user from host:port
     let parts: Vec<&str> = host_spec.splitn(2, '@').collect();

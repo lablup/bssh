@@ -4,7 +4,7 @@ use crate::{
     forwarding::tunnel::Tunnel,
     ssh::tokio_client::{AddressFamily, Client, Error as SshError},
 };
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -30,9 +30,9 @@ pub async fn handle_socks4_connection(
         peer_addr,
         cancel_token,
         address_family,
-        |destination| async move {
+        |destination, address_family| async move {
             ssh_client
-                .open_direct_tcpip_channel(destination.as_str(), None)
+                .open_direct_tcpip_channel_with_family(destination.as_str(), None, address_family)
                 .await
                 .map_err(anyhow::Error::from)
         },
@@ -43,7 +43,7 @@ pub async fn handle_socks4_connection(
     .await
 }
 
-async fn handle_socks4_connection_with<
+pub(crate) async fn handle_socks4_connection_with<
     IoStream,
     OpenChannel,
     OpenFuture,
@@ -60,7 +60,7 @@ async fn handle_socks4_connection_with<
 ) -> Result<super::super::tunnel::TunnelStats>
 where
     IoStream: AsyncRead + AsyncWrite + Unpin,
-    OpenChannel: FnOnce(String) -> OpenFuture,
+    OpenChannel: FnOnce(String, AddressFamily) -> OpenFuture,
     OpenFuture: Future<Output = Result<ChannelTarget>>,
     RunTunnel: FnOnce(IoStream, ChannelTarget, CancellationToken) -> RunFuture,
     RunFuture: Future<Output = Result<super::super::tunnel::TunnelStats>>,
@@ -98,39 +98,43 @@ where
         return Err(anyhow::anyhow!("Unsupported SOCKS4 command: {command}"));
     }
 
-    // Read USERID (until NULL byte)
-    let mut userid = Vec::new();
-    loop {
-        let mut byte = [0u8; 1];
-        tcp_stream.read_exact(&mut byte).await?;
-        if byte[0] == 0 {
-            break; // NULL terminator
-        }
-        userid.push(byte[0]);
-        if userid.len() > 255 {
-            // Prevent excessive memory usage
-            let response = [0, 0x5B, 0, 0, 0, 0, 0, 0]; // Request rejected
-            tcp_stream.write_all(&response).await?;
-            return Err(anyhow::anyhow!("USERID too long"));
-        }
+    // Read USERID (until NULL byte).
+    if let Err(error) = read_socks4_field(&mut tcp_stream, "USERID").await {
+        tcp_stream.write_all(&[0, 0x5B, 0, 0, 0, 0, 0, 0]).await?;
+        return Err(error);
     }
 
-    let destination = match socks4_destination_for_family(dest_ip, dest_port, address_family) {
-        Ok(destination) => destination,
-        Err(e) => {
-            debug!(
-                "Rejected SOCKS4 CONNECT to {}:{} for forced {} from {}: {}",
-                dest_ip, dest_port, address_family, peer_addr, e
-            );
-            let response = [0, 0x5B, 0, 0, 0, 0, 0, 0]; // Request rejected
-            tcp_stream.write_all(&response).await?;
-            return Err(e.into());
+    // SOCKS4A represents a remotely-resolved hostname as 0.0.0.x, where x is
+    // non-zero, followed by a NUL-terminated domain after USERID.
+    let destination = if dest_ip.octets()[..3] == [0, 0, 0] && dest_ip.octets()[3] != 0 {
+        let domain = match read_socks4_field(&mut tcp_stream, "SOCKS4A domain").await {
+            Ok(domain) => domain,
+            Err(error) => {
+                tcp_stream.write_all(&[0, 0x5B, 0, 0, 0, 0, 0, 0]).await?;
+                return Err(error);
+            }
+        };
+        anyhow::ensure!(!domain.is_empty(), "SOCKS4A domain cannot be empty");
+        let domain = String::from_utf8(domain).context("SOCKS4A domain is not valid UTF-8")?;
+        format!("{domain}:{dest_port}")
+    } else {
+        match socks4_destination_for_family(dest_ip, dest_port, address_family) {
+            Ok(destination) => destination,
+            Err(e) => {
+                debug!(
+                    "Rejected SOCKS4 CONNECT to {}:{} for forced {} from {}: {}",
+                    dest_ip, dest_port, address_family, peer_addr, e
+                );
+                let response = [0, 0x5B, 0, 0, 0, 0, 0, 0]; // Request rejected
+                tcp_stream.write_all(&response).await?;
+                return Err(e.into());
+            }
         }
     };
     debug!("SOCKS4 CONNECT to {} from {}", destination, peer_addr);
 
     // Create SSH channel to destination
-    let ssh_channel = match open_channel(destination.clone()).await {
+    let ssh_channel = match open_channel(destination.clone(), address_family).await {
         Ok(channel) => channel,
         Err(e) => {
             debug!("Failed to create SSH channel to {}: {}", destination, e);
@@ -158,6 +162,22 @@ where
 
     // Start bidirectional tunnel
     run_tunnel(tcp_stream, ssh_channel, cancel_token).await
+}
+
+async fn read_socks4_field<Stream>(stream: &mut Stream, name: &str) -> Result<Vec<u8>>
+where
+    Stream: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut value = Vec::new();
+    loop {
+        let mut byte = [0_u8; 1];
+        stream.read_exact(&mut byte).await?;
+        if byte[0] == 0 {
+            return Ok(value);
+        }
+        anyhow::ensure!(value.len() < 255, "{name} too long");
+        value.push(byte[0]);
+    }
 }
 
 fn socks4_destination_for_family(
@@ -202,8 +222,15 @@ pub async fn handle_socks5_connection(
     .await
 }
 
-async fn handle_socks5_connection_with<OpenChannel, OpenFuture, RunTunnel, RunFuture, Channel>(
-    mut tcp_stream: TcpStream,
+pub(crate) async fn handle_socks5_connection_with<
+    IoStream,
+    OpenChannel,
+    OpenFuture,
+    RunTunnel,
+    RunFuture,
+    Channel,
+>(
+    mut tcp_stream: IoStream,
     peer_addr: SocketAddr,
     address_family: AddressFamily,
     mut open_channel: OpenChannel,
@@ -211,9 +238,10 @@ async fn handle_socks5_connection_with<OpenChannel, OpenFuture, RunTunnel, RunFu
     cancel_token: CancellationToken,
 ) -> Result<super::super::tunnel::TunnelStats>
 where
+    IoStream: AsyncRead + AsyncWrite + Unpin,
     OpenChannel: FnMut(String, AddressFamily) -> OpenFuture,
     OpenFuture: Future<Output = Result<Channel>>,
-    RunTunnel: FnOnce(TcpStream, Channel, CancellationToken) -> RunFuture,
+    RunTunnel: FnOnce(IoStream, Channel, CancellationToken) -> RunFuture,
     RunFuture: Future<Output = Result<super::super::tunnel::TunnelStats>>,
 {
     debug!("Handling SOCKS5 connection from {}", peer_addr);
@@ -405,11 +433,12 @@ mod tests {
                 peer_addr,
                 CancellationToken::new(),
                 address_family,
-                move |destination| {
+                move |destination, family| {
                     let open_count = Arc::clone(&open_count_for_task);
                     async move {
                         open_count.fetch_add(1, Ordering::Relaxed);
                         assert_eq!(destination, "192.0.2.25:8080");
+                        assert_eq!(family, address_family);
                         Err(anyhow::anyhow!("synthetic channel-open stop"))
                     }
                 },
@@ -509,6 +538,54 @@ mod tests {
         assert!(
             err.to_string().contains("synthetic channel-open stop"),
             "the injected channel-open seam error must surface"
+        );
+    }
+
+    #[tokio::test]
+    async fn socks4a_domain_is_forwarded_for_remote_resolution() {
+        let peer_addr: SocketAddr = "127.0.0.1:4242".parse().expect("peer address parses");
+        let (mut client_stream, server_stream) = tokio::io::duplex(128);
+        let captured = Arc::new(Mutex::new(None));
+        let captured_for_task = Arc::clone(&captured);
+
+        let server = tokio::spawn(async move {
+            handle_socks4_connection_with(
+                server_stream,
+                peer_addr,
+                CancellationToken::new(),
+                AddressFamily::V6,
+                move |destination, family| {
+                    let captured = Arc::clone(&captured_for_task);
+                    async move {
+                        *captured.lock().expect("capture lock") = Some((destination, family));
+                        Err::<(), anyhow::Error>(anyhow::anyhow!("synthetic channel-open stop"))
+                    }
+                },
+                |_tcp_stream, _channel_target: (), _cancel_token| async move {
+                    Ok(TunnelStats::default())
+                },
+            )
+            .await
+            .expect_err("the synthetic seam stop must surface as an error")
+        });
+
+        let mut request = socks4_request(Ipv4Addr::new(0, 0, 0, 1), 8080, b"user");
+        request.extend_from_slice(b"example.com\0");
+        client_stream
+            .write_all(&request)
+            .await
+            .expect("client sends SOCKS4A request");
+
+        let mut response = [0_u8; 8];
+        client_stream
+            .read_exact(&mut response)
+            .await
+            .expect("client reads SOCKS4A rejection response");
+        assert_eq!(response, [0, 0x5B, 0, 0, 0, 0, 0, 0]);
+        server.await.expect("server task joins");
+        assert_eq!(
+            *captured.lock().expect("capture lock"),
+            Some(("example.com:8080".to_string(), AddressFamily::V6))
         );
     }
 

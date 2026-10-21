@@ -19,10 +19,15 @@ use thiserror::Error;
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ControlPathContext {
     local_host: String,
+    local_host_short: String,
+    local_user: String,
+    local_uid: String,
     home_dir: PathBuf,
+    original_remote_host: String,
     remote_host: String,
     remote_port: u16,
     remote_user: String,
+    host_key_alias: String,
     jump_host: String,
 }
 
@@ -35,10 +40,22 @@ impl ControlPathContext {
         remote_port: u16,
         remote_user: impl Into<String>,
     ) -> Self {
+        let local_host = local_host.into();
+        let local_host_short = local_host
+            .split('.')
+            .next()
+            .unwrap_or(&local_host)
+            .to_string();
+        let remote_host = remote_host.into();
         Self {
-            local_host: local_host.into(),
+            local_host,
+            local_host_short,
+            local_user: whoami::username().unwrap_or_else(|_| "user".to_string()),
+            local_uid: local_uid(),
             home_dir: home_dir.into(),
-            remote_host: remote_host.into(),
+            original_remote_host: remote_host.clone(),
+            host_key_alias: remote_host.clone(),
+            remote_host,
             remote_port,
             remote_user: remote_user.into(),
             jump_host: String::new(),
@@ -50,6 +67,36 @@ impl ControlPathContext {
     #[must_use]
     pub fn with_jump_host(mut self, jump_host: impl Into<String>) -> Self {
         self.jump_host = jump_host.into();
+        self
+    }
+
+    /// Set the original destination spelling used by `%n`.
+    #[must_use]
+    pub fn with_original_remote_host(mut self, original_remote_host: impl Into<String>) -> Self {
+        self.original_remote_host = original_remote_host.into();
+        self
+    }
+
+    /// Set the known-hosts identity used by `%k`.
+    #[must_use]
+    pub fn with_host_key_alias(mut self, host_key_alias: impl Into<String>) -> Self {
+        self.host_key_alias = host_key_alias.into();
+        self
+    }
+
+    /// Override local identity values used by `%u` and `%i`.
+    ///
+    /// Production callers normally use the process identity populated by
+    /// [`Self::new`]. This builder keeps expansion deterministic in tests and
+    /// embedders that intentionally model another local account.
+    #[must_use]
+    pub fn with_local_identity(
+        mut self,
+        local_user: impl Into<String>,
+        local_uid: impl Into<String>,
+    ) -> Self {
+        self.local_user = local_user.into();
+        self.local_uid = local_uid.into();
         self
     }
 
@@ -93,7 +140,7 @@ impl ControlPathContext {
     }
 }
 
-/// Expand the #286 ControlPath token subset and validate the resulting Unix
+/// Expand the OpenSSH `ControlPath` token set and validate the resulting Unix
 /// socket address before any connection or bind attempt.
 pub fn expand_control_path(
     template: &str,
@@ -119,8 +166,26 @@ pub fn expand_control_path(
     let connection_hash = context.connection_hash();
     let port = context.remote_port.to_string();
     let mut output = String::with_capacity(expanded_home.len() + connection_hash.len());
-    let mut characters = expanded_home.chars();
+    let mut characters = expanded_home.chars().peekable();
     while let Some(character) = characters.next() {
+        if character == '$' && characters.peek() == Some(&'{') {
+            characters.next();
+            let mut name = String::new();
+            loop {
+                match characters.next() {
+                    Some('}') => break,
+                    Some(character) => name.push(character),
+                    None => return Err(ControlPathError::IncompleteEnvironmentVariable),
+                }
+            }
+            if name.is_empty() {
+                return Err(ControlPathError::EmptyEnvironmentVariable);
+            }
+            let value = std::env::var(&name)
+                .map_err(|_| ControlPathError::EnvironmentVariableNotSet(name))?;
+            output.push_str(&value);
+            continue;
+        }
         if character != '%' {
             output.push(character);
             continue;
@@ -129,9 +194,16 @@ pub fn expand_control_path(
         let replacement = match token {
             '%' => "%",
             'C' => &connection_hash,
+            'd' => context.home_dir.to_str().unwrap_or_default(),
             'h' => &context.remote_host,
+            'i' => &context.local_uid,
+            'j' => &context.jump_host,
+            'k' => &context.host_key_alias,
+            'L' => &context.local_host_short,
+            'n' => &context.original_remote_host,
             'p' => &port,
             'r' => &context.remote_user,
+            'u' => &context.local_user,
             'l' => &context.local_host,
             _ => return Err(ControlPathError::UnsupportedToken(token)),
         };
@@ -206,9 +278,15 @@ pub enum ControlPathError {
     #[error("ControlPath ends with an incomplete '%' token")]
     IncompleteToken,
     #[error(
-        "ControlPath contains unsupported token '%{0}'; supported tokens are %C, %h, %p, %r, %l, and %%"
+        "ControlPath contains unsupported token '%{0}'; supported tokens are %%, %C, %d, %h, %i, %j, %k, %L, %l, %n, %p, %r, and %u"
     )]
     UnsupportedToken(char),
+    #[error("ControlPath environment expansion is missing a closing '}}'")]
+    IncompleteEnvironmentVariable,
+    #[error("ControlPath contains an empty environment variable expansion")]
+    EmptyEnvironmentVariable,
+    #[error("ControlPath environment variable '${{{0}}}' is not set")]
+    EnvironmentVariableNotSet(String),
     #[error(
         "ControlPath '{0}' uses unsupported '~user' expansion; use '~/' for the current user's home"
     )]
@@ -224,6 +302,17 @@ pub enum ControlPathError {
     },
 }
 
+#[cfg(unix)]
+fn local_uid() -> String {
+    // SAFETY: getuid has no arguments, dereferences no pointers, and cannot fail.
+    unsafe { libc::getuid() }.to_string()
+}
+
+#[cfg(not(unix))]
+fn local_uid() -> String {
+    "0".to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,16 +325,26 @@ mod tests {
             2222,
             "deploy",
         )
+        .with_local_identity("alice", "1000")
+        .with_original_remote_host("server-alias")
+        .with_host_key_alias("known-host-alias")
         .with_jump_host("jump.example:22")
     }
 
     #[test]
     fn expands_required_tokens_tilde_and_literal_percent() {
-        let short_context = ControlPathContext::new("local", "/h", "host", 22, "user");
-        let expanded = expand_control_path("~/cm-%h-%p-%r-%l-%%-%C", &short_context)
-            .expect("valid control path");
+        let short_context = ControlPathContext::new("l.x", "/h", "h", 22, "r")
+            .with_local_identity("u", "1")
+            .with_original_remote_host("n")
+            .with_host_key_alias("k")
+            .with_jump_host("j");
+        let expanded = expand_control_path(
+            "~/cm-%d-%h-%i-%j-%k-%L-%l-%n-%p-%r-%u-%%-%C",
+            &short_context,
+        )
+        .expect("valid control path");
         let rendered = expanded.to_string_lossy();
-        assert!(rendered.starts_with("/h/cm-host-22-user-local-%-"));
+        assert!(rendered.starts_with("/h/cm-/h-h-1-j-k-l-l.x-n-22-r-u-%-"));
         let hash = rendered.rsplit('-').next().expect("hash suffix");
         assert_eq!(hash.len(), 40);
         assert!(hash.bytes().all(|byte| byte.is_ascii_hexdigit()));
@@ -267,7 +366,15 @@ mod tests {
 
     #[test]
     fn rejects_ambiguous_or_malformed_templates() {
-        for template in ["", "~other/socket", "/tmp/%", "/tmp/%x", "/tmp/a\0b"] {
+        for template in [
+            "",
+            "~other/socket",
+            "/tmp/%",
+            "/tmp/%x",
+            "/tmp/${}",
+            "/tmp/${UNCLOSED",
+            "/tmp/a\0b",
+        ] {
             assert!(
                 expand_control_path(template, &context()).is_err(),
                 "accepted {template:?}"

@@ -111,7 +111,12 @@ pub struct SshHostConfig {
     pub kex_algorithms: Vec<String>,
     pub ciphers: Vec<String>,
     pub macs: Vec<String>,
+    /// Effective HostKeyAlgorithms names, retaining certificate/plain kinds.
+    pub(crate) resolved_host_key_algorithm_names: Option<Vec<String>>,
+    /// Effective plain host-key algorithms.
     pub(crate) resolved_host_key_algorithms: Option<Vec<ssh_key::Algorithm>>,
+    /// Effective OpenSSH host-certificate algorithms.
+    pub(crate) resolved_host_key_certificate_algorithms: Option<Vec<ssh_key::Algorithm>>,
     pub(crate) resolved_kex_algorithms: Option<Vec<russh::kex::Name>>,
     pub(crate) resolved_ciphers: Option<Vec<russh::cipher::Name>>,
     pub(crate) resolved_macs: Option<Vec<russh::mac::Name>>,

@@ -48,7 +48,10 @@ fn validate_control_path(value: &str, line_number: usize) -> Result<()> {
         let Some((_, token)) = tokens.next() else {
             anyhow::bail!("ControlPath has an incomplete '%' token at line {line_number}");
         };
-        if !matches!(token, '%' | 'C' | 'h' | 'l' | 'p' | 'r') {
+        if !matches!(
+            token,
+            '%' | 'C' | 'd' | 'h' | 'i' | 'j' | 'k' | 'L' | 'l' | 'n' | 'p' | 'r' | 'u'
+        ) {
             anyhow::bail!(
                 "ControlPath contains unknown substitution token '%{token}' at line {line_number}"
             );
@@ -135,7 +138,7 @@ fn validates_control_master_modes_case_insensitively() {
 fn accepts_control_path_literals_and_valid_templates() {
     for value in [
         "none",
-        "~/.ssh/control-%C-%h-%p-%r-%l",
+        "~/.ssh/control-%C-%d-%h-%i-%j-%k-%L-%l-%n-%p-%r-%u",
         "/tmp/control path;literal|&`$(still-a-path)-%%",
     ] {
         assert!(parse_for_test("controlpath", &[value]).is_ok(), "{value:?}");

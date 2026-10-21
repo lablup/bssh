@@ -31,7 +31,7 @@
 
 mod connection;
 mod forwarder;
-mod socks;
+pub(crate) mod socks;
 mod stats;
 
 pub use forwarder::DynamicForwarder;

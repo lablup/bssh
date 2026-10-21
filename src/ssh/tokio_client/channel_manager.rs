@@ -440,7 +440,8 @@ impl Client {
         command: &str,
         sender: Sender<CommandOutput>,
     ) -> Result<u32, super::Error> {
-        self.execute_streaming_with_input(command, sender, tokio::io::stdin())
+        let input = super::process_stdin::open().map_err(super::Error::IoError)?;
+        self.execute_streaming_with_input(command, sender, input)
             .await
     }
 

@@ -93,6 +93,7 @@ impl ForwardingRuntime {
             auto_reconnect: false,
             max_reconnect_attempts: 1,
             address_family: plan.address_family,
+            permit_remote_open: plan.permit_remote_open.clone(),
             ..ForwardingConfig::default()
         };
         let mut manager = ForwardingManager::new(config);
@@ -164,6 +165,7 @@ impl ForwardingRuntime {
                 auto_reconnect: false,
                 max_reconnect_attempts: 1,
                 address_family: plan.address_family,
+                permit_remote_open: plan.permit_remote_open.clone(),
                 ..ForwardingConfig::default()
             };
             let mut manager = ForwardingManager::new(config);

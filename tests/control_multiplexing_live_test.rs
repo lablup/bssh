@@ -157,7 +157,7 @@ async fn two_passengers_share_exactly_one_authenticated_transport() {
         "test",
         AuthMethod::with_password("test"),
         ServerCheckMethod::NoCheck,
-        &SshConnectionConfig::default(),
+        &SshConnectionConfig::default().with_compression(true),
     )
     .await
     .expect("authenticate control master");
@@ -182,6 +182,29 @@ async fn two_passengers_share_exactly_one_authenticated_transport() {
         .await
         .expect("check control master");
     assert!(matches!(check, ControlResponseKind::Alive { .. }));
+
+    let conninfo = send_control_command(
+        &path,
+        ControlCommand::ConnectionInfo,
+        Vec::new(),
+        AddressFamily::Any,
+    )
+    .await
+    .expect("query connection info");
+    let ControlResponseKind::Info { message } = conninfo else {
+        panic!("unexpected conninfo response: {conninfo:?}");
+    };
+    assert!(message.contains(&format!("-> {}", ssh.address)));
+    assert!(message.contains("\r\n  kexalgorithm "));
+    assert!(message.contains("\r\n  hostkeyalgorithm ssh-ed25519\r\n"));
+    assert!(message.contains("\r\n  cipher "));
+    assert!(message.contains("\r\n  compression zlib\r\n"));
+    assert!(message.contains("\r\n    compressed traffic statistics unavailable\r\n"));
+    assert!(!message.contains("kexalgorithm unavailable"));
+    assert!(!message.contains("hostkeyalgorithm unavailable"));
+    assert!(!message.contains("cipher unavailable"));
+    assert!(message.contains("\r\n  rekey unavailable\r\n"));
+    assert!(message.contains("\r\n  traffic unavailable in, unavailable out\r\n"));
 
     let reserved = TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
         .await
@@ -228,6 +251,20 @@ async fn two_passengers_share_exactly_one_authenticated_transport() {
     })
     .await
     .expect("slow passenger did not open");
+
+    let channels = send_control_command(
+        &path,
+        ControlCommand::Channels,
+        Vec::new(),
+        AddressFamily::Any,
+    )
+    .await
+    .expect("query active channels");
+    let ControlResponseKind::Info { message } = channels else {
+        panic!("unexpected channels response: {channels:?}");
+    };
+    assert!(message.starts_with("The following connections are open:\r\n"));
+    assert!(message.contains("exec slow (no-pty)"));
 
     send_control_command(&path, ControlCommand::Stop, Vec::new(), AddressFamily::Any)
         .await

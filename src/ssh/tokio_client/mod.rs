@@ -26,6 +26,7 @@ pub mod error;
 pub mod file_transfer;
 mod hostkey_rotation;
 mod known_hosts_command;
+mod process_stdin;
 mod proxy_command;
 mod session;
 pub mod sftp_client;
@@ -43,8 +44,8 @@ pub use authentication::{AuthKeyboardInteractive, AuthMethod, ServerCheckMethod}
 pub use channel_manager::{CommandExecutedResult, CommandOutput};
 pub(crate) use connection::AgentForwardingLease;
 pub use connection::{
-    Client, ClientHandler, DEFAULT_KEEPALIVE_INTERVAL, DEFAULT_KEEPALIVE_MAX, SshConnectionConfig,
-    SshConnectionConfigResolver,
+    Client, ClientHandler, ConnectionInfo, DEFAULT_KEEPALIVE_INTERVAL, DEFAULT_KEEPALIVE_MAX,
+    SshConnectionConfig, SshConnectionConfigResolver,
 };
 pub use error::{Error, TransportIntegrityCause};
 pub use proxy_command::{ProxyCommandConfig, ProxyMode};

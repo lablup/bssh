@@ -94,6 +94,18 @@ fn remote_command_conflicts_and_session_request_kinds_are_exact() {
     let policy =
         SessionPolicy::resolve(&config, &node(), None, CliTtyMode::Default, false).unwrap();
     assert_eq!(policy.request, SessionRequest::None);
+
+    config.session_type = Some("default".into());
+    config.remote_command = Some("NoNe".into());
+    let policy = SessionPolicy::resolve(
+        &config,
+        &node(),
+        Some("scp -f file"),
+        CliTtyMode::Default,
+        false,
+    )
+    .unwrap();
+    assert_eq!(policy.request, SessionRequest::Exec("scp -f file".into()));
 }
 
 #[test]
