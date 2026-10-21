@@ -237,7 +237,19 @@ impl SshConfig {
         hostname: &str,
         options: &[String],
     ) -> Result<Self> {
-        Self::load_from_file_for_host_with_options(path, hostname, options).await
+        Self::load_explicit_for_config_dump_with_option_sources(path, hostname, options, options)
+            .await
+    }
+
+    #[doc(hidden)]
+    pub async fn load_explicit_for_config_dump_with_option_sources<P: AsRef<Path>>(
+        path: P,
+        hostname: &str,
+        options: &[String],
+        diagnostic_options: &[String],
+    ) -> Result<Self> {
+        Self::load_from_file_for_host_with_options(path, hostname, options, diagnostic_options)
+            .await
     }
 
     /// Load default user and system files for resolved-config output.
@@ -248,7 +260,16 @@ impl SshConfig {
         hostname: &str,
         options: &[String],
     ) -> Result<Self> {
-        Self::load_default_for_host_with_options(hostname, options).await
+        Self::load_default_for_config_dump_with_option_sources(hostname, options, options).await
+    }
+
+    #[doc(hidden)]
+    pub async fn load_default_for_config_dump_with_option_sources(
+        hostname: &str,
+        options: &[String],
+        diagnostic_options: &[String],
+    ) -> Result<Self> {
+        Self::load_default_for_host_with_options(hostname, options, diagnostic_options).await
     }
 
     /// Load a file with host-dependent Include tokens resolved for `hostname`.
@@ -257,29 +278,44 @@ impl SshConfig {
         path: P,
         hostname: &str,
     ) -> Result<Self> {
-        Self::load_from_file_for_host_with_options(path, hostname, &[]).await
+        Self::load_from_file_for_host_with_options(path, hostname, &[], &[]).await
     }
 
     pub(crate) async fn load_from_file_for_host_with_options<P: AsRef<Path>>(
         path: P,
         hostname: &str,
         options: &[String],
+        diagnostic_options: &[String],
     ) -> Result<Self> {
         validate_command_line_hostname(hostname)?;
-        let path = path.as_ref();
+        let original_path = path.as_ref();
+        // Preflight existence through the same canonicalization boundary as
+        // cached loads, but preserve the caller's spelling in diagnostics.
+        // The subsequent open still validates the opened file descriptor.
+        let _canonical_path = tokio::fs::canonicalize(original_path)
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to canonicalize path: {}",
+                    diagnostic::escape_path(original_path)
+                )
+            })?;
         let anchor = dirs::home_dir()
             .map(|home| home.join(".ssh"))
-            .or_else(|| path.parent().map(Path::to_path_buf))
+            .or_else(|| original_path.parent().map(Path::to_path_buf))
             .unwrap_or_else(|| PathBuf::from("/"));
         let mut config = Self::new();
-        config.apply_cli_options(options)?;
+        if let Some(overlay) = parser::parse_cli_options_silently(options)? {
+            config.hosts.insert(0, overlay);
+        }
         let initial = resolver::find_host_config_first_pass(&config.hosts, hostname);
         if let Some(user) = initial.user.as_deref() {
             validate_trusted_shell_remote_user(user)?;
         }
         config
-            .append_file_for_host(path, hostname, &initial, anchor, false)
+            .append_file_for_host(original_path, hostname, &initial, anchor, false)
             .await?;
+        let _ = parser::parse_cli_options(diagnostic_options, &mut config.reported_diagnostics)?;
         Ok(config)
     }
 
@@ -287,10 +323,13 @@ impl SshConfig {
     async fn load_default_for_host_with_options(
         hostname: &str,
         options: &[String],
+        diagnostic_options: &[String],
     ) -> Result<Self> {
         validate_command_line_hostname(hostname)?;
         let mut config = Self::new();
-        config.apply_cli_options(options)?;
+        if let Some(overlay) = parser::parse_cli_options_silently(options)? {
+            config.hosts.insert(0, overlay);
+        }
         let initial = resolver::find_host_config_first_pass(&config.hosts, hostname);
         if let Some(user) = initial.user.as_deref() {
             validate_trusted_shell_remote_user(user)?;
@@ -363,6 +402,7 @@ impl SshConfig {
                     .await?;
             }
         }
+        let _ = parser::parse_cli_options(diagnostic_options, &mut config.reported_diagnostics)?;
         Ok(config)
     }
 
@@ -805,6 +845,7 @@ mod tests {
         let config = SshConfig::load_from_file_for_host_with_options(
             &config_path,
             "target",
+            &["Port=2202".to_string()],
             &["Port=2202".to_string()],
         )
         .await

@@ -207,16 +207,21 @@ pub async fn initialize_app(cli: &mut Cli, args: &[String]) -> Result<AppContext
         (SshConfig::new(), false)
     } else if let Some(hostname) = ssh_destination.as_deref() {
         let config = if let Some(ref ssh_config_path) = cli.ssh_config {
-            SshConfig::load_explicit_for_config_dump_with_options(
+            SshConfig::load_explicit_for_config_dump_with_option_sources(
                 ssh_config_path,
                 hostname,
                 &ssh_config_overrides,
+                &cli.ssh_options,
             )
             .await
             .with_context(|| format!("Failed to load SSH config from {ssh_config_path:?}"))?
         } else {
-            SshConfig::load_default_for_config_dump_with_options(hostname, &ssh_config_overrides)
-                .await?
+            SshConfig::load_default_for_config_dump_with_option_sources(
+                hostname,
+                &ssh_config_overrides,
+                &cli.ssh_options,
+            )
+            .await?
         };
         (config, true)
     } else {
