@@ -165,7 +165,7 @@ A Unix-domain socket path (any field containing a slash) may replace either side
 .I local_socket:remote_socket ,
 or
 .I [bind_address:]port:remote_socket .
-A local socket path must not already exist; bssh never unlinks an existing path before binding and never follows a symbolic link at the path. The socket is created mode 0600 and removed when the forwarding stops.
+A local socket path must not already exist; bssh never unlinks an existing path before binding and never follows a symbolic link at the path. The socket is owner-only (mode 0600), its mode is never changed through a path that could have been replaced by a symbolic link, and it is removed when the forwarding stops.
 
 .TP
 .BR \-R " " \fI[bind_address:]port:host:hostport\fR
@@ -885,9 +885,9 @@ Host key signature algorithms offered to the server, in preference order, with t
 .br
 A presented host certificate is accepted only when a
 .B @cert-authority
-line in a known_hosts file names the host (or its HostKeyAlias) with the signing CA key (negated !pattern entries exclude a host, and hashed host fields are matched), the certificate is a host certificate with a principal matching that name (principals may be wildcard patterns), it is inside its validity window, it carries no critical options, its CA signature uses an algorithm permitted by CASignatureAlgorithms, and neither the CA key nor the certified key is revoked by a
+line in a known_hosts file names the host (or its HostKeyAlias) with the signing CA key (negated !pattern entries exclude a host, and hashed host fields are matched), the certificate is a host certificate with a principal matching that name (principals may be case-sensitive wildcard patterns), its signature by the CA verifies, it is inside its validity window, it carries no critical options, its CA signature uses an algorithm permitted by CASignatureAlgorithms, and neither the CA key nor the certified key is revoked by a
 .B @revoked
-line or by RevokedHostKeys. If no @cert-authority line matches, the certified key is checked as a plain host key under the usual StrictHostKeyChecking rules. A certificate from a matching CA that fails any other check is refused outright. UpdateHostKeys is not applied to certificate-authenticated hosts.
+line or by RevokedHostKeys. On a non-default port a @cert-authority line naming the bare host also matches. If no @cert-authority line matches, the certified key is checked as a plain host key under the usual StrictHostKeyChecking rules, provided HostKeyAlgorithms permits its plain key type; a certificate-only HostKeyAlgorithms list refuses the connection instead. A certificate from a matching CA that fails any other check is refused outright. UpdateHostKeys is not applied to certificate-authenticated hosts.
 
 .TP
 .B RevokedHostKeys

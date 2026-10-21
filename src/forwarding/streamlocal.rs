@@ -11,15 +11,24 @@
 //!
 //! A listener path is never unlinked before binding: if anything exists at
 //! the path (a stale socket, a regular file, or a symlink) the bind fails,
-//! matching OpenSSH with `StreamLocalBindUnlink no`. `bind(2)` would follow a
-//! dangling symlink and create the socket wherever it points, so the bound
-//! node is re-checked afterwards and the forwarding fails closed if it is not
-//! a plain socket. Removal on shutdown only unlinks a node that is a socket.
+//! matching OpenSSH with `StreamLocalBindUnlink no`. The bound node is
+//! re-checked afterwards and the forwarding fails closed if it is not a plain
+//! socket. Removal on shutdown only unlinks a node that is a socket.
+//!
 //! The socket is restricted to its owner (mode 0600, OpenSSH's default
-//! `StreamLocalBindMask` of 0177) right after it is bound. The process umask
-//! is deliberately left alone: it is shared by every thread, and narrowing it
-//! around `bind(2)` would also narrow files and directories another runtime
-//! thread creates at that moment.
+//! `StreamLocalBindMask` of 0177) without ever changing a mode through the
+//! path name, so a writer of the socket directory cannot redirect the change
+//! through a symlink swapped in after `bind(2)`:
+//!
+//! - On Linux the unbound socket is `fchmod`ed first. `unix_bind` creates the
+//!   node with the socket inode's mode minus the umask, so the path never
+//!   exists with a wider mode and nothing is changed after the bind.
+//! - Elsewhere the node is created with the umask-derived mode and narrowed
+//!   with `fchmodat(AT_SYMLINK_NOFOLLOW)`, which never follows a link.
+//!
+//! The process umask is deliberately left alone: it is shared by every
+//! thread, and narrowing it around `bind(2)` would also narrow files and
+//! directories another runtime thread creates at that moment.
 
 use std::os::unix::fs::FileTypeExt;
 use std::path::Path;
@@ -69,35 +78,81 @@ pub(crate) fn bind_unix_listener(path: &str) -> Result<UnixListener> {
         }
     }
 
-    let listener = std::os::unix::net::UnixListener::bind(socket_path)
+    let listener = bind_owner_only(socket_path)
         .with_context(|| format!("cannot bind Unix-domain listener {path}"))?;
 
-    // `bind(2)` resolves symlinks, so a path that became a dangling symlink
-    // between the check above and the bind would have created the socket at
-    // the link target. Refuse to serve anything that is not the plain socket
-    // node this call meant to create, and only then restrict its mode, so
-    // the chmod never follows a planted link either.
-    let bound = std::fs::symlink_metadata(socket_path)
-        .with_context(|| format!("cannot verify Unix-domain listener {path}"))?;
-    if bound.file_type().is_symlink() || !bound.file_type().is_socket() {
+    // Refuse to serve anything that is not the plain socket node this call
+    // created, and make sure no group or other permission bit is left.
+    if let Err(error) = restrict_bound_socket(socket_path) {
         drop(listener);
-        anyhow::bail!(
-            "refusing Unix-domain listener {path}: the bound path is not a plain socket node"
-        );
+        return Err(error.context(format!("refusing Unix-domain listener {path}")));
     }
-    // The node exists with the umask-derived mode until this call returns;
-    // a restrictive umask closes that window entirely.
-    std::fs::set_permissions(
-        socket_path,
-        std::os::unix::fs::PermissionsExt::from_mode(SOCKET_MODE),
-    )
-    .with_context(|| format!("cannot restrict permissions of Unix-domain listener {path}"))?;
 
     listener
         .set_nonblocking(true)
         .with_context(|| format!("cannot configure Unix-domain listener {path}"))?;
     UnixListener::from_std(listener)
         .with_context(|| format!("cannot register Unix-domain listener {path}"))
+}
+
+/// Create a listening socket at `path` whose node is created owner-only.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn bind_owner_only(path: &Path) -> std::io::Result<std::os::unix::net::UnixListener> {
+    use socket2::{Domain, SockAddr, Socket, Type};
+
+    let socket = Socket::new(Domain::UNIX, Type::STREAM, None)?;
+    // Linux creates the node with the socket inode's mode minus the umask,
+    // so narrowing the unbound socket narrows the node `bind(2)` creates.
+    nix::sys::stat::fchmod(
+        &socket,
+        nix::sys::stat::Mode::from_bits_truncate(SOCKET_MODE as nix::libc::mode_t),
+    )
+    .map_err(std::io::Error::from)?;
+    socket.bind(&SockAddr::unix(path)?)?;
+    socket.listen(nix::libc::SOMAXCONN)?;
+    Ok(socket.into())
+}
+
+/// Create a listening socket at `path`; [`restrict_bound_socket`] narrows
+/// its mode afterwards without following symlinks.
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+fn bind_owner_only(path: &Path) -> std::io::Result<std::os::unix::net::UnixListener> {
+    std::os::unix::net::UnixListener::bind(path)
+}
+
+/// Verify that `path` is a socket node and leave it with no permission bit
+/// outside [`SOCKET_MODE`]. The mode is changed only with
+/// `AT_SYMLINK_NOFOLLOW`, so a symlink swapped in after the bind is never
+/// followed; the node is then checked again and anything other than an
+/// owner-only socket fails closed.
+fn restrict_bound_socket(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let is_owner_only_socket = |metadata: &std::fs::Metadata| {
+        metadata.file_type().is_socket()
+            && metadata.permissions().mode() & 0o7777 & !SOCKET_MODE == 0
+    };
+    let bound = std::fs::symlink_metadata(path).context("cannot verify the bound socket")?;
+    if !bound.file_type().is_socket() {
+        anyhow::bail!("the bound path is not a plain socket node");
+    }
+    if is_owner_only_socket(&bound) {
+        return Ok(());
+    }
+    nix::sys::stat::fchmodat(
+        nix::fcntl::AT_FDCWD,
+        path,
+        nix::sys::stat::Mode::from_bits_truncate(SOCKET_MODE as nix::libc::mode_t),
+        nix::sys::stat::FchmodatFlags::NoFollowSymlink,
+    )
+    .map_err(std::io::Error::from)
+    .context("cannot restrict the socket to its owner")?;
+    let restricted =
+        std::fs::symlink_metadata(path).context("cannot verify the restricted socket")?;
+    if !is_owner_only_socket(&restricted) {
+        anyhow::bail!("the bound path is not an owner-only socket node");
+    }
+    Ok(())
 }
 
 /// Remove the socket node at `path` if, and only if, it is a socket.
@@ -403,6 +458,64 @@ mod tests {
         std::fs::write(&path, b"replaced").expect("write regular file");
         remove_unix_socket(path_str);
         assert!(path.exists(), "a non-socket node must never be removed");
+    }
+
+    /// On Linux the node must be born owner-only, so there is no window in
+    /// which another local user can connect before the mode is narrowed.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn linux_socket_node_is_created_owner_only() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("born.sock");
+        let _listener = bind_owner_only(&path).expect("bind");
+        let mode = std::fs::symlink_metadata(&path)
+            .expect("socket")
+            .permissions()
+            .mode();
+        assert_eq!(
+            mode & 0o077,
+            0,
+            "mode {mode:o} grants group or other access"
+        );
+    }
+
+    #[test]
+    fn restricting_a_bound_socket_never_follows_a_symlink() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let victim = dir.path().join("victim");
+        std::fs::write(&victim, b"data").expect("write victim");
+        std::fs::set_permissions(&victim, std::fs::Permissions::from_mode(0o644))
+            .expect("chmod victim");
+        let link = dir.path().join("swapped.sock");
+        std::os::unix::fs::symlink(&victim, &link).expect("symlink");
+        let error = restrict_bound_socket(&link).expect_err("a symlink is not a socket node");
+        assert!(
+            error.to_string().contains("not a plain socket"),
+            "{error:#}"
+        );
+        assert_eq!(
+            std::fs::metadata(&victim)
+                .expect("victim")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o644,
+            "the symlink target's mode must be untouched"
+        );
+
+        // A socket left with a wide mode is narrowed in place.
+        let path = dir.path().join("wide.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&path).expect("bind");
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o777)).expect("widen");
+        restrict_bound_socket(&path).expect("narrow a wide socket");
+        assert_eq!(
+            std::fs::symlink_metadata(&path)
+                .expect("socket")
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
     }
 
     #[test]
