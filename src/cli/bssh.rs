@@ -19,6 +19,8 @@ use std::path::PathBuf;
 
 use super::ssh_args::StdioForwardTarget;
 
+const MAX_PARALLELISM: usize = 4_096;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "bssh",
@@ -127,7 +129,8 @@ pub struct Cli {
     #[arg(
         long = "parallel",
         default_value = "10",
-        help = "Maximum parallel connections (multi-server mode)"
+        value_parser = parse_parallelism,
+        help = "Maximum parallel connections (1-4096, multi-server mode)"
     )]
     pub parallel: usize,
 
@@ -474,6 +477,37 @@ pub enum Commands {
     Ping,
 
     #[command(
+        visible_alias = "nping",
+        about = "Test direct network connectivity using ICMP echo requests",
+        long_about = "Sends direct-origin ICMP echo requests to all target hosts in parallel.\nReports the selected address, packet loss, and min/avg/max/stddev latency statistics.\nDoes not open an SSH connection and does not use ProxyJump or ProxyCommand.\n\nExit codes:\n  0    every host answered at least once\n  1    at least one host answered and at least one did not\n  255  no host answered, or bssh failed before sending"
+    )]
+    NetworkPing {
+        #[arg(
+            long = "count",
+            default_value = "4",
+            value_parser = clap::value_parser!(u16).range(1..),
+            help = "Number of ICMP echo requests per host (1-65535)"
+        )]
+        count: u16,
+
+        #[arg(
+            long = "timeout",
+            default_value = "2",
+            value_parser = parse_network_ping_timeout,
+            help = "Reply timeout per request in seconds (greater than 0, at most 3600)"
+        )]
+        timeout: f64,
+
+        #[arg(
+            long = "interval",
+            default_value = "0.2",
+            value_parser = parse_network_ping_interval,
+            help = "Interval between requests in seconds (0.2 to 3600)"
+        )]
+        interval: f64,
+    },
+
+    #[command(
         about = "Upload files to remote hosts",
         long_about = "Uploads local file(s) to all specified remote hosts in parallel using SFTP.\nSupports glob patterns for batch uploads (e.g., *.txt, logs/*.log).\nWhen uploading multiple files, destination should be a directory (end with /).\nUses secure SFTP protocol with progress indicators for each transfer.\n\nRequirements: Remote SSH servers must have SFTP subsystem enabled.",
         after_help = "Examples:\n  bssh upload config.yaml /etc/app/      # Single file to directory\n  bssh upload app.tar.gz /tmp/app.tar.gz # Single file with rename\n  bssh upload \"*.log\" /var/logs/        # Multiple files with glob\n  bssh upload -r ./configs/ /etc/app/    # Recursive directory upload"
@@ -570,6 +604,45 @@ pub enum Commands {
     },
 }
 
+fn parse_network_ping_timeout(value: &str) -> Result<f64, String> {
+    parse_network_ping_duration(value, 0.0, "timeout")
+}
+
+fn parse_parallelism(value: &str) -> Result<usize, String> {
+    let parallel = value
+        .parse::<usize>()
+        .map_err(|_| "parallelism must be a positive integer".to_string())?;
+    if parallel == 0 {
+        return Err("parallelism must be greater than 0".to_string());
+    }
+    if parallel > MAX_PARALLELISM {
+        return Err(format!("parallelism must not exceed {MAX_PARALLELISM}"));
+    }
+    Ok(parallel)
+}
+
+fn parse_network_ping_interval(value: &str) -> Result<f64, String> {
+    parse_network_ping_duration(value, 0.2, "interval")
+}
+
+fn parse_network_ping_duration(value: &str, minimum: f64, name: &str) -> Result<f64, String> {
+    const MAX_SECONDS: f64 = 3_600.0;
+
+    let seconds = value
+        .parse::<f64>()
+        .map_err(|_| format!("{name} must be a number of seconds"))?;
+    if !seconds.is_finite() || seconds <= minimum && minimum == 0.0 {
+        return Err(format!("{name} must be finite and greater than 0"));
+    }
+    if seconds < minimum {
+        return Err(format!("{name} must be at least {minimum} seconds"));
+    }
+    if seconds > MAX_SECONDS {
+        return Err(format!("{name} must not exceed {MAX_SECONDS} seconds"));
+    }
+    Ok(seconds)
+}
+
 impl Cli {
     /// Return migration notices for reassigned OpenSSH short options.
     ///
@@ -650,7 +723,14 @@ impl Cli {
     pub fn is_known_subcommand(arg: &str) -> bool {
         matches!(
             arg,
-            "list" | "ping" | "upload" | "download" | "interactive" | "cache-stats"
+            "list"
+                | "ping"
+                | "network-ping"
+                | "nping"
+                | "upload"
+                | "download"
+                | "interactive"
+                | "cache-stats"
         )
     }
 
@@ -1133,6 +1213,75 @@ mod tests {
                 "help describes current behavior using historical version {historical_version:?}"
             );
         }
+    }
+
+    #[test]
+    fn network_ping_and_nping_parse_the_same_validated_options() {
+        for command in ["network-ping", "nping"] {
+            let cli = Cli::try_parse_from([
+                "bssh",
+                "-H",
+                "node1",
+                command,
+                "--count",
+                "3",
+                "--timeout",
+                "1.5",
+                "--interval",
+                "0.25",
+            ])
+            .unwrap_or_else(|error| panic!("failed to parse {command}: {error}"));
+            assert!(matches!(
+                cli.command,
+                Some(Commands::NetworkPing {
+                    count: 3,
+                    timeout: 1.5,
+                    interval: 0.25,
+                })
+            ));
+        }
+    }
+
+    #[test]
+    fn network_ping_rejects_unbounded_or_zero_settings() {
+        for args in [
+            ["network-ping", "--count", "0"],
+            ["network-ping", "--timeout", "0"],
+            ["network-ping", "--timeout", "inf"],
+            ["network-ping", "--interval", "0.19"],
+            ["network-ping", "--interval", "NaN"],
+        ] {
+            let argv = ["bssh", "-H", "node1", args[0], args[1], args[2]];
+            assert!(
+                Cli::try_parse_from(argv).is_err(),
+                "invalid network-ping arguments were accepted: {argv:?}"
+            );
+        }
+        assert!(
+            Cli::try_parse_from(["bssh", "--parallel", "0", "-H", "node1", "network-ping"])
+                .is_err()
+        );
+        assert!(
+            Cli::try_parse_from(["bssh", "--parallel", "4097", "-H", "node1", "network-ping",])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn network_ping_short_flags_do_not_reassign_openssh_c_or_w() {
+        let ssh = Cli::try_parse_from(["bssh", "-c", "aes256-ctr", "target"]).unwrap();
+        assert_eq!(ssh.cipher.as_deref(), Some("aes256-ctr"));
+        assert!(Cli::try_parse_from(["bssh", "-H", "node1", "network-ping", "-c", "1"]).is_err());
+
+        let ssh = Cli::try_parse_from(["bssh", "-W", "localhost:22", "target"]).unwrap();
+        assert!(ssh.stdio_forward.is_some());
+        assert!(Cli::try_parse_from(["bssh", "-H", "node1", "network-ping", "-W", "1"]).is_err());
+    }
+
+    #[test]
+    fn network_ping_names_are_known_subcommands() {
+        assert!(Cli::is_known_subcommand("network-ping"));
+        assert!(Cli::is_known_subcommand("nping"));
     }
 
     #[test]

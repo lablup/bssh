@@ -368,6 +368,10 @@ mod tests {
     use super::*;
     use tempfile::TempDir;
 
+    // The default macOS Keychain is an external, process-global test resource.
+    // Every test that reaches it must share serial_test's global lock, including
+    // absence checks, so concurrent SecItem operations cannot hide fresh writes.
+
     fn is_keychain_unavailable(err: &anyhow::Error) -> bool {
         let err_msg = format!("{err:#}");
         err_msg.contains("authorization was canceled")
@@ -387,6 +391,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn test_store_and_retrieve_passphrase() {
         // Create a temporary SSH key file
         let temp_dir = TempDir::new().unwrap();
@@ -430,6 +435,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn test_retrieve_nonexistent_passphrase() {
         // Create a temporary SSH key file
         let temp_dir = TempDir::new().unwrap();
@@ -452,6 +458,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn test_delete_nonexistent_passphrase() {
         // Create a temporary SSH key file
         let temp_dir = TempDir::new().unwrap();
@@ -470,6 +477,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn test_update_existing_passphrase() {
         // Create a temporary SSH key file
         let temp_dir = TempDir::new().unwrap();
@@ -532,6 +540,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[serial_test::serial]
     async fn test_passphrase_zeroization() {
         let temp_dir = TempDir::new().unwrap();
         let key_path = temp_dir.path().join("zeroize_test_key");

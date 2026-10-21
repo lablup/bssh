@@ -22,6 +22,7 @@ use bssh::{
         exec::{ExecuteCommandParams, execute_command},
         interactive::InteractiveCommand,
         list::list_clusters,
+        network_ping::network_ping_nodes,
         ping::ping_nodes,
         upload::{FileTransferParams, upload_file},
     },
@@ -574,6 +575,7 @@ async fn wait_for_no_session_transport(client: &bssh::ssh::tokio_client::Client)
 fn sudo_password_is_applicable(command: &Option<Commands>, command_text: &str) -> bool {
     match command {
         Some(Commands::Ping)
+        | Some(Commands::NetworkPing { .. })
         | Some(Commands::Upload { .. })
         | Some(Commands::Download { .. })
         | Some(Commands::List)
@@ -595,7 +597,9 @@ fn sudo_password_is_applicable(command: &Option<Commands>, command_text: &str) -
 fn ssh_password_is_applicable(command: &Option<Commands>) -> bool {
     !matches!(
         command,
-        Some(Commands::List) | Some(Commands::CacheStats { .. })
+        Some(Commands::List)
+            | Some(Commands::NetworkPing { .. })
+            | Some(Commands::CacheStats { .. })
     )
 }
 
@@ -643,6 +647,7 @@ fn subcommand_name(command: &Option<Commands>) -> &'static str {
     match command {
         Some(Commands::List) => "list",
         Some(Commands::Ping) => "ping",
+        Some(Commands::NetworkPing { .. }) => "network-ping",
         Some(Commands::Upload { .. }) => "upload",
         Some(Commands::Download { .. }) => "download",
         Some(Commands::Interactive { .. }) => "interactive",
@@ -830,9 +835,8 @@ pub async fn dispatch_command_with_background(
                 ctx.cluster_name.as_deref().or(cli.cluster.as_deref()),
             );
 
-            // `ping` is the one subcommand whose exit code depends on how many
-            // hosts answered, so the outcome is translated here rather than
-            // discarded. See `PingOutcome` for the 0/1/255 contract.
+            // Connectivity subcommands return an outcome so the dispatcher can
+            // preserve their 0/1/255 aggregate contract.
             let outcome = ping_nodes(
                 ctx.nodes.clone(),
                 ctx.max_parallel,
@@ -850,6 +854,26 @@ pub async fn dispatch_command_with_background(
             )
             .await?;
 
+            Ok(outcome.exit_code())
+        }
+        Some(Commands::NetworkPing {
+            count,
+            timeout,
+            interval,
+        }) => {
+            let outcome = network_ping_nodes(
+                ctx.nodes.clone(),
+                *count,
+                Duration::from_secs_f64(*timeout),
+                Duration::from_secs_f64(*interval),
+                ctx.max_parallel,
+                build_ssh_connection_config_resolver(
+                    cli,
+                    ctx,
+                    ctx.cluster_name.as_deref().or(cli.cluster.as_deref()),
+                ),
+            )
+            .await?;
             Ok(outcome.exit_code())
         }
         Some(Commands::Upload {
@@ -1466,6 +1490,14 @@ mod tests {
 
         assert!(!sudo_password_is_applicable(&None, ""));
         assert!(!sudo_password_is_applicable(&Some(Commands::Ping), "true"));
+        assert!(!sudo_password_is_applicable(
+            &Some(Commands::NetworkPing {
+                count: 1,
+                timeout: 1.0,
+                interval: 0.2,
+            }),
+            "",
+        ));
         assert!(!sudo_password_is_applicable(&interactive_command(), ""));
         assert!(!sudo_password_is_applicable(
             &Some(Commands::CacheStats {
@@ -1484,6 +1516,11 @@ mod tests {
         assert!(ssh_password_is_applicable(&interactive_command()));
 
         assert!(!ssh_password_is_applicable(&Some(Commands::List)));
+        assert!(!ssh_password_is_applicable(&Some(Commands::NetworkPing {
+            count: 1,
+            timeout: 1.0,
+            interval: 0.2,
+        })));
         assert!(!ssh_password_is_applicable(&Some(Commands::CacheStats {
             detailed: false,
             clear: false,

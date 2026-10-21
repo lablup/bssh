@@ -99,6 +99,14 @@ Tokio-based async executor for concurrent command execution:
 - Real-time progress visualization
 - Stream mode for live output
 
+### Direct ICMP Network Ping
+
+`commands/network_ping.rs` implements the bssh-only `network-ping` / `nping` health check. Unlike `ping`, it does not enter the SSH client or authentication path. Initialized `Node.host` values already contain ssh_config `HostName` expansion, while `Node::config_host()` retains the alias used to resolve the effective `AddressFamily`; bounded DNS selects the first resolver-order address matching that family and reports it with the result.
+
+Hosts are scheduled through a `buffer_unordered` stream capped by the global `--parallel` value. IPv4 and IPv6 each lazily share one surge-ping client/socket, request sequences are bounded to `u16`, and each host paces its probes with a minimum 200 ms interval. Tests inject a `NetworkProbe` implementation so DNS, loss, timing, family selection, and concurrency remain deterministic without ICMP privileges.
+
+The socket preference is unprivileged `SOCK_DGRAM`, with surge-ping's raw-socket fallback where the platform requires it. Permission failures remain visible and never trigger a TCP/HTTP fallback. ProxyJump and ProxyCommand are deliberately outside the data path because the echo request originates locally; the dispatcher suppresses SSH and sudo password collection and the command warns when a proxy setting would otherwise apply. Output is the normal formatter only, with per-host received/sent and min/avg/max/population-standard-deviation plus aggregate reachability and the mean of reachable per-host averages.
+
 ### SSH Client
 **Documentation**: [docs/architecture/ssh-client.md](./docs/architecture/ssh-client.md)
 

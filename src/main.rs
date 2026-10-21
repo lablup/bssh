@@ -126,14 +126,13 @@ async fn dispatch_and_exit(
     }
 }
 
-/// Apply the `ping` exit code contract to a hard failure.
+/// Apply the connectivity-check exit code contract to a hard failure.
 ///
-/// `ping` reports 255 whenever bssh itself failed rather than a remote host: a
-/// configuration file that could not be loaded, a host list that resolved to
-/// nothing, or any error raised before the connectivity check could produce a
-/// per-host tally. That is OpenSSH's convention for "ssh encountered an error",
-/// and it keeps the pre-connection case distinct from the exit code 1 that means
-/// "some hosts answered and some did not".
+/// `ping` and `network-ping` report 255 whenever bssh itself failed rather than
+/// a remote host: a configuration file that could not be loaded, a host list
+/// that resolved to nothing, or any error raised before the connectivity check
+/// could produce a per-host tally. It keeps a setup failure distinct from the
+/// exit code 1 that means "some hosts answered and some did not".
 ///
 /// Typed SSH client failures use OpenSSH's exit status 255. Local validation,
 /// configuration, and other subcommand failures retain the generic exit status 1.
@@ -150,7 +149,7 @@ fn map_hard_failure(
     ssh_mode: bool,
     error: anyhow::Error,
 ) -> anyhow::Error {
-    if matches!(command, Some(Commands::Ping)) {
+    if matches!(command, Some(Commands::Ping | Commands::NetworkPing { .. })) {
         // Match the format anyhow's `Termination` impl uses, since this path
         // replaces it.
         bssh::diagnosticln!("Error: {error:?}");
