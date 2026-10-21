@@ -37,7 +37,7 @@ use bssh::{
             AttachOutcome, ControlCommand, ControlPathContext, ControlPolicy, ControlResponseKind,
             SessionOpenRequest, attach_session, connect_control_socket, expand_control_path,
             prepare_attached_session, remove_stale_control_socket, send_control_command,
-            start_control_master_with_bootstrap_session,
+            start_control_master_with_bootstrap_session_and_forwarding_policy,
         },
         tokio_client::{AddressFamily, ProxyMode, SshConnectionConfigResolver},
     },
@@ -97,6 +97,7 @@ struct ResolvedControlInvocation {
     session_policy: SessionPolicy,
     session_request: SessionOpenRequest,
     forwarding_directives: Vec<bssh::forwarding::ForwardingDirective>,
+    permit_remote_open: Vec<String>,
     address_family: AddressFamily,
     jump_spec: Option<String>,
     quiet_notifications: bool,
@@ -249,6 +250,10 @@ fn resolve_control_invocation(
         session_policy,
         session_request,
         forwarding_directives: resolved_connection.forwarding_plan.directives.clone(),
+        permit_remote_open: resolved_connection
+            .forwarding_plan
+            .permit_remote_open
+            .clone(),
         address_family: resolved_connection.address_family,
         jump_spec,
         quiet_notifications: cli.quiet
@@ -458,11 +463,12 @@ async fn handle_control_master(
     let bootstrap_session = !control.fork_after_authentication
         && control.policy.persist.is_enabled()
         && background_worker.is_some();
-    let master = match start_control_master_with_bootstrap_session(
+    let master = match start_control_master_with_bootstrap_session_and_forwarding_policy(
         &control.path,
         client.clone(),
         control.policy.master.requires_confirmation(),
         bootstrap_session,
+        control.permit_remote_open.clone(),
     ) {
         Ok(master) => master,
         Err(error) => {

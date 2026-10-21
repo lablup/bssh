@@ -805,6 +805,7 @@ impl Cli {
             destination
         };
         let spec = crate::node::parse_node_spec(destination)?;
+        crate::ssh::ssh_config::validate_command_line_hostname(spec.host)?;
 
         Ok(Some(spec))
     }
@@ -876,13 +877,17 @@ impl Cli {
     ///
     /// Dedicated OpenSSH flags have explicit precedence over generic `-o`
     /// forms. Within repeated `-o` options, the parser keeps the first value.
-    pub fn ssh_config_overrides(&self) -> Vec<String> {
+    pub fn ssh_config_overrides(&self) -> Result<Vec<String>> {
+        let destination = self.parse_destination_result()?;
         let mut options = Vec::with_capacity(
             self.ssh_options.len()
-                + usize::from(self.get_effective_user().is_some())
                 + usize::from(
-                    self.port.is_some() || self.parse_destination().is_some_and(|v| v.2.is_some()),
+                    self.user.is_some() || destination.is_some_and(|value| value.user.is_some()),
                 )
+                + usize::from(
+                    self.port.is_some() || destination.is_some_and(|value| value.port.is_some()),
+                )
+                + usize::from(self.jump_hosts.is_some())
                 + usize::from(self.cipher.is_some())
                 + usize::from(self.macs.is_some())
                 + usize::from(self.subsystem)
@@ -896,12 +901,25 @@ impl Cli {
                 + usize::from(self.control_master > 0)
                 + usize::from(self.control_path.is_some()),
         );
-        if let Some(user) = self.get_effective_user() {
-            options.push(format!("User={user}"));
+        let destination_user = destination.and_then(|value| value.user);
+        if let Some(user) = self.user.as_deref().or(destination_user) {
+            crate::ssh::ssh_config::validate_trusted_shell_remote_user(user)?;
+            options.push(format!(
+                "User={}",
+                crate::ssh::ssh_config::encode_config_value(user)?
+            ));
         }
-        let destination_port = self.parse_destination().and_then(|(_, _, port)| port);
+        let destination_port = destination.and_then(|value| value.port);
         if let Some(port) = self.port.or(destination_port) {
             options.push(format!("Port={port}"));
+        }
+        if let Some(jump_hosts) = self.jump_hosts.as_deref() {
+            let canonical = crate::jump::parser::canonicalize_jump_hosts(jump_hosts)
+                .context("Invalid ProxyJump command-line value")?;
+            options.push(format!(
+                "ProxyJump={}",
+                crate::ssh::ssh_config::encode_config_value(&canonical)?
+            ));
         }
         if self.control_master > 0 {
             let mode = if self.control_master == 1 {
@@ -944,8 +962,10 @@ impl Cli {
         if self.stdin_null || self.fork_after_authentication {
             options.push("StdinNull=yes".to_string());
         }
-        options.extend(self.ssh_options.iter().cloned());
-        options
+        for option in &self.ssh_options {
+            options.push(super::ssh_args::canonicalize_proxy_jump_option(option)?);
+        }
+        Ok(options)
     }
 
     fn forwarding_ssh_option(option: &str) -> Option<crate::forwarding::ForwardingDirective> {
@@ -1397,7 +1417,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            cli.ssh_config_overrides(),
+            cli.ssh_config_overrides().unwrap(),
             [
                 "Ciphers=aes128-ctr",
                 "MACs=hmac-sha2-256",
@@ -1410,7 +1430,7 @@ mod tests {
     fn destination_user_and_port_become_match_context_overrides() {
         let destination = Cli::try_parse_from(["bssh", "dest-user@example.com:2222"]).unwrap();
         assert_eq!(
-            &destination.ssh_config_overrides()[..2],
+            &destination.ssh_config_overrides().unwrap()[..2],
             ["User=dest-user", "Port=2222"]
         );
 
@@ -1428,13 +1448,67 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(
-            &dedicated.ssh_config_overrides()[..4],
+            &dedicated.ssh_config_overrides().unwrap()[..4],
             [
                 "User=flag-user",
                 "Port=2200",
                 "User=option-user",
                 "Port=2300",
             ]
+        );
+    }
+
+    #[test]
+    fn command_line_proxy_jump_is_canonicalized_before_config_loading() {
+        let cli = Cli::try_parse_from([
+            "bssh",
+            "-J",
+            "ssh://jump-user@proxy.example:2200",
+            "-o",
+            "ProxyJump=ignored.example",
+            "target",
+        ])
+        .unwrap();
+        let overrides = cli.ssh_config_overrides().unwrap();
+        assert_eq!(
+            &overrides[..2],
+            [
+                "ProxyJump=jump-user@proxy.example:2200",
+                "ProxyJump=ignored.example"
+            ]
+        );
+
+        for args in [
+            vec!["bssh", "-J", "bad;proxy", "target"],
+            vec!["bssh", "-o", "ProxyJump=bad;proxy", "target"],
+        ] {
+            let cli = Cli::try_parse_from(args).unwrap();
+            assert!(cli.ssh_config_overrides().is_err());
+        }
+    }
+
+    #[test]
+    fn unsafe_command_line_token_inputs_are_rejected() {
+        for destination in ["bad;host", "user@bad$host", "bad,user"] {
+            let cli = Cli::try_parse_from(["bssh", destination]).unwrap();
+            assert!(cli.parse_destination_result().is_err(), "{destination}");
+        }
+
+        let cli = Cli::try_parse_from(["bssh", "bad;user@target"]).unwrap();
+        assert!(cli.ssh_config_overrides().is_err());
+        let cli = Cli::try_parse_from(["bssh", "-l", "bad;user", "target"]).unwrap();
+        assert!(cli.ssh_config_overrides().is_err());
+
+        for user in ["touch /tmp/pwn", "touch$IFS/tmp/pwn", "touch\\ /tmp/pwn"] {
+            let cli = Cli::try_parse_from(["bssh", "-l", user, "target"]).unwrap();
+            assert!(cli.ssh_config_overrides().is_err(), "{user:?}");
+        }
+
+        let overridden =
+            Cli::try_parse_from(["bssh", "-l", "safe-user", "bad;ignored@target"]).unwrap();
+        assert_eq!(
+            overridden.ssh_config_overrides().unwrap()[0],
+            "User=safe-user"
         );
     }
 
@@ -1452,7 +1526,7 @@ mod tests {
         .unwrap();
         assert_eq!(once.control_master, 1);
         assert_eq!(
-            once.ssh_config_overrides(),
+            once.ssh_config_overrides().unwrap(),
             [
                 "ControlMaster=yes",
                 "ControlPath=/tmp/bssh-%C",
@@ -1465,7 +1539,10 @@ mod tests {
                 .unwrap();
         assert_eq!(repeated.control_master, 2);
         assert_eq!(repeated.control_command.as_deref(), Some("check"));
-        assert_eq!(repeated.ssh_config_overrides()[0], "ControlMaster=ask");
+        assert_eq!(
+            repeated.ssh_config_overrides().unwrap()[0],
+            "ControlMaster=ask"
+        );
 
         let proxy =
             Cli::try_parse_from(["bssh", "-Oproxy", "--control-path=/tmp/c", "target"]).unwrap();
@@ -1484,7 +1561,10 @@ mod tests {
 
         let repeated_more = Cli::try_parse_from(["bssh", "-MMM", "target"]).unwrap();
         assert_eq!(repeated_more.control_master, 3);
-        assert_eq!(repeated_more.ssh_config_overrides()[0], "ControlMaster=ask");
+        assert_eq!(
+            repeated_more.ssh_config_overrides().unwrap()[0],
+            "ControlMaster=ask"
+        );
     }
 
     #[test]
@@ -1518,7 +1598,7 @@ mod tests {
         assert!(!cli.no_prefix);
         assert!(!cli.fail_fast);
         assert_eq!(
-            cli.ssh_config_overrides(),
+            cli.ssh_config_overrides().unwrap(),
             [
                 "ControlPath=/tmp/control-%C",
                 "Compression=yes",
@@ -1610,6 +1690,7 @@ mod tests {
         assert!(!none.subsystem);
         assert!(
             none.ssh_config_overrides()
+                .unwrap()
                 .contains(&"SessionType=none".to_string())
         );
 
@@ -1619,6 +1700,7 @@ mod tests {
         assert!(
             subsystem
                 .ssh_config_overrides()
+                .unwrap()
                 .contains(&"SessionType=subsystem".to_string())
         );
     }
@@ -1647,7 +1729,7 @@ mod tests {
         assert!(cli.subsystem && cli.stdin_null);
         assert_eq!(cli.stdio_forward.as_ref().unwrap().host, "::1");
         assert_eq!(
-            cli.ssh_config_overrides(),
+            cli.ssh_config_overrides().unwrap(),
             [
                 "Ciphers=-aes128-cbc",
                 "MACs=+hmac-sha2-256",
@@ -1678,7 +1760,7 @@ mod tests {
         for value in ["not-a-supported-cipher", ""] {
             let cli = Cli::try_parse_from(["bssh", "-c", value, "target"]).unwrap();
             let error = crate::ssh::SshConfig::new()
-                .apply_cli_options(&cli.ssh_config_overrides())
+                .apply_cli_options(&cli.ssh_config_overrides().unwrap())
                 .expect_err("invalid -c policy must fail closed");
             let message = format!("{error:#}").to_ascii_lowercase();
             assert!(
@@ -1696,7 +1778,7 @@ mod tests {
         for value in ["not-a-supported-mac", ""] {
             let cli = Cli::try_parse_from(["bssh", "-m", value, "target"]).unwrap();
             let error = crate::ssh::SshConfig::new()
-                .apply_cli_options(&cli.ssh_config_overrides())
+                .apply_cli_options(&cli.ssh_config_overrides().unwrap())
                 .expect_err("invalid -m policy must fail closed");
             let message = format!("{error:#}").to_ascii_lowercase();
             assert!(

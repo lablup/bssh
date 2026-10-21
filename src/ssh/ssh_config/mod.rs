@@ -49,6 +49,69 @@ mod value;
 
 pub(crate) use value::encode as encode_config_value;
 
+/// Validate a command-line hostname before it may be substituted into
+/// OpenSSH `%` tokens or a trusted `Match exec` command.
+///
+/// This intentionally mirrors OpenSSH's `ssh_valid_hostname` byte-level
+/// policy instead of applying DNS hostname syntax. Host aliases, IPv6
+/// literals, and non-ASCII names remain valid.
+pub(crate) fn validate_command_line_hostname(hostname: &str) -> Result<()> {
+    let bytes = hostname.as_bytes();
+    if bytes.first() == Some(&b'-')
+        || bytes.iter().any(|byte| {
+            byte.is_ascii_whitespace()
+                || byte.is_ascii_control()
+                || b"'`\"$\\;&<>|(){},".contains(byte)
+        })
+    {
+        anyhow::bail!("hostname contains invalid characters");
+    }
+    Ok(())
+}
+
+/// Validate a command-line remote username before trusted config expansion.
+///
+/// OpenSSH permits spaces and `$` in remote usernames, but rejects shell
+/// metacharacters, an option-like word after whitespace, and a trailing
+/// backslash. Preserve those parser compatibility details here rather than
+/// imposing a platform account-name grammar. The trusted-shell boundary below
+/// deliberately applies an additional invariant before raw `%r` expansion.
+pub(crate) fn validate_command_line_remote_user(user: &str) -> Result<()> {
+    let bytes = user.as_bytes();
+    if bytes.first() == Some(&b'-') {
+        anyhow::bail!("remote username contains invalid characters");
+    }
+    for (index, byte) in bytes.iter().copied().enumerate() {
+        let next = bytes.get(index + 1).copied();
+        if byte.is_ascii_control()
+            || b"'`\";&<>|(){}".contains(&byte)
+            || (byte.is_ascii_whitespace() && next == Some(b'-'))
+            || (byte == b'\\' && next.is_none())
+        {
+            anyhow::bail!("remote username contains invalid characters");
+        }
+    }
+    Ok(())
+}
+
+/// Validate a command-line remote user for bssh's trusted `Match exec` path.
+///
+/// OpenSSH accepts whitespace, `$`, and internal backslashes in a remote user,
+/// but bssh currently expands `%r` directly into a shell command. Until that
+/// expansion is context-aware, accepting those bytes would allow word
+/// splitting, parameter expansion, or escape-based argument injection. Fail
+/// closed at every public host-aware loader boundary.
+pub(crate) fn validate_trusted_shell_remote_user(user: &str) -> Result<()> {
+    validate_command_line_remote_user(user)?;
+    if user
+        .bytes()
+        .any(|byte| byte.is_ascii_whitespace() || matches!(byte, b'$' | b'\\'))
+    {
+        anyhow::bail!("remote username cannot be safely expanded by Match exec");
+    }
+    Ok(())
+}
+
 // Re-export public types
 pub use dump::render_resolved_config;
 pub use ip_qos::{IpQosParseError, IpQosPolicy, IpQosValue};
@@ -202,6 +265,7 @@ impl SshConfig {
         hostname: &str,
         options: &[String],
     ) -> Result<Self> {
+        validate_command_line_hostname(hostname)?;
         let path = path.as_ref();
         let anchor = dirs::home_dir()
             .map(|home| home.join(".ssh"))
@@ -210,6 +274,9 @@ impl SshConfig {
         let mut config = Self::new();
         config.apply_cli_options(options)?;
         let initial = resolver::find_host_config_first_pass(&config.hosts, hostname);
+        if let Some(user) = initial.user.as_deref() {
+            validate_trusted_shell_remote_user(user)?;
+        }
         config
             .append_file_for_host(path, hostname, &initial, anchor, false)
             .await?;
@@ -221,9 +288,13 @@ impl SshConfig {
         hostname: &str,
         options: &[String],
     ) -> Result<Self> {
+        validate_command_line_hostname(hostname)?;
         let mut config = Self::new();
         config.apply_cli_options(options)?;
         let initial = resolver::find_host_config_first_pass(&config.hosts, hostname);
+        if let Some(user) = initial.user.as_deref() {
+            validate_trusted_shell_remote_user(user)?;
+        }
         let user_source = if let Some(home_dir) = dirs::home_dir() {
             let path = home_dir.join(".ssh").join("config");
             path_exists(&path)
@@ -575,6 +646,84 @@ mod tests {
         }
     }
 
+    #[test]
+    fn command_line_token_inputs_match_openssh_safety_rules() {
+        for hostname in ["under_score.example", "2001:db8::1", "münchen.example"] {
+            validate_command_line_hostname(hostname)
+                .unwrap_or_else(|error| panic!("valid hostname {hostname:?}: {error}"));
+        }
+        for hostname in [
+            "-option",
+            "bad host",
+            "bad;host",
+            "bad,host",
+            "bad$host",
+            "bad\\host",
+            "bad\nname",
+        ] {
+            assert!(
+                validate_command_line_hostname(hostname).is_err(),
+                "unsafe hostname accepted: {hostname:?}"
+            );
+        }
+
+        for user in ["name$tag", "name space", "slash\\ok", "사용자"] {
+            validate_command_line_remote_user(user)
+                .unwrap_or_else(|error| panic!("valid remote user {user:?}: {error}"));
+        }
+        for user in [
+            "-option",
+            "bad;user",
+            "bad{user",
+            "name -option",
+            "trailing\\",
+            "bad\nuser",
+        ] {
+            assert!(
+                validate_command_line_remote_user(user).is_err(),
+                "unsafe remote user accepted: {user:?}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn public_host_loader_rejects_unsafe_tokens_before_match_exec() {
+        let temp_dir = TempDir::new().unwrap();
+        let config_path = temp_dir.path().join("config");
+        let host_marker = temp_dir.path().join("host-marker");
+        write_config(
+            &config_path,
+            "Match exec=\"%h\"\n    Port 2201\nMatch exec=\"%r\"\n    Port 2202\n",
+        );
+
+        let hostile_host = format!("touch${{IFS}}{}", host_marker.display());
+        let host_error =
+            SshConfig::load_explicit_for_config_dump_with_options(&config_path, &hostile_host, &[])
+                .await
+                .expect_err("unsafe hostname must be rejected before config evaluation");
+        assert!(host_error.to_string().contains("hostname contains invalid"));
+        assert!(!host_marker.exists());
+
+        for (name, hostile_user) in [
+            ("space", "touch {marker}"),
+            ("ifs", "touch$IFS{marker}"),
+            ("backslash", "touch\\ {marker}"),
+        ] {
+            let marker = temp_dir.path().join(format!("user-{name}-marker"));
+            let hostile_user = hostile_user.replace("{marker}", &marker.to_string_lossy());
+            let user_error = SshConfig::load_explicit_for_config_dump_with_options(
+                &config_path,
+                "target",
+                &[format!("User={}", value::encode(&hostile_user).unwrap())],
+            )
+            .await
+            .expect_err("unsafe remote user must be rejected before config evaluation");
+            assert!(user_error.to_string().contains("cannot be safely expanded"));
+            assert!(!marker.exists(), "{name} expansion executed Match exec");
+        }
+    }
+
     #[tokio::test]
     async fn later_config_files_use_earlier_effective_include_context() {
         let temp_dir = TempDir::new().unwrap();
@@ -668,6 +817,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn cli_canonicalization_does_not_fix_hostname_before_explicit_file() {
+        use clap::Parser as _;
         use sha1::{Digest as _, Sha1};
 
         let temp_dir = TempDir::new().unwrap();
@@ -679,7 +829,7 @@ mod tests {
             "effective.example",
             "2207",
             "deploy",
-            "cli-jump",
+            "jump@proxy.example:2200",
         ] {
             digest.update(value.as_bytes());
         }
@@ -695,7 +845,7 @@ mod tests {
                     "Host *\n",
                     "    HostName effective.example\n",
                     "Match exec=\"test %h = effective.example && test %p = 2207 && ",
-                    "test %k = cli-key && test %j = cli-jump && test %C = {}\"\n",
+                    "test %k = cli-key && test %j = jump@proxy.example:2200 && test %C = {}\"\n",
                     "    Include {}/%h-%p-%k-%j-%C.conf\n"
                 ),
                 connection_hash,
@@ -704,21 +854,32 @@ mod tests {
         );
         write_config(
             temp_dir.path().join(format!(
-                "effective.example-2207-cli-key-cli-jump-{connection_hash}.conf"
+                "effective.example-2207-cli-key-jump@proxy.example:2200-{connection_hash}.conf"
             )),
             "ServerAliveInterval 17\n",
         );
 
+        let cli = crate::cli::Cli::try_parse_from([
+            "bssh",
+            "-l",
+            "deploy",
+            "-p",
+            "2207",
+            "-J",
+            "ssh://jump@proxy.example:2200",
+            "-o",
+            "CanonicalizeHostname=yes",
+            "-o",
+            "HostKeyAlias=cli-key",
+            "alias",
+        ])
+        .unwrap();
+        let overrides = cli.ssh_config_overrides().unwrap();
+
         let config = SshConfig::load_explicit_for_config_dump_with_options(
             &config_path,
             "alias",
-            &[
-                "CanonicalizeHostname=yes".to_string(),
-                "User=deploy".to_string(),
-                "Port=2207".to_string(),
-                "HostKeyAlias=cli-key".to_string(),
-                "ProxyJump=cli-jump".to_string(),
-            ],
+            &overrides,
         )
         .await
         .unwrap();
@@ -727,7 +888,10 @@ mod tests {
         assert_eq!(resolved.user.as_deref(), Some("deploy"));
         assert_eq!(resolved.port, Some(2207));
         assert_eq!(resolved.host_key_alias.as_deref(), Some("cli-key"));
-        assert_eq!(resolved.proxy_jump.as_deref(), Some("cli-jump"));
+        assert_eq!(
+            resolved.proxy_jump.as_deref(),
+            Some("jump@proxy.example:2200")
+        );
         assert_eq!(resolved.server_alive_interval, Some(17));
     }
 

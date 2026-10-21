@@ -513,7 +513,7 @@ fn apply_value(
     Ok(())
 }
 
-fn canonicalize_proxy_jump_option(value: &str) -> Result<String> {
+pub(crate) fn canonicalize_proxy_jump_option(value: &str) -> Result<String> {
     let trimmed = value.trim_start();
     let separator = trimmed.find(|character: char| character == '=' || character.is_whitespace());
     let Some(separator) = separator else {

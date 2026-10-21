@@ -1,14 +1,10 @@
 //! SOCKS protocol implementation for dynamic port forwarding
 
-use crate::{
-    forwarding::tunnel::Tunnel,
-    ssh::tokio_client::{AddressFamily, Client, Error as SshError},
-};
+use crate::ssh::tokio_client::{AddressFamily, Error as SshError};
 use anyhow::{Context as _, Result};
 use std::future::Future;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::net::TcpStream;
 use tokio_util::sync::CancellationToken;
 use tracing::debug;
 
@@ -16,32 +12,6 @@ const SOCKS5_IPV4_BOUND_REPLY: [u8; 10] = [5, 0x00, 0, 1, 0, 0, 0, 0, 0, 0];
 const SOCKS5_CONNECTION_REFUSED_REPLY: [u8; 10] = [5, 0x05, 0, 1, 0, 0, 0, 0, 0, 0];
 const SOCKS5_COMMAND_NOT_SUPPORTED_REPLY: [u8; 10] = [5, 0x07, 0, 1, 0, 0, 0, 0, 0, 0];
 const SOCKS5_ADDRESS_TYPE_NOT_SUPPORTED_REPLY: [u8; 10] = [5, 0x08, 0, 1, 0, 0, 0, 0, 0, 0];
-
-/// Handle SOCKS4 connection protocol
-pub async fn handle_socks4_connection(
-    tcp_stream: TcpStream,
-    peer_addr: SocketAddr,
-    ssh_client: &Client,
-    cancel_token: CancellationToken,
-    address_family: AddressFamily,
-) -> Result<super::super::tunnel::TunnelStats> {
-    handle_socks4_connection_with(
-        tcp_stream,
-        peer_addr,
-        cancel_token,
-        address_family,
-        |destination, address_family| async move {
-            ssh_client
-                .open_direct_tcpip_channel_with_family(destination.as_str(), None, address_family)
-                .await
-                .map_err(anyhow::Error::from)
-        },
-        |tcp_stream, ssh_channel, cancel_token| async move {
-            Tunnel::run(tcp_stream, ssh_channel, cancel_token).await
-        },
-    )
-    .await
-}
 
 pub(crate) async fn handle_socks4_connection_with<
     IoStream,
@@ -194,32 +164,6 @@ fn socks4_destination_for_family(
     }
 
     Ok(format!("{dest_ip}:{dest_port}"))
-}
-
-/// Handle SOCKS5 connection protocol
-pub async fn handle_socks5_connection(
-    tcp_stream: TcpStream,
-    peer_addr: SocketAddr,
-    ssh_client: &Client,
-    cancel_token: CancellationToken,
-    address_family: AddressFamily,
-) -> Result<super::super::tunnel::TunnelStats> {
-    handle_socks5_connection_with(
-        tcp_stream,
-        peer_addr,
-        address_family,
-        |destination, address_family| async move {
-            ssh_client
-                .open_direct_tcpip_channel_with_family(destination.as_str(), None, address_family)
-                .await
-                .map_err(anyhow::Error::from)
-        },
-        |tcp_stream, ssh_channel, cancel_token| async move {
-            Tunnel::run(tcp_stream, ssh_channel, cancel_token).await
-        },
-        cancel_token,
-    )
-    .await
 }
 
 pub(crate) async fn handle_socks5_connection_with<
@@ -407,6 +351,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+    use tokio::net::TcpStream;
 
     fn socks4_request(dest_ip: Ipv4Addr, dest_port: u16, userid: &[u8]) -> Vec<u8> {
         let mut frame = Vec::with_capacity(8 + userid.len() + 1);

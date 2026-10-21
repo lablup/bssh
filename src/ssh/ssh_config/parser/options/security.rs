@@ -127,18 +127,9 @@ pub(super) fn parse_security_option(
                 );
             }
 
-            let resolved_names =
-                crate::ssh::tokio_client::algorithms::resolve_host_key_names(&algorithms)
-                    .map_err(anyhow::Error::msg)?;
-            let resolved_plain =
-                crate::ssh::tokio_client::algorithms::resolve_plain_host_keys(&algorithms)
-                    .map_err(anyhow::Error::msg)?;
-            let resolved_certificates =
-                crate::ssh::tokio_client::algorithms::resolve_host_key_certificates(&algorithms)
-                    .map_err(anyhow::Error::msg)?;
-            host.resolved_host_key_algorithm_names = Some(resolved_names);
-            host.resolved_host_key_algorithms = Some(resolved_plain);
-            host.resolved_host_key_certificate_algorithms = Some(resolved_certificates);
+            let resolved = crate::ssh::tokio_client::algorithms::resolve_host_keys(&algorithms)
+                .map_err(anyhow::Error::msg)?;
+            host.resolved_host_key_algorithms = Some(resolved);
             host.host_key_algorithms = algorithms;
         }
         "kexalgorithms" => {

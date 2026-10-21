@@ -89,16 +89,6 @@ fn proxy_jump_none_is_omitted_from_config_dump() {
 }
 
 #[test]
-fn host_key_algorithm_dump_preserves_certificate_names() {
-    let config = SshConfig::parse(
-        "Host target\n    HostKeyAlgorithms ssh-ed25519-cert-v01@openssh.com,ssh-ed25519\n",
-    )
-    .unwrap();
-    let output = render_resolved_config("target", &config.find_host_config("target")).unwrap();
-    assert!(output.contains("hostkeyalgorithms ssh-ed25519-cert-v01@openssh.com,ssh-ed25519\n"));
-}
-
-#[test]
 fn renderer_rejects_line_injection() {
     let mut config = SshHostConfig {
         hostname: Some("safe.example\nport 1".to_string()),

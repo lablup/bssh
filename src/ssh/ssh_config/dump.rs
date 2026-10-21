@@ -629,11 +629,11 @@ fn kex_names(config: &SshHostConfig) -> String {
 
 fn host_key_names(config: &SshHostConfig) -> String {
     config
-        .resolved_host_key_algorithm_names
-        .clone()
-        .unwrap_or_else(crate::ssh::tokio_client::algorithms::default_host_key_algorithm_names)
+        .resolved_host_key_algorithms
+        .as_deref()
+        .unwrap_or(crate::ssh::tokio_client::algorithms::default_host_key_algorithms())
         .iter()
-        .map(String::as_str)
+        .map(ToString::to_string)
         .collect::<Vec<_>>()
         .join(",")
 }

@@ -520,7 +520,8 @@ fn validate_local_shell_command(command: &str) -> Result<()> {
 fn validate_shell_token_value(name: &str, value: &str) -> Result<()> {
     if value.len() > 1024
         || value.chars().any(|ch| {
-            ch.is_control()
+            ch.is_ascii_whitespace()
+                || ch.is_control()
                 || matches!(
                     ch,
                     '\'' | '"' | '`' | '$' | ';' | '&' | '|' | '<' | '>' | '\\'

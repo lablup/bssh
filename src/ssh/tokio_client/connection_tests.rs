@@ -233,6 +233,11 @@ fn debug_log_level_enables_kex_diagnostics_without_changing_info() {
 
     assert!(resolver.resolve_for_host("debug").emit_kex_diagnostics);
     assert!(!resolver.resolve_for_host("normal").emit_kex_diagnostics);
+
+    let quiet_cli = resolver.with_cli_quiet(true);
+    let quiet_debug = quiet_cli.resolve_for_host("debug");
+    assert!(quiet_debug.suppress_auth_banner);
+    assert!(!quiet_debug.emit_kex_diagnostics);
 }
 
 #[test]

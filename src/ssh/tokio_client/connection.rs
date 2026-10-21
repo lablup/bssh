@@ -167,8 +167,6 @@ pub struct SshConnectionConfig {
     pub mac_preferences: Option<Vec<russh::mac::Name>>,
     pub kex_preferences: Option<Vec<russh::kex::Name>>,
     pub host_key_preferences: Option<Vec<ssh_key::Algorithm>>,
-    /// Host-key certificate algorithms advertised ahead of plain host keys.
-    pub host_key_certificate_preferences: Option<Vec<ssh_key::Algorithm>>,
     /// Whether known-host key types may reorder the default or modified preference list.
     pub order_host_key_algorithms: bool,
     /// Public-key signature policy for the authentication follow-up.
@@ -211,7 +209,6 @@ impl Default for SshConnectionConfig {
             mac_preferences: None,
             kex_preferences: None,
             host_key_preferences: None,
-            host_key_certificate_preferences: None,
             order_host_key_algorithms: true,
             pubkey_accepted_algorithms: None,
             auth_policy: SshAuthenticationPolicy::default(),
@@ -454,15 +451,16 @@ impl SshConnectionConfigResolver {
                 .as_ref()
                 .and_then(|config| config.log_level.as_deref())
                 .is_some_and(|level| level.eq_ignore_ascii_case("quiet"));
-        let emit_kex_diagnostics = host_config
-            .as_ref()
-            .and_then(|config| config.log_level.as_deref())
-            .is_some_and(|level| {
-                matches!(
-                    level.to_ascii_lowercase().as_str(),
-                    "debug" | "debug1" | "debug2" | "debug3"
-                )
-            });
+        let emit_kex_diagnostics = !self.cli_quiet
+            && host_config
+                .as_ref()
+                .and_then(|config| config.log_level.as_deref())
+                .is_some_and(|level| {
+                    matches!(
+                        level.to_ascii_lowercase().as_str(),
+                        "debug" | "debug1" | "debug2" | "debug3"
+                    )
+                });
         let ip_qos = host_config
             .as_ref()
             .and_then(|config| config.ipqos)
@@ -510,9 +508,6 @@ impl SshConnectionConfigResolver {
         let host_key_preferences = host_config
             .as_ref()
             .and_then(|config| config.resolved_host_key_algorithms.clone());
-        let host_key_certificate_preferences = host_config
-            .as_ref()
-            .and_then(|config| config.resolved_host_key_certificate_algorithms.clone());
         let order_host_key_algorithms = host_config.as_ref().is_none_or(|config| {
             config.host_key_algorithms.is_empty()
                 || config.host_key_algorithms[0].starts_with('+')
@@ -676,7 +671,6 @@ impl SshConnectionConfigResolver {
                 kex_preferences,
                 host_key_preferences,
             )
-            .with_host_key_certificate_preferences(host_key_certificate_preferences)
             .with_known_host_algorithm_ordering(order_host_key_algorithms)
             .with_pubkey_accepted_algorithms(pubkey_accepted_algorithms)
             .with_auth_policy(auth_policy)
@@ -930,16 +924,6 @@ impl SshConnectionConfig {
         self
     }
 
-    /// Select the OpenSSH host-certificate algorithms advertised by russh.
-    #[must_use]
-    pub fn with_host_key_certificate_preferences(
-        mut self,
-        certificates: Option<Vec<ssh_key::Algorithm>>,
-    ) -> Self {
-        self.host_key_certificate_preferences = certificates;
-        self
-    }
-
     #[must_use]
     pub fn with_known_host_algorithm_ordering(mut self, enabled: bool) -> Self {
         self.order_host_key_algorithms = enabled;
@@ -1001,9 +985,6 @@ impl SshConnectionConfig {
         let preferred = russh::Preferred {
             compression: std::borrow::Cow::Borrowed(compression_order),
             key: Cow::Borrowed(super::algorithms::default_host_key_algorithms()),
-            host_key_certificates: Cow::Borrowed(
-                super::algorithms::default_host_key_certificate_algorithms(),
-            ),
             ..russh::Preferred::DEFAULT
         };
         let preferred = russh::Preferred {
@@ -1027,11 +1008,6 @@ impl SshConnectionConfig {
                 .clone()
                 .map(Cow::Owned)
                 .unwrap_or(preferred.key),
-            host_key_certificates: self
-                .host_key_certificate_preferences
-                .clone()
-                .map(Cow::Owned)
-                .unwrap_or(preferred.host_key_certificates),
             ..preferred
         };
 
@@ -1449,7 +1425,7 @@ pub struct ConnectionInfo {
 }
 
 #[derive(Debug, Clone)]
-struct ConnectionInfoState(Arc<Mutex<ConnectionInfo>>);
+pub(crate) struct ConnectionInfoState(Arc<Mutex<ConnectionInfo>>);
 
 impl ConnectionInfoState {
     fn new(remote_address: SocketAddr) -> Self {
@@ -2337,6 +2313,7 @@ impl Client {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) async fn from_authenticated_handle_with_policy_state(
         handle: Arc<Handle<ClientHandler>>,
         username: String,
@@ -2345,6 +2322,7 @@ impl Client {
         hostkey_rotation: HostkeyRotationTasks,
         remote_forward_registry: RemoteForwardRegistry,
         agent_forwarding: AgentForwardingState,
+        connection_info: ConnectionInfoState,
     ) -> Self {
         let client = Self {
             connection_handle: handle.clone(),
@@ -2357,7 +2335,7 @@ impl Client {
             forwarding_runtime: Arc::new(ForwardingRuntime::default()),
             remote_forward_registry,
             agent_forwarding,
-            connection_info: ConnectionInfoState::new(address),
+            connection_info,
         };
         client.flush_hostkey_updates().await;
         client
@@ -2701,12 +2679,12 @@ impl ClientHandler {
         }
     }
 
-    fn with_suppress_auth_banner(mut self, suppress: bool) -> Self {
+    pub(crate) fn with_suppress_auth_banner(mut self, suppress: bool) -> Self {
         self.suppress_auth_banner = suppress;
         self
     }
 
-    fn with_kex_diagnostics(mut self, enabled: bool) -> Self {
+    pub(crate) fn with_kex_diagnostics(mut self, enabled: bool) -> Self {
         self.emit_kex_diagnostics = enabled;
         self
     }
@@ -2727,7 +2705,7 @@ impl ClientHandler {
         self.agent_forwarding.clone()
     }
 
-    fn connection_info_state(&self) -> ConnectionInfoState {
+    pub(crate) fn connection_info_state(&self) -> ConnectionInfoState {
         self.connection_info.clone()
     }
 
@@ -2739,10 +2717,11 @@ impl ClientHandler {
         server_key: &russh::keys::PublicKey,
         host_key_alias: Option<&str>,
     ) -> Result<Option<super::host_verification::KnownHostLookup>, super::Error> {
-        if self.policy.known_hosts_command.is_none() {
+        let Some(command) = self.policy.known_hosts_command.as_deref() else {
             return Ok(None);
-        }
+        };
 
+        let lookup_host = super::host_verification::known_hosts_entry_name(hostname, port);
         let fingerprint = server_key
             .fingerprint(russh::keys::HashAlg::Sha256)
             .to_string();
@@ -2754,39 +2733,6 @@ impl ClientHandler {
                 })?;
         let key_base64 =
             base64::Engine::encode(&base64::engine::general_purpose::STANDARD, key_blob);
-        let key_type = server_key.algorithm().as_str().to_string();
-        let output = self
-            .run_known_hosts_command_output(
-                hostname,
-                port,
-                invocation,
-                &fingerprint,
-                &key_base64,
-                &key_type,
-                host_key_alias,
-            )
-            .await?;
-        super::host_verification::lookup_known_host_data(&output, hostname, port, server_key)
-            .map(Some)
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    async fn run_known_hosts_command_output(
-        &self,
-        hostname: &str,
-        port: u16,
-        invocation: &'static str,
-        fingerprint: &str,
-        key_base64: &str,
-        key_type: &str,
-        host_key_alias: Option<&str>,
-    ) -> Result<String, super::Error> {
-        let command = self
-            .policy
-            .known_hosts_command
-            .as_deref()
-            .expect("caller checked KnownHostsCommand is configured");
-        let lookup_host = super::host_verification::known_hosts_entry_name(hostname, port);
         let local_user = std::env::var("USER")
             .or_else(|_| std::env::var("USERNAME"))
             .or_else(|_| std::env::var("LOGNAME"))
@@ -2801,6 +2747,7 @@ impl ClientHandler {
         let home_dir = dirs::home_dir()
             .map(|path| path.to_string_lossy().into_owned())
             .unwrap_or_default();
+        let key_type = server_key.algorithm().as_str().to_string();
         let context = super::known_hosts_command::KnownHostsCommandContext {
             lookup_host: &lookup_host,
             target_host: &self.policy.target_host,
@@ -2815,47 +2762,13 @@ impl ClientHandler {
             home_dir: &home_dir,
             proxy_jump: &self.policy.proxy_jump,
             invocation,
-            fingerprint,
-            key_base64,
-            key_type,
+            fingerprint: &fingerprint,
+            key_base64: &key_base64,
+            key_type: &key_type,
         };
-        super::known_hosts_command::run_known_hosts_command(command, &context).await
-    }
-
-    async fn run_known_hosts_certificate_lookup(
-        &self,
-        hostname: &str,
-        port: u16,
-        certificate: &russh::keys::Certificate,
-        host_key_alias: Option<&str>,
-    ) -> Result<Option<String>, super::Error> {
-        if self.policy.known_hosts_command.is_none() {
-            return Ok(None);
-        }
-        let subject = russh::keys::PublicKey::new(certificate.public_key().clone(), "");
-        let fingerprint = subject
-            .fingerprint(russh::keys::HashAlg::Sha256)
-            .to_string();
-        let key_blob =
-            certificate
-                .to_bytes()
-                .map_err(|error| super::Error::KnownHostsCommandFailed {
-                    reason: format!("could not encode the offered host certificate: {error}"),
-                })?;
-        let key_base64 =
-            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, key_blob);
-        let key_type = certificate.algorithm().to_certificate_type().to_string();
-        self.run_known_hosts_command_output(
-            hostname,
-            port,
-            "HOSTNAME",
-            &fingerprint,
-            &key_base64,
-            &key_type,
-            host_key_alias,
-        )
-        .await
-        .map(Some)
+        let output = super::known_hosts_command::run_known_hosts_command(command, &context).await?;
+        super::host_verification::lookup_known_host_data(&output, hostname, port, server_key)
+            .map(Some)
     }
 
     fn rotation_paths(&self, method: &ServerCheckMethod) -> Vec<String> {
@@ -2881,33 +2794,6 @@ impl ClientHandler {
                     .unwrap_or_default()
             }
             _ => Vec::new(),
-        }
-    }
-
-    fn certificate_known_hosts_paths(&self, method: &ServerCheckMethod) -> Vec<String> {
-        if !method_uses_known_hosts(method) {
-            return Vec::new();
-        }
-        if !self.policy.known_hosts_paths.is_empty() {
-            return self.policy.known_hosts_paths.clone();
-        }
-        match method {
-            ServerCheckMethod::KnownHostsFile(path)
-            | ServerCheckMethod::AcceptNewKnownHostsFile(path) => vec![path.clone()],
-            ServerCheckMethod::KnownHostsFiles(paths)
-            | ServerCheckMethod::AcceptNewKnownHostsFiles { files: paths, .. } => paths.clone(),
-            ServerCheckMethod::DefaultKnownHostsFile => {
-                crate::ssh::known_hosts::get_default_known_hosts_path()
-                    .map(|path| vec![path.to_string_lossy().into_owned()])
-                    .unwrap_or_default()
-            }
-            ServerCheckMethod::AcceptNewInMemory
-            | ServerCheckMethod::NoCheck
-            | ServerCheckMethod::PublicKey(_)
-            | ServerCheckMethod::PublicKeyFile(_) => Vec::new(),
-            ServerCheckMethod::HostKeyAlias { .. } => {
-                unreachable!("aliases are unwrapped by ClientHandler")
-            }
         }
     }
 }
@@ -3530,64 +3416,21 @@ impl Handler for ClientHandler {
             self.host.port()
         };
 
+        // bssh does not yet validate OpenSSH host certificates. Never compare
+        // an unverified certificate's embedded key against ordinary
+        // known_hosts entries.
         let server_public_key = match server_key {
             russh::keys::PublicKeyOrCertificate::PublicKey { key, .. } => key,
-            russh::keys::PublicKeyOrCertificate::Certificate(certificate) => {
-                let subject = russh::keys::PublicKey::new(certificate.public_key().clone(), "");
+            russh::keys::PublicKeyOrCertificate::Certificate(cert) => {
                 if matches!(method, ServerCheckMethod::NoCheck) {
-                    *self
-                        .verified_server_key
-                        .lock()
-                        .map_err(|_| super::Error::ServerCheckFailed)? = Some(subject);
-                    self.rotation_allowed.store(false, Ordering::Release);
                     return Ok(true);
                 }
-
-                // An ordinary public-key pin never authorizes a certificate:
-                // only a matching @cert-authority line may do so. Accept-new
-                // likewise never persists the certificate's embedded key.
-                if !method_uses_known_hosts(method) {
-                    tracing::error!(
-                        "Host '{hostname}' presented an OpenSSH host certificate, but the configured verifier has no certificate authority store"
-                    );
-                    return Err(super::Error::ServerCheckFailed);
-                }
-
-                let paths = self.certificate_known_hosts_paths(method);
-                let mut trusted = super::host_verification::verify_host_certificate_files(
+                tracing::error!(
+                    "Host '{}' presented an unverifiable OpenSSH host certificate (key ID '{}')",
                     hostname,
-                    port,
-                    certificate,
-                    &paths,
-                )?;
-                if let Some(output) = self
-                    .run_known_hosts_certificate_lookup(hostname, port, certificate, host_key_alias)
-                    .await?
-                {
-                    trusted |= super::host_verification::verify_host_certificate_data(
-                        &output,
-                        hostname,
-                        port,
-                        certificate,
-                    )?;
-                }
-                if !trusted {
-                    tracing::error!(
-                        "Host certificate '{}' for '{hostname}' is not signed by a trusted @cert-authority",
-                        certificate.key_id()
-                    );
-                    return Err(super::Error::ServerCheckFailed);
-                }
-
-                *self
-                    .verified_server_key
-                    .lock()
-                    .map_err(|_| super::Error::ServerCheckFailed)? = Some(subject);
-                // UpdateHostKeys proofs are bound to the currently trusted
-                // plain key. A CA-authorized certificate is a different trust
-                // path, so do not silently rotate ordinary host-key entries.
-                self.rotation_allowed.store(false, Ordering::Release);
-                return Ok(true);
+                    cert.key_id()
+                );
+                return Err(super::Error::ServerCheckFailed);
             }
         };
 
@@ -4126,28 +3969,6 @@ mod known_host_policy_tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn host_key_algorithm_policy_preserves_certificate_only_selection() {
-        let config =
-            SshConfig::parse("Host node\n    HostKeyAlgorithms ssh-ed25519-cert-v01@openssh.com\n")
-                .unwrap();
-        let resolved = SshConnectionConfigResolver::new()
-            .with_ssh_config(Some(config))
-            .resolve_for_host("node");
-        assert_eq!(resolved.host_key_preferences.as_deref(), Some(&[][..]));
-        assert_eq!(
-            resolved.host_key_certificate_preferences.as_deref(),
-            Some(&[ssh_key::Algorithm::Ed25519][..])
-        );
-
-        let russh = resolved.to_russh_config();
-        assert!(russh.preferred.key.is_empty());
-        assert_eq!(
-            russh.preferred.host_key_certificates.as_ref(),
-            &[ssh_key::Algorithm::Ed25519]
-        );
     }
 
     #[test]

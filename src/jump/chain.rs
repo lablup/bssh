@@ -171,13 +171,15 @@ impl JumpHostChain {
     /// by `-J`. The alias remains the resolver lookup key while `HostName`,
     /// `User`, and `Port` become the actual hop endpoint.
     fn resolved_jump_host(&self, jump_host: &JumpHost) -> JumpHost {
-        let Some((host, user, port, _identity_file)) = self
-            .ssh_connection_config_resolver
-            .as_ref()
-            .and_then(|resolver| resolver.resolve_jump_host(&jump_host.host))
+        let Some(resolver) = self.ssh_connection_config_resolver.as_ref() else {
+            return jump_host.clone();
+        };
+        let Some((_raw_host, user, port, _identity_file)) =
+            resolver.resolve_jump_host(&jump_host.host)
         else {
             return jump_host.clone();
         };
+        let host = resolver.effective_hostname(&jump_host.host);
 
         JumpHost::with_ssh_key(
             host,
@@ -595,6 +597,8 @@ Host bastion
     User config-user
     Port 2200
     IdentityFile /tmp/config-key
+Host templated
+    HostName %h.internal
 "#,
         )
         .expect("valid ssh_config");
@@ -618,6 +622,9 @@ Host bastion
         assert_eq!(explicit.host, "127.0.0.1");
         assert_eq!(explicit.user.as_deref(), Some("cli-user"));
         assert_eq!(explicit.port, Some(2222));
+
+        let templated = chain.resolved_jump_host(&JumpHost::new("templated".into(), None, None));
+        assert_eq!(templated.host, "templated.internal");
     }
 
     #[test]

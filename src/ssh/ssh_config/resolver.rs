@@ -337,10 +337,7 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
     }
     if base.host_key_algorithms.is_empty() && !overlay.host_key_algorithms.is_empty() {
         base.host_key_algorithms = overlay.host_key_algorithms.clone();
-        base.resolved_host_key_algorithm_names = overlay.resolved_host_key_algorithm_names.clone();
         base.resolved_host_key_algorithms = overlay.resolved_host_key_algorithms.clone();
-        base.resolved_host_key_certificate_algorithms =
-            overlay.resolved_host_key_certificate_algorithms.clone();
     }
     if base.kex_algorithms.is_empty() && !overlay.kex_algorithms.is_empty() {
         base.kex_algorithms = overlay.kex_algorithms.clone();

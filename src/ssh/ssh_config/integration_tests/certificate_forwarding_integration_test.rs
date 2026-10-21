@@ -106,8 +106,7 @@ Host web.prod.example.com
 Host *.secure.example.com
     GatewayPorts clientspecified
     ExitOnForwardFailure yes
-    PermitRemoteOpen localhost:8080
-    PermitRemoteOpen db.internal:5432
+    PermitRemoteOpen localhost:8080 db.internal:5432
 "#;
         write_config(&include_file, include_content);
 
@@ -314,8 +313,7 @@ Include {}
 
 Match host web*.prod.example.com
     ExitOnForwardFailure yes
-    PermitRemoteOpen localhost:8080
-    PermitRemoteOpen db.internal:5432
+    PermitRemoteOpen localhost:8080 db.internal:5432
 
 Host web1.prod.example.com
     User webuser
@@ -376,9 +374,7 @@ Host *.prod.example.com
 Match host *.secure.prod.example.com
     GatewayPorts clientspecified
     ExitOnForwardFailure yes
-    PermitRemoteOpen localhost:8080
-    PermitRemoteOpen localhost:5432
-    PermitRemoteOpen db.internal:5432
+    PermitRemoteOpen localhost:8080 localhost:5432 db.internal:5432
 
 # Specific web server
 Host web.secure.prod.example.com
@@ -415,12 +411,12 @@ Host web.secure.prod.example.com
         // ExitOnForwardFailure: first obtained as no from Host *
         assert_eq!(resolved.exit_on_forward_failure, Some(false));
 
-        // PermitRemoteOpen: from Match (3) + specific Host (1) = 4 total
-        assert_eq!(resolved.permit_remote_open.len(), 4);
+        // PermitRemoteOpen is a first-obtained list: the three Match values
+        // prevent the later specific Host block from broadening the policy.
+        assert_eq!(resolved.permit_remote_open.len(), 3);
         assert_eq!(resolved.permit_remote_open[0], "localhost:8080");
         assert_eq!(resolved.permit_remote_open[1], "localhost:5432");
         assert_eq!(resolved.permit_remote_open[2], "db.internal:5432");
-        assert_eq!(resolved.permit_remote_open[3], "cache.internal:6379");
 
         // Basic options
         assert_eq!(resolved.user, Some("webadmin".to_string()));

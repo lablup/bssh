@@ -186,13 +186,13 @@ pub async fn initialize_app(cli: &mut Cli, args: &[String]) -> Result<AppContext
     // Load configuration with priority
     let config = Config::load_with_priority(&cli.config).await?;
 
-    let ssh_config_overrides = cli.ssh_config_overrides();
     let ssh_destination = if cli.is_ssh_mode() {
         cli.parse_destination_result()?
             .map(|destination| destination.host.to_string())
     } else {
         None
     };
+    let ssh_config_overrides = cli.ssh_config_overrides()?;
 
     // A single OpenSSH-style destination is an explicit trust boundary for
     // on-disk ssh_config. Resolve it through the host-aware loader so Match

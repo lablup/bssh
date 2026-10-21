@@ -21,8 +21,8 @@ mod unix {
     use tokio::sync::{Mutex, Semaphore, mpsc, watch};
     use tokio::task::{JoinHandle, JoinSet};
 
-    use crate::forwarding::ForwardingPlan;
-    use crate::ssh::tokio_client::{Client, CommandOutput};
+    use crate::forwarding::{ForwardingDirective, ForwardingPlan};
+    use crate::ssh::tokio_client::{AddressFamily, Client, CommandOutput};
     use crate::ssh::{SessionPolicy, SessionRequest};
 
     use super::super::{
@@ -131,6 +131,26 @@ mod unix {
         require_confirmation: bool,
         allow_bootstrap_session: bool,
     ) -> Result<RunningControlMaster> {
+        start_control_master_with_bootstrap_session_and_forwarding_policy(
+            path,
+            client,
+            require_confirmation,
+            allow_bootstrap_session,
+            Vec::new(),
+        )
+    }
+
+    /// Start a master with the destination's authoritative remote-open policy.
+    ///
+    /// Control passengers may add forwarding listeners, but must never widen
+    /// the policy selected when the authenticated transport was created.
+    pub fn start_control_master_with_bootstrap_session_and_forwarding_policy(
+        path: &Path,
+        client: Client,
+        require_confirmation: bool,
+        allow_bootstrap_session: bool,
+        permit_remote_open: Vec<String>,
+    ) -> Result<RunningControlMaster> {
         let (listener, guard) = bind_control_socket(path)?;
         let (signal_tx, signal_rx) = mpsc::channel(8);
         let (active_tx, active_rx) = watch::channel(0usize);
@@ -142,6 +162,7 @@ mod unix {
                 client,
                 require_confirmation,
                 allow_bootstrap_session,
+                permit_remote_open,
                 signal_rx,
                 task_signal,
                 active_tx,
@@ -414,6 +435,7 @@ mod unix {
         client: Client,
         require_confirmation: bool,
         allow_bootstrap_session: bool,
+        permit_remote_open: Vec<String>,
         mut signal_rx: mpsc::Receiver<MasterSignal>,
         signal_tx: mpsc::Sender<MasterSignal>,
         active_tx: watch::Sender<usize>,
@@ -449,6 +471,7 @@ mod unix {
                     let handler_next_session = Arc::clone(&next_session);
                     let handler_confirmation = Arc::clone(&confirmation);
                     let handler_bootstrap_session = Arc::clone(&bootstrap_session);
+                    let handler_permit_remote_open = permit_remote_open.clone();
                     handlers.spawn(async move {
                         let _handler_slot = handler_slot;
                         if let Err(error) = handle_control_connection(
@@ -456,6 +479,7 @@ mod unix {
                             handler_client,
                             require_confirmation,
                             handler_bootstrap_session,
+                            handler_permit_remote_open,
                             handler_confirmation,
                             handler_signal,
                             handler_active,
@@ -503,6 +527,7 @@ mod unix {
         client: Client,
         require_confirmation: bool,
         bootstrap_session: Arc<AtomicBool>,
+        permit_remote_open: Vec<String>,
         confirmation: Arc<Mutex<()>>,
         signal: mpsc::Sender<MasterSignal>,
         active: Arc<AtomicUsize>,
@@ -564,13 +589,7 @@ mod unix {
                 forwards,
                 address_family,
             } => {
-                let plan = ForwardingPlan {
-                    directives: forwards,
-                    clear_all: false,
-                    exit_on_failure: true,
-                    address_family,
-                    permit_remote_open: Vec::new(),
-                };
+                let plan = control_forwarding_plan(forwards, address_family, &permit_remote_open);
                 let result = match command {
                     ControlCommand::Check => {
                         return send_response(
@@ -836,6 +855,20 @@ mod unix {
         }
     }
 
+    fn control_forwarding_plan(
+        directives: Vec<ForwardingDirective>,
+        address_family: AddressFamily,
+        permit_remote_open: &[String],
+    ) -> ForwardingPlan {
+        ForwardingPlan {
+            directives,
+            clear_all: false,
+            exit_on_failure: true,
+            address_family,
+            permit_remote_open: permit_remote_open.to_vec(),
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn handle_remote_session(
         mut stream: UnixStream,
@@ -1052,6 +1085,15 @@ mod unix {
             assert_eq!(outcome, AttachOutcome::NoMaster);
             dying.await.expect("dying listener task");
         }
+
+        #[test]
+        fn control_forwarding_uses_master_remote_open_policy() {
+            let policy = vec!["none".to_string()];
+
+            let plan = control_forwarding_plan(Vec::new(), AddressFamily::Any, &policy);
+
+            assert_eq!(plan.permit_remote_open, policy);
+        }
     }
 }
 
@@ -1059,6 +1101,7 @@ mod unix {
 pub use unix::{
     AttachOutcome, AttachedSession, RunningControlMaster, attach_session, prepare_attached_session,
     send_control_command, start_control_master, start_control_master_with_bootstrap_session,
+    start_control_master_with_bootstrap_session_and_forwarding_policy,
 };
 
 #[cfg(not(unix))]
@@ -1119,6 +1162,16 @@ mod unsupported {
         anyhow::bail!("connection multiplexing requires Unix-domain sockets")
     }
 
+    pub fn start_control_master_with_bootstrap_session_and_forwarding_policy(
+        _path: &Path,
+        _client: Client,
+        _require_confirmation: bool,
+        _allow_bootstrap_session: bool,
+        _permit_remote_open: Vec<String>,
+    ) -> Result<RunningControlMaster> {
+        anyhow::bail!("connection multiplexing requires Unix-domain sockets")
+    }
+
     pub async fn attach_session(
         _path: &Path,
         _session: SessionOpenRequest,
@@ -1149,4 +1202,5 @@ mod unsupported {
 pub use unsupported::{
     AttachOutcome, AttachedSession, RunningControlMaster, attach_session, prepare_attached_session,
     send_control_command, start_control_master, start_control_master_with_bootstrap_session,
+    start_control_master_with_bootstrap_session_and_forwarding_policy,
 };

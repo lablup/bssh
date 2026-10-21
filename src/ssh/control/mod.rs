@@ -33,6 +33,7 @@ pub use protocol::{
 pub use runtime::{
     AttachOutcome, AttachedSession, RunningControlMaster, attach_session, prepare_attached_session,
     send_control_command, start_control_master, start_control_master_with_bootstrap_session,
+    start_control_master_with_bootstrap_session_and_forwarding_policy,
 };
 #[cfg(unix)]
 pub use socket::verify_same_user;

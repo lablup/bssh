@@ -64,12 +64,22 @@ impl ForwardingSpec {
             ));
         }
         fields.push(field);
-        if fields.iter().any(String::is_empty) {
-            return Err(anyhow::anyhow!(
-                "Invalid forwarding specification '{spec}': empty field"
-            ));
-        }
         Ok(fields)
+    }
+
+    fn reject_empty_fields(
+        spec: &str,
+        fields: &[String],
+        allow_empty_remote_bind: bool,
+    ) -> Result<()> {
+        if fields
+            .iter()
+            .enumerate()
+            .any(|(index, field)| field.is_empty() && !(allow_empty_remote_bind && index == 0))
+        {
+            anyhow::bail!("Invalid forwarding specification '{spec}': empty field");
+        }
+        Ok(())
     }
 
     fn bind_spec(host: &str, port: &str) -> String {
@@ -78,6 +88,21 @@ impl ForwardingSpec {
         } else {
             format!("{host}:{port}")
         }
+    }
+
+    fn remote_bind(host: &str, port: &str) -> Result<(IpAddr, u16)> {
+        let port = port
+            .parse::<u16>()
+            .with_context(|| format!("Invalid remote port: {port}"))?;
+        let address = match host {
+            "" | "*" => IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+            "localhost" => IpAddr::V4(Ipv4Addr::LOCALHOST),
+            host => {
+                let bind_spec = Self::bind_spec(host, &port.to_string());
+                parse_bind_spec_with_family(&bind_spec, AddressFamily::Any)?.ip()
+            }
+        };
+        Ok((address, port))
     }
 
     /// Parse local port forwarding specification (-L)
@@ -95,6 +120,7 @@ impl ForwardingSpec {
     pub fn parse_local(spec: &str, address_family: AddressFamily) -> Result<ForwardingType> {
         let spec = Self::normalize_stream_spec(spec)?;
         let parts = Self::split_stream_fields(&spec)?;
+        Self::reject_empty_fields(&spec, &parts, false)?;
 
         match parts.len() {
             3 => {
@@ -151,6 +177,8 @@ impl ForwardingSpec {
     pub fn parse_remote(spec: &str) -> Result<ForwardingType> {
         let spec = Self::normalize_stream_spec(spec)?;
         let parts = Self::split_stream_fields(&spec)?;
+        let allow_empty_remote_bind = matches!(parts.len(), 2 | 4);
+        Self::reject_empty_fields(&spec, &parts, allow_empty_remote_bind)?;
 
         match parts.len() {
             1 => {
@@ -164,11 +192,10 @@ impl ForwardingSpec {
                 })
             }
             2 => {
-                let bind_spec = Self::bind_spec(&parts[0], &parts[1]);
-                let bind_addr = parse_bind_spec_with_family(&bind_spec, AddressFamily::Any)?;
+                let (bind_addr, bind_port) = Self::remote_bind(&parts[0], &parts[1])?;
                 Ok(ForwardingType::RemoteDynamic {
-                    bind_addr: bind_addr.ip(),
-                    bind_port: bind_addr.port(),
+                    bind_addr,
+                    bind_port,
                     permitted_destinations: Vec::new(),
                 })
             }
@@ -191,16 +218,15 @@ impl ForwardingSpec {
             }
             4 => {
                 // Format: bind_address:port:host:hostport
-                let bind_spec = Self::bind_spec(&parts[0], &parts[1]);
-                let bind_addr = parse_bind_spec_with_family(&bind_spec, AddressFamily::Any)?;
+                let (bind_addr, bind_port) = Self::remote_bind(&parts[0], &parts[1])?;
                 let local_host = parts[2].clone();
                 let local_port = parts[3]
                     .parse::<u16>()
                     .with_context(|| format!("Invalid local port: {}", parts[3]))?;
 
                 Ok(ForwardingType::Remote {
-                    bind_addr: bind_addr.ip(),
-                    bind_port: bind_addr.port(),
+                    bind_addr,
+                    bind_port,
                     local_host,
                     local_port,
                 })
@@ -403,6 +429,22 @@ mod tests {
             ForwardingSpec::parse_remote("[::1]:4243").unwrap(),
             ForwardingType::RemoteDynamic {
                 bind_addr: IpAddr::V6(Ipv6Addr::LOCALHOST),
+                bind_port: 4243,
+                permitted_destinations: Vec::new(),
+            }
+        );
+        assert_eq!(
+            ForwardingSpec::parse_remote("localhost:4243").unwrap(),
+            ForwardingType::RemoteDynamic {
+                bind_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
+                bind_port: 4243,
+                permitted_destinations: Vec::new(),
+            }
+        );
+        assert_eq!(
+            ForwardingSpec::parse_remote(":4243").unwrap(),
+            ForwardingType::RemoteDynamic {
+                bind_addr: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
                 bind_port: 4243,
                 permitted_destinations: Vec::new(),
             }

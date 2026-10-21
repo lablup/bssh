@@ -30,15 +30,15 @@
 //! which keys verify and which count as changed. Both entry points also
 //! lowercase the hostname once before it is used for either the lookup or the
 //! recorded entry, matching OpenSSH's case-insensitive known_hosts matching
-//! (russh's own matcher is a plain byte compare), and scan for `@revoked`
-//! marker lines before the ordinary lookup runs:
+//! (russh's own matcher is a plain byte compare), and scan for
+//! `@revoked`/`@cert-authority` marker lines before the ordinary lookup runs:
 //! russh's parser reads the marker itself as the literal first field of the
 //! host list, so a line like `@revoked node1 ssh-ed25519 <key>` never matches
 //! `node1` and is otherwise invisible to [`lookup_known_host`].
 
 use crate::diagnosticln as eprintln;
 
-use russh::keys::{Algorithm, Certificate, HashAlg, PublicKey};
+use russh::keys::{Algorithm, HashAlg, PublicKey};
 #[cfg(test)]
 use std::sync::Mutex as StdMutex;
 use std::{
@@ -94,6 +94,21 @@ impl ProcessPinKey {
             hostname: hostname.to_string(),
             port,
             trust_scope: trust_scope.map(str::to_string),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CertAuthorityPolicy {
+    WarnAndTofu,
+    Reject,
+}
+
+impl CertAuthorityPolicy {
+    fn from_env() -> Self {
+        match std::env::var("BSSH_CERT_AUTHORITY_POLICY") {
+            Ok(value) if value.eq_ignore_ascii_case("reject") => Self::Reject,
+            _ => Self::WarnAndTofu,
         }
     }
 }
@@ -354,8 +369,8 @@ fn lookup_known_host(
     })
 }
 
-/// The result of scanning known_hosts for `@revoked` marker lines naming a
-/// host, ahead of the ordinary lookup.
+/// The result of scanning known_hosts for `@revoked`/`@cert-authority`
+/// marker lines naming a host, ahead of the ordinary lookup.
 ///
 /// russh's `known_host_keys_path` splits each line on `' '` and takes the
 /// *first* field as the host list, so on a marker line such as `@revoked
@@ -369,15 +384,17 @@ enum MarkerScan {
     /// offered key: the caller must hard reject without recording or
     /// accepting anything.
     Revoked { line: usize },
+    /// A `@cert-authority` line names the host. bssh has no CA signature
+    /// validation path to fall back to, so this does not fail closed; the
+    /// caller warns and falls through to ordinary TOFU.
+    CertAuthority { line: usize },
     /// No marker line applies to this host.
     None,
 }
 
-/// Scan `known_hosts_path` for `@revoked` lines naming `hostname`/`port`.
-/// `hostname` must already be normalized (lowercase) by the caller, the same
-/// convention [`lookup_known_host`] relies on. `@cert-authority` entries are
-/// deliberately ignored here: they authorize certificates, not ordinary
-/// host keys, and are handled by [`verify_host_certificate_data`].
+/// Scan `known_hosts_path` for `@revoked` and `@cert-authority` lines naming
+/// `hostname`/`port`. `hostname` must already be normalized (lowercase) by
+/// the caller, the same convention [`lookup_known_host`] relies on.
 ///
 /// An unreadable or missing file has nothing to scan and reports
 /// [`MarkerScan::None`], the same as [`lookup_known_host`] treats it as an
@@ -393,6 +410,8 @@ fn scan_known_hosts_markers(
     };
 
     let host_port = known_hosts_entry_name(hostname, port);
+    let mut cert_authority: Option<usize> = None;
+
     for (idx, raw_line) in contents.lines().enumerate() {
         let line = idx + 1;
         let text = raw_line.trim_start();
@@ -404,7 +423,8 @@ fn scan_known_hosts_markers(
         let Some(marker) = fields.next() else {
             continue;
         };
-        if marker != "@revoked" {
+        let is_revoked = marker == "@revoked";
+        if !is_revoked && marker != "@cert-authority" {
             continue;
         }
         // Fields after the marker mirror an ordinary known_hosts line: host
@@ -418,219 +438,52 @@ fn scan_known_hosts_markers(
             continue;
         };
 
-        if !marker_host_matches(&host_port, hostname, host_field, true) {
+        if !marker_host_matches(&host_port, hostname, host_field, is_revoked) {
             continue;
         }
 
-        if let Ok(key) = russh::keys::parse_public_key_base64(key_field)
-            && key == *server_public_key
-        {
-            return MarkerScan::Revoked { line };
+        if is_revoked {
+            if let Ok(key) = russh::keys::parse_public_key_base64(key_field)
+                && key == *server_public_key
+            {
+                return MarkerScan::Revoked { line };
+            }
+            // A `@revoked` line matching the host but holding a *different*
+            // key revokes some other key, not the one being offered now, so
+            // it must not block this one; keep scanning the rest of the file.
+        } else {
+            cert_authority.get_or_insert(line);
         }
-        // A `@revoked` line matching the host but holding a *different* key
-        // revokes some other key, not the one being offered now, so it must
-        // not block this one; keep scanning the rest of the file.
     }
 
-    MarkerScan::None
+    match cert_authority {
+        Some(line) => MarkerScan::CertAuthority { line },
+        None => MarkerScan::None,
+    }
 }
 
 /// Whether a marker line's host field names `hostname`/`host_port`.
 ///
-/// Supports exact, hashed, negated, comma-separated, and simple glob patterns.
-/// When `lenient` (used for `@revoked` only), each pattern is evaluated against
-/// both the port-qualified identity and the bare hostname. A negated match for
-/// either identity vetoes the whole field before any positive pattern can
-/// authorize it.
+/// Supports the exact form, the comma-separated list form, and simple `*`
+/// and `?` globs, since marker lines commonly use them (`@cert-authority
+/// *.example.com`). When `lenient` (used for `@revoked` only), a pattern that
+/// does not match the port-qualified form is also tried against the bare
+/// hostname: a `@revoked` line commonly omits the port, and failing to honor
+/// a revocation is worse than an unnecessary rejection.
 fn marker_host_matches(
     host_port: &str,
     hostname: &str,
     pattern_field: &str,
     lenient: bool,
 ) -> bool {
-    let mut positive = false;
-    for raw_pattern in pattern_field.split(',') {
-        let raw_pattern = raw_pattern.trim();
-        let (negated, pattern) = match raw_pattern.strip_prefix('!') {
-            Some(pattern) => (true, pattern),
-            None => (false, raw_pattern),
-        };
+    pattern_field.split(',').any(|pattern| {
+        let pattern = pattern.trim();
         if pattern.is_empty() {
-            continue;
-        }
-        let matches = super::hostkey_rotation::host_pattern_matches(pattern, host_port)
-            || (lenient
-                && host_port != hostname
-                && super::hostkey_rotation::host_pattern_matches(pattern, hostname));
-        if matches && negated {
             return false;
         }
-        positive |= matches;
-    }
-    positive
-}
-
-// OpenSSH's default CASignatureAlgorithms policy. Configuration parsing for
-// that directive is not yet wired into certificate verification, so enforce
-// the safe default instead of implicitly accepting legacy SHA-1 ssh-rsa.
-const DEFAULT_CA_SIGNATURE_ALGORITHMS: &[&str] = &[
-    "ssh-ed25519",
-    "ecdsa-sha2-nistp256",
-    "ecdsa-sha2-nistp384",
-    "ecdsa-sha2-nistp521",
-    "sk-ssh-ed25519@openssh.com",
-    "sk-ecdsa-sha2-nistp256@openssh.com",
-    "webauthn-sk-ecdsa-sha2-nistp256@openssh.com",
-    "rsa-sha2-512",
-    "rsa-sha2-256",
-];
-
-fn default_ca_signature_algorithm_is_allowed(algorithm: &Algorithm) -> bool {
-    DEFAULT_CA_SIGNATURE_ALGORITHMS.contains(&algorithm.as_str())
-}
-
-/// Validate an OpenSSH host certificate against marker entries in one
-/// known_hosts data source.
-///
-/// A certificate is trusted only when a matching `@cert-authority` entry
-/// contains its exact signing key. Ordinary host-key entries never authorize
-/// the key embedded in a certificate. Matching `@revoked` entries reject both
-/// the certified host key and its CA key, mirroring OpenSSH's fail-closed
-/// revocation behavior.
-pub(super) fn verify_host_certificate_data(
-    data: &str,
-    hostname: &str,
-    port: u16,
-    certificate: &Certificate,
-) -> Result<bool, super::Error> {
-    use russh::keys::ssh_key::certificate::CertType;
-
-    if certificate.cert_type() != CertType::Host {
-        tracing::error!(
-            "Host '{hostname}' presented a non-host OpenSSH certificate (key ID '{}')",
-            certificate.key_id()
-        );
-        return Err(super::Error::ServerCheckFailed);
-    }
-    let signature_algorithm = certificate.signature().algorithm();
-    if !default_ca_signature_algorithm_is_allowed(&signature_algorithm) {
-        tracing::error!(
-            "Host certificate '{}' uses CA signature algorithm '{signature_algorithm}', which is not enabled by the safe default policy",
-            certificate.key_id()
-        );
-        return Err(super::Error::ServerCheckFailed);
-    }
-    if !certificate.critical_options().is_empty() {
-        tracing::error!(
-            "Host certificate '{}' contains unsupported critical options",
-            certificate.key_id()
-        );
-        return Err(super::Error::ServerCheckFailed);
-    }
-    if !certificate.valid_principals().is_empty()
-        && !certificate
-            .valid_principals()
-            .iter()
-            .any(|principal| principal.eq_ignore_ascii_case(hostname))
-    {
-        tracing::error!(
-            "Host certificate '{}' is not valid for principal '{hostname}'",
-            certificate.key_id()
-        );
-        return Err(super::Error::ServerCheckFailed);
-    }
-
-    let normalized_hostname = hostname.to_ascii_lowercase();
-    let identity = known_hosts_entry_name(&normalized_hostname, port);
-    let subject = PublicKey::new(certificate.public_key().clone(), "");
-    let authority = PublicKey::new(certificate.signature_key().clone(), "");
-    let mut trusted_authority = None;
-
-    for (index, line) in data.lines().enumerate() {
-        let line_number = index + 1;
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        let fields = trimmed.split_whitespace().collect::<Vec<_>>();
-        let Some(marker @ ("@cert-authority" | "@revoked")) = fields.first().copied() else {
-            continue;
-        };
-        if fields.len() < 4 {
-            continue;
-        }
-        let host_matches = marker_host_matches(
-            &identity,
-            &normalized_hostname,
-            fields[1],
-            marker == "@revoked",
-        );
-        if !host_matches {
-            continue;
-        }
-        let key = russh::keys::parse_public_key_base64(fields[3]).map_err(|error| {
-            tracing::error!(
-                "Invalid key on matching known_hosts marker line {line_number}: {error}"
-            );
-            super::Error::ServerCheckFailed
-        })?;
-        if fields[2] != key.algorithm().as_str() {
-            tracing::error!(
-                "Key algorithm mismatch on matching known_hosts marker line {line_number}"
-            );
-            return Err(super::Error::ServerCheckFailed);
-        }
-
-        if marker == "@revoked" && (key == subject || key == authority) {
-            tracing::error!(
-                "Refusing host certificate for '{identity}': its host or CA key is revoked at line {line_number}"
-            );
-            return Err(super::Error::HostKeyRevoked {
-                host: hostname.to_string(),
-                port,
-                line: line_number,
-            });
-        }
-        if marker == "@cert-authority" && key == authority {
-            trusted_authority = Some(key.fingerprint(HashAlg::Sha256));
-        }
-    }
-
-    let Some(fingerprint) = trusted_authority else {
-        return Ok(false);
-    };
-    certificate.validate([&fingerprint]).map_err(|error| {
-        tracing::error!(
-            "Host certificate '{}' failed signature or validity checking: {error}",
-            certificate.key_id()
-        );
-        super::Error::ServerCheckFailed
-    })?;
-    Ok(true)
-}
-
-/// Validate a host certificate against every configured known_hosts file.
-/// Missing files contain no authorities; unreadable or non-file paths fail
-/// closed just like ordinary strict host-key verification.
-pub(super) fn verify_host_certificate_files(
-    hostname: &str,
-    port: u16,
-    certificate: &Certificate,
-    known_hosts_paths: &[String],
-) -> Result<bool, super::Error> {
-    let mut accepted = false;
-    for path in known_hosts_paths {
-        match probe_known_hosts_path(path)? {
-            KnownHostsPathState::Missing => continue,
-            KnownHostsPathState::ReadableFile => {}
-        }
-        let data = std::fs::read_to_string(path).map_err(|error| {
-            tracing::error!("Could not read known_hosts file '{path}': {error}");
-            super::Error::ServerCheckFailed
-        })?;
-        accepted |= verify_host_certificate_data(&data, hostname, port, certificate)?;
-    }
-    Ok(accepted)
+        glob_match(host_port, pattern)
+            || (lenient && host_port != hostname && glob_match(hostname, pattern))
+    })
 }
 
 /// Minimal case-insensitive glob matcher supporting `*` (any sequence,
@@ -662,17 +515,38 @@ fn glob_match_chars(text: &[char], pattern: &[char], ti: usize, pi: usize) -> bo
     }
 }
 
-/// Act on any `@revoked` marker line naming `hostname`/`port`, ahead of the
-/// ordinary lookup. `hostname` must already be normalized (lowercase).
+/// Act on any `@revoked`/`@cert-authority` marker line naming
+/// `hostname`/`port`, ahead of the ordinary lookup. `hostname` must already
+/// be normalized (lowercase).
 ///
 /// A `@revoked` match is a hard stop: `Err` with the dedicated
 /// [`super::Error::HostKeyRevoked`], printed with a loud warning, and nothing
-/// is recorded or accepted. No marker at all is a silent `Ok(())`.
+/// is recorded or accepted. A `@cert-authority` match only warns: bssh has no
+/// CA signature validation to fall back to, so failing closed here would
+/// break every working CA setup with no workaround, and the point of this
+/// check is only to stop the marker being silently ignored, not to implement
+/// CA validation. No marker at all is a silent `Ok(())`.
 fn check_marker_lines(
     hostname: &str,
     port: u16,
     server_public_key: &PublicKey,
     known_hosts_path: &str,
+) -> Result<(), super::Error> {
+    check_marker_lines_with_policy(
+        hostname,
+        port,
+        server_public_key,
+        known_hosts_path,
+        CertAuthorityPolicy::from_env(),
+    )
+}
+
+fn check_marker_lines_with_policy(
+    hostname: &str,
+    port: u16,
+    server_public_key: &PublicKey,
+    known_hosts_path: &str,
+    cert_authority_policy: CertAuthorityPolicy,
 ) -> Result<(), super::Error> {
     match scan_known_hosts_markers(hostname, port, server_public_key, known_hosts_path) {
         MarkerScan::Revoked { line } => {
@@ -693,6 +567,29 @@ fn check_marker_lines(
                 port,
                 line,
             })
+        }
+        MarkerScan::CertAuthority { line } => {
+            let entry = known_hosts_entry_name(hostname, port);
+            match cert_authority_policy {
+                CertAuthorityPolicy::WarnAndTofu => {
+                    tracing::warn!(
+                        "'{entry}' has a @cert-authority entry at {known_hosts_path}:{line}, which bssh does not validate; falling back to trust-on-first-use for the offered key"
+                    );
+                    eprintln!(
+                        "Warning: {known_hosts_path}:{line} marks '{entry}' as a certificate authority (@cert-authority); bssh cannot validate CA-signed host keys, so the offered key is being trusted on first use instead"
+                    );
+                    Ok(())
+                }
+                CertAuthorityPolicy::Reject => {
+                    tracing::error!(
+                        "Refusing host key for '{entry}': @cert-authority at {known_hosts_path}:{line} cannot be validated"
+                    );
+                    eprintln!(
+                        "Host key verification failed: {known_hosts_path}:{line} marks '{entry}' as a certificate authority (@cert-authority), but bssh cannot validate CA-signed host keys"
+                    );
+                    Err(super::Error::ServerCheckFailed)
+                }
+            }
         }
         MarkerScan::None => Ok(()),
     }
@@ -1569,6 +1466,10 @@ mod tests {
 
     /// Build the OpenSSH *host certificate* form of `check_server_key`'s
     /// argument: `subject`'s public key signed by `ca`.
+    ///
+    /// bssh never advertises certificate host key algorithms, so russh cannot
+    /// negotiate one in practice; these tests pin the fail-closed behavior for
+    /// the case where a peer sends one anyway.
     fn host_certificate(
         subject: &PrivateKey,
         ca: &PrivateKey,
@@ -1588,15 +1489,6 @@ mod tests {
         russh::keys::PublicKeyOrCertificate::Certificate(
             builder.sign(ca).expect("signing with an ED25519 CA works"),
         )
-    }
-
-    fn certificate(value: &russh::keys::PublicKeyOrCertificate) -> &Certificate {
-        match value {
-            russh::keys::PublicKeyOrCertificate::Certificate(certificate) => certificate,
-            russh::keys::PublicKeyOrCertificate::PublicKey { .. } => {
-                panic!("test fixture must be a certificate")
-            }
-        }
     }
 
     #[tokio::test]
@@ -1868,7 +1760,7 @@ mod tests {
         );
     }
 
-    // `@revoked` marker lines and ordinary-key handling around CA entries.
+    // `@revoked` / `@cert-authority` marker lines.
 
     #[tokio::test]
     async fn test_accept_new_rejects_revoked_key() {
@@ -1937,7 +1829,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_accept_new_ignores_cert_authority_for_plain_host_key() {
+    async fn test_accept_new_cert_authority_warns_and_falls_through_to_tofu() {
         let (_dir, path, path_str) = temp_known_hosts();
         let key = generate_key();
 
@@ -1947,8 +1839,9 @@ mod tests {
         )
         .unwrap();
 
-        // A CA marker authorizes host certificates only. When the server
-        // offers an ordinary key it remains unknown and goes through TOFU.
+        // bssh has no CA signature validation path, so the marker must not
+        // fail closed: the offered key still goes through ordinary TOFU and
+        // is recorded like any other unknown host.
         let result = verify_accept_new("node1.example.com", 22, key.public_key(), &path_str).await;
         assert!(
             matches!(result, Ok(true)),
@@ -1958,6 +1851,30 @@ mod tests {
             entry_lines(&path).len(),
             2,
             "the offered key must still be recorded alongside the @cert-authority line"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cert_authority_policy_can_reject() {
+        let (_dir, path, path_str) = temp_known_hosts();
+        let key = generate_key();
+
+        std::fs::write(
+            &path,
+            "@cert-authority *.example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIJdD7y3aLq454yWBdwLWbieU1ebz9/cu7/QEXn9OIeZJ\n",
+        )
+        .unwrap();
+
+        let result = check_marker_lines_with_policy(
+            "node1.example.com",
+            22,
+            key.public_key(),
+            &path_str,
+            CertAuthorityPolicy::Reject,
+        );
+        assert!(
+            matches!(result, Err(Error::ServerCheckFailed)),
+            "reject policy must fail closed for unsupported @cert-authority lines, got {result:?}"
         );
     }
 
@@ -2612,166 +2529,9 @@ mod tests {
 
     // Host certificates (russh 0.63 widened `check_server_key`).
 
-    #[test]
-    fn trusted_host_certificate_requires_ca_marker_principal_and_valid_signature() {
-        let ca = generate_key();
-        let subject = generate_key();
-        let offered = host_certificate(&subject, &ca);
-        let certificate = certificate(&offered);
-        let ca_line = format!(
-            "@cert-authority node1.example.com {}\n",
-            ca.public_key().to_openssh().unwrap()
-        );
-
-        assert!(
-            verify_host_certificate_data(&ca_line, "node1.example.com", 22, certificate,).unwrap()
-        );
-        assert!(
-            verify_host_certificate_data(&ca_line, "other.example.com", 22, certificate,).is_err(),
-            "a valid CA signature must not bypass certificate principals"
-        );
-
-        let ordinary_subject = format!(
-            "node1.example.com {}\n",
-            subject.public_key().to_openssh().unwrap()
-        );
-        assert!(
-            !verify_host_certificate_data(&ordinary_subject, "node1.example.com", 22, certificate,)
-                .unwrap(),
-            "an ordinary subject-key pin must not authorize a certificate"
-        );
-    }
-
-    #[test]
-    fn host_certificate_rejects_revoked_subject_or_authority() {
-        let ca = generate_key();
-        let subject = generate_key();
-        let offered = host_certificate(&subject, &ca);
-        let certificate = certificate(&offered);
-
-        for revoked in [ca.public_key(), subject.public_key()] {
-            let data = format!(
-                "@cert-authority node1.example.com {}\n@revoked node1.example.com {}\n",
-                ca.public_key().to_openssh().unwrap(),
-                revoked.to_openssh().unwrap()
-            );
-            assert!(matches!(
-                verify_host_certificate_data(&data, "node1.example.com", 22, certificate),
-                Err(Error::HostKeyRevoked { .. })
-            ));
-        }
-    }
-
-    #[test]
-    fn host_certificate_revocation_accepts_bare_host_at_nondefault_port_but_ca_trust_does_not() {
-        let ca = generate_key();
-        let subject = generate_key();
-        let offered = host_certificate(&subject, &ca);
-        let certificate = certificate(&offered);
-        let ca_key = ca.public_key().to_openssh().unwrap();
-
-        let strict_ca = format!("@cert-authority [node1.example.com]:2222 {ca_key}\n");
-        assert!(
-            verify_host_certificate_data(&strict_ca, "node1.example.com", 2222, certificate,)
-                .unwrap()
-        );
-        let bare_ca = format!("@cert-authority node1.example.com {ca_key}\n");
-        assert!(
-            !verify_host_certificate_data(&bare_ca, "node1.example.com", 2222, certificate,)
-                .unwrap(),
-            "CA trust at a non-default port must require the bracketed host:port identity"
-        );
-
-        let revoked = format!("{strict_ca}@revoked node1.example.com {ca_key}\n");
-        assert!(matches!(
-            verify_host_certificate_data(&revoked, "node1.example.com", 2222, certificate,),
-            Err(Error::HostKeyRevoked { .. })
-        ));
-    }
-
-    #[test]
-    fn plain_revocation_honors_hashed_nondefault_identities_and_negation() {
-        let key = generate_key();
-        let (_dir, path, path_str) = temp_known_hosts();
-        let openssh = key.public_key().to_openssh().unwrap();
-
-        for identity in ["[node1.example.com]:2222", "node1.example.com"] {
-            let hashed = super::super::hostkey_rotation::hash_host_pattern(identity).unwrap();
-            std::fs::write(&path, format!("@revoked {hashed} {openssh}\n")).unwrap();
-            assert!(matches!(
-                check_marker_lines("node1.example.com", 2222, key.public_key(), &path_str),
-                Err(Error::HostKeyRevoked { .. })
-            ));
-        }
-
-        std::fs::write(&path, format!("@revoked !node1.example.com,* {openssh}\n")).unwrap();
-        assert!(
-            check_marker_lines("node1.example.com", 2222, key.public_key(), &path_str).is_ok(),
-            "a matching negation must veto the wildcard across qualified and bare identities"
-        );
-    }
-
-    #[test]
-    fn host_certificate_markers_honor_hashed_nondefault_identities_and_negation() {
-        let ca = generate_key();
-        let subject = generate_key();
-        let offered = host_certificate(&subject, &ca);
-        let certificate = certificate(&offered);
-        let ca_key = ca.public_key().to_openssh().unwrap();
-        let qualified =
-            super::super::hostkey_rotation::hash_host_pattern("[node1.example.com]:2222").unwrap();
-        let bare = super::super::hostkey_rotation::hash_host_pattern("node1.example.com").unwrap();
-        let trusted = format!("@cert-authority {qualified} {ca_key}\n");
-        assert!(
-            verify_host_certificate_data(&trusted, "node1.example.com", 2222, certificate,)
-                .unwrap()
-        );
-
-        for revoked_identity in [&qualified, &bare] {
-            let data = format!("{trusted}@revoked {revoked_identity} {ca_key}\n");
-            assert!(matches!(
-                verify_host_certificate_data(&data, "node1.example.com", 2222, certificate,),
-                Err(Error::HostKeyRevoked { .. })
-            ));
-        }
-
-        let negated_ca = format!("@cert-authority ![node1.example.com]:2222,* {ca_key}\n");
-        assert!(
-            !verify_host_certificate_data(&negated_ca, "node1.example.com", 2222, certificate,)
-                .unwrap(),
-            "a negated qualified identity must veto wildcard CA trust"
-        );
-        let negated_revocation = format!("{trusted}@revoked !node1.example.com,* {ca_key}\n");
-        assert!(
-            verify_host_certificate_data(
-                &negated_revocation,
-                "node1.example.com",
-                2222,
-                certificate,
-            )
-            .unwrap(),
-            "a negated bare identity must veto wildcard revocation"
-        );
-    }
-
-    #[test]
-    fn default_ca_signature_policy_rejects_legacy_sha1_rsa() {
-        assert!(!default_ca_signature_algorithm_is_allowed(
-            &Algorithm::Rsa { hash: None }
-        ));
-        assert!(default_ca_signature_algorithm_is_allowed(&Algorithm::Rsa {
-            hash: Some(HashAlg::Sha256),
-        }));
-        assert!(default_ca_signature_algorithm_is_allowed(&Algorithm::Rsa {
-            hash: Some(HashAlg::Sha512),
-        }));
-        assert!(default_ca_signature_algorithm_is_allowed(
-            &Algorithm::Ed25519
-        ));
-    }
-
-    /// Ordinary subject-key entries and direct key pins must not authorize a
-    /// host certificate; only a matching `@cert-authority` may do that.
+    /// A host certificate carries a key signed by a CA. bssh verifies no CA
+    /// signatures, so every verifying mode must refuse it rather than fall
+    /// back to matching the key inside it against known_hosts.
     #[tokio::test]
     async fn test_host_certificate_is_rejected_by_verifying_modes() {
         let ca = generate_key();
@@ -2820,25 +2580,6 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn test_host_certificate_is_accepted_by_matching_cert_authority() {
-        let ca = generate_key();
-        let subject = generate_key();
-        let cert = host_certificate(&subject, &ca);
-        let (_dir, path, path_str) = temp_known_hosts();
-        std::fs::write(
-            &path,
-            format!(
-                "@cert-authority node1.example.com {}\n",
-                ca.public_key().to_openssh().unwrap()
-            ),
-        )
-        .unwrap();
-
-        let mut handler = handler_for(ServerCheckMethod::KnownHostsFile(path_str));
-        assert!(matches!(handler.check_server_key(&cert).await, Ok(true)));
-    }
-
     /// `NoCheck` means the user turned host verification off entirely, so it
     /// stays permissive for certificates too.
     #[tokio::test]
@@ -2855,14 +2596,23 @@ mod tests {
         );
     }
 
+    /// The certificate rejection must not have been reachable by accident:
+    /// bssh never advertises certificate host key algorithms, so russh cannot
+    /// negotiate one.
     #[test]
-    fn test_bssh_advertises_host_key_certificates_by_default() {
-        let config = crate::ssh::tokio_client::SshConnectionConfig::default().to_russh_config();
-        assert_eq!(
-            config.preferred.host_key_certificates.as_ref(),
-            crate::ssh::tokio_client::algorithms::default_host_key_certificate_algorithms()
+    fn test_bssh_never_advertises_host_key_certificates() {
+        assert!(
+            russh::Preferred::DEFAULT.host_key_certificates.is_empty(),
+            "bssh's Preferred overrides inherit this field from DEFAULT; a \
+             non-empty default would silently opt bssh into host certificates"
         );
-        assert!(!config.preferred.host_key_certificates.is_empty());
+        assert!(
+            crate::ssh::tokio_client::Config::default()
+                .preferred
+                .host_key_certificates
+                .is_empty(),
+            "the client config must not advertise certificate host key algorithms"
+        );
     }
 
     #[tokio::test]
@@ -3118,7 +2868,24 @@ mod tests {
 }
 
 fn command_host_field_matches(host_field: &str, identity: &str) -> bool {
-    marker_host_matches(identity, identity, host_field, false)
+    let mut positive = false;
+    for raw_pattern in host_field.split(',') {
+        let raw_pattern = raw_pattern.trim();
+        let (negated, pattern) = match raw_pattern.strip_prefix('!') {
+            Some(pattern) => (true, pattern),
+            None => (false, raw_pattern),
+        };
+        let matches = if pattern.starts_with("|1|") {
+            super::hostkey_rotation::host_pattern_matches(pattern, identity)
+        } else {
+            glob_match(identity, pattern)
+        };
+        if matches && negated {
+            return false;
+        }
+        positive |= matches;
+    }
+    positive
 }
 
 /// Parse bounded KnownHostsCommand output without creating a temporary trust file.
