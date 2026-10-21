@@ -542,7 +542,7 @@ bssh -H "host1,host2" ping
 
 # Test direct ICMP reachability (alias: nping)
 bssh --cluster production network-ping
-bssh -6 -H "host1,host2" network-ping -c 10 --timeout 1 --interval 0.5
+bssh -6 -H "host1,host2" network-ping --count 10 --timeout 1 --interval 0.5
 
 # List configured clusters
 bssh list
@@ -558,7 +558,7 @@ bssh -H "host1,host2" download /etc/hosts ./backups/
 
 #### Direct ICMP network ping
 
-`network-ping` (alias `nping`) measures direct ICMP reachability without logging in over SSH. It sends four requests per host by default, waits up to two seconds per reply, spaces requests by at least 0.2 seconds, uses the global `--parallel` limit, and reports the selected IP plus received/sent, loss, and min/avg/max/population-stddev statistics. `--timeout` is intentionally long-only because OpenSSH-compatible `-W` remains the root `--stdio-forward` option; `--interval` is long-only. `-c` after `network-ping` sets the request count, while root `-c` before the subcommand retains its OpenSSH cipher meaning.
+`network-ping` (alias `nping`) measures direct ICMP reachability without logging in over SSH. It sends four requests per host by default, waits up to two seconds per reply, spaces requests by at least 0.2 seconds, uses the global `--parallel` limit, and reports the selected IP plus received/sent, loss, and min/avg/max/population-stddev statistics. `--count` and `--timeout` are intentionally long-only because OpenSSH-compatible root `-c` and `-W` remain the cipher and stdio-forward options; `--interval` is long-only.
 
 Host aliases are expanded through ssh_config `HostName`, and the first resolver-order address allowed by `-4`, `-6`, or `AddressFamily` is probed and shown. ICMP originates on the local machine: `ProxyJump`, `ProxyCommand`, SSH authentication, TUI/stream output, and output directories are not used. The command never silently falls back to TCP or HTTP, so success proves only that the selected address replied to ICMP; failure can also mean that ICMP is filtered.
 
@@ -566,7 +566,7 @@ The command prefers unprivileged ICMP datagram sockets. Linux installations may 
 
 #### 직접 ICMP 네트워크 핑
 
-`network-ping`(`nping`)은 SSH 로그인 없이 로컬 머신에서 대상 주소로 ICMP echo를 직접 전송합니다. 기본값은 호스트당 4회, 응답별 제한 시간 2초, 전송 간격 0.2초이며 전역 `--parallel` 제한을 사용합니다. 선택된 IP, 수신/송신 수, 손실률, min/avg/max/모집단 표준편차를 출력합니다. OpenSSH 호환 `-W`는 루트의 `--stdio-forward` 의미를 유지하므로 제한 시간은 긴 옵션 `--timeout`만 제공합니다. `network-ping` 뒤의 `-c`는 요청 횟수이고, 서브명령 앞의 루트 `-c`는 기존 OpenSSH cipher 의미를 유지합니다.
+`network-ping`(`nping`)은 SSH 로그인 없이 로컬 머신에서 대상 주소로 ICMP echo를 직접 전송합니다. 기본값은 호스트당 4회, 응답별 제한 시간 2초, 전송 간격 0.2초이며 전역 `--parallel` 제한을 사용합니다. 선택된 IP, 수신/송신 수, 손실률, min/avg/max/모집단 표준편차를 출력합니다. OpenSSH 호환 루트 `-c`와 `-W`는 각각 cipher와 stdio-forward 의미를 유지하므로 요청 횟수와 제한 시간은 긴 옵션 `--count`, `--timeout`만 제공합니다.
 
 ssh_config의 `HostName` 별칭을 적용하고 `-4`, `-6`, `AddressFamily`에 맞는 DNS 결과 중 resolver 순서상 첫 주소를 사용합니다. `ProxyJump`와 `ProxyCommand`는 ICMP를 중계하지 않으며 TCP/HTTP로 자동 대체하지 않습니다. 따라서 성공은 선택한 주소의 제한적인 ICMP 응답만 의미하고, 실패는 방화벽의 ICMP 차단 때문일 수도 있습니다. 종료 코드는 전체 응답 0, 일부 응답 1, 전부 미응답 또는 준비 실패 255이며 인자 파싱 오류는 2입니다.
 

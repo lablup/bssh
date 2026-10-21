@@ -249,6 +249,18 @@ impl SshConnectionConfigResolver {
         }
     }
 
+    /// Resolve the destination name selected by ssh_config `HostName`.
+    ///
+    /// Callers that do not open an SSH connection can use this alongside
+    /// [`Self::resolve_for_host`] while preserving the original alias for
+    /// per-host option matching.
+    pub fn effective_hostname(&self, hostname: &str) -> String {
+        self.ssh_config.as_ref().map_or_else(
+            || hostname.to_string(),
+            |config| config.get_effective_hostname(hostname),
+        )
+    }
+
     #[must_use]
     pub fn with_ssh_config(mut self, ssh_config: Option<SshConfig>) -> Self {
         self.ssh_config = ssh_config;

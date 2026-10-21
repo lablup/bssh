@@ -483,7 +483,6 @@ pub enum Commands {
     )]
     NetworkPing {
         #[arg(
-            short = 'c',
             long = "count",
             default_value = "4",
             value_parser = clap::value_parser!(u16).range(1..),
@@ -724,7 +723,14 @@ impl Cli {
     pub fn is_known_subcommand(arg: &str) -> bool {
         matches!(
             arg,
-            "list" | "ping" | "upload" | "download" | "interactive" | "cache-stats"
+            "list"
+                | "ping"
+                | "network-ping"
+                | "nping"
+                | "upload"
+                | "download"
+                | "interactive"
+                | "cache-stats"
         )
     }
 
@@ -1217,7 +1223,7 @@ mod tests {
                 "-H",
                 "node1",
                 command,
-                "-c",
+                "--count",
                 "3",
                 "--timeout",
                 "1.5",
@@ -1262,10 +1268,20 @@ mod tests {
     }
 
     #[test]
-    fn network_ping_timeout_does_not_reassign_openssh_w() {
+    fn network_ping_short_flags_do_not_reassign_openssh_c_or_w() {
+        let ssh = Cli::try_parse_from(["bssh", "-c", "aes256-ctr", "target"]).unwrap();
+        assert_eq!(ssh.cipher.as_deref(), Some("aes256-ctr"));
+        assert!(Cli::try_parse_from(["bssh", "-H", "node1", "network-ping", "-c", "1"]).is_err());
+
         let ssh = Cli::try_parse_from(["bssh", "-W", "localhost:22", "target"]).unwrap();
         assert!(ssh.stdio_forward.is_some());
         assert!(Cli::try_parse_from(["bssh", "-H", "node1", "network-ping", "-W", "1"]).is_err());
+    }
+
+    #[test]
+    fn network_ping_names_are_known_subcommands() {
+        assert!(Cli::is_known_subcommand("network-ping"));
+        assert!(Cli::is_known_subcommand("nping"));
     }
 
     #[test]

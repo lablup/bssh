@@ -301,10 +301,11 @@ fn first_eligible_address(
 async fn probe_node<P: NetworkProbe>(
     probe: &P,
     node: Node,
+    target_host: &str,
     family: AddressFamily,
     settings: ProbeSettings,
 ) -> HostNetworkPingResult {
-    let address = match probe.resolve(&node.host, family).await {
+    let address = match probe.resolve(target_host, family).await {
         Ok(address) => address,
         Err(error) => return HostNetworkPingResult::failed(node, None, format!("{error:#}")),
     };
@@ -335,9 +336,11 @@ async fn run_network_ping<P: NetworkProbe>(
 ) -> Vec<HostNetworkPingResult> {
     let mut results = stream::iter(nodes.into_iter().enumerate().map(|(index, node)| {
         let probe = Arc::clone(&probe);
-        let family = resolver.resolve_for_host(node.config_host()).address_family;
+        let config_host = node.config_host();
+        let family = resolver.resolve_for_host(config_host).address_family;
+        let target_host = resolver.effective_hostname(config_host);
         async move {
-            let result = probe_node(probe.as_ref(), node, family, settings).await;
+            let result = probe_node(probe.as_ref(), node, &target_host, family, settings).await;
             (index, result)
         }
     }))

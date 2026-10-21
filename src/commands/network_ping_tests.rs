@@ -127,6 +127,7 @@ async fn probe_resolves_the_expanded_hostname_not_the_ssh_alias() {
     let result = probe_node(
         &probe,
         node("effective.example").with_original_host("alias".to_string()),
+        "effective.example",
         AddressFamily::V4,
         ProbeSettings {
             count: 1,
@@ -138,6 +139,41 @@ async fn probe_resolves_the_expanded_hostname_not_the_ssh_alias() {
 
     assert_eq!(result.address, Some(address));
     assert!(result.is_reachable());
+}
+
+#[tokio::test]
+async fn run_expands_cluster_alias_through_ssh_config_hostname() {
+    let address = IpAddr::from([192, 0, 2, 11]);
+    let mut probe = FakeProbe::default();
+    probe
+        .addresses
+        .insert("effective.example".to_string(), address);
+    probe
+        .samples
+        .insert(address, vec![Duration::from_millis(1)]);
+    let resolver = SshConnectionConfigResolver::new().with_ssh_config(Some(
+        crate::ssh::SshConfig::parse(
+            "Host alias\n    HostName effective.example\n    AddressFamily inet\n",
+        )
+        .expect("valid ssh config"),
+    ));
+
+    let results = run_network_ping(
+        Arc::new(probe),
+        vec![node("alias")],
+        1,
+        ProbeSettings {
+            count: 1,
+            timeout: Duration::from_secs(1),
+            interval: Duration::from_millis(200),
+        },
+        &resolver,
+    )
+    .await;
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].address, Some(address));
+    assert!(results[0].is_reachable());
 }
 
 #[tokio::test]
@@ -177,6 +213,7 @@ async fn mocked_probe_reports_resolution_failure_without_icmp() {
     let result = probe_node(
         probe.as_ref(),
         node("missing"),
+        "missing",
         AddressFamily::V6,
         ProbeSettings {
             count: 4,

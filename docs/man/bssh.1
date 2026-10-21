@@ -443,11 +443,11 @@ Test connectivity to hosts
 .B network-ping, nping
 Test direct ICMP reachability without opening an SSH connection.
 .RS
-Usage: bssh [global options] network-ping [\fB-c\fR \fICOUNT\fR] [\fB--timeout\fR \fISECONDS\fR] [\fB--interval\fR \fISECONDS\fR]
+Usage: bssh [global options] network-ping [\fB--count\fR \fICOUNT\fR] [\fB--timeout\fR \fISECONDS\fR] [\fB--interval\fR \fISECONDS\fR]
 .br
 The defaults are 4 requests, a 2 second per-request reply timeout, and a 0.2 second interval. The interval cannot be less than 0.2 seconds. The global \fB--parallel\fR limit controls host concurrency.
 .br
-The timeout option is deliberately long-only because the OpenSSH-compatible root \fB-W\fR option keeps its stdio-forward meaning. The \fB-c\fR option after network-ping is the request count; root \fB-c\fR before the subcommand retains its cipher meaning. The command uses normal output only; TUI, stream, and output-directory modes do not apply.
+The count and timeout options are deliberately long-only because the OpenSSH-compatible root \fB-c\fR and \fB-W\fR options keep their cipher and stdio-forward meanings. The command uses normal output only; TUI, stream, and output-directory modes do not apply.
 .br
 ssh_config HostName aliases are expanded, then the first resolver-order address allowed by \fB-4\fR, \fB-6\fR, or AddressFamily is selected and reported. ICMP originates directly from the local machine, so ProxyJump and ProxyCommand are ignored with a warning. There is no TCP or HTTP fallback.
 .br
