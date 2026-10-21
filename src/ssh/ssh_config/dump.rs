@@ -280,7 +280,9 @@ pub fn render_resolved_config(original_host: &str, config: &SshHostConfig) -> Re
         "canonicaldomains",
         &raw_option_args(config, "canonicaldomains").unwrap_or_else(|| vec!["none".to_string()]),
     )?;
-    let revoked_host_keys = raw_option(config, "revokedhostkeys")
+    let revoked_host_keys = config
+        .revoked_host_keys
+        .clone()
         .map(|value| tokens.expand_path_for_dump(&value))
         .transpose()?
         .unwrap_or_else(|| "none".to_string());
@@ -627,15 +629,21 @@ fn kex_names(config: &SshHostConfig) -> String {
         .join(",")
 }
 
+/// Certificate names first, then plain names, the order the wire list uses.
 fn host_key_names(config: &SshHostConfig) -> String {
-    config
+    let certificates = config
+        .resolved_host_key_certificates
+        .as_deref()
+        .unwrap_or(crate::ssh::tokio_client::algorithms::default_host_key_certificates())
+        .iter()
+        .map(|algorithm| algorithm.to_certificate_type().to_string());
+    let keys = config
         .resolved_host_key_algorithms
         .as_deref()
         .unwrap_or(crate::ssh::tokio_client::algorithms::default_host_key_algorithms())
         .iter()
-        .map(ToString::to_string)
-        .collect::<Vec<_>>()
-        .join(",")
+        .map(ToString::to_string);
+    certificates.chain(keys).collect::<Vec<_>>().join(",")
 }
 
 fn pubkey_names(config: &SshHostConfig) -> String {

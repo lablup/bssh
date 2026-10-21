@@ -159,12 +159,26 @@ Disable X11 forwarding
 Local port forwarding. Binds a local port to forward connections to a remote destination via SSH.
 Multiple -L options can be specified for multiple forwards.
 Example: -L 8080:example.com:80 (localhost:8080 → example.com:80)
+.br
+A Unix-domain socket path (any field containing a slash) may replace either side, as in OpenSSH:
+.I local_socket:host:hostport ,
+.I local_socket:remote_socket ,
+or
+.I [bind_address:]port:remote_socket .
+A local socket path must not already exist; bssh never unlinks an existing path before binding and never follows a symbolic link at the path. The socket is owner-only (mode 0600), its mode is never changed through a path that could have been replaced by a symbolic link, and it is removed when the forwarding stops.
 
 .TP
 .BR \-R " " \fI[bind_address:]port:host:hostport\fR
 Remote port forwarding. Requests the SSH server to bind a port and forward connections to local destination.
 Multiple -R options can be specified for multiple forwards.
 Example: -R 8080:localhost:80 (remote:8080 → localhost:80)
+.br
+A Unix-domain socket path may replace either side:
+.I remote_socket:host:hostport ,
+.I remote_socket:local_socket ,
+or
+.I [bind_address:]port:local_socket .
+The server creates and removes a remote socket path according to its own StreamLocalBindUnlink and StreamLocalBindMask settings. Both forms are also accepted by -O forward and -O cancel on a control master.
 
 .TP
 .BR \-D " " \fI[bind_address:]port[/socks_version]\fR
@@ -644,8 +658,7 @@ Example:
 
 .TP
 .B CASignatureAlgorithms
-Specifies the signature algorithms that will be used for certificate validation.
-Comma-separated list of algorithms (maximum 50 entries).
+Specifies the signature algorithms a certificate authority may have used to sign a host certificate. A presented host certificate whose CA signature uses another algorithm is refused. Comma-separated list (maximum 50 entries) accepting the OpenSSH +, - and ^ modifiers. The default is OpenSSH's: ssh-ed25519, ecdsa-sha2-nistp256, ecdsa-sha2-nistp384, ecdsa-sha2-nistp521, sk-ssh-ed25519@openssh.com, sk-ecdsa-sha2-nistp256@openssh.com, webauthn-sk-ecdsa-sha2-nistp256@openssh.com, rsa-sha2-512, rsa-sha2-256.
 .br
 Example:
 .I CASignatureAlgorithms ssh-ed25519,rsa-sha2-512,rsa-sha2-256
@@ -865,6 +878,20 @@ who can recognize the pattern of trusted hosts. Default is no.
 .br
 Example:
 .I VisualHostKey yes
+
+.TP
+.B HostKeyAlgorithms
+Host key signature algorithms offered to the server, in preference order, with the OpenSSH +, - and ^ modifiers. Certificate forms (\fI*-cert-v01@openssh.com\fR) are accepted and, by default, the certificate form of every default algorithm is offered ahead of the plain forms, so a server holding a host certificate presents it. bssh always sends certificate names before plain names regardless of their relative order in the list.
+.br
+A presented host certificate is accepted only when a
+.B @cert-authority
+line in a known_hosts file names the host (or its HostKeyAlias) with the signing CA key (negated !pattern entries exclude a host, and hashed host fields are matched), the certificate is a host certificate with a principal matching that name (principals may be case-sensitive wildcard patterns), its signature by the CA verifies, it is inside its validity window, it carries no critical options, its CA signature uses an algorithm permitted by CASignatureAlgorithms, and neither the CA key nor the certified key is revoked by a
+.B @revoked
+line or by RevokedHostKeys. On a non-default port a @cert-authority line naming the bare host also matches. If no @cert-authority line matches, the certified key is checked as a plain host key under the usual StrictHostKeyChecking rules, provided HostKeyAlgorithms permits its plain key type; a certificate-only HostKeyAlgorithms list refuses the connection instead. A certificate from a matching CA that fails any other check is refused outright. UpdateHostKeys is not applied to certificate-authenticated hosts.
+
+.TP
+.B RevokedHostKeys
+Path to a file listing revoked host keys and host CA keys, one OpenSSH public key per line. A matching key or certificate is refused. The file may use the same percent tokens as UserKnownHostsFile; a path that cannot be expanded (an unset environment variable or an unsupported token) refuses every host key. The value none disables the check. Binary key revocation lists (KRL) are not supported: a KRL file, or a file that cannot be read, refuses every host key until it is replaced.
 
 .TP
 .B HostKeyAlias

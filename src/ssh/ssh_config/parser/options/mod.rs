@@ -117,6 +117,7 @@ pub fn parse_option(
         | "ciphers"
         | "macs"
         | "casignaturealgorithms"
+        | "revokedhostkeys"
         | "nohostauthenticationforlocalhost"
         | "hashknownhosts"
         | "checkhostip"
@@ -208,8 +209,7 @@ pub fn parse_option(
         | "streamlocalbindmask"
         | "tunnel"
         | "warnweakcrypto"
-        | "xauthlocation"
-        | "revokedhostkeys" => Ok(()),
+        | "xauthlocation" => Ok(()),
         _ => unreachable!("accepted keyword is missing a parser: {keyword}"),
     }
 }
@@ -297,7 +297,7 @@ fn validate_retained_option(keyword: &str, args: &[String], line_number: usize) 
                 anyhow::bail!("Invalid obscurekeystroketiming at line {line_number}");
             }
         }
-        "securitykeyprovider" | "xauthlocation" | "revokedhostkeys" => one()?,
+        "securitykeyprovider" | "xauthlocation" => one()?,
         "channeltimeout" | "logverbose" if args.is_empty() => {
             anyhow::bail!("{keyword} expects at least one value at line {line_number}");
         }

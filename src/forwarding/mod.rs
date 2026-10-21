@@ -26,6 +26,7 @@ pub mod manager;
 pub mod remote;
 pub mod runtime;
 pub mod spec;
+pub mod streamlocal;
 pub mod tunnel;
 
 // Re-export key types for convenience
@@ -153,6 +154,55 @@ pub enum ForwardingType {
         /// SOCKS protocol version (4 or 5)
         socks_version: SocksVersion,
     },
+    /// Local forwarding (-L) with a Unix-domain socket on at least one side:
+    /// `local_socket:host:hostport`, `local_socket:remote_socket`, or
+    /// `[bind_address:]port:remote_socket`.
+    LocalStream {
+        listen: StreamListener,
+        connect: StreamEndpoint,
+    },
+    /// Remote forwarding (-R) with a Unix-domain socket on at least one side:
+    /// `remote_socket:host:hostport`, `remote_socket:local_socket`, or
+    /// `[bind_address:]port:local_socket`.
+    RemoteStream {
+        listen: StreamListener,
+        connect: StreamEndpoint,
+    },
+}
+
+/// Listener side of a forwarding that involves a Unix-domain socket.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum StreamListener {
+    Tcp { bind_addr: IpAddr, bind_port: u16 },
+    Unix { path: String },
+}
+
+/// Connect side of a forwarding that involves a Unix-domain socket.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum StreamEndpoint {
+    Tcp { host: String, port: u16 },
+    Unix { path: String },
+}
+
+impl fmt::Display for StreamListener {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Tcp {
+                bind_addr,
+                bind_port,
+            } => write!(f, "{}", SocketAddr::new(*bind_addr, *bind_port)),
+            Self::Unix { path } => f.write_str(path),
+        }
+    }
+}
+
+impl fmt::Display for StreamEndpoint {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Tcp { host, port } => f.write_str(&format_host_port(host, *port)),
+            Self::Unix { path } => f.write_str(path),
+        }
+    }
 }
 
 /// SOCKS protocol version for dynamic forwarding
@@ -289,6 +339,8 @@ impl fmt::Display for ForwardingType {
                     SocketAddr::new(*bind_addr, *bind_port)
                 )
             }
+            ForwardingType::LocalStream { listen, connect } => write!(f, "{listen}→{connect}"),
+            ForwardingType::RemoteStream { listen, connect } => write!(f, "{listen}←{connect}"),
         }
     }
 }

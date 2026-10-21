@@ -176,13 +176,12 @@ impl SshClient {
         connect_timeout_seconds: Option<u64>,
         ssh_connection_config: Option<&SshConnectionConfig>,
     ) -> Result<Client> {
-        // SECURITY: Add rate limiting before connection attempts
-        const RATE_LIMIT_DELAY: Duration = Duration::from_millis(100);
-        tokio::time::sleep(RATE_LIMIT_DELAY).await;
-
-        // SECURITY: Capture start time for timing attack mitigation
-        let start_time = std::time::Instant::now();
-
+        // No artificial pre-connect delay or minimum-duration padding here:
+        // OpenSSH opens the transport immediately, and the padding this path
+        // used to add (100 ms before connecting plus a 500 ms floor on the
+        // connect-and-authenticate phase) only slowed every connection by
+        // about 0.6 s without protecting anything; the server owns the
+        // authentication timing, not the client.
         let addr = (self.host.as_str(), self.port);
 
         let connect_timeout =
@@ -204,7 +203,7 @@ impl SshClient {
             &self.username,
         );
 
-        let result = match tokio::time::timeout(
+        match tokio::time::timeout(
             connect_timeout,
             Client::connect_with_ssh_config(
                 addr,
@@ -237,17 +236,7 @@ impl SshClient {
                     stage: "connection setup or authentication",
                 },
             )),
-        };
-
-        // SECURITY: Normalize timing to prevent timing attacks
-        // Ensure all authentication attempts take at least 500ms to complete
-        const MIN_AUTH_DURATION: Duration = Duration::from_millis(500);
-        let elapsed = start_time.elapsed();
-        if elapsed < MIN_AUTH_DURATION {
-            tokio::time::sleep(MIN_AUTH_DURATION - elapsed).await;
         }
-
-        result
     }
 
     /// Create an SSH connection through jump hosts

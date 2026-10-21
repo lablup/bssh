@@ -112,6 +112,10 @@ pub struct SshHostConfig {
     pub ciphers: Vec<String>,
     pub macs: Vec<String>,
     pub(crate) resolved_host_key_algorithms: Option<Vec<ssh_key::Algorithm>>,
+    /// Certificate host-key algorithms (`*-cert-v01@openssh.com`) resolved
+    /// from `HostKeyAlgorithms`, kept apart because russh advertises them
+    /// separately from plain algorithms.
+    pub(crate) resolved_host_key_certificates: Option<Vec<ssh_key::Algorithm>>,
     pub(crate) resolved_kex_algorithms: Option<Vec<russh::kex::Name>>,
     pub(crate) resolved_ciphers: Option<Vec<russh::cipher::Name>>,
     pub(crate) resolved_macs: Option<Vec<russh::mac::Name>>,
@@ -142,6 +146,8 @@ pub struct SshHostConfig {
     /// Original CertificateFile arguments retained for `-G` output.
     pub(crate) certificate_file_args: Vec<String>,
     pub ca_signature_algorithms: Vec<String>,
+    /// `RevokedHostKeys`: a file listing revoked host keys and host CA keys.
+    pub revoked_host_keys: Option<String>,
     pub gateway_ports: Option<String>,
     pub exit_on_forward_failure: Option<bool>,
     pub permit_remote_open: Vec<String>,

@@ -307,7 +307,20 @@ impl ForwardingManager {
                     )
                     .await
                 }
-                ForwardingType::Remote { .. } | ForwardingType::RemoteDynamic { .. } => {
+                ForwardingType::LocalStream { .. } => {
+                    super::streamlocal::LocalStreamForwarder::run(
+                        session_id,
+                        spec.clone(),
+                        ssh_client,
+                        config,
+                        cancel_token,
+                        message_tx.clone(),
+                    )
+                    .await
+                }
+                ForwardingType::Remote { .. }
+                | ForwardingType::RemoteDynamic { .. }
+                | ForwardingType::RemoteStream { .. } => {
                     super::remote::RemoteForwarder::run(
                         session_id,
                         spec.clone(),

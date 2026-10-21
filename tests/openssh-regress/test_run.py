@@ -38,7 +38,7 @@ class ManifestTests(unittest.TestCase):
         }
         self.assertEqual(
             timeout_overrides,
-            {"forward-control": 180, "sshsig": 180},
+            {"forward-control": 180, "rekey": 180, "sshsig": 180},
         )
         self.assertNotIn("pubkey-priority", {row.test for row in selection})
 

@@ -28,8 +28,7 @@ use russh::Channel;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpStream;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, trace, warn};
 
@@ -95,23 +94,29 @@ impl Tunnel {
         }
     }
 
-    /// Start bidirectional data transfer between TCP socket and SSH channel
+    /// Start bidirectional data transfer between a local byte stream and an
+    /// SSH channel.
     ///
     /// This function handles bidirectional data transfer by using an async loop
-    /// that polls both the TCP socket and SSH channel for data availability.
+    /// that polls both the local stream and SSH channel for data availability.
+    /// The stream is usually a TCP socket, but Unix-domain forwarding passes a
+    /// `UnixStream` through the same relay.
     ///
     /// # Arguments
-    /// - `tcp_stream`: Local TCP connection
+    /// - `tcp_stream`: Local connection (TCP or Unix-domain)
     /// - `ssh_channel`: SSH channel for remote communication
     /// - `cancel_token`: Token for coordinated cancellation
     ///
     /// # Returns
     /// Transfer statistics upon completion
-    pub async fn run(
-        mut tcp_stream: TcpStream,
+    pub async fn run<S>(
+        mut tcp_stream: S,
         mut ssh_channel: Channel<russh::client::Msg>,
         cancel_token: CancellationToken,
-    ) -> Result<TunnelStats> {
+    ) -> Result<TunnelStats>
+    where
+        S: AsyncRead + AsyncWrite + Unpin,
+    {
         let stats = TunnelStats::new();
         let mut buffer = global::get_medium_buffer();
         buffer.resize(buffer.capacity(), 0);
@@ -229,14 +234,15 @@ impl Tunnel {
     ///
     /// Similar to `run` but periodically reports transfer statistics via a callback.
     /// Useful for monitoring long-running tunnels.
-    pub async fn run_with_stats<F>(
-        tcp_stream: TcpStream,
+    pub async fn run_with_stats<S, F>(
+        tcp_stream: S,
         ssh_channel: Channel<russh::client::Msg>,
         cancel_token: CancellationToken,
         mut stats_callback: F,
         report_interval: std::time::Duration,
     ) -> Result<TunnelStats>
     where
+        S: AsyncRead + AsyncWrite + Unpin,
         F: FnMut(&TunnelStats) + Send + 'static,
     {
         let stats = TunnelStats::new();

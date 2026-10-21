@@ -83,7 +83,12 @@ The port forwarding functionality is organized into the following modules:
  - Handles incoming `forwarded-tcpip` channels
  - Connects to local services
 
-7. **`src/forwarding/dynamic/*`**: Dynamic forwarding (-D, Refactored 2025-10-17)
+7. **`src/forwarding/streamlocal.rs`**: Unix-domain socket forwarding (-L/-R with a socket path, `-O forward`/`-O cancel`)
+ - Local listeners bind owner-only (0600) without a chmod through the path name; an existing path is never unlinked and a symlink or non-socket at the path is refused
+ - Uses `direct-streamlocal@openssh.com` for -L and `streamlocal-forward@openssh.com` for -R, with `forwarded-streamlocal@openssh.com` channels connecting to a local socket or TCP target
+ - Only a socket node is removed on shutdown; `spec.rs` classifies any forwarding field containing a slash as a socket path
+
+8. **`src/forwarding/dynamic/*`**: Dynamic forwarding (-D, Refactored 2025-10-17)
  - **Module Structure:**
  - `dynamic/forwarder.rs` - Main forwarder logic and retry mechanism (280 lines)
  - `dynamic/socks.rs` - SOCKS4/5 protocol handlers (257 lines)

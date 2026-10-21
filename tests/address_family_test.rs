@@ -178,6 +178,9 @@ fn no_flag_keeps_the_ipv4_forwarding_listen_default() {
             ForwardingType::Dynamic { bind_addr, .. }
             | ForwardingType::Remote { bind_addr, .. }
             | ForwardingType::RemoteDynamic { bind_addr, .. } => *bind_addr,
+            ForwardingType::LocalStream { .. } | ForwardingType::RemoteStream { .. } => {
+                panic!("TCP-only specs must not parse as Unix-domain forwardings")
+            }
         };
         assert_eq!(
             bind_addr,

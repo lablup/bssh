@@ -175,6 +175,10 @@ bssh -N -L *:8080:web:80 user@host                # All interfaces
 bssh -N -D 1080/4 user@host                       # SOCKS4
 bssh -N -D *:1080/5 user@host                     # SOCKS5 on all interfaces
 
+# Unix-domain socket forwarding (any field containing a slash is a socket path)
+bssh -N -L /tmp/db.sock:db:3306 user@host              # local socket → remote TCP
+bssh -N -R /var/run/app.sock:/var/run/local.sock user@host   # remote socket → local socket
+
 # Port forwarding with command execution
 bssh -L 5432:postgres:5432 user@host "psql -h localhost"
 

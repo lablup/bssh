@@ -16,6 +16,33 @@
 
 use bssh::diagnosticln as eprintln;
 
+/// Plain host/user key types bssh can verify and authenticate with.
+const PLAIN_KEY_TYPES: &[&str] = &[
+    "ssh-ed25519",
+    "ecdsa-sha2-nistp256",
+    "ecdsa-sha2-nistp384",
+    "ecdsa-sha2-nistp521",
+    "ssh-rsa",
+];
+
+/// Signature algorithm names, which add the SHA-2 RSA variants.
+const SIGNATURE_KEY_TYPES: &[&str] = &[
+    "ssh-ed25519",
+    "ecdsa-sha2-nistp256",
+    "ecdsa-sha2-nistp384",
+    "ecdsa-sha2-nistp521",
+    "ssh-rsa",
+    "rsa-sha2-256",
+    "rsa-sha2-512",
+];
+
+fn certificate_names(plain: &[&str]) -> Vec<String> {
+    plain
+        .iter()
+        .map(|name| format!("{name}-cert-v01@openssh.com"))
+        .collect()
+}
+
 pub fn is_supported_query(query: &str) -> bool {
     matches!(
         query.to_ascii_lowercase().as_str(),
@@ -63,10 +90,15 @@ pub fn handle_query(query: &str) {
             // underlying transport currently corrupts post-auth packets.
             println!("none\nzlib");
         }
-        "key" | "key-plain" | "key-cert" | "key-sig" => {
-            println!("ssh-ed25519");
-            println!("ecdsa-sha2-nistp256\necdsa-sha2-nistp384\necdsa-sha2-nistp521");
-            println!("ssh-rsa");
+        "key-plain" => println!("{}", PLAIN_KEY_TYPES.join("\n")),
+        "key-cert" => println!("{}", certificate_names(PLAIN_KEY_TYPES).join("\n")),
+        "key" => {
+            println!("{}", PLAIN_KEY_TYPES.join("\n"));
+            println!("{}", certificate_names(PLAIN_KEY_TYPES).join("\n"));
+        }
+        "key-sig" => {
+            println!("{}", SIGNATURE_KEY_TYPES.join("\n"));
+            println!("{}", certificate_names(SIGNATURE_KEY_TYPES).join("\n"));
         }
         "protocol-version" => {
             println!("2");
@@ -98,6 +130,15 @@ mod tests {
         for query in ["kex", "KexAlgorithms", "kexalgorithms"] {
             assert!(is_supported_query(query));
         }
+    }
+
+    #[test]
+    fn certificate_key_names_follow_openssh_naming() {
+        assert_eq!(
+            certificate_names(&["ssh-ed25519"]),
+            vec!["ssh-ed25519-cert-v01@openssh.com".to_string()]
+        );
+        assert!(is_supported_query("key-cert"));
     }
 
     #[test]

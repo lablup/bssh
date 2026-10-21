@@ -82,7 +82,7 @@ putty-kex	exclude	Permanent exclusion: PuTTY interoperability is outside the com
 putty-transfer	exclude	Permanent exclusion: PuTTY interoperability is outside the compatibility target.
 reconfigure	skip	Permanent candidate skip: sshd process reconfiguration is server-side lifecycle behavior.
 reexec	exclude	sshd-side re-exec test; outside the client candidate set.
-rekey	run
+rekey	run		180
 scp-ssh-wrapper	exclude	Upstream helper script; it is not a standalone regression test.
 scp-uri	run
 scp	run
