@@ -14,6 +14,8 @@
 //! of a persistent control master.
 
 use std::path::PathBuf;
+#[cfg(unix)]
+use std::time::Duration;
 
 #[cfg(unix)]
 use std::io::Write as _;
@@ -39,6 +41,10 @@ const WORKER_PARENT_ENV: &str = "BSSH_INTERNAL_BACKGROUND_PARENT";
 const MAX_EVENT_BYTES: usize = 1024 * 1024;
 #[cfg(unix)]
 const MAX_PORTABLE_SOCKET_PATH_BYTES: usize = 100;
+#[cfg(unix)]
+const SUPERVISOR_ACK: u8 = 0xa5;
+#[cfg(unix)]
+const SUPERVISOR_ACK_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// A lifecycle transition sent by the authenticated worker to its supervisor.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -96,6 +102,7 @@ impl BackgroundWorker {
                     self.socket_path.display()
                 )
             })?;
+        wait_for_supervisor_ack(&mut stream).await?;
         detach_process()?;
         write_event(&mut stream, event).await?;
         stream.shutdown().await?;
@@ -148,6 +155,10 @@ pub async fn supervise(args: &[String]) -> Result<i32> {
         accepted = listener.accept() => {
             let (mut stream, _) = accepted.context("Could not accept background worker readiness")?;
             verify_same_user(&stream).context("Rejected background worker owned by another user")?;
+            stream
+                .write_u8(SUPERVISOR_ACK)
+                .await
+                .context("Could not acknowledge authenticated background worker")?;
             let event = read_event(&mut stream).await?;
             match event {
                 BackgroundEvent::Detached { exit_code } => Ok(exit_code),
@@ -164,6 +175,18 @@ pub async fn supervise(args: &[String]) -> Result<i32> {
             }
         }
     }
+}
+
+#[cfg(unix)]
+async fn wait_for_supervisor_ack(stream: &mut UnixStream) -> Result<()> {
+    let acknowledgement = tokio::time::timeout(SUPERVISOR_ACK_TIMEOUT, stream.read_u8())
+        .await
+        .context("Timed out waiting for background supervisor authentication")??;
+    anyhow::ensure!(
+        acknowledgement == SUPERVISOR_ACK,
+        "Background supervisor sent an invalid authentication acknowledgement"
+    );
+    Ok(())
 }
 
 #[cfg(not(unix))]
@@ -353,5 +376,43 @@ mod tests {
         let write = tokio::spawn(async move { write_event(&mut writer, &event).await });
         assert_eq!(read_event(&mut reader).await.unwrap(), expected);
         write.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn worker_waits_for_authenticated_supervisor_acknowledgement() {
+        let (mut supervisor, mut worker) = UnixStream::pair().expect("unix stream pair");
+        let waiting = tokio::spawn(async move { wait_for_supervisor_ack(&mut worker).await });
+
+        tokio::task::yield_now().await;
+        assert!(
+            !waiting.is_finished(),
+            "worker must not detach before the supervisor authenticates it"
+        );
+        supervisor
+            .write_u8(SUPERVISOR_ACK)
+            .await
+            .expect("write supervisor acknowledgement");
+        waiting
+            .await
+            .expect("join acknowledgement waiter")
+            .expect("accept authenticated supervisor acknowledgement");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn worker_supervisor_acknowledgement_wait_is_bounded() {
+        let (_supervisor, mut worker) = UnixStream::pair().expect("unix stream pair");
+        let waiting = tokio::spawn(async move { wait_for_supervisor_ack(&mut worker).await });
+
+        tokio::time::advance(SUPERVISOR_ACK_TIMEOUT).await;
+
+        let error = waiting
+            .await
+            .expect("join acknowledgement waiter")
+            .expect_err("silent supervisor acknowledgement must time out");
+        assert!(
+            error
+                .to_string()
+                .contains("Timed out waiting for background supervisor authentication")
+        );
     }
 }

@@ -199,9 +199,13 @@ pub async fn initialize_app(cli: &mut Cli, args: &[String]) -> Result<AppContext
     // exec runs exactly once during preprocessing and the generic resolver
     // never gains shell authority. Cluster/library config remains on the
     // cached direct-exec path.
-    let (mut ssh_config, overrides_preprocessed) = if let Some(hostname) =
-        ssh_destination.as_deref()
-    {
+    let ssh_config_disabled = cli
+        .ssh_config
+        .as_deref()
+        .is_some_and(|path| path.as_os_str() == "none");
+    let (mut ssh_config, overrides_preprocessed) = if ssh_config_disabled {
+        (SshConfig::new(), false)
+    } else if let Some(hostname) = ssh_destination.as_deref() {
         let config = if let Some(ref ssh_config_path) = cli.ssh_config {
             SshConfig::load_explicit_for_config_dump_with_options(
                 ssh_config_path,
@@ -410,6 +414,28 @@ pub fn determine_effective_jump_hosts(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser as _;
+
+    #[tokio::test]
+    async fn ssh_config_none_skips_loading_and_keeps_cli_overrides() {
+        let args = [
+            "bssh",
+            "-F",
+            "none",
+            "-o",
+            "User=override-user",
+            "target.invalid",
+        ]
+        .map(str::to_string);
+        let mut cli = Cli::try_parse_from(&args).unwrap();
+
+        let context = initialize_app(&mut cli, &args).await.unwrap();
+
+        let host_config = context.ssh_config.find_host_config("target.invalid");
+        assert_eq!(host_config.user.as_deref(), Some("override-user"));
+        assert_eq!(context.nodes.len(), 1);
+        assert_eq!(context.nodes[0].username, "override-user");
+    }
 
     #[test]
     fn test_determine_effective_jump_hosts_cli_takes_precedence() {
