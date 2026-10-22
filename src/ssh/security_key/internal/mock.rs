@@ -34,9 +34,12 @@ use super::ctaphid::{
 };
 use super::pin_protocol::PlatformKeyAgreement;
 
+#[path = "mock_enrollment.rs"]
+pub(super) mod enrollment;
 #[path = "mock_handlers.rs"]
 mod handlers;
 
+#[derive(Clone)]
 pub enum CredentialKey {
     Ed25519(ed25519_dalek::SigningKey),
     P256(p256::ecdsa::SigningKey),
@@ -62,6 +65,7 @@ impl CredentialKey {
     }
 }
 
+#[derive(Clone)]
 pub struct Credential {
     pub rp_id: String,
     pub id: Vec<u8>,
@@ -84,6 +88,8 @@ pub enum Request {
         protocol: i64,
         permissions: Option<(i64, String)>,
     },
+    MakeCredential(Value),
+    CredentialManagement(Value),
     TouchProbe,
     U2fCheck,
     U2fSign,
@@ -168,6 +174,13 @@ pub struct MockAuthenticator {
     /// Answer `getPinUvAuthTokenUsingUvWithPermissions` with this status.
     pub uv_token_status: Option<u8>,
     pub requests: Vec<Request>,
+    pub pin_messages: Vec<Value>,
+    pub resident_credentials: Vec<enrollment::Resident>,
+    pub enrollment_reply: Option<Vec<u8>>,
+    pub management_reply: Option<Vec<u8>>,
+    rp_cursor: usize,
+    credential_cursor: usize,
+    selected_rp: Option<String>,
     pub cancels: usize,
     cid: [u8; 4],
     assembler: Assembler,
@@ -193,6 +206,13 @@ impl MockAuthenticator {
             forced_status: None,
             uv_token_status: None,
             requests: Vec::new(),
+            pin_messages: Vec::new(),
+            resident_credentials: Vec::new(),
+            enrollment_reply: None,
+            management_reply: None,
+            rp_cursor: 0,
+            credential_cursor: 0,
+            selected_rp: None,
             cancels: 0,
             cid: [0x0b, 0x55, 0x47, 0x01],
             assembler: Assembler::default(),

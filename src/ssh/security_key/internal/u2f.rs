@@ -113,3 +113,56 @@ pub fn parse_authenticate(data: &[u8]) -> Result<Authentication, CtapError> {
 #[cfg(test)]
 #[path = "u2f_tests.rs"]
 mod tests;
+
+/// Parse REGISTER's reserved byte, public point, handle, certificate and signature.
+/// Attestation is verified against the supplied certificate and not exported.
+pub(crate) fn parse_registration(
+    data: &[u8],
+    flags: u8,
+    application_hash: &[u8; 32],
+    challenge_hash: &[u8; 32],
+) -> Result<super::super::SkEnrollResponse, CtapError> {
+    if data.len() < 68 || data[0] != 5 {
+        return Err(CtapError::Protocol("truncated or invalid U2F registration"));
+    }
+    let public_key = &data[1..66];
+    p256::PublicKey::from_sec1_bytes(public_key)
+        .map_err(|_| CtapError::Protocol("invalid U2F public point"))?;
+    let len = usize::from(data[66]);
+    let end = 67 + len;
+    if len == 0 || end >= data.len() {
+        return Err(CtapError::Protocol(
+            "invalid U2F registration handle length",
+        ));
+    }
+    let certificate_len = der_sequence_len(&data[end..])?;
+    let signature = &data[end + certificate_len..];
+    p256::ecdsa::Signature::from_der(signature)
+        .map_err(|_| CtapError::Protocol("invalid U2F registration signature"))?;
+    super::attestation::verify_u2f(
+        &data[end..end + certificate_len],
+        signature,
+        application_hash,
+        challenge_hash,
+        &data[67..end],
+        public_key,
+    )?;
+    Ok(super::super::SkEnrollResponse {
+        flags,
+        public_key: public_key.to_vec(),
+        key_handle: zeroize::Zeroizing::new(data[67..end].to_vec()),
+    })
+}
+
+fn der_sequence_len(data: &[u8]) -> Result<usize, CtapError> {
+    use x509_cert::{
+        Certificate,
+        der::{Decode, Reader, SliceReader},
+    };
+    let mut reader =
+        SliceReader::new(data).map_err(|_| CtapError::Protocol("invalid U2F certificate data"))?;
+    Certificate::decode(&mut reader)
+        .map_err(|_| CtapError::Protocol("invalid U2F attestation certificate"))?;
+    usize::try_from(reader.position())
+        .map_err(|_| CtapError::Protocol("U2F certificate length overflow"))
+}

@@ -23,8 +23,7 @@
 //! [`InternalProvider`], which is `sk_sign` behind the
 //! [`SecurityKeyProvider`] trait. Only [`hidapi_backend`] touches the OS.
 //!
-//! Only signing exists. Enrollment (`ssh-keygen -t ed25519-sk`) and resident
-//! key loading (`ssh-keygen -K`) stay with OpenSSH's tools.
+//! Enrollment and resident credential downloads share these transports and PIN protocols.
 //!
 //! One deliberate deviation from libfido2: a whole `sk_sign` call is bounded
 //! by [`SIGN_TIMEOUT`] (120 s, sshd's default `LoginGraceTime`). libfido2
@@ -36,10 +35,13 @@
 //! (on CTAP2 devices), the signature fails with "timed out waiting for the
 //! security key", and authentication moves on to the next identity.
 
+mod attestation;
 pub mod cbor;
 pub mod ctap2;
 pub mod ctaphid;
 pub mod device;
+mod enrollment_provider;
+mod enrollment_wire;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 mod hidapi_backend;
 #[cfg(test)]
@@ -251,6 +253,22 @@ impl SecurityKeyProvider for InternalProvider {
         pack_signature(request.algorithm, &assertion)
     }
 
+    fn enroll(
+        &self,
+        request: &super::SkEnrollRequest<'_>,
+        pin: Option<&str>,
+    ) -> Result<super::SkEnrollResponse, SecurityKeyError> {
+        self.enroll_credential(request, pin)
+    }
+
+    fn load_resident_keys(
+        &self,
+        pin: Option<&str>,
+        device: Option<&str>,
+    ) -> Result<Vec<super::SkResidentKey>, SecurityKeyError> {
+        self.download_resident(pin, device)
+    }
+
     fn describe(&self) -> String {
         "internal".to_string()
     }
@@ -320,3 +338,9 @@ mod uv_token_tests;
 #[cfg(test)]
 #[path = "robustness_tests.rs"]
 mod robustness_tests;
+
+#[cfg(test)]
+mod enrollment_tests;
+
+#[cfg(test)]
+mod enrollment_wire_tests;

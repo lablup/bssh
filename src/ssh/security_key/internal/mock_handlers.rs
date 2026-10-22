@@ -35,6 +35,14 @@ impl MockAuthenticator {
                 self.requests.push(Request::GetInfo);
                 let mut pairs = vec![
                     (
+                        Value::Int(2),
+                        Value::Array(if config.options.get("testCredProtect") == Some(&true) {
+                            vec![Value::from("credProtect")]
+                        } else {
+                            vec![]
+                        }),
+                    ),
+                    (
                         Value::Int(1),
                         Value::Array(vec![Value::from("FIDO_2_0"), Value::from("FIDO_2_1")]),
                     ),
@@ -68,6 +76,21 @@ impl MockAuthenticator {
             }
             ctap2::CMD_GET_ASSERTION => self.handle_get_assertion(body),
             ctap2::CMD_CLIENT_PIN => self.handle_client_pin(body),
+            0x0a | 0x41 => self.handle_management(body),
+            ctap2::CMD_MAKE_CREDENTIAL
+                if cbor::decode(body)
+                    .ok()
+                    .and_then(|v| {
+                        v.get_int(2)
+                            .and_then(|rp| rp.get(&Value::from("id")))
+                            .and_then(Value::as_text)
+                            .map(str::to_owned)
+                    })
+                    .as_deref()
+                    != Some("localhost") =>
+            {
+                self.handle_enrollment(body)
+            }
             ctap2::CMD_MAKE_CREDENTIAL => {
                 self.requests.push(Request::TouchProbe);
                 self.touch_on_probe.then(|| vec![self.touch_status])
@@ -156,13 +179,14 @@ impl MockAuthenticator {
 
     fn handle_client_pin(&mut self, body: &[u8]) -> Option<Vec<u8>> {
         let map = cbor::decode(body).expect("valid clientPIN CBOR");
+        self.pin_messages.push(map.clone());
         let protocol_number = map.get_int(1)?.as_int()?;
         let subcommand = map.get_int(2)?.as_int()?;
         let permissions = map
             .get_int(9)
             .and_then(Value::as_int)
             .and_then(|bits| Some((bits, map.get_int(10)?.as_text()?.to_string())));
-        let has_permissions = permissions.is_some();
+        let has_permissions = map.get_int(9).is_some();
         self.requests.push(Request::ClientPin {
             subcommand,
             protocol: protocol_number,
@@ -226,6 +250,7 @@ impl MockAuthenticator {
         let len = usize::from(u16::from_be_bytes([apdu[5], apdu[6]]));
         let data = &apdu[7..7 + len];
         match ins {
+            u2f::INS_REGISTER if data.iter().any(|v| *v != 0) => self.handle_registration(data, p1),
             u2f::INS_REGISTER => {
                 self.requests.push(Request::U2fRegister { p1 });
                 Some(if self.touch_on_probe {

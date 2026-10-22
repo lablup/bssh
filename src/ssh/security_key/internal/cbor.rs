@@ -20,6 +20,7 @@
 //! rejected on input, which is what libfido2's parser does as well.
 
 use super::CtapError;
+use zeroize::{Zeroize, Zeroizing};
 
 /// Nesting depth beyond which input is treated as hostile.
 const MAX_DEPTH: usize = 16;
@@ -36,6 +37,28 @@ pub enum Value {
     Map(Vec<(Value, Value)>),
     Bool(bool),
     Null,
+}
+
+// Credential IDs and PIN authentication data can occur anywhere in a CBOR tree.
+impl Zeroize for Value {
+    fn zeroize(&mut self) {
+        match self {
+            Self::Bytes(bytes) => bytes.zeroize(),
+            Self::Text(text) => text.zeroize(),
+            Self::Array(items) => items.iter_mut().for_each(Zeroize::zeroize),
+            Self::Map(pairs) => pairs.iter_mut().for_each(|(key, value)| {
+                key.zeroize();
+                value.zeroize();
+            }),
+            _ => {}
+        }
+    }
+}
+
+impl Drop for Value {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
 }
 
 impl Value {
@@ -186,7 +209,7 @@ fn encode_into(value: &Value, out: &mut Vec<u8>) {
         Value::Map(pairs) => {
             let mut encoded = pairs
                 .iter()
-                .map(|(key, value)| (encode(key), encode(value)))
+                .map(|(key, value)| (Zeroizing::new(encode(key)), Zeroizing::new(encode(value))))
                 .collect::<Vec<_>>();
             // CTAP2 canonical order: major type, then length, then bytes.
             // The major type is the top three bits of the first byte, so a
@@ -208,12 +231,18 @@ fn encode_into(value: &Value, out: &mut Vec<u8>) {
 
 /// Decode one item that must span the whole input.
 pub fn decode(input: &[u8]) -> Result<Value, CtapError> {
-    let mut cursor = Cursor { input, offset: 0 };
-    let value = cursor.item(0)?;
-    if cursor.offset != input.len() {
+    let (value, consumed) = decode_prefix(input)?;
+    if consumed != input.len() {
         return Err(CtapError::Cbor("trailing bytes after item"));
     }
     Ok(value)
+}
+
+/// Decode the first item in authenticator data containing a COSE key and extensions.
+pub fn decode_prefix(input: &[u8]) -> Result<(Value, usize), CtapError> {
+    let mut cursor = Cursor { input, offset: 0 };
+    let value = cursor.item(0)?;
+    Ok((value, cursor.offset))
 }
 
 struct Cursor<'a> {
@@ -305,6 +334,9 @@ impl Cursor<'_> {
                 for _ in 0..len {
                     let key = self.item(depth + 1)?;
                     let value = self.item(depth + 1)?;
+                    if pairs.iter().any(|(existing, _)| existing == &key) {
+                        return Err(CtapError::Cbor("duplicate map key"));
+                    }
                     pairs.push((key, value));
                 }
                 Value::Map(pairs)

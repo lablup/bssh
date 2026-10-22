@@ -13,10 +13,15 @@ bssh-keygen \- SSH key pair generation tool
 [\fB\-C\fR \fIcomment\fR]
 [\fB\-y\fR]
 [\fB\-q\fR]
+[\fB\-w\fR \fIprovider\fR]
+[\fB\-O\fR \fIoption\fR]
+.br
+.B bssh-keygen
+\fB\-K\fR [\fB\-w\fR \fIprovider\fR] [\fB\-O\fR device=\fIpath\fR]
 
 .SH DESCRIPTION
 .B bssh-keygen
-generates SSH key pairs in OpenSSH format. It supports Ed25519 (recommended) and RSA algorithms.
+generates SSH key pairs in OpenSSH format. It supports Ed25519 (recommended), RSA, and authenticator-backed ed25519-sk and ecdsa-sk algorithms.
 Generated keys are compatible with OpenSSH and can be used for SSH authentication.
 
 By default, bssh-keygen generates an Ed25519 key pair and saves it to
@@ -30,6 +35,10 @@ Specifies the type of key to generate. Supported types:
 .IP \fBed25519\fR 10
 (default, recommended) Ed25519 elliptic curve key. Provides strong security with compact key size
 and fast operations.
+.IP \fBed25519-sk\fR 10
+Ed25519 FIDO security key. Requires a compatible attached authenticator.
+.IP \fBecdsa-sk\fR 10
+ECDSA P-256 FIDO security key.
 .IP \fBrsa\fR 10
 RSA key. Use \fB-b\fR to specify key size. Supported for compatibility with legacy systems.
 .RE
@@ -59,6 +68,47 @@ Comment to include in the public key. Typically used to identify the key owner.
 Default: "bssh-keygen"
 
 Example: \fB-C "user@hostname"\fR
+
+.TP
+.BR \-w ", " \-\-provider " " \fIPROVIDER\fR
+Security-key provider. Defaults to \fBinternal\fR, the built-in USB HID provider.
+May be a trusted shared library implementing OpenSSH sk-api, or a quoted
+\fI$VARIABLE\fR naming an environment variable containing the provider setting.
+External providers execute inside the process. Only load trusted libraries.
+
+.TP
+.B \-O OPTION
+Security-key option; may be repeated with different option names:
+.RS
+.IP \fBapplication=ssh:NAME\fR 10
+Application identifier. Must begin with ssh:. Default: ssh:.
+.IP \fBresident\fR 10
+Create a discoverable credential that can later be downloaded using \fB-K\fR.
+.IP \fBverify-required\fR 10
+Require user verification (normally a PIN) when signing.
+.IP \fBno-touch-required\fR 10
+Do not request user presence for signatures. The authenticator or server may
+still require a touch. Use the corresponding server authorized_keys option.
+.IP \fBuser=NAME\fR 10
+User name for resident credential enrollment.
+.IP \fBchallenge=FILE\fR 10
+Read enrollment challenge bytes from a regular file (1 byte to 1 MiB).
+The default is a random 32-byte challenge.
+.IP \fBdevice=PATH\fR 10
+Select a specific authenticator device. Also accepted with \fB-K\fR.
+.RE
+.PP
+\fB-O write-attestation=FILE\fR is explicitly unsupported. Unknown, duplicate,
+or malformed options fail before authenticator access.
+
+.TP
+.BR \-K ", " \-\-download-resident
+Prompt for the authenticator PIN and download resident SSH credentials into
+the current directory. Filenames follow OpenSSH's id_ed25519_sk_rk or
+id_ecdsa_sk_rk naming with application/user suffixes. Unsafe path characters
+are escaped. Numeric suffixes distinguish credentials with duplicate or
+case-equivalent application/user filenames, including public-key path aliases. Existing key files require
+confirmation unless \fB-y\fR is specified. Cannot be combined with \fB-f\fR.
 
 .TP
 .BR \-y ", " \-\-yes
@@ -107,6 +157,23 @@ Smaller key sizes for equivalent security
 Better resistance to implementation errors
 .PP
 RSA support is provided for compatibility with legacy systems.
+
+.SS FIDO Security Keys
+The private file stores an opaque handle rather than the authenticator's private
+signing key. Keep the file private; the attached authenticator is still required
+to authenticate. Defaults are ~/.ssh/id_ed25519_sk and ~/.ssh/id_ecdsa_sk.
+Enrollment may prompt for a PIN and require a touch. Resident download always
+prompts for a PIN. Device and provider support determines available algorithms
+and resident-key operations. Built-in resident enrollment requires a PIN and
+CTAP2 credential management (credMgmt or credentialMgmtPreview), used to check
+for an existing application/user credential before enrollment. Both resident
+and verify-required enrollment require the credProtect extension. Unsupported
+authenticators fail explicitly instead of creating a credential with weaker
+protection. The current ssh-key encoder supports credential
+handles of up to 255 bytes; larger handles fail with an explicit diagnostic.
+On Linux, the user needs access to the authenticator's /dev/hidraw device,
+normally configured by the FIDO udev rules. The built-in provider supports
+Linux and macOS; other platforms require an external provider library.
 
 .SH OUTPUT
 .B bssh-keygen
@@ -159,6 +226,13 @@ $ bssh-keygen -C "john@workstation"
 .SS Generate RSA Key with 4096 Bits
 .nf
 $ bssh-keygen -t rsa -b 4096
+.fi
+
+.SS Enroll a Resident Security Key
+.nf
+$ bssh-keygen -t ed25519-sk -O resident -O application=ssh:work -O user=alice
+$ bssh-keygen -t ecdsa-sk -O verify-required -w internal
+$ bssh-keygen -K
 .fi
 
 .SS Generate Key Non-Interactively
@@ -255,3 +329,10 @@ There is NO WARRANTY, to the extent permitted by law.
 .BR ssh (1)
 
 Project homepage: https://github.com/lablup/bssh
+
+.SH ATTESTATION
+The internal provider verifies signatures on packed and FIDO U2F registration
+responses using the supplied public key or attestation certificate.
+It also accepts the unsigned "none" attestation format, as OpenSSH does.
+Certificate chains, certificate lifetime and vendor trust are not checked.
+Attestation export with write-attestation is unsupported.

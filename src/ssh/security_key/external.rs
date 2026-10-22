@@ -15,8 +15,7 @@
 //! `dlopen` binding to an external `sk-api.h` middleware library.
 //!
 //! The ABI is the pinned OpenSSH 10.3 `sk-api.h` (version `0x000a0000`).
-//! Only `sk_sign` is called; `sk_enroll` and `sk_load_resident_keys` must
-//! exist (as `sshsk_open` requires) but enrollment stays with `ssh-keygen`.
+//! Signing, enrollment, and resident-key discovery use typed ABI bindings.
 //!
 //! A library is opened with `RTLD_NOW | RTLD_LOCAL`, as `sshsk_open` opens it
 //! with `RTLD_NOW`, so an unresolved symbol fails the load instead of
@@ -37,8 +36,13 @@ use libloading::{Library, Symbol};
 use zeroize::Zeroizing;
 
 use super::{
-    SecurityKeyError, SecurityKeyProvider, SkSignRequest, SkSignResponse, check_api_version,
+    SecurityKeyError, SecurityKeyProvider, SkEnrollRequest, SkEnrollResponse, SkResidentKey,
+    SkSignRequest, SkSignResponse, check_api_version,
 };
+
+#[path = "external_enroll.rs"]
+mod enrollment;
+use enrollment::{SkEnrollFn, SkLoadResidentFn};
 
 /// Upper bound on a single signature component the provider may hand back.
 /// Real values are 32 to 64 bytes; anything larger is a corrupt response.
@@ -74,6 +78,8 @@ type SkSignFn = unsafe extern "C" fn(
 /// are never dropped, so the library is never unmapped while `sign` exists.
 struct LoadedLibrary {
     sign: SkSignFn,
+    enroll: SkEnrollFn,
+    load_resident: SkLoadResidentFn,
     /// Held so the code `sign` points into stays mapped.
     _library: Library,
 }
@@ -109,9 +115,11 @@ impl ExternalProvider {
                     path: path.to_path_buf(),
                     reason: describe_load_error(&error),
                 })?;
-            let sign = bind_symbols(path, &library)?;
+            let (sign, enroll, load_resident) = bind_symbols(path, &library)?;
             Ok(LoadedLibrary {
                 sign,
+                enroll,
+                load_resident,
                 _library: library,
             })
         })?;
@@ -181,8 +189,7 @@ fn describe_load_error(error: &libloading::Error) -> String {
 }
 
 /// Required `sk-api.h` entry points besides `sk_api_version` and `sk_sign`.
-/// They are looked up, never called: `sshsk_open` refuses a library that
-/// lacks any of them, and so does bssh.
+/// `sshsk_open` refuses a library that lacks any of them, and so does bssh.
 const REQUIRED_OPERATIONS: [&[u8]; 2] = [b"sk_enroll\0", b"sk_load_resident_keys\0"];
 
 /// The provider checks `sshsk_open` performs, with the library accesses
@@ -212,7 +219,10 @@ where
 }
 
 /// Resolve and validate the sk-api entry points the way `sshsk_open` does.
-fn bind_symbols(path: &Path, library: &Library) -> Result<SkSignFn, SecurityKeyError> {
+fn bind_symbols(
+    path: &Path,
+    library: &Library,
+) -> Result<(SkSignFn, SkEnrollFn, SkLoadResidentFn), SecurityKeyError> {
     // SAFETY: the symbol is declared in sk-api.h as `uint32_t sk_api_version(void)`;
     // the type annotation matches that prototype exactly.
     let api_version: Symbol<'_, SkApiVersionFn> = unsafe { library.get(b"sk_api_version\0") }
@@ -238,7 +248,20 @@ fn bind_symbols(path: &Path, library: &Library) -> Result<SkSignFn, SecurityKeyE
             path: path.to_path_buf(),
             reason: error.to_string(),
         })?;
-    Ok(*sign)
+    // SAFETY: these types exactly match the pinned sk-api.h prototypes; the
+    // library remains loaded for the process lifetime.
+    let enroll: Symbol<'_, SkEnrollFn> =
+        unsafe { library.get(b"sk_enroll\0") }.map_err(|error| SecurityKeyError::NotAProvider {
+            path: path.to_path_buf(),
+            reason: error.to_string(),
+        })?;
+    // SAFETY: same ABI and lifetime guarantees as for sk_enroll above.
+    let resident: Symbol<'_, SkLoadResidentFn> = unsafe { library.get(b"sk_load_resident_keys\0") }
+        .map_err(|error| SecurityKeyError::NotAProvider {
+            path: path.to_path_buf(),
+            reason: error.to_string(),
+        })?;
+    Ok((*sign, *enroll, *resident))
 }
 
 impl SecurityKeyProvider for ExternalProvider {
@@ -300,6 +323,22 @@ impl SecurityKeyProvider for ExternalProvider {
         // and it is not touched again after this call.
         unsafe { free_response(response) };
         copied
+    }
+
+    fn enroll(
+        &self,
+        request: &SkEnrollRequest<'_>,
+        pin: Option<&str>,
+    ) -> Result<SkEnrollResponse, SecurityKeyError> {
+        enrollment::enroll(self.loaded.enroll, request, pin)
+    }
+
+    fn load_resident_keys(
+        &self,
+        pin: Option<&str>,
+        device: Option<&str>,
+    ) -> Result<Vec<SkResidentKey>, SecurityKeyError> {
+        enrollment::load_resident(self.loaded.load_resident, pin, device)
     }
 
     fn describe(&self) -> String {

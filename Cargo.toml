@@ -80,9 +80,12 @@ libc = "0.2"
 # see src/ssh/security_key for why no ssh-sk-helper style subprocess exists.
 libloading = "0.8"
 # The built-in `SecurityKeyProvider internal` (src/ssh/security_key/internal)
-# implements CTAPHID, CTAP2 getAssertion/clientPIN and the U2F fallback in
-# tree; these three only supply the PIN-protocol crypto and are already in the
-# dependency graph through russh/ssh-key, so they add no crate.
+# implements CTAPHID, CTAP2 enrollment/signing/credential management and U2F.
+# Crypto primitives are shared with the existing russh/ssh-key dependency graph.
+# Validate authenticator-provided Ed25519 keys; already in the ssh-key graph.
+ed25519-dalek = "3.0"
+# Parse authenticator attestation certificates without handwritten ASN.1.
+x509-cert = { version = "0.3", default-features = false, features = ["std"] }
 p256 = { version = "0.14", features = ["ecdh", "ecdsa"] }
 aes = "0.9"
 cbc = { version = "0.2", features = ["alloc"] }
@@ -126,9 +129,6 @@ hidapi = { version = "2.6.7", default-features = false, features = ["macos-share
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
-# The mock FIDO authenticator signs Ed25519 assertions; already in the graph
-# through ssh-key.
-ed25519-dalek = "3.0"
 tempfile = "3.27.0"
 mockito = "1.7.2"
 tokio-test = "0.4"
