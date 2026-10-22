@@ -414,7 +414,10 @@ fn scan_known_hosts_marker_text(
             continue;
         }
 
-        let mut fields = text.split(' ').filter(|f| !f.is_empty());
+        // Space and tab both separate fields, as in OpenSSH and the other
+        // known_hosts readers here; a tab-separated `@revoked` line must not
+        // slip past as an unrecognized marker.
+        let mut fields = text.split_whitespace();
         let Some(marker) = fields.next() else {
             continue;
         };
@@ -459,25 +462,32 @@ fn scan_known_hosts_marker_text(
 
 /// Whether a marker line's host field names `hostname`/`host_port`.
 ///
-/// Supports the exact form, the comma-separated list form, and simple `*`
-/// and `?` globs, since marker lines commonly use them (`@cert-authority
-/// *.example.com`). When `lenient` (used for `@revoked` only), a pattern that
-/// does not match the port-qualified form is also tried against the bare
-/// hostname: a `@revoked` line commonly omits the port, and failing to honor
-/// a revocation is worse than an unnecessary rejection.
+/// Supports the exact form, the comma-separated list form, simple `*` and `?`
+/// globs (`@cert-authority *.example.com`), and hashed `|1|salt|hash` fields.
+/// When `lenient` (used for `@revoked` only), a pattern that does not match
+/// the port-qualified form is also tried against the bare hostname: a
+/// `@revoked` line commonly omits the port, and failing to honor a revocation
+/// is worse than an unnecessary rejection.
+///
+/// A `!`-negated pattern never matches and does not veto the other patterns.
+/// For `@revoked` this over-matches, which is the fail-safe direction, so
+/// revocation deliberately gets no negation-veto semantics. The scan's
+/// `@cert-authority` result only feeds a debug note here; certificate trust
+/// uses the negation-aware matcher in `host_certificate`.
 fn marker_host_matches(
     host_port: &str,
     hostname: &str,
     pattern_field: &str,
     lenient: bool,
 ) -> bool {
+    use super::hostkey_rotation::host_pattern_matches;
     pattern_field.split(',').any(|pattern| {
         let pattern = pattern.trim();
-        if pattern.is_empty() {
+        if pattern.is_empty() || pattern.starts_with('!') {
             return false;
         }
-        glob_match(host_port, pattern)
-            || (lenient && host_port != hostname && glob_match(hostname, pattern))
+        host_pattern_matches(pattern, host_port)
+            || (lenient && host_port != hostname && host_pattern_matches(pattern, hostname))
     })
 }
 

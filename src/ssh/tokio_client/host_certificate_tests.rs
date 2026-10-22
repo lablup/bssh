@@ -666,3 +666,65 @@ fn every_revoked_host_keys_file_is_consulted_for_certificates() {
         );
     }
 }
+
+#[test]
+fn hashed_and_tab_separated_revoked_lines_refuse_the_certificate() {
+    let (ca, subject) = (generate_key(), generate_key());
+    let cert = build_certificate(&subject, &ca, CertificateShape::default());
+    let hash = |host: &str| super::super::hostkey_rotation::hash_host_pattern(host).unwrap();
+    let revoked = |host: &str, key: &PrivateKey| {
+        format!("@revoked {host} {}", key.public_key().to_openssh().unwrap())
+    };
+    let tabbed = |line: String| line.replacen(' ', "\t", 2);
+    let verify = |port: u16, lines: &[String], in_command_output: bool| {
+        let (_dir, empty) = known_hosts_with(&[]);
+        let (_dir2, file) = known_hosts_with(lines);
+        let text = lines.join("\n");
+        let (paths, output) = if in_command_output {
+            ([empty], Some(text.as_str()))
+        } else {
+            ([file], None)
+        };
+        verify_host_certificate(
+            &cert,
+            "node1.example.com",
+            port,
+            &paths,
+            output,
+            &defaults(),
+            &[],
+        )
+    };
+
+    let refusing = [
+        (22, revoked(&hash("node1.example.com"), &ca)),
+        (22, revoked(&hash("node1.example.com"), &subject)),
+        (22, tabbed(revoked("node1.example.com", &ca))),
+        (22, tabbed(revoked("node1.example.com", &subject))),
+        (22, tabbed(revoked(&hash("node1.example.com"), &ca))),
+        (2222, revoked(&hash("node1.example.com"), &ca)),
+        (2222, revoked(&hash("[node1.example.com]:2222"), &subject)),
+    ];
+    for in_command_output in [false, true] {
+        for (port, line) in &refusing {
+            let lines = [ca_line(&hash("node1.example.com"), &ca), line.clone()];
+            assert!(
+                matches!(
+                    verify(*port, &lines, in_command_output),
+                    Err(super::super::Error::HostKeyRevoked { .. })
+                ),
+                "port {port}, command output {in_command_output}: {line}"
+            );
+        }
+
+        let lines = [
+            ca_line(&hash("node1.example.com"), &ca),
+            revoked(&hash("node2.example.com"), &ca),
+        ];
+        assert_eq!(
+            verify(22, &lines, in_command_output).unwrap(),
+            CertificateVerdict::Accepted,
+            "a hashed @revoked line for another host must not refuse this one"
+        );
+    }
+}
