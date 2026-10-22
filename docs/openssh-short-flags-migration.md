@@ -6,8 +6,7 @@ features.
 
 ## Release-status note
 
-This is the target contract for 3.0. The source tree still reports version
-2.4.3 while the compatibility epic is being implemented. The requirement to
+This contract shipped in 3.0 and remains in effect in 3.1. The requirement to
 warn in a final 2.x release before reassignment is a release-history
 requirement: this documentation and the 3.0 implementation do not, by
 themselves, prove that such a warning was shipped. Release notes must not mark

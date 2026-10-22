@@ -5,6 +5,61 @@ All notable changes to bssh will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.0] - 2026-10-23
+
+### New Features
+
+- Added FIDO security-key authentication through OpenSSH sk-api libraries and a built-in USB HID provider on Linux and macOS, including CTAP 2.1 sensor verification (#333, #334, #346).
+- Added `bssh-keygen` enrollment for `ed25519-sk` and `ecdsa-sk` and resident credential download with `-K` (#347).
+- Added `network-ping` / `nping` for direct IPv4/IPv6 ICMP checks with per-host packet loss, latency statistics and aggregate exit status (#324).
+- Added validated host certificates with CA trust, principal, validity, signature-algorithm and revocation checks, including `KnownHostsCommand` CA sources (#329, #332).
+- Added Unix-domain socket forwarding and remote dynamic SOCKS forwarding with `PermitRemoteOpen` restrictions (#325, #329).
+
+### Improvements
+
+- Enabled macOS `UseKeychain` passphrase lookup and storage while preserving batch-mode and authentication timeout policy (#316).
+- Improved ProxyJump resolution, SSH percent-token expansion, control commands, background detachment and cancellation-safe SCP input (#325).
+- Removed unnecessary client connection delays that added about 0.6 seconds per connection (#329).
+
+### Bug Fixes
+
+- Fixed SFTP upload disconnects when requests arrived faster than storage by applying backpressure and bounding queued requests (#321).
+- Restricted substituted `ProxyCommand` endpoint values to prevent shell injection through host, user and alias data (#342).
+- Hardened `Match exec` and `LocalCommand` token handling and bounded SOCKS negotiation (#325).
+- Fixed host-certificate trust gaps, multi-file revocation handling and Unix-socket publication races (#332).
+- Enforced the negotiated host-key algorithm when accepting a server key or certificate (#333).
+- Rejected server security-key authorization policies whose touch or user-verification requirements cannot be enforced (#343).
+
+### CI/CD Improvements
+
+- Updated the declared MSRV and Debian/Launchpad build toolchain to Rust 1.97 (#341).
+- Serialized HOME-sensitive tests and added a repeatable race-test runner (#344).
+
+### Technical Details
+
+- Moved pipelined SFTP client transfers and server read-ahead into bssh using upstream public APIs (#320).
+- Raised measured OpenSSH regression results to 69/70 on Ubuntu and 66/67 on macOS in the security-key support validation; destination-constrained agent authentication remained incomplete (#333).
+
+### Dependencies
+
+- Replaced the internal SSH and SFTP forks with upstream `russh` 0.64.1 and `russh-sftp` 3.0.1 (#317, #318, #320).
+- Added HID transport, provider loading and cryptographic dependencies for FIDO signing and enrollment (#333, #334, #347).
+
+### Breaking Changes
+
+- Raised the minimum supported Rust version from 1.96 to 1.97 (#341).
+- Rejected substituted `ProxyCommand` values containing whitespace, shell syntax, non-ASCII characters, scoped IPv6 or a leading hyphen; ordinary aliases and normalized IPv6 remained supported (#342).
+- Replaced the warn-and-TOFU handling of `@cert-authority` with certificate validation and removed `BSSH_CERT_AUTHORITY_POLICY` (#329).
+- Required the first matching server `authorized_keys` entry for a security key to specify `no-touch-required` without `verify-required` until signature flags can be enforced (#343).
+
+### Known Issues
+
+- Destination-constrained agent authentication remained blocked on upstream session-binding support (#327).
+- WebAuthn security-key host signatures remained unsupported (#345).
+- Physical-authenticator validation remained pending on Linux and macOS (#334, #348).
+- Built-in resident enrollment required a PIN and credential management; `write-attestation` remained unsupported and serialized key handles were limited to 255 bytes (#347).
+- Native OpenSSH mux-v4 interoperability and some control-channel operations remained incomplete (#325, #329).
+
 ## [3.0.1] - 2026-09-01
 
 Made user-facing guidance self-contained without changing command behavior.
@@ -1083,6 +1138,7 @@ None
 - russh library for native SSH implementation
 - Cross-platform support (Linux and macOS)
 
+[3.1.0]: https://github.com/lablup/bssh/compare/v3.0.1...v3.1.0
 [3.0.1]: https://github.com/lablup/bssh/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/lablup/bssh/compare/v2.4.3...v3.0.0
 [2.4.3]: https://github.com/lablup/bssh/compare/v2.4.2...v2.4.3

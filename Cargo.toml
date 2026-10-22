@@ -6,7 +6,7 @@ members = [
 
 [package]
 name = "bssh"
-version = "3.0.1"
+version = "3.1.0"
 authors = ["Jeongkyu Shin <inureyes@gmail.com>"]
 description = "Parallel SSH command execution tool for cluster management"
 license = "Apache-2.0"

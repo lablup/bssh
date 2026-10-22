@@ -1,3 +1,15 @@
+bssh (3.1.0-1~jammy1) jammy; urgency=medium
+
+  * Added FIDO security-key authentication, enrollment and resident key download.
+  * Added direct ICMP network ping, host certificates and Unix-socket forwarding.
+  * Enabled macOS Keychain support and improved OpenSSH session compatibility.
+  * Fixed SFTP upload backpressure and hardened SSH command token expansion.
+  * Rejected server security-key policies requiring unenforceable touch or UV.
+  * Replaced internal forks with russh 0.64.1 and russh-sftp 3.0.1.
+  * Raised the Rust toolchain requirement to 1.97.
+
+ -- Jeongkyu Shin <inureyes@gmail.com>  Fri, 23 Oct 2026 00:45:00 +0900
+
 bssh (3.0.1-1~jammy1) jammy; urgency=medium
 
   * v3.0.1

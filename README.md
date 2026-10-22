@@ -12,6 +12,8 @@ A high-performance SSH client with **SSH-compatible syntax** for both single-hos
 
 ## Recent Updates
 
+- **v3.1.0 (2026/10/23):** Added FIDO security-key authentication and enrollment, direct ICMP network ping, host-certificate verification and Unix-socket forwarding; fixed upload backpressure, enabled macOS Keychain support, and hardened SSH command expansion.
+
 - **v3.0.1 (2026/09/01):** Replaced developer-only tracking and historical-version references in active help, runtime warnings, manpages, current release notes, and public documentation with behavior-focused guidance. Added rendered-help regression checks for all three binaries. Runtime behavior was unchanged.
 - **v3.0.0 (2026/09/01):** Made single-destination sessions byte-transparent, applied SSH configuration at runtime, added OpenSSH configuration, session, forwarding, and multiplexing options, and restored seven colliding short flags to their OpenSSH meanings. The pinned OpenSSH suite passes 60 tests on macOS and 61 on Ubuntu.
 - **v2.4.3 (2026/08/24):** Fix bssh-to-bssh SFTP downloads above 255 KiB, upgrade to russh 0.63.1 with two security fixes and host-certificate refusal, sync bssh-russh-sftp 2.4.0, and repair release automation for API-key notarization and Homebrew updates.
