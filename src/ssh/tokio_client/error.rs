@@ -57,11 +57,11 @@ pub enum Error {
         path: std::path::PathBuf,
         reason: String,
     },
-    /// The security-key provider failed after the server requested a
-    /// signature; like [`Self::LocalSignerFailed`], this ends the transport.
-    #[error(
-        "security key signing failed for {path} after the server requested a signature: {reason}"
-    )]
+    /// The security-key provider failed after the server accepted the key.
+    /// The signer declines without sending a signature (see
+    /// `security_key_signer::authenticate_declinable`), so authentication
+    /// continues with the next identity on the same transport.
+    #[error("security key signing failed for {path}: {reason}")]
     SecurityKeySignFailed {
         path: std::path::PathBuf,
         reason: String,

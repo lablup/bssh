@@ -805,7 +805,7 @@ async fn authenticate_private_key_with_policy<H: Handler>(
     key: russh::keys::PrivateKey,
     key_file_path: &std::path::Path,
     accepted: &[String],
-    security_key_provider: Option<&str>,
+    security_key: SecurityKeySource<'_>,
     interactive: bool,
 ) -> Result<(), super::Error> {
     let hashes = if accepted.is_empty() {
@@ -822,8 +822,7 @@ async fn authenticate_private_key_with_policy<H: Handler>(
 
     let public_key = key.public_key().clone();
     let signer =
-        LocalSigner::for_private_key(key, key_file_path, security_key_provider, interactive)
-            .await?;
+        LocalSigner::for_private_key(key, key_file_path, security_key, interactive).await?;
     match signer {
         LocalSigner::Software(key) => {
             for hash in hashes {
@@ -839,15 +838,26 @@ async fn authenticate_private_key_with_policy<H: Handler>(
             }
         }
         LocalSigner::SecurityKey(mut signer) => {
-            let result = handle
-                .authenticate_publickey_with(username, public_key, None, &mut signer)
-                .await?;
+            let decline = signer.decline();
+            let result = super::security_key_signer::authenticate_declinable(
+                &decline,
+                handle.authenticate_publickey_with(username, public_key, None, &mut signer),
+            )
+            .await?;
             if result.success() {
                 return Ok(());
             }
         }
     }
     Err(super::Error::KeyAuthFailed)
+}
+
+/// How an `sk-*` identity reaches its provider: the raw `SecurityKeyProvider`
+/// setting, plus the provider `preflight_security_key_file` already opened
+/// before the private key was decrypted.
+struct SecurityKeySource<'a> {
+    setting: Option<&'a str>,
+    preopened: Option<Arc<dyn crate::ssh::security_key::SecurityKeyProvider>>,
 }
 
 /// Signs locally held identities: software keys in process, `sk-*` keys
@@ -860,20 +870,27 @@ enum LocalSigner {
 
 impl LocalSigner {
     /// Pick the signer for `key`; `sk-*` keys need a usable provider before
-    /// the identity is offered, so provider failures surface here.
+    /// the identity is offered, so provider failures surface here (or
+    /// earlier, in `preflight_security_key_file`, which hands its provider
+    /// over as `preopened`).
     async fn for_private_key(
         key: russh::keys::PrivateKey,
         path: &std::path::Path,
-        security_key_provider: Option<&str>,
+        security_key: SecurityKeySource<'_>,
         interactive: bool,
     ) -> Result<Self, super::Error> {
         match super::security_key_signer::SecurityKeyIdentity::from_private_key(&key, path) {
             Some(identity) => {
-                let provider = super::security_key_signer::open_security_key_provider(
-                    security_key_provider,
-                    path,
-                )
-                .await?;
+                let provider = match security_key.preopened {
+                    Some(provider) => provider,
+                    None => {
+                        super::security_key_signer::open_security_key_provider(
+                            security_key.setting,
+                            path,
+                        )
+                        .await?
+                    }
+                };
                 Ok(Self::SecurityKey(
                     super::security_key_signer::SecurityKeySigner::new(
                         provider,
@@ -956,6 +973,11 @@ async fn authenticate_certificate_file<H: Handler>(
     use_keychain: bool,
     security_key_provider: Option<String>,
 ) -> Result<(), super::Error> {
+    let preopened_provider = super::security_key_signer::preflight_security_key_file(
+        security_key_provider.as_deref(),
+        &key_file_path,
+    )
+    .await?;
     let key = load_policy_private_key(
         &key_file_path,
         key_pass,
@@ -998,14 +1020,26 @@ async fn authenticate_certificate_file<H: Handler>(
     let mut signer = LocalSigner::for_private_key(
         key,
         &key_file_path,
-        security_key_provider.as_deref(),
+        SecurityKeySource {
+            setting: security_key_provider.as_deref(),
+            preopened: preopened_provider,
+        },
         allow_passphrase_prompt,
     )
     .await?;
+    let decline = match &signer {
+        LocalSigner::SecurityKey(signer) => Some(signer.decline()),
+        LocalSigner::Software(_) => None,
+    };
     for hash in hashes {
-        let result = handle
-            .authenticate_certificate_with(username, certificate.clone(), hash, &mut signer)
-            .await?;
+        let exchange =
+            handle.authenticate_certificate_with(username, certificate.clone(), hash, &mut signer);
+        let result = match &decline {
+            Some(decline) => {
+                super::security_key_signer::authenticate_declinable(decline, exchange).await
+            }
+            None => exchange.await,
+        }?;
         if result.success() {
             return Ok(());
         }
@@ -1330,8 +1364,10 @@ pub(super) fn is_retryable_rejection(error: &super::Error) -> bool {
     // Agent setup fails before russh requests a signature, so the plan may
     // safely continue. Signer failures are intentionally absent: russh may be
     // waiting for `Msg::Signed`, and reusing that transport could then hang.
-    // `SecurityKeyUnavailable` is raised before the identity is offered;
-    // `SecurityKeySignFailed` comes from inside the signer and is not here.
+    // `SecurityKeyUnavailable` is raised before the identity is offered.
+    // `SecurityKeySignFailed` is the exception among signer failures: the
+    // security-key signer declines without sending anything and
+    // `authenticate_declinable` releases the transport (see there).
     matches!(
         error,
         super::Error::KeyboardInteractiveAuthFailed
@@ -1341,6 +1377,7 @@ pub(super) fn is_retryable_rejection(error: &super::Error) -> bool {
             | super::Error::KeyPassphrasePromptDisabled { .. }
             | super::Error::IdentityAlgorithmExcluded(_)
             | super::Error::SecurityKeyUnavailable { .. }
+            | super::Error::SecurityKeySignFailed { .. }
             | super::Error::PasswordWrong
             | super::Error::AgentConnectionFailed
             | super::Error::AgentRequestIdentitiesFailed
@@ -1410,6 +1447,11 @@ async fn authenticate_single<H: Handler>(
             use_keychain,
             security_key_provider,
         } => {
+            let preopened_provider = super::security_key_signer::preflight_security_key_file(
+                security_key_provider.as_deref(),
+                &key_file_path,
+            )
+            .await?;
             let key = load_policy_private_key(
                 &key_file_path,
                 key_pass,
@@ -1423,7 +1465,10 @@ async fn authenticate_single<H: Handler>(
                 key,
                 &key_file_path,
                 &accepted_algorithms,
-                security_key_provider.as_deref(),
+                SecurityKeySource {
+                    setting: security_key_provider.as_deref(),
+                    preopened: preopened_provider,
+                },
                 allow_passphrase_prompt,
             )
             .await?;
@@ -1807,6 +1852,146 @@ mod policy_execution_tests {
         assert_eq!(
             attempts.lock().await.as_slice(),
             ["cert:matching-user-cert"]
+        );
+        task.abort();
+    }
+
+    /// A security-key signing failure after the server accepted the key
+    /// (device absent, PIN needed in BatchMode) must leave the transport
+    /// usable, so the next identity authenticates on the same connection as
+    /// it does after OpenSSH's `sign_and_send_pubkey` failure.
+    #[tokio::test]
+    async fn security_key_sign_failure_moves_on_to_the_next_identity() {
+        use crate::ssh::security_key::{
+            SecurityKeyError, SecurityKeyProvider, SkSignRequest, SkSignResponse,
+        };
+        use russh::keys::ssh_key::private::{KeypairData, SkEd25519 as SkEd25519Private};
+        use russh::keys::ssh_key::public::{Ed25519PublicKey, SkEd25519 as SkEd25519Public};
+
+        #[derive(Debug)]
+        struct AbsentDevice(std::sync::atomic::AtomicUsize);
+        impl SecurityKeyProvider for AbsentDevice {
+            fn sign(
+                &self,
+                _: &SkSignRequest<'_>,
+                _: Option<&str>,
+            ) -> Result<SkSignResponse, SecurityKeyError> {
+                self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Err(SecurityKeyError::DeviceNotFound)
+            }
+            fn describe(&self) -> String {
+                "absent".to_string()
+            }
+        }
+
+        let sk_public = SkEd25519Public::new(Ed25519PublicKey([7u8; 32]), "ssh:");
+        let sk_private = SkEd25519Private::new(sk_public, 0x01, vec![1, 2, 3]).unwrap();
+        let sk_key =
+            russh::keys::PrivateKey::new(KeypairData::SkEd25519(sk_private), "sk").unwrap();
+        let directory = tempfile::TempDir::new().unwrap();
+        let software_path = directory.path().join("software-key");
+        let software = write_key(&software_path);
+        let attempts = Arc::new(Mutex::new(Vec::new()));
+        let (address, task) = start_server(ScriptedAuthServer {
+            attempts: Arc::clone(&attempts),
+            key_names: HashMap::from([
+                (sk_key.public_key().key_data().clone(), "sk-key".to_string()),
+                (
+                    software.public_key().key_data().clone(),
+                    "software-key".to_string(),
+                ),
+            ]),
+            accepted_key: Some("software-key".to_string()),
+            accepted_certificate: None,
+        })
+        .await;
+        let mut handle = connect(address).await;
+
+        let provider = Arc::new(AbsentDevice(std::sync::atomic::AtomicUsize::new(0)));
+        let identity = super::super::security_key_signer::SecurityKeyIdentity::from_private_key(
+            &sk_key,
+            std::path::Path::new("/id_ed25519_sk"),
+        )
+        .unwrap();
+        let mut signer = super::super::security_key_signer::SecurityKeySigner::new(
+            provider.clone(),
+            identity,
+            false,
+        );
+        let decline = signer.decline();
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            let error = super::super::security_key_signer::authenticate_declinable(
+                &decline,
+                handle.authenticate_publickey_with(
+                    "user",
+                    sk_key.public_key().clone(),
+                    None,
+                    &mut signer,
+                ),
+            )
+            .await
+            .unwrap_err();
+            assert!(is_retryable_rejection(&error), "{error:?}");
+            assert!(error.to_string().contains("device not found"), "{error}");
+
+            let methods =
+                AuthMethod::with_key_file_policy(&software_path, None, vec!["ssh-ed25519".into()]);
+            authenticate(&mut handle, &"user".to_string(), methods).await
+        })
+        .await
+        .expect("the transport must stay usable after a declined security-key signature");
+        outcome.unwrap();
+        assert_eq!(
+            provider.0.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the server accepted the sk key, so the provider was asked to sign"
+        );
+        assert_eq!(attempts.lock().await.as_slice(), ["software-key"]);
+        task.abort();
+    }
+
+    /// An encrypted `sk-*` identity without a usable provider is skipped from
+    /// its public half, before any passphrase handling, as OpenSSH does.
+    #[tokio::test]
+    async fn security_key_identity_without_provider_is_skipped_before_decryption() {
+        use russh::keys::ssh_key::private::{KeypairData, SkEd25519 as SkEd25519Private};
+        use russh::keys::ssh_key::public::{Ed25519PublicKey, SkEd25519 as SkEd25519Public};
+
+        let sk_public = SkEd25519Public::new(Ed25519PublicKey([3u8; 32]), "ssh:");
+        let sk_private = SkEd25519Private::new(sk_public, 0x01, vec![9, 9]).unwrap();
+        let encrypted = russh::keys::PrivateKey::new(KeypairData::SkEd25519(sk_private), "sk")
+            .unwrap()
+            .encrypt(&mut rand::rng(), "passphrase")
+            .unwrap();
+        let directory = tempfile::TempDir::new().unwrap();
+        let path = directory.path().join("id_ed25519_sk");
+        std::fs::write(
+            &path,
+            encrypted.to_openssh(LineEnding::LF).unwrap().as_bytes(),
+        )
+        .unwrap();
+
+        let (address, task) = start_server(ScriptedAuthServer {
+            attempts: Arc::new(Mutex::new(Vec::new())),
+            key_names: HashMap::new(),
+            accepted_key: None,
+            accepted_certificate: None,
+        })
+        .await;
+        let mut handle = connect(address).await;
+        let method = AuthMethod::with_configured_key_file(
+            &path,
+            vec!["sk-ssh-ed25519@openssh.com".into()],
+            false,
+            false,
+            Some("none".to_string()),
+        );
+        let error = authenticate_single(&mut handle, &"user".to_string(), method)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, super::super::Error::SecurityKeyUnavailable { .. }),
+            "{error:?}"
         );
         task.abort();
     }

@@ -17,10 +17,20 @@
 //! announce the touch when the key wants user presence, prompt for a PIN
 //! once when the provider asks for one, and never block the async runtime
 //! while the authenticator waits for the user.
+//!
+//! A provider failure (device absent, PIN required in `BatchMode`, provider
+//! error) skips the identity the way a failed `identity_sign` does in
+//! OpenSSH: the signer hands russh the request back unsigned, which russh
+//! then does not send, and [`authenticate_declinable`] stops waiting for a
+//! server reply that will never come. The transport stays usable for the
+//! next identity.
 
+use std::future::Future;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+
+use tokio::sync::Notify;
 
 use russh::keys::ssh_encoding::Encode as _;
 use russh::keys::ssh_key::HashAlg;
@@ -115,6 +125,100 @@ pub(super) async fn open_security_key_provider(
     }
 }
 
+/// Serializes every provider call in the process. sk-api makes no
+/// thread-safety promise and OpenSSH never calls a provider concurrently
+/// (each signature runs in its own `ssh-sk-helper`), while bssh may
+/// authenticate to many hosts at once. The lock is taken inside the blocking
+/// task, so a dropped authentication future cannot release it while the
+/// provider is still running.
+static PROVIDER_CALL_LOCK: Mutex<()> = Mutex::new(());
+
+/// Records a signature the signer declined to produce.
+#[derive(Debug, Default)]
+pub(super) struct SignatureDecline {
+    error: Mutex<Option<super::Error>>,
+    notify: Notify,
+}
+
+impl SignatureDecline {
+    fn record(&self, error: super::Error) {
+        *self
+            .error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error);
+        self.notify.notify_one();
+    }
+
+    fn take(&self) -> Option<super::Error> {
+        self.error
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
+}
+
+/// Drive one russh public-key or certificate exchange that signs with a
+/// [`SecurityKeySigner`], ending it as soon as the signer declines.
+///
+/// When the signer declines, it has returned the request unsigned. russh's
+/// session loop compares the returned buffer with the request it handed out
+/// and, finding it unchanged, sends nothing; the `Msg::Signed` that carries
+/// it is queued on russh's bounded handle channel in the same poll, because
+/// authentication holds the handle exclusively and that channel is otherwise
+/// empty. The handle-side future then waits for a server reply that will
+/// never arrive, so it is dropped here (its receive is cancellation-safe) and
+/// the recorded signing error is returned instead. The server never saw a
+/// signed request, so the next identity can be offered on the same transport,
+/// as OpenSSH's `sign_and_send_pubkey` failure path does.
+pub(super) async fn authenticate_declinable<T, F>(
+    decline: &SignatureDecline,
+    exchange: F,
+) -> Result<T, super::Error>
+where
+    F: Future<Output = Result<T, super::Error>>,
+{
+    tokio::pin!(exchange);
+    let result = tokio::select! {
+        biased;
+        result = &mut exchange => result,
+        () = decline.notify.notified() => Err(decline
+            .take()
+            .unwrap_or_else(|| super::Error::AuthenticationPolicy(
+                "security key signature declined".to_string(),
+            ))),
+    };
+    match decline.take() {
+        Some(error) => Err(error),
+        None => result,
+    }
+}
+
+/// Resolve the provider for an `sk-*` identity file before its private half
+/// is decrypted, as OpenSSH skips such keys from their public half when no
+/// provider is configured. The public key of an OpenSSH-format private key is
+/// stored unencrypted, so this never prompts. Returns `None` for software
+/// keys and for files that are not OpenSSH-format private keys (the regular
+/// loader reports those).
+pub(super) async fn preflight_security_key_file(
+    setting: Option<&str>,
+    path: &Path,
+) -> Result<Option<Arc<dyn SecurityKeyProvider>>, super::Error> {
+    let Ok(text) = tokio::fs::read_to_string(path).await.map(Zeroizing::new) else {
+        return Ok(None);
+    };
+    let Ok(key) = russh::keys::ssh_key::PrivateKey::from_openssh(text.as_bytes()) else {
+        return Ok(None);
+    };
+    if !matches!(
+        key.algorithm(),
+        russh::keys::ssh_key::Algorithm::SkEd25519
+            | russh::keys::ssh_key::Algorithm::SkEcdsaSha2NistP256
+    ) {
+        return Ok(None);
+    }
+    open_security_key_provider(setting, path).await.map(Some)
+}
+
 /// Signs `to_sign` with the provider and returns it with the signature
 /// appended, which is what russh expects back from a [`russh::Signer`].
 #[derive(Debug)]
@@ -123,6 +227,7 @@ pub(super) struct SecurityKeySigner {
     identity: Arc<SecurityKeyIdentity>,
     /// `BatchMode no`: a touch notice may be printed and a PIN prompted.
     interactive: bool,
+    decline: Arc<SignatureDecline>,
 }
 
 impl SecurityKeySigner {
@@ -135,7 +240,14 @@ impl SecurityKeySigner {
             provider,
             identity: Arc::new(identity),
             interactive,
+            decline: Arc::new(SignatureDecline::default()),
         }
+    }
+
+    /// Where a declined signature is reported; pass it to
+    /// [`authenticate_declinable`] around the russh exchange.
+    pub(super) fn decline(&self) -> Arc<SignatureDecline> {
+        Arc::clone(&self.decline)
     }
 
     pub(super) async fn sign_blob(&self, data: Vec<u8>) -> Result<Vec<u8>, super::Error> {
@@ -168,6 +280,9 @@ impl SecurityKeySigner {
                     key_handle: &identity.key_handle,
                     flags: identity.flags,
                 };
+                let _serialized = PROVIDER_CALL_LOCK
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 provider.sign(&request, attempt_pin.as_deref().map(String::as_str))
             })
             .await
@@ -219,15 +334,36 @@ impl russh::Signer for SecurityKeySigner {
         _hash_alg: Option<HashAlg>,
         to_sign: Vec<u8>,
     ) -> Result<Vec<u8>, Self::Error> {
-        let blob = self.sign_blob(to_sign.clone()).await?;
-        let mut signed = to_sign;
-        blob.as_slice().encode(&mut signed).map_err(|error| {
-            super::Error::SecurityKeySignFailed {
-                path: self.identity.path.clone(),
-                reason: error.to_string(),
+        let signed = match self.sign_blob(to_sign.clone()).await {
+            Ok(blob) => {
+                let mut signed = to_sign.clone();
+                blob.as_slice()
+                    .encode(&mut signed)
+                    .map(|()| signed)
+                    .map_err(|error| super::Error::SecurityKeySignFailed {
+                        path: self.identity.path.clone(),
+                        reason: error.to_string(),
+                    })
             }
-        })?;
-        Ok(signed)
+            Err(error) => Err(error),
+        };
+        match signed {
+            Ok(signed) => Ok(signed),
+            Err(error) => {
+                // OpenSSH reports "sign_and_send_pubkey: signing failed for
+                // ..." and moves on to the next identity.
+                match &error {
+                    super::Error::SecurityKeySignFailed { .. } => crate::warningln!("{error}"),
+                    other => crate::warningln!(
+                        "security key signing failed for {}: {other}",
+                        self.identity.path.display()
+                    ),
+                }
+                self.decline.record(error);
+                // Unchanged length: russh sends nothing for this request.
+                Ok(to_sign)
+            }
+        }
     }
 }
 
@@ -378,6 +514,53 @@ mod tests {
         let error = signer.sign_blob(vec![1]).await.unwrap_err().to_string();
         assert!(error.contains("/id_sk"), "{error}");
         assert!(error.contains("device not found"), "{error}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn provider_calls_never_overlap_across_signers() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        #[derive(Debug, Default)]
+        struct OverlapProbe {
+            in_flight: AtomicUsize,
+            max_in_flight: AtomicUsize,
+        }
+        impl SecurityKeyProvider for OverlapProbe {
+            fn sign(
+                &self,
+                request: &SkSignRequest<'_>,
+                _: Option<&str>,
+            ) -> Result<SkSignResponse, SecurityKeyError> {
+                let now = self.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+                self.max_in_flight.fetch_max(now, Ordering::SeqCst);
+                std::thread::sleep(std::time::Duration::from_millis(30));
+                self.in_flight.fetch_sub(1, Ordering::SeqCst);
+                Ok(SkSignResponse {
+                    flags: request.flags,
+                    counter: 1,
+                    sig_r: Zeroizing::new(vec![0x5a; 64]),
+                    sig_s: Zeroizing::new(Vec::new()),
+                })
+            }
+            fn describe(&self) -> String {
+                "overlap-probe".to_string()
+            }
+        }
+
+        let provider = Arc::new(OverlapProbe::default());
+        let key = sk_ed25519_key(0x00);
+        let tasks = (0..4)
+            .map(|_| {
+                let identity =
+                    SecurityKeyIdentity::from_private_key(&key, Path::new("/k")).unwrap();
+                let signer = SecurityKeySigner::new(provider.clone(), identity, false);
+                tokio::spawn(async move { signer.sign_blob(vec![1, 2, 3]).await })
+            })
+            .collect::<Vec<_>>();
+        for task in tasks {
+            task.await.unwrap().unwrap();
+        }
+        assert_eq!(provider.max_in_flight.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
