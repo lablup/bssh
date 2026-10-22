@@ -190,6 +190,16 @@ pub enum Error {
     CommandDidntExit,
     #[error("Host key verification failed")]
     ServerCheckFailed,
+    /// The server's host key (or certified key) does not have the type the
+    /// key exchange negotiated; OpenSSH's `kex_verify_host_key` fails the
+    /// same case with `SSH_ERR_KEY_TYPE_MISMATCH`.
+    #[error(
+        "Host key verification failed: host key type {received} does not match the negotiated host key algorithm {negotiated}"
+    )]
+    HostKeyTypeMismatch {
+        negotiated: String,
+        received: String,
+    },
     #[error("KnownHostsCommand failed: {reason}")]
     KnownHostsCommandFailed { reason: String },
     /// `port` is not interpolated into the `Display` text, but carrying it is
@@ -311,6 +321,7 @@ impl Error {
                 | Self::NoAddressForFamily { .. }
                 | Self::CommandDidntExit
                 | Self::ServerCheckFailed
+                | Self::HostKeyTypeMismatch { .. }
                 | Self::KnownHostsCommandFailed { .. }
                 | Self::HostKeyChanged { .. }
                 | Self::HostKeyRevoked { .. }

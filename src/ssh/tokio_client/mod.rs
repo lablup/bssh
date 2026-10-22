@@ -25,6 +25,7 @@ mod connection_tests;
 pub mod error;
 pub mod file_transfer;
 mod host_certificate;
+mod host_key_type;
 mod hostkey_rotation;
 mod known_hosts_command;
 mod process_stdin;

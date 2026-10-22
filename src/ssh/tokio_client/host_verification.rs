@@ -1462,7 +1462,6 @@ fn print_process_pin_changed_warning(hostname: &str, port: u16, server_public_ke
 mod tests {
     use super::*;
     use crate::ssh::tokio_client::{ClientHandler, Error, ServerCheckMethod};
-    use russh::client::Handler;
     use russh::keys::PrivateKey;
     use std::path::PathBuf;
     use tempfile::TempDir;
@@ -2001,7 +2000,7 @@ mod tests {
 
         let mut handler = handler_for(ServerCheckMethod::KnownHostsFile(path_str));
         let result = handler
-            .check_server_key(&host_key(revoked.public_key()))
+            .verify_server_key(&host_key(revoked.public_key()))
             .await;
         assert!(
             matches!(result, Err(Error::HostKeyRevoked { .. })),
@@ -2066,7 +2065,7 @@ mod tests {
             "127.0.0.1:22".parse().unwrap(),
             ServerCheckMethod::KnownHostsFile(path_str),
         );
-        let result = handler.check_server_key(&host_key(key.public_key())).await;
+        let result = handler.verify_server_key(&host_key(key.public_key())).await;
         assert!(
             matches!(result, Ok(true)),
             "strict mode must match an existing pin regardless of hostname casing, got {result:?}"
@@ -2380,7 +2379,7 @@ mod tests {
         let key = generate_key();
 
         let mut handler = handler_for(ServerCheckMethod::KnownHostsFile(path_str));
-        let result = handler.check_server_key(&host_key(key.public_key())).await;
+        let result = handler.verify_server_key(&host_key(key.public_key())).await;
         assert!(
             matches!(result, Ok(false)),
             "unknown host must be rejected in strict mode, got {result:?}"
@@ -2403,7 +2402,7 @@ mod tests {
 
         let mut handler = handler_for(ServerCheckMethod::KnownHostsFile(path_str.clone()));
         let result = handler
-            .check_server_key(&host_key(imposter.public_key()))
+            .verify_server_key(&host_key(imposter.public_key()))
             .await;
         assert!(
             matches!(result, Err(Error::HostKeyChanged { .. })),
@@ -2413,7 +2412,7 @@ mod tests {
         // The original key still verifies.
         let mut handler = handler_for(ServerCheckMethod::KnownHostsFile(path_str));
         let result = handler
-            .check_server_key(&host_key(original.public_key()))
+            .verify_server_key(&host_key(original.public_key()))
             .await;
         assert!(matches!(result, Ok(true)));
     }
@@ -2441,7 +2440,7 @@ mod tests {
 
         let mut handler = handler_for(ServerCheckMethod::KnownHostsFile(path_str));
         let result = handler
-            .check_server_key(&host_key(current.public_key()))
+            .verify_server_key(&host_key(current.public_key()))
             .await;
         assert!(
             matches!(result, Ok(true)),
@@ -2455,7 +2454,7 @@ mod tests {
         let key = generate_key();
 
         let mut handler = handler_for(ServerCheckMethod::NoCheck);
-        let result = handler.check_server_key(&host_key(key.public_key())).await;
+        let result = handler.verify_server_key(&host_key(key.public_key())).await;
         assert!(matches!(result, Ok(true)));
         assert!(!path.exists(), "NoCheck must not create a known_hosts file");
     }
@@ -2467,7 +2466,7 @@ mod tests {
         let key = generate_key();
 
         let mut handler = handler_for(ServerCheckMethod::AcceptNewKnownHostsFile(path_str));
-        let result = handler.check_server_key(&host_key(key.public_key())).await;
+        let result = handler.verify_server_key(&host_key(key.public_key())).await;
         assert!(matches!(result, Ok(true)));
         assert_eq!(entry_lines(&path).len(), 1);
     }
@@ -2572,7 +2571,7 @@ mod tests {
             "127.0.0.1:22".parse().unwrap(),
             ServerCheckMethod::KnownHostsFile(path_str),
         );
-        let result = handler.check_server_key(&host_key(key.public_key())).await;
+        let result = handler.verify_server_key(&host_key(key.public_key())).await;
         assert!(
             matches!(result, Err(Error::ServerCheckFailed)),
             "strict mode must refuse an unrecordable hostname, got {result:?}"
@@ -2605,7 +2604,7 @@ mod tests {
             ServerCheckMethod::AcceptNewKnownHostsFile(path_str.clone()),
         ] {
             let mut handler = handler_for(check.clone());
-            let result = handler.check_server_key(&cert).await;
+            let result = handler.verify_server_key(&cert).await;
             assert!(
                 matches!(result, Ok(true)),
                 "{check:?} must accept a certificate from a trusted CA, got {result:?}"
@@ -2652,7 +2651,7 @@ mod tests {
         )
         .unwrap();
         let mut handler = handler_for(ServerCheckMethod::KnownHostsFile(path_str.clone()));
-        let result = handler.check_server_key(&cert).await;
+        let result = handler.verify_server_key(&cert).await;
         assert!(
             matches!(result, Ok(true)),
             "a pinned plain key accepts the downgraded certificate, got {result:?}"
@@ -2660,7 +2659,7 @@ mod tests {
 
         let (_dir, _unknown_path, unknown_str) = temp_known_hosts();
         let mut handler = handler_for(ServerCheckMethod::KnownHostsFile(unknown_str));
-        let result = handler.check_server_key(&cert).await;
+        let result = handler.verify_server_key(&cert).await;
         assert!(
             matches!(result, Ok(false)),
             "strict checking refuses the downgraded key of an unknown host, got {result:?}"
@@ -2697,7 +2696,7 @@ mod tests {
         )
         .unwrap();
         let mut handler = handler_for(ServerCheckMethod::AcceptNewKnownHostsFile(path_str));
-        let result = handler.check_server_key(&cert).await;
+        let result = handler.verify_server_key(&cert).await;
         assert!(
             matches!(result, Err(Error::ServerCheckFailed)),
             "a trusted CA must not accept a certificate for another principal, got {result:?}"
@@ -2713,7 +2712,7 @@ mod tests {
         let cert = host_certificate(&subject, &ca);
 
         let mut handler = handler_for(ServerCheckMethod::NoCheck);
-        let result = handler.check_server_key(&cert).await;
+        let result = handler.verify_server_key(&cert).await;
         assert!(
             matches!(result, Ok(true)),
             "NoCheck disables verification for certificates too, got {result:?}"
@@ -2762,7 +2761,7 @@ mod tests {
         );
         assert!(matches!(
             alias_handler
-                .check_server_key(&host_key(key.public_key()))
+                .verify_server_key(&host_key(key.public_key()))
                 .await,
             Ok(true)
         ));
@@ -2774,7 +2773,7 @@ mod tests {
         );
         assert!(matches!(
             target_against_alias_store
-                .check_server_key(&host_key(key.public_key()))
+                .verify_server_key(&host_key(key.public_key()))
                 .await,
             Ok(false)
         ));
@@ -2786,7 +2785,7 @@ mod tests {
         );
         assert!(matches!(
             target_handler
-                .check_server_key(&host_key(key.public_key()))
+                .verify_server_key(&host_key(key.public_key()))
                 .await,
             Ok(true)
         ));
@@ -2801,7 +2800,7 @@ mod tests {
         );
         assert!(matches!(
             alias_against_target_store
-                .check_server_key(&host_key(key.public_key()))
+                .verify_server_key(&host_key(key.public_key()))
                 .await,
             Ok(false)
         ));
@@ -2824,7 +2823,7 @@ mod tests {
         );
 
         assert!(matches!(
-            handler.check_server_key(&host_key(key.public_key())).await,
+            handler.verify_server_key(&host_key(key.public_key())).await,
             Ok(true)
         ));
         let lines = entry_lines(&path);
@@ -2852,7 +2851,7 @@ mod tests {
         );
         assert!(matches!(
             matching_handler
-                .check_server_key(&host_key(expected.public_key()))
+                .verify_server_key(&host_key(expected.public_key()))
                 .await,
             Ok(true)
         ));
@@ -2864,7 +2863,7 @@ mod tests {
         );
         assert!(matches!(
             empty_handler
-                .check_server_key(&host_key(expected.public_key()))
+                .verify_server_key(&host_key(expected.public_key()))
                 .await,
             Ok(false)
         ));
@@ -2886,7 +2885,7 @@ mod tests {
         );
         assert!(matches!(
             handler
-                .check_server_key(&host_key(expected.public_key()))
+                .verify_server_key(&host_key(expected.public_key()))
                 .await,
             Ok(true)
         ));
@@ -2897,7 +2896,7 @@ mod tests {
         let key = generate_key();
         let mut handler = handler_for(ServerCheckMethod::KnownHostsFiles(Vec::new()));
         assert!(matches!(
-            handler.check_server_key(&host_key(key.public_key())).await,
+            handler.verify_server_key(&host_key(key.public_key())).await,
             Ok(false)
         ));
     }
@@ -2914,7 +2913,7 @@ mod tests {
         });
 
         assert!(matches!(
-            handler.check_server_key(&host_key(key.public_key())).await,
+            handler.verify_server_key(&host_key(key.public_key())).await,
             Ok(true)
         ));
         assert_eq!(entry_lines(&user_path).len(), 1);
@@ -2941,7 +2940,7 @@ mod tests {
         );
 
         assert!(matches!(
-            handler.check_server_key(&host_key(key.public_key())).await,
+            handler.verify_server_key(&host_key(key.public_key())).await,
             Ok(true)
         ));
         assert!(
@@ -2965,7 +2964,7 @@ mod tests {
         );
         assert!(matches!(
             first
-                .check_server_key(&host_key(original.public_key()))
+                .verify_server_key(&host_key(original.public_key()))
                 .await,
             Ok(true)
         ));
@@ -2977,7 +2976,7 @@ mod tests {
         );
         assert!(matches!(
             second
-                .check_server_key(&host_key(changed.public_key()))
+                .verify_server_key(&host_key(changed.public_key()))
                 .await,
             Err(Error::HostKeyChanged { .. })
         ));
