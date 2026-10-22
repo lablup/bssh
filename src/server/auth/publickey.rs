@@ -306,7 +306,9 @@ impl PublicKeyVerifier {
                         key_type = %key.algorithm(),
                         "Security key rejected: user presence or verification policy cannot be enforced; only no-touch-required without verify-required is supported"
                     );
-                    continue;
+                    // The first matching entry determines the policy; a later
+                    // duplicate must not weaken its presence/verification requirement.
+                    return Ok(false);
                 }
                 tracing::info!(
                     user = %username,

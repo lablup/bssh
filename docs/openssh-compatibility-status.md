@@ -89,3 +89,5 @@ Remaining control details include complete forwarding-channel enumeration, alloc
 ### Server security-key authorization
 
 bssh-server fails closed for `sk-ssh-ed25519@openssh.com` and `sk-ecdsa-sha2-nistp256@openssh.com` user keys: russh does not expose signature UP/UV flags to the authentication callback. An `authorized_keys` line must have `no-touch-required` and must not have `verify-required` to authorize either type. The default touch policy and every verification-required policy are rejected and logged at info level. Ordinary keys are unaffected. This server restriction is distinct from client-side security-key signing and host-key verification described above; [#340](https://github.com/lablup/bssh/issues/340) tracks actual signature-flag enforcement. Security-key user certificates remain out of scope.
+
+For duplicate user-key entries, the first matching `authorized_keys` line determines the security-key policy. A later `no-touch-required` entry cannot override an earlier matching line that requires touch or verification; unrelated keys are skipped.

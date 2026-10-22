@@ -85,16 +85,17 @@ async fn server_sk_policy_enforces_each_authorized_key_option_combination() {
 }
 
 #[tokio::test]
-async fn server_sk_policy_evaluates_matching_entries_independently() {
+async fn server_sk_policy_uses_first_matching_entry() {
     let keys = keys();
     for key in &keys[..2] {
         let public = key.to_openssh().unwrap();
         let restricted = format!("verify-required {public}");
         let allowed = format!("no-touch-required {public}");
-        assert!(authenticate(key, &[restricted.clone(), allowed.clone()]).await);
-        assert!(authenticate(key, &[allowed, restricted]).await);
+        assert!(!authenticate(key, &[restricted.clone(), allowed.clone()]).await);
+        assert!(authenticate(key, &[allowed.clone(), restricted]).await);
         // An exception for a different key must never relax this key's policy.
         let unrelated = format!("no-touch-required {}", keys[2].to_openssh().unwrap());
-        assert!(!authenticate(key, &[public, unrelated]).await);
+        assert!(!authenticate(key, &[public, unrelated.clone()]).await);
+        assert!(authenticate(key, &[unrelated, allowed]).await);
     }
 }

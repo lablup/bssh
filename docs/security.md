@@ -61,6 +61,8 @@ bssh-server currently cannot inspect the user-presence (UP/touch) or user-verifi
 
 Use an ordinary key or an SSH server that enforces UP/UV when touch or verification is required. Only use `no-touch-required` when deliberately authorizing authentication without either requirement; it is a relaxation of policy, not a way to enforce touch. Ordinary public keys are unaffected. Signature-flag enforcement is tracked in [#340](https://github.com/lablup/bssh/issues/340); security-key user certificates are outside this support.
 
+For duplicate user-key entries, the first matching `authorized_keys` line determines the security-key policy. A later `no-touch-required` entry cannot override an earlier matching line that requires touch or verification; unrelated keys are skipped.
+
 ### Password Authentication
 
 If password authentication is required, use strong passwords with Argon2id hashing:
