@@ -87,6 +87,7 @@ impl ProxyCommandConfig {
 
     /// Expand endpoint tokens only when their data is safe in a shell word.
     ///
+    /// Only expanded token values are checked; unused fields are unrestricted.
     /// Token values must be nonempty ASCII letters/digits or `.`, `_`, `:`,
     /// `@`, `-`, and must not begin with `-`. This intentionally rejects shell
     /// expansions, whitespace, glob patterns, and option-like values, even
@@ -98,23 +99,6 @@ impl ProxyCommandConfig {
             .host_key_alias
             .as_deref()
             .unwrap_or(&self.original_host);
-        // Enforce this at the last common boundary, not in individual input
-        // parsers: inventory, environment, and public API data all reach here.
-        for (token, value) in [
-            ("%h", host),
-            ("%n", self.original_host.as_str()),
-            ("%r", remote_user),
-            ("%k", key_alias),
-        ] {
-            if value.is_empty()
-                || value.starts_with('-')
-                || !value.bytes().all(|byte| {
-                    byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'@' | b'-')
-                })
-            {
-                return Err(Error::UnsafeProxyCommandValue { token });
-            }
-        }
         let port = port.to_string();
         let mut expanded = String::with_capacity(self.command.len());
         let mut chars = self.command.chars();
@@ -133,11 +117,28 @@ impl ProxyCommandConfig {
             };
             match token {
                 '%' => expanded.push('%'),
-                'h' => expanded.push_str(host),
-                'k' => expanded.push_str(key_alias),
-                'n' => expanded.push_str(&self.original_host),
                 'p' => expanded.push_str(&port),
-                'r' => expanded.push_str(remote_user),
+                'h' | 'k' | 'n' | 'r' => {
+                    let (token, value) = match token {
+                        'h' => ("%h", host),
+                        'k' => ("%k", key_alias),
+                        'n' => ("%n", self.original_host.as_str()),
+                        _ => ("%r", remote_user),
+                    };
+                    // Check only data entering the shell program, at the
+                    // common boundary shared by every input path. Literal
+                    // %% escapes and unused endpoint fields need no check.
+                    if value.is_empty()
+                        || value.starts_with('-')
+                        || !value.bytes().all(|byte| {
+                            byte.is_ascii_alphanumeric()
+                                || matches!(byte, b'.' | b'_' | b':' | b'@' | b'-')
+                        })
+                    {
+                        return Err(Error::UnsafeProxyCommandValue { token });
+                    }
+                    expanded.push_str(value);
+                }
                 other => {
                     return Err(Error::InvalidProxyCommandToken {
                         command: self.command.clone(),
@@ -432,6 +433,31 @@ mod tests {
         let error = config.expand("target", 22, "alice").unwrap_err();
         assert!(matches!(error, Error::InvalidProxyCommandToken { .. }));
         assert!(error.to_string().contains("%x"));
+    }
+
+    #[test]
+    fn unused_endpoint_fields_and_escaped_tokens_are_not_validated() {
+        let unsafe_value = "$(touch unused)";
+        let config = ProxyCommandConfig::new("nc %h %p", unsafe_value)
+            .with_host_key_alias(Some(unsafe_value.to_string()));
+        assert_eq!(
+            config.expand("target", 22, unsafe_value).unwrap(),
+            "nc target 22"
+        );
+
+        for command in ["fixed-proxy", "echo %%h %%n %%r %%k"] {
+            let config = ProxyCommandConfig::new(command, unsafe_value)
+                .with_host_key_alias(Some(unsafe_value.to_string()));
+            assert_eq!(
+                config.expand(unsafe_value, 22, unsafe_value).unwrap(),
+                command.replace("%%", "%")
+            );
+        }
+        let config = ProxyCommandConfig::new("nc %h %p; echo %r", "alias");
+        assert!(matches!(
+            config.expand("target", 22, unsafe_value),
+            Err(Error::UnsafeProxyCommandValue { token: "%r" })
+        ));
     }
 
     #[tokio::test]
