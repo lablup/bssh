@@ -128,7 +128,7 @@ fn canonical_unimplemented_and_unknown_diagnostics_use_real_source_and_log_file(
     let log = directory.path().join("bssh.log");
     fs::write(
         &included,
-        "# Source: /spoofed/config:9000\nChallengeResponseAuthentication no\nKbdInteractiveAuthentication yes\nSecurityKeyProvider /usr/lib/ssh/ssh-sk-helper\nDefinitelyUnknownOption yes\n",
+        "# Source: /spoofed/config:9000\nChallengeResponseAuthentication no\nKbdInteractiveAuthentication yes\nVisualHostKey yes\nDefinitelyUnknownOption yes\nSecurityKeyProvider /usr/lib/ssh/ssh-sk-helper\n",
     )
     .expect("included ssh config should be written");
     #[cfg(unix)]
@@ -178,7 +178,7 @@ fn canonical_unimplemented_and_unknown_diagnostics_use_real_source_and_log_file(
         "Unsupported SSH config option 'kbdinteractiveauthentication' at {included}:2; bssh parses this value for inspection but does not implement its runtime behavior"
     );
     let unimplemented = format!(
-        "Unsupported SSH config option 'securitykeyprovider' at {included}:4; bssh parses this value for inspection but does not implement its runtime behavior"
+        "Unsupported SSH config option 'visualhostkey' at {included}:4; bssh parses this value for inspection but does not implement its runtime behavior"
     );
     let unknown = format!("Unknown SSH config option 'definitelyunknownoption' at {included}:5");
     let distinct_unknown = "Unknown SSH config option 'anotherunknownoption' at -o option #4";
@@ -208,6 +208,11 @@ fn canonical_unimplemented_and_unknown_diagnostics_use_real_source_and_log_file(
             .count(),
         1,
         "distinct unknown diagnostic must remain independent: {diagnostics:?}"
+    );
+    // SecurityKeyProvider has a runtime consumer, so it must not be reported.
+    assert!(
+        !diagnostics.contains("securitykeyprovider"),
+        "implemented SecurityKeyProvider must not be reported as unsupported: {diagnostics:?}"
     );
     assert!(!diagnostics.contains("/spoofed/config"));
 }
