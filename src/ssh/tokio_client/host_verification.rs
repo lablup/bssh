@@ -118,6 +118,13 @@ enum KnownHostsPathState {
 }
 
 fn probe_known_hosts_path(known_hosts_path: &str) -> Result<KnownHostsPathState, super::Error> {
+    probe_known_hosts_path_once(known_hosts_path, true)
+}
+
+fn probe_known_hosts_path_once(
+    known_hosts_path: &str,
+    may_retry: bool,
+) -> Result<KnownHostsPathState, super::Error> {
     let path = Path::new(known_hosts_path);
     match std::fs::metadata(path) {
         Ok(metadata) if !metadata.is_file() => {
@@ -139,8 +146,15 @@ fn probe_known_hosts_path(known_hosts_path: &str) -> Result<KnownHostsPathState,
                 Err(super::Error::ServerCheckFailed)
             }
         },
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            if std::fs::symlink_metadata(path).is_ok() {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => match std::fs::symlink_metadata(path) {
+            Err(_) => Ok(KnownHostsPathState::Missing),
+            // The path appeared between the two calls, typically because a
+            // concurrent first connection just created the file: inspect it
+            // afresh instead of mistaking it for a dangling symlink.
+            Ok(entry) if !entry.file_type().is_symlink() && may_retry => {
+                probe_known_hosts_path_once(known_hosts_path, false)
+            }
+            Ok(_) => {
                 tracing::error!(
                     "Host key verification failed: {known_hosts_path} exists but cannot be resolved"
                 );
@@ -148,10 +162,8 @@ fn probe_known_hosts_path(known_hosts_path: &str) -> Result<KnownHostsPathState,
                     "Host key verification failed: {known_hosts_path} exists but cannot be resolved"
                 );
                 Err(super::Error::ServerCheckFailed)
-            } else {
-                Ok(KnownHostsPathState::Missing)
             }
-        }
+        },
         Err(e) => {
             tracing::error!("Host key verification failed: cannot inspect {known_hosts_path}: {e}");
             eprintln!("Host key verification failed: cannot inspect {known_hosts_path}: {e}");
@@ -2101,13 +2113,39 @@ mod tests {
         }
         for handle in handles {
             let result = handle.await.unwrap();
-            assert!(matches!(result, Ok(true)), "every racer must be accepted");
+            assert!(
+                matches!(result, Ok(true)),
+                "every racer must be accepted, got {result:?}"
+            );
         }
 
         assert_eq!(
             entry_lines(&path).len(),
             1,
             "parallel first-time connections must record exactly one entry"
+        );
+    }
+
+    /// The race fix in `probe_known_hosts_path` re-inspects a path that
+    /// appeared between `metadata` and `symlink_metadata`; a genuinely dangling
+    /// symlink must still fail closed and must not be written through.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_accept_new_dangling_symlink_known_hosts_fails_closed() {
+        let (dir, path, path_str) = temp_known_hosts();
+        let target = dir.path().join("missing-target");
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        let key = generate_key();
+
+        let result = verify_accept_new("node1.example.com", 22, key.public_key(), &path_str).await;
+
+        assert!(
+            matches!(result, Err(Error::ServerCheckFailed)),
+            "a dangling known_hosts symlink must be refused, got {result:?}"
+        );
+        assert!(
+            !target.exists(),
+            "nothing may be written through the symlink"
         );
     }
 
