@@ -393,7 +393,17 @@ fn scan_known_hosts_markers(
     let Ok(contents) = std::fs::read_to_string(known_hosts_path) else {
         return MarkerScan::None;
     };
+    scan_known_hosts_marker_text(hostname, port, server_public_key, &contents)
+}
 
+/// [`scan_known_hosts_markers`] over known_hosts text already in memory, such
+/// as `KnownHostsCommand` output. Both sources share this one matcher.
+fn scan_known_hosts_marker_text(
+    hostname: &str,
+    port: u16,
+    server_public_key: &PublicKey,
+    contents: &str,
+) -> MarkerScan {
     let host_port = known_hosts_entry_name(hostname, port);
     let mut cert_authority: Option<usize> = None;
 
@@ -543,7 +553,27 @@ pub(super) fn revoked_marker_line(
     key: &PublicKey,
     known_hosts_path: &str,
 ) -> Option<usize> {
-    match scan_known_hosts_markers(hostname, port, key, known_hosts_path) {
+    revoked_line(scan_known_hosts_markers(
+        hostname,
+        port,
+        key,
+        known_hosts_path,
+    ))
+}
+
+/// [`revoked_marker_line`] over known_hosts text already in memory, such as
+/// `KnownHostsCommand` output.
+pub(super) fn revoked_marker_line_in_text(
+    hostname: &str,
+    port: u16,
+    key: &PublicKey,
+    contents: &str,
+) -> Option<usize> {
+    revoked_line(scan_known_hosts_marker_text(hostname, port, key, contents))
+}
+
+fn revoked_line(scan: MarkerScan) -> Option<usize> {
+    match scan {
         MarkerScan::Revoked { line } => Some(line),
         MarkerScan::CertAuthority { .. } | MarkerScan::None => None,
     }

@@ -459,7 +459,7 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
     if base.ca_signature_algorithms.is_empty() && !overlay.ca_signature_algorithms.is_empty() {
         base.ca_signature_algorithms = overlay.ca_signature_algorithms.clone();
     }
-    if base.revoked_host_keys.is_none() && overlay.revoked_host_keys.is_some() {
+    if base.revoked_host_keys.is_empty() && !overlay.revoked_host_keys.is_empty() {
         base.revoked_host_keys = overlay.revoked_host_keys.clone();
     }
     if base.gateway_ports.is_none() && overlay.gateway_ports.is_some() {

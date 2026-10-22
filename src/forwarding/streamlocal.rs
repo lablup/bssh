@@ -23,8 +23,15 @@
 //! - On Linux the unbound socket is `fchmod`ed first. `unix_bind` creates the
 //!   node with the socket inode's mode minus the umask, so the path never
 //!   exists with a wider mode and nothing is changed after the bind.
-//! - Elsewhere the node is created with the umask-derived mode and narrowed
-//!   with `fchmodat(AT_SYMLINK_NOFOLLOW)`, which never follows a link.
+//! - Elsewhere `bind(2)` ignores the socket inode's mode, so the node is
+//!   created with the umask-derived mode. It is therefore bound as `s` inside
+//!   a private `mkdtemp` directory (mode 0700) next to the target, where no
+//!   other user can reach it, narrowed there with
+//!   `fchmodat(AT_SYMLINK_NOFOLLOW)` and verified, and only then moved to the
+//!   configured path without overwriting anything: `renamex_np(RENAME_EXCL)`
+//!   on Apple platforms, `link(2)` and `unlink(2)` of the temporary name on
+//!   other BSDs. The private directory is removed on every path. A
+//!   temporary path longer than `sun_path` allows fails closed.
 //!
 //! The process umask is deliberately left alone: it is shared by every
 //! thread, and narrowing it around `bind(2)` would also narrow files and
@@ -113,11 +120,110 @@ fn bind_owner_only(path: &Path) -> std::io::Result<std::os::unix::net::UnixListe
     Ok(socket.into())
 }
 
-/// Create a listening socket at `path`; [`restrict_bound_socket`] narrows
-/// its mode afterwards without following symlinks.
+/// Create a listening socket at `path` whose node is owner-only before it
+/// appears there: it is bound and narrowed in a private sibling directory,
+/// then moved into place without replacing an existing node.
 #[cfg(not(any(target_os = "linux", target_os = "android")))]
-fn bind_owner_only(path: &Path) -> std::io::Result<std::os::unix::net::UnixListener> {
-    std::os::unix::net::UnixListener::bind(path)
+fn bind_owner_only(path: &Path) -> Result<std::os::unix::net::UnixListener> {
+    let parent = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        _ => Path::new("."),
+    };
+    let private = PrivateBindDir::create(parent)?;
+    let temporary = private.socket_path();
+    // `sun_path` holds the path and its terminating NUL.
+    if temporary.as_os_str().len() >= MAX_SOCKET_PATH_LEN {
+        anyhow::bail!(
+            "the temporary socket path {} exceeds the {MAX_SOCKET_PATH_LEN}-byte Unix socket path limit (including the terminating NUL); use a shorter listener path",
+            temporary.display()
+        );
+    }
+    let listener = std::os::unix::net::UnixListener::bind(&temporary)
+        .context("cannot bind the socket in its private directory")?;
+    restrict_bound_socket(&temporary)?;
+    move_without_replacing(&temporary, path)
+        .context("cannot move the owner-only socket into place")?;
+    Ok(listener)
+}
+
+/// A `mkdtemp` directory (mode 0700) beside the listener path. Dropping it
+/// removes the temporary socket name, if still present, and the directory.
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+struct PrivateBindDir(std::path::PathBuf);
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+impl PrivateBindDir {
+    fn create(parent: &Path) -> Result<Self> {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+
+        let template = parent.join(".bsshXXXXXX");
+        let mut template = std::ffi::CString::new(template.as_os_str().as_bytes())
+            .context("the socket directory path contains a NUL byte")?
+            .into_bytes_with_nul();
+        // SAFETY: `template` is a writable, NUL-terminated buffer that ends in
+        // the six `X` characters mkdtemp replaces in place; it outlives the
+        // call and mkdtemp keeps no reference to it.
+        let created = unsafe { libc::mkdtemp(template.as_mut_ptr().cast()) };
+        if created.is_null() {
+            return Err(std::io::Error::last_os_error()).with_context(|| {
+                format!("cannot create a private directory in {}", parent.display())
+            });
+        }
+        template.pop();
+        Ok(Self(std::ffi::OsString::from_vec(template).into()))
+    }
+
+    fn socket_path(&self) -> std::path::PathBuf {
+        self.0.join("s")
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android")))]
+impl Drop for PrivateBindDir {
+    fn drop(&mut self) {
+        let socket = self.socket_path();
+        match std::fs::remove_file(&socket) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                tracing::warn!(
+                    "Could not remove temporary socket {}: {error}",
+                    socket.display()
+                );
+            }
+        }
+        if let Err(error) = std::fs::remove_dir(&self.0) {
+            tracing::warn!(
+                "Could not remove private socket directory {}: {error}",
+                self.0.display()
+            );
+        }
+    }
+}
+
+/// Atomically rename `from` to `to`, failing with `EEXIST` instead of
+/// replacing whatever exists at `to`.
+#[cfg(target_vendor = "apple")]
+fn move_without_replacing(from: &Path, to: &Path) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let from = std::ffi::CString::new(from.as_os_str().as_bytes())?;
+    let to = std::ffi::CString::new(to.as_os_str().as_bytes())?;
+    // SAFETY: both arguments are valid NUL-terminated strings that live until
+    // the call returns; renamex_np keeps no reference to them.
+    if unsafe { libc::renamex_np(from.as_ptr(), to.as_ptr(), libc::RENAME_EXCL) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+/// Hard-link `from` at `to` and drop the temporary name. `link(2)` fails
+/// with `EEXIST` instead of replacing whatever exists at `to`.
+#[cfg(not(any(target_os = "linux", target_os = "android", target_vendor = "apple")))]
+fn move_without_replacing(from: &Path, to: &Path) -> std::io::Result<()> {
+    std::fs::hard_link(from, to)?;
+    std::fs::remove_file(from)
 }
 
 /// Verify that `path` is a socket node and leave it with no permission bit
@@ -477,6 +583,83 @@ mod tests {
             0,
             "mode {mode:o} grants group or other access"
         );
+    }
+
+    /// On macOS `bind(2)` ignores the socket inode's mode, so the node is
+    /// bound and narrowed in a private directory and moved into place. The
+    /// configured path never holds a wider mode, an existing node is never
+    /// replaced, and no private directory is left behind.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_socket_node_is_owner_only_before_it_appears() {
+        use std::os::unix::fs::MetadataExt;
+
+        let entries = |dir: &Path| {
+            let mut names = std::fs::read_dir(dir)
+                .expect("read_dir")
+                .map(|entry| {
+                    entry
+                        .expect("entry")
+                        .file_name()
+                        .into_string()
+                        .expect("utf-8")
+                })
+                .collect::<Vec<_>>();
+            names.sort();
+            names
+        };
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("born.sock");
+        let listener = bind_owner_only(&path).expect("bind");
+        let bound = std::fs::symlink_metadata(&path).expect("socket");
+        assert!(bound.file_type().is_socket());
+        let mode = bound.permissions().mode();
+        assert_eq!(
+            mode & 0o077,
+            0,
+            "mode {mode:o} grants group or other access"
+        );
+        assert_eq!(entries(dir.path()), ["born.sock"]);
+        std::os::unix::net::UnixStream::connect(&path).expect("connect through the moved node");
+        drop(listener);
+
+        let file = dir.path().join("file");
+        std::fs::write(&file, b"keep").expect("write file");
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(dir.path().join("target"), &link).expect("symlink");
+        for occupied in [&path, &file, &link] {
+            let before = std::fs::symlink_metadata(occupied).expect("before");
+            bind_owner_only(occupied).expect_err("an existing node must not be replaced");
+            let after = std::fs::symlink_metadata(occupied).expect("after");
+            assert_eq!(
+                (before.ino(), before.mode()),
+                (after.ino(), after.mode()),
+                "{} was modified",
+                occupied.display()
+            );
+            assert_eq!(entries(dir.path()), ["born.sock", "file", "link"]);
+        }
+        assert_eq!(std::fs::read(&file).expect("file"), b"keep");
+        assert!(!dir.path().join("target").exists());
+
+        // A listener path that fits sun_path but whose private sibling does
+        // not fails closed and leaves nothing behind.
+        let base_len = dir.path().as_os_str().len();
+        let parent_len = MAX_SOCKET_PATH_LEN - 6;
+        assert!(
+            parent_len > base_len + 1,
+            "temporary directory path is too long"
+        );
+        let parent = dir.path().join("p".repeat(parent_len - base_len - 1));
+        std::fs::create_dir(&parent).expect("parent");
+        let target = parent.join("x");
+        let error = bind_unix_listener(target.to_str().expect("utf-8"))
+            .expect_err("the temporary path exceeds sun_path");
+        assert!(
+            format!("{error:#}").contains(&format!("{MAX_SOCKET_PATH_LEN}-byte")),
+            "{error:#}"
+        );
+        assert!(entries(&parent).is_empty(), "{:?}", entries(&parent));
     }
 
     #[test]

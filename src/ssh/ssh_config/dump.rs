@@ -280,13 +280,16 @@ pub fn render_resolved_config(original_host: &str, config: &SshHostConfig) -> Re
         "canonicaldomains",
         &raw_option_args(config, "canonicaldomains").unwrap_or_else(|| vec!["none".to_string()]),
     )?;
-    let revoked_host_keys = config
-        .revoked_host_keys
-        .clone()
-        .map(|value| tokens.expand_path_for_dump(&value))
-        .transpose()?
-        .unwrap_or_else(|| "none".to_string());
-    output.line("revokedhostkeys", revoked_host_keys)?;
+    let revoked_host_keys = if config.revoked_host_keys.is_empty() {
+        vec!["none".to_string()]
+    } else {
+        config
+            .revoked_host_keys
+            .iter()
+            .map(|value| tokens.expand_path_for_dump(value))
+            .collect::<Result<Vec<_>>>()?
+    };
+    output.args("revokedhostkeys", &revoked_host_keys)?;
     output.args(
         "logverbose",
         &raw_option_args(config, "logverbose").unwrap_or_else(|| vec!["none".to_string()]),

@@ -146,8 +146,9 @@ pub struct SshHostConfig {
     /// Original CertificateFile arguments retained for `-G` output.
     pub(crate) certificate_file_args: Vec<String>,
     pub ca_signature_algorithms: Vec<String>,
-    /// `RevokedHostKeys`: a file listing revoked host keys and host CA keys.
-    pub revoked_host_keys: Option<String>,
+    /// `RevokedHostKeys`: files listing revoked host keys and host CA keys.
+    /// Empty means unset; a sole `none` or `/dev/null` disables the check.
+    pub revoked_host_keys: Vec<String>,
     pub gateway_ports: Option<String>,
     pub exit_on_forward_failure: Option<bool>,
     pub permit_remote_open: Vec<String>,
