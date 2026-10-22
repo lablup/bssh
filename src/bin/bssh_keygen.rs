@@ -46,7 +46,7 @@ use std::path::PathBuf;
 #[command(version)]
 #[command(about = "Generate SSH key pairs in OpenSSH format", long_about = None)]
 struct Cli {
-    /// Key type: ed25519 (recommended) or rsa
+    /// Key type: ed25519 (recommended), rsa, ed25519-sk, or ecdsa-sk
     #[arg(
         short = 't',
         long = "type",
@@ -72,6 +72,20 @@ struct Cli {
     #[arg(short = 'C', long = "comment", value_name = "COMMENT")]
     comment: Option<String>,
 
+    /// Download resident security keys to the current directory (prompts for PIN)
+    #[arg(short = 'K', long = "download-resident", conflicts_with = "output")]
+    download_resident: bool,
+
+    /// Security-key provider: internal (default), library path, or $VARIABLE
+    #[arg(short = 'w', long = "provider", value_name = "PROVIDER")]
+    provider: Option<String>,
+
+    /// Security-key option: application=ssh:NAME, resident, verify-required,
+    /// no-touch-required, user=NAME, challenge=FILE, or device=PATH.
+    /// write-attestation=FILE is explicitly unsupported.
+    #[arg(short = 'O', value_name = "OPTION")]
+    sk_options: Vec<String>,
+
     /// Overwrite existing files without prompting
     #[arg(short = 'y', long = "yes")]
     yes: bool,
@@ -93,11 +107,19 @@ fn main() -> Result<()> {
         logging::init_logging_console_only(cli.verbose);
     }
 
+    if cli.download_resident || matches!(cli.key_type.as_str(), "ed25519-sk" | "ecdsa-sk") {
+        return run_security_key(&cli);
+    }
+    anyhow::ensure!(
+        cli.provider.is_none() && cli.sk_options.is_empty(),
+        "-w and -O require a security-key type or -K"
+    );
+
     // Validate key type early
     let key_type = cli.key_type.to_lowercase();
     if !matches!(key_type.as_str(), "ed25519" | "rsa") {
         anyhow::bail!(
-            "Unknown key type: '{}'. Supported types: ed25519 (recommended), rsa",
+            "Unknown key type: '{}'. Supported types: ed25519 (recommended), rsa, ed25519-sk, ecdsa-sk",
             cli.key_type
         );
     }
@@ -190,138 +212,143 @@ fn create_ssh_directory(path: &PathBuf) -> Result<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use clap::CommandFactory;
-    use tempfile::tempdir;
-
-    #[test]
-    fn test_cli_parsing() {
-        // Verify CLI structure is valid
-        Cli::command().debug_assert();
-
-        let help = Cli::command().render_long_help().to_string();
-        for internal_reference in ["issue #", "PR #", "/issues/", "/pull/"] {
-            assert!(
-                !help.contains(internal_reference),
-                "help contains internal tracking reference {internal_reference:?}"
-            );
-        }
+fn confirm_security_key_output(path: &std::path::Path, yes: bool) -> Result<Option<bool>> {
+    use keygen::security_key::{check_output, public_path};
+    // Inspect both files, including dangling links, before any prompt.
+    check_output(path, true)?;
+    if yes {
+        return Ok(Some(true));
     }
-
-    #[test]
-    fn test_cli_defaults() {
-        let cli = Cli::try_parse_from(["bssh-keygen"]).unwrap();
-        assert_eq!(cli.key_type, "ed25519");
-        assert_eq!(cli.bits, 4096);
-        assert!(cli.output.is_none());
-        assert!(cli.comment.is_none());
-        assert!(!cli.yes);
-        assert!(!cli.quiet);
+    if !path.exists() && !public_path(path).exists() {
+        return Ok(Some(false));
     }
-
-    #[test]
-    fn test_cli_ed25519() {
-        let cli = Cli::try_parse_from(["bssh-keygen", "-t", "ed25519"]).unwrap();
-        assert_eq!(cli.key_type, "ed25519");
-    }
-
-    #[test]
-    fn test_cli_rsa() {
-        let cli = Cli::try_parse_from(["bssh-keygen", "-t", "rsa", "-b", "2048"]).unwrap();
-        assert_eq!(cli.key_type, "rsa");
-        assert_eq!(cli.bits, 2048);
-    }
-
-    #[test]
-    fn test_cli_output_file() {
-        let cli = Cli::try_parse_from(["bssh-keygen", "-f", "/tmp/my_key"]).unwrap();
-        assert_eq!(cli.output, Some(PathBuf::from("/tmp/my_key")));
-    }
-
-    #[test]
-    fn test_cli_comment() {
-        let cli = Cli::try_parse_from(["bssh-keygen", "-C", "user@host"]).unwrap();
-        assert_eq!(cli.comment, Some("user@host".to_string()));
-    }
-
-    #[test]
-    fn test_cli_flags() {
-        let cli = Cli::try_parse_from(["bssh-keygen", "-y", "-q"]).unwrap();
-        assert!(cli.yes);
-        assert!(cli.quiet);
-    }
-
-    #[test]
-    fn test_cli_verbose() {
-        let cli = Cli::try_parse_from(["bssh-keygen", "-vvv"]).unwrap();
-        assert_eq!(cli.verbose, 3);
-    }
-
-    #[test]
-    fn test_cli_full_options() {
-        let cli = Cli::try_parse_from([
-            "bssh-keygen",
-            "-t",
-            "rsa",
-            "-b",
-            "4096",
-            "-f",
-            "/tmp/test_key",
-            "-C",
-            "test@example.com",
-            "-y",
-            "-v",
-        ])
-        .unwrap();
-
-        assert_eq!(cli.key_type, "rsa");
-        assert_eq!(cli.bits, 4096);
-        assert_eq!(cli.output, Some(PathBuf::from("/tmp/test_key")));
-        assert_eq!(cli.comment, Some("test@example.com".to_string()));
-        assert!(cli.yes);
-        assert!(!cli.quiet);
-        assert_eq!(cli.verbose, 1);
-    }
-
-    #[test]
-    fn test_cli_long_options() {
-        let cli = Cli::try_parse_from([
-            "bssh-keygen",
-            "--type",
-            "ed25519",
-            "--file",
-            "/tmp/key",
-            "--comment",
-            "my key",
-            "--yes",
-            "--quiet",
-        ])
-        .unwrap();
-
-        assert_eq!(cli.key_type, "ed25519");
-        assert_eq!(cli.output, Some(PathBuf::from("/tmp/key")));
-        assert_eq!(cli.comment, Some("my key".to_string()));
-        assert!(cli.yes);
-        assert!(cli.quiet);
-    }
-
-    #[test]
-    fn test_create_ssh_directory() {
-        let temp_dir = tempdir().unwrap();
-        let ssh_dir = temp_dir.path().join(".ssh");
-
-        let result = create_ssh_directory(&ssh_dir);
-        assert!(result.is_ok());
-        assert!(ssh_dir.exists());
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let metadata = std::fs::metadata(&ssh_dir).unwrap();
-            let permissions = metadata.permissions();
-            assert_eq!(permissions.mode() & 0o777, 0o700);
-        }
-    }
+    print!(
+        "{} or its public key already exists. Overwrite? (y/n) ",
+        path.display()
+    );
+    io::stdout().flush()?;
+    let mut response = String::new();
+    io::stdin().read_line(&mut response)?;
+    Ok(response.trim().eq_ignore_ascii_case("y").then_some(true))
 }
+
+fn run_security_key(cli: &Cli) -> Result<()> {
+    use bssh::ssh::security_key::{
+        SecurityKeyError, SkAlgorithm, open_provider, resolve_provider_from_env,
+    };
+    use keygen::security_key::{self as sk, EnrollmentOptions};
+    use zeroize::Zeroizing;
+
+    let options = EnrollmentOptions::parse(&cli.sk_options)?;
+    if cli.download_resident {
+        anyhow::ensure!(
+            cli.sk_options
+                .iter()
+                .all(|option| option.starts_with("device=")),
+            "-K only accepts the device security-key option"
+        );
+        let provider = open_provider(&resolve_provider_from_env(cli.provider.as_deref()))?;
+        let pin = Zeroizing::new(rpassword::prompt_password("Enter PIN for authenticator: ")?);
+        if !cli.quiet {
+            println!("You may need to touch your authenticator to authorize key download.");
+        }
+        let keys = provider.load_resident_keys(Some(pin.as_str()), options.device.as_deref())?;
+        drop(pin);
+        if keys.is_empty() && !cli.quiet {
+            println!("No keys to download");
+        }
+        let directory = std::env::current_dir()?;
+        let names = sk::resident_filenames(&keys);
+        for (key, name) in keys.into_iter().zip(names) {
+            let path = directory.join(name);
+            let Some(overwrite) = confirm_security_key_output(&path, cli.yes)? else {
+                break;
+            };
+            let saved = sk::save_resident_at(key, &path, overwrite)?;
+            if !cli.quiet {
+                println!(
+                    "Saved security key to {}\n{}",
+                    saved.path.display(),
+                    saved.fingerprint
+                );
+            }
+        }
+        return Ok(());
+    }
+    let (algorithm, basename) = match cli.key_type.as_str() {
+        "ed25519-sk" => (SkAlgorithm::Ed25519, "id_ed25519_sk"),
+        "ecdsa-sk" => (SkAlgorithm::EcdsaSha2NistP256, "id_ecdsa_sk"),
+        _ => anyhow::bail!("Unsupported security-key type"),
+    };
+    let output = match &cli.output {
+        Some(path) => path.clone(),
+        None => {
+            let directory = dirs::home_dir()
+                .context("Cannot determine home directory")?
+                .join(".ssh");
+            if !directory.exists() {
+                create_ssh_directory(&directory)?;
+            }
+            directory.join(basename)
+        }
+    };
+    if let Some(parent) = output.parent().filter(|path| !path.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent)?;
+    }
+    let Some(overwrite) = confirm_security_key_output(&output, cli.yes)? else {
+        return Ok(());
+    };
+    let challenge = options.challenge_bytes()?;
+    let request = options.request(algorithm, &challenge);
+    request.validate()?;
+    let provider = open_provider(&resolve_provider_from_env(cli.provider.as_deref()))?;
+    if !cli.quiet {
+        println!("You may need to touch your authenticator to authorize key generation.");
+    }
+    let result = sk::generate(
+        provider.as_ref(),
+        &request,
+        None,
+        &output,
+        cli.comment.as_deref(),
+        overwrite,
+    );
+    let saved = match result {
+        Err(error)
+            if matches!(
+                error.downcast_ref::<SecurityKeyError>(),
+                Some(SecurityKeyError::PinRequired)
+            ) =>
+        {
+            let pin = Zeroizing::new(rpassword::prompt_password("Enter PIN for authenticator: ")?);
+            sk::generate(
+                provider.as_ref(),
+                &request,
+                Some(pin.as_str()),
+                &output,
+                cli.comment.as_deref(),
+                overwrite,
+            )?
+        }
+        result => result?,
+    };
+    if !cli.quiet {
+        println!(
+            "Your identification has been saved in {}",
+            saved.path.display()
+        );
+        println!(
+            "Your public key has been saved in {}",
+            sk::public_path(&saved.path).display()
+        );
+        println!(
+            "The key fingerprint is:\n{}\n\nPublic key:\n{}",
+            saved.fingerprint, saved.public_key_openssh
+        );
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "tests/keygen.rs"]
+mod tests;

@@ -41,7 +41,9 @@
 //!   bssh holds in memory, including decrypted keys and passwords for other
 //!   hosts. Only configure a provider library you would trust with them.
 
+mod enrollment;
 mod external;
+pub use enrollment::{SK_FLAG_RESIDENT_KEY, SkEnrollRequest, SkEnrollResponse, SkResidentKey};
 pub mod internal;
 mod signature;
 
@@ -183,6 +185,24 @@ pub trait SecurityKeyProvider: Send + Sync {
         request: &SkSignRequest<'_>,
         pin: Option<&str>,
     ) -> Result<SkSignResponse, SecurityKeyError>;
+
+    /// Create an authenticator-hosted credential.
+    fn enroll(
+        &self,
+        _request: &SkEnrollRequest<'_>,
+        _pin: Option<&str>,
+    ) -> Result<SkEnrollResponse, SecurityKeyError> {
+        Err(SecurityKeyError::Unsupported)
+    }
+
+    /// Enumerate SSH resident credentials after PIN verification.
+    fn load_resident_keys(
+        &self,
+        _pin: Option<&str>,
+        _device: Option<&str>,
+    ) -> Result<Vec<SkResidentKey>, SecurityKeyError> {
+        Err(SecurityKeyError::Unsupported)
+    }
 
     /// Human-readable origin for diagnostics.
     fn describe(&self) -> String;

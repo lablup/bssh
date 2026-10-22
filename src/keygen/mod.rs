@@ -34,6 +34,7 @@
 
 pub mod ed25519;
 pub mod rsa;
+pub mod security_key;
 
 use anyhow::Result;
 use std::path::Path;

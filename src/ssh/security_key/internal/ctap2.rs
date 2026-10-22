@@ -98,6 +98,7 @@ pub struct AuthenticatorInfo {
     pub versions: Vec<String>,
     pub options: BTreeMap<String, bool>,
     pub pin_protocols: Vec<u64>,
+    pub extensions: Vec<String>,
 }
 
 impl AuthenticatorInfo {
@@ -147,6 +148,16 @@ pub fn parse_get_info(response: &[u8]) -> Result<AuthenticatorInfo, CtapError> {
         versions,
         options,
         pin_protocols,
+        extensions: map
+            .get_int(2)
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|value| value.as_text().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default(),
     })
 }
 
@@ -331,6 +342,22 @@ pub fn encode_client_pin_get_token(
     pin_hash_enc: &[u8],
     permissions: Option<(i64, &str)>,
 ) -> Vec<u8> {
+    encode_client_pin_scoped_token(
+        protocol,
+        platform_key,
+        pin_hash_enc,
+        permissions.map(|(bits, rp)| (bits, Some(rp))),
+    )
+}
+
+/// A credential-management token deliberately has no relying-party restriction.
+#[must_use]
+pub fn encode_client_pin_scoped_token(
+    protocol: u64,
+    platform_key: &CosePublicKey,
+    pin_hash_enc: &[u8],
+    permissions: Option<(i64, Option<&str>)>,
+) -> Vec<u8> {
     let subcommand = if permissions.is_some() {
         PIN_SUB_GET_PIN_TOKEN_WITH_PERMISSIONS
     } else {
@@ -344,7 +371,9 @@ pub fn encode_client_pin_get_token(
     ];
     if let Some((bits, rp_id)) = permissions {
         pairs.push((Value::Int(9), Value::Int(bits)));
-        pairs.push((Value::Int(10), Value::from(rp_id)));
+        if let Some(rp_id) = rp_id {
+            pairs.push((Value::Int(10), Value::from(rp_id)));
+        }
     }
     let mut out = vec![CMD_CLIENT_PIN];
     out.extend(cbor::encode(&Value::Map(pairs)));
