@@ -162,6 +162,7 @@ impl MockAuthenticator {
             .get_int(9)
             .and_then(Value::as_int)
             .and_then(|bits| Some((bits, map.get_int(10)?.as_text()?.to_string())));
+        let has_permissions = permissions.is_some();
         self.requests.push(Request::ClientPin {
             subcommand,
             protocol: protocol_number,
@@ -185,17 +186,30 @@ impl MockAuthenticator {
                 self.agreement = Some(agreement);
                 Some(reply)
             }
-            0x05 | 0x09 => {
+            0x05 | 0x06 | 0x09 => {
                 let platform = CosePublicKey::from_value(map.get_int(3)?).ok()?;
                 let secret: SharedSecret = self
                     .agreement
                     .as_ref()?
                     .shared_secret(protocol, &platform)
                     .ok()?;
-                let pin_hash = secret.decrypt(map.get_int(6)?.as_bytes()?).ok()?;
-                let expected = Sha256::digest(config.pin.as_deref()?.as_bytes());
-                if pin_hash[..] != expected[..16] {
-                    return Some(vec![status::PIN_INVALID]);
+                if subcommand == 0x06 {
+                    if let Some(status) = self.uv_token_status {
+                        return Some(vec![status]);
+                    }
+                    if config.options.get("uv") != Some(&true)
+                        || config.options.get("pinUvAuthToken") != Some(&true)
+                        || !has_permissions
+                        || map.get_int(6).is_some()
+                    {
+                        return Some(vec![status::INVALID_OPTION]);
+                    }
+                } else {
+                    let pin_hash = secret.decrypt(map.get_int(6)?.as_bytes()?).ok()?;
+                    let expected = Sha256::digest(config.pin.as_deref()?.as_bytes());
+                    if pin_hash[..] != expected[..16] {
+                        return Some(vec![status::PIN_INVALID]);
+                    }
                 }
                 let token = secret
                     .encrypt(&self.pin_token, &mut rand::rng())

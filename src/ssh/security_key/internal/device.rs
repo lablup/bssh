@@ -24,7 +24,7 @@ use zeroize::Zeroizing;
 
 use super::ctap2::{self, AuthenticatorInfo, GetAssertionRequest, PERMISSION_GET_ASSERTION};
 use super::ctaphid::{CMD_CBOR, CMD_MSG, CtapHidChannel, HidBackend, HidDeviceInfo, remaining};
-use super::pin_protocol::{PinProtocol, PlatformKeyAgreement, authenticate_with};
+use super::pin_protocol::{PinProtocol, PlatformKeyAgreement, SharedSecret, authenticate_with};
 use super::u2f;
 use super::{CtapError, UserPresence};
 
@@ -182,6 +182,11 @@ impl Authenticator {
                 let param = Zeroizing::new(authenticate_with(protocol, &token, client_data_hash));
                 Some((param, protocol))
             }
+            None if request.uv == Some(true) && info.supports_permissions() => {
+                let (token, protocol) = self.uv_token(info, request.rp_id, deadline, rng)?;
+                let param = Zeroizing::new(authenticate_with(protocol, &token, client_data_hash));
+                Some((param, protocol))
+            }
             None => None,
         };
         let encoded = ctap2::encode_get_assertion(&GetAssertionRequest {
@@ -189,7 +194,9 @@ impl Authenticator {
             client_data_hash,
             credential_id: request.credential_id,
             up: request.up,
-            uv: request.uv,
+            // A PIN/UV token proves verification; CTAP 2.1 requires the
+            // assertion's `uv` option to be omitted in this path.
+            uv: if pin_auth.is_some() { None } else { request.uv },
             pin_auth: pin_auth
                 .as_ref()
                 .map(|(param, protocol)| (&param[..], protocol.number())),
@@ -215,15 +222,7 @@ impl Authenticator {
         deadline: Instant,
         rng: &mut R,
     ) -> Result<(Zeroizing<Vec<u8>>, PinProtocol), CtapError> {
-        let protocol = PinProtocol::select(&info.pin_protocols);
-        let platform = PlatformKeyAgreement::generate(rng);
-        let reply = self.channel.transact(
-            CMD_CBOR,
-            &ctap2::encode_client_pin_key_agreement(protocol.number()),
-            Some(remaining(deadline)?),
-        )?;
-        let peer = ctap2::parse_key_agreement(&reply)?;
-        let secret = platform.shared_secret(protocol, &peer)?;
+        let (platform, secret, protocol) = self.key_agreement(info, deadline, rng)?;
         let pin_hash_enc = secret.encrypt_pin_hash(pin, rng)?;
         let permissions = info
             .supports_permissions()
@@ -240,6 +239,48 @@ impl Authenticator {
         )?;
         let token = secret.decrypt(&ctap2::parse_pin_token(&reply)?)?;
         Ok((token, protocol))
+    }
+
+    /// CTAP 2.1 `getPinUvAuthTokenUsingUvWithPermissions`: let the
+    /// authenticator perform built-in verification and issue a token without
+    /// a PIN or `pinHashEnc`.
+    fn uv_token<R: rand::CryptoRng + ?Sized>(
+        &mut self,
+        info: &AuthenticatorInfo,
+        rp_id: &str,
+        deadline: Instant,
+        rng: &mut R,
+    ) -> Result<(Zeroizing<Vec<u8>>, PinProtocol), CtapError> {
+        let (platform, secret, protocol) = self.key_agreement(info, deadline, rng)?;
+        let reply = self.channel.transact(
+            CMD_CBOR,
+            &ctap2::encode_client_pin_get_uv_token(
+                protocol.number(),
+                platform.public_key(),
+                (PERMISSION_GET_ASSERTION, rp_id),
+            ),
+            Some(remaining(deadline)?),
+        )?;
+        let token = secret.decrypt(&ctap2::parse_pin_token(&reply)?)?;
+        Ok((token, protocol))
+    }
+
+    fn key_agreement<R: rand::CryptoRng + ?Sized>(
+        &mut self,
+        info: &AuthenticatorInfo,
+        deadline: Instant,
+        rng: &mut R,
+    ) -> Result<(PlatformKeyAgreement, SharedSecret, PinProtocol), CtapError> {
+        let protocol = PinProtocol::select(&info.pin_protocols);
+        let platform = PlatformKeyAgreement::generate(rng);
+        let reply = self.channel.transact(
+            CMD_CBOR,
+            &ctap2::encode_client_pin_key_agreement(protocol.number()),
+            Some(remaining(deadline)?),
+        )?;
+        let peer = ctap2::parse_key_agreement(&reply)?;
+        let secret = platform.shared_secret(protocol, &peer)?;
+        Ok((platform, secret, protocol))
     }
 
     /// `u2f_authenticate`: look the key handle up with a check-only request,

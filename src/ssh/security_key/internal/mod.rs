@@ -314,5 +314,9 @@ mod tests;
 mod selection_tests;
 
 #[cfg(test)]
+#[path = "uv_token_tests.rs"]
+mod uv_token_tests;
+
+#[cfg(test)]
 #[path = "robustness_tests.rs"]
 mod robustness_tests;
