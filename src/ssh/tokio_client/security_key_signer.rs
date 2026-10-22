@@ -43,7 +43,7 @@ use crate::ssh::security_key::{
 };
 
 /// Everything the provider needs from an `sk-*` private key file.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(super) struct SecurityKeyIdentity {
     pub(super) algorithm: SkAlgorithm,
     application: String,
@@ -51,6 +51,24 @@ pub(super) struct SecurityKeyIdentity {
     flags: u8,
     fingerprint: String,
     pub(super) path: PathBuf,
+}
+
+/// The key handle is the authenticator's wrapped credential, so `Debug`
+/// (which reaches `-vvv` traces through the signer) prints only its length.
+impl std::fmt::Debug for SecurityKeyIdentity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SecurityKeyIdentity")
+            .field("algorithm", &self.algorithm)
+            .field("application", &self.application)
+            .field(
+                "key_handle",
+                &format_args!("<redacted, {} bytes>", self.key_handle.len()),
+            )
+            .field("flags", &self.flags)
+            .field("fingerprint", &self.fingerprint)
+            .field("path", &self.path)
+            .finish()
+    }
 }
 
 impl SecurityKeyIdentity {
@@ -264,6 +282,18 @@ impl SecurityKeySigner {
             path: self.identity.path.clone(),
             reason,
         };
+        // `sshsk_sign` refuses a malformed key before opening the provider;
+        // doing the same here also keeps the touch notice from appearing for
+        // a signature that will never be attempted.
+        SkSignRequest {
+            algorithm: self.identity.algorithm,
+            data: &data,
+            application: &self.identity.application,
+            key_handle: &self.identity.key_handle,
+            flags: self.identity.flags,
+        }
+        .validate()
+        .map_err(|error| failed(error.to_string()))?;
         let notify = self.interactive && self.identity.wants_user_presence();
         let notify = notify && std::io::stderr().is_terminal();
         let data = Arc::new(data);
@@ -481,6 +511,43 @@ mod tests {
         assert_eq!(key_handle, &[1, 2, 3, 4]);
         assert_eq!(*flags, 0x01);
         assert!(!had_pin);
+    }
+
+    #[test]
+    fn identity_debug_output_redacts_the_key_handle() {
+        let public = SkEd25519Public::new(Ed25519PublicKey([9u8; 32]), "ssh:example");
+        let handle = vec![0xde, 0xad, 0xbe, 0xef, 0x42];
+        let private = SkEd25519Private::new(public, 0x01, handle).unwrap();
+        let key = PrivateKey::new(KeypairData::SkEd25519(private), "test").unwrap();
+        let identity = SecurityKeyIdentity::from_private_key(&key, Path::new("/k")).unwrap();
+        let rendered = format!("{identity:?}");
+        assert!(rendered.contains("<redacted, 5 bytes>"), "{rendered}");
+        for leaked in ["222, 173, 190, 239", "0xde", "de, ad", "deadbeef"] {
+            assert!(!rendered.contains(leaked), "{rendered}");
+        }
+        let signer =
+            SecurityKeySigner::new(Arc::new(RecordingProvider::default()), identity, false);
+        assert!(!format!("{signer:?}").contains("222, 173, 190, 239"));
+    }
+
+    #[tokio::test]
+    async fn a_key_without_an_application_never_reaches_the_provider() {
+        let public = SkEd25519Public::new(Ed25519PublicKey([9u8; 32]), "");
+        let private = SkEd25519Private::new(public, 0x01, vec![1, 2]).unwrap();
+        let key = PrivateKey::new(KeypairData::SkEd25519(private), "test").unwrap();
+        let identity = SecurityKeyIdentity::from_private_key(&key, Path::new("/k")).unwrap();
+        let provider = Arc::new(RecordingProvider::default());
+        let signer = SecurityKeySigner::new(provider.clone(), identity, false);
+        let error = signer.sign_blob(vec![1]).await.unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                super::super::Error::SecurityKeySignFailed { reason, .. }
+                    if reason.contains("no application")
+            ),
+            "{error:?}"
+        );
+        assert!(provider.calls.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

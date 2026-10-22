@@ -29,6 +29,17 @@
 //! helper would add a private wire protocol without changing what code runs
 //! as the user. Provider calls block on touch and PIN entry, so callers run
 //! them on a blocking thread (see `tokio_client::security_key_signer`).
+//!
+//! Running in-process has costs the helper avoids, and they are accepted:
+//!
+//! - An `sk_sign` call that has started cannot be cancelled. A provider that
+//!   hangs keeps its blocking thread and the process-wide provider lock until
+//!   it returns, so no other security-key signature in the process can
+//!   proceed meanwhile. Connections queued behind it give up at their
+//!   `ConnectTimeout` without ever reaching the provider.
+//! - The provider shares bssh's address space, so it can read everything
+//!   bssh holds in memory, including decrypted keys and passwords for other
+//!   hosts. Only configure a provider library you would trust with them.
 
 mod external;
 mod signature;
@@ -87,6 +98,17 @@ pub struct SkSignRequest<'a> {
     pub application: &'a str,
     pub key_handle: &'a [u8],
     pub flags: u8,
+}
+
+impl SkSignRequest<'_> {
+    /// The argument checks `sshsk_sign` makes before it opens the provider:
+    /// a key without an application string is refused rather than signed.
+    pub fn validate(&self) -> Result<(), SecurityKeyError> {
+        if self.application.is_empty() {
+            return Err(SecurityKeyError::InvalidRequest("key has no application"));
+        }
+        Ok(())
+    }
 }
 
 /// Where `SecurityKeyProvider` points after `$VAR` expansion.
@@ -357,6 +379,23 @@ mod tests {
         assert_eq!(
             SecurityKeyError::from_sk_code(-5),
             SecurityKeyError::SignFailed(-5)
+        );
+    }
+
+    #[test]
+    fn requests_without_an_application_are_invalid() {
+        let mut request = SkSignRequest {
+            algorithm: SkAlgorithm::Ed25519,
+            data: b"data",
+            application: "ssh:",
+            key_handle: &[1, 2],
+            flags: SK_FLAG_USER_PRESENCE_REQUIRED,
+        };
+        assert_eq!(request.validate(), Ok(()));
+        request.application = "";
+        assert_eq!(
+            request.validate(),
+            Err(SecurityKeyError::InvalidRequest("key has no application"))
         );
     }
 

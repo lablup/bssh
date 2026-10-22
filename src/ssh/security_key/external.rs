@@ -17,10 +17,21 @@
 //! The ABI is the pinned OpenSSH 10.3 `sk-api.h` (version `0x000a0000`).
 //! Only `sk_sign` is called; `sk_enroll` and `sk_load_resident_keys` must
 //! exist (as `sshsk_open` requires) but enrollment stays with `ssh-keygen`.
+//!
+//! A library is opened with `RTLD_NOW | RTLD_LOCAL`, as `sshsk_open` opens it
+//! with `RTLD_NOW`, so an unresolved symbol fails the load instead of
+//! aborting bssh at the first `sk_sign`. Each library is opened once per
+//! canonical path and kept for the life of the process: OpenSSH's helper
+//! process exits after one signature, while bssh would otherwise rerun the
+//! library's initializers and `dlclose` it for every identity on every
+//! connection, which leaves thread-local destructors pointing into unmapped
+//! code.
 
+use std::collections::HashMap;
 use std::ffi::{CString, c_char, c_int, c_void};
 use std::path::{Path, PathBuf};
 use std::ptr;
+use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
 use libloading::{Library, Symbol};
 use zeroize::Zeroizing;
@@ -59,13 +70,22 @@ type SkSignFn = unsafe extern "C" fn(
     sign_response: *mut *mut RawSignResponse,
 ) -> c_int;
 
-/// A provider library kept open for the life of the signer.
+/// A validated provider library. Instances live in [`LOADED_LIBRARIES`] and
+/// are never dropped, so the library is never unmapped while `sign` exists.
+struct LoadedLibrary {
+    sign: SkSignFn,
+    /// Held so the code `sign` points into stays mapped.
+    _library: Library,
+}
+
+/// Validated provider libraries by canonical path, for the process lifetime.
+static LOADED_LIBRARIES: LazyLock<Mutex<HashMap<PathBuf, Arc<LoadedLibrary>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// An sk-api library as named by one `SecurityKeyProvider` setting.
 pub(super) struct ExternalProvider {
     path: PathBuf,
-    sign: SkSignFn,
-    /// Declared after `sign` so the function pointer is never used once the
-    /// library is unmapped; both go away together.
-    _library: Library,
+    loaded: Arc<LoadedLibrary>,
 }
 
 impl std::fmt::Debug for ExternalProvider {
@@ -77,22 +97,73 @@ impl std::fmt::Debug for ExternalProvider {
 }
 
 impl ExternalProvider {
+    #[cfg(test)]
+    fn _loaded_for_tests(&self) -> &Library {
+        &self.loaded._library
+    }
+
     pub(super) fn load(path: &Path) -> Result<Self, SecurityKeyError> {
-        // SAFETY: loading a shared object runs its initializers. The path is
-        // the user's own `SecurityKeyProvider` setting (or `$SSH_SK_PROVIDER`),
-        // the same trust OpenSSH extends when `ssh-sk-helper` dlopens it.
-        let library =
-            unsafe { Library::new(path) }.map_err(|error| SecurityKeyError::LoadFailed {
-                path: path.to_path_buf(),
-                reason: describe_load_error(&error),
-            })?;
-        let sign = bind_symbols(path, &library)?;
+        let loaded = load_cached(&LOADED_LIBRARIES, path, |canonical| {
+            let library =
+                open_library(canonical).map_err(|error| SecurityKeyError::LoadFailed {
+                    path: path.to_path_buf(),
+                    reason: describe_load_error(&error),
+                })?;
+            let sign = bind_symbols(path, &library)?;
+            Ok(LoadedLibrary {
+                sign,
+                _library: library,
+            })
+        })?;
         Ok(Self {
             path: path.to_path_buf(),
-            sign,
-            _library: library,
+            loaded,
         })
     }
+}
+
+/// Return the entry for `path`'s canonical form, running `load` only when
+/// none exists yet. A failed load is not remembered, so a provider that is
+/// installed or fixed later is picked up by the next connection.
+fn load_cached<T, F>(
+    cache: &Mutex<HashMap<PathBuf, Arc<T>>>,
+    path: &Path,
+    load: F,
+) -> Result<Arc<T>, SecurityKeyError>
+where
+    F: FnOnce(&Path) -> Result<T, SecurityKeyError>,
+{
+    // `lib_contains_symbol` opens the configured path itself before
+    // `sshsk_open` dlopens it, so a bare file name names a file relative to
+    // the working directory, never one found through the loader search path.
+    let canonical = std::fs::canonicalize(path).map_err(|error| SecurityKeyError::LoadFailed {
+        path: path.to_path_buf(),
+        reason: error.to_string(),
+    })?;
+    let mut cache = cache.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(loaded) = cache.get(&canonical) {
+        return Ok(Arc::clone(loaded));
+    }
+    let loaded = Arc::new(load(&canonical)?);
+    cache.insert(canonical, Arc::clone(&loaded));
+    Ok(loaded)
+}
+
+/// `dlopen(path, RTLD_NOW | RTLD_LOCAL)`.
+#[cfg(unix)]
+fn open_library(path: &Path) -> Result<Library, libloading::Error> {
+    use libloading::os::unix::{Library as UnixLibrary, RTLD_LOCAL, RTLD_NOW};
+    // SAFETY: loading a shared object runs its initializers. The path is the
+    // user's own `SecurityKeyProvider` setting (or `$SSH_SK_PROVIDER`), the
+    // same trust OpenSSH extends when `ssh-sk-helper` dlopens it.
+    unsafe { UnixLibrary::open(Some(path), RTLD_NOW | RTLD_LOCAL) }.map(Library::from)
+}
+
+/// `LoadLibraryExW`, which resolves every import at load time.
+#[cfg(not(unix))]
+fn open_library(path: &Path) -> Result<Library, libloading::Error> {
+    // SAFETY: as for the Unix variant; the path is the user's own setting.
+    unsafe { Library::new(path) }
 }
 
 /// Explain a failed `dlopen`, naming the static-linking limitation of musl
@@ -176,14 +247,13 @@ impl SecurityKeyProvider for ExternalProvider {
         request: &SkSignRequest<'_>,
         pin: Option<&str>,
     ) -> Result<SkSignResponse, SecurityKeyError> {
+        request.validate()?;
         let application = CString::new(request.application)
             .map_err(|_| SecurityKeyError::InvalidRequest("application contains NUL"))?;
-        let pin = pin
-            .map(|pin| {
-                CString::new(pin).map_err(|_| SecurityKeyError::InvalidRequest("PIN contains NUL"))
-            })
-            .transpose()?;
-        let pin_ptr = pin.as_ref().map_or(ptr::null(), |pin| pin.as_ptr());
+        let pin = pin.map(pin_buffer).transpose()?;
+        let pin_ptr = pin
+            .as_ref()
+            .map_or(ptr::null(), |pin| pin.as_ptr().cast::<c_char>());
         let mut response: *mut RawSignResponse = ptr::null_mut();
 
         // SAFETY: every pointer is valid for the stated length for the whole
@@ -192,7 +262,7 @@ impl SecurityKeyProvider for ExternalProvider {
         // in `sshsk_sign`, and `response` is a valid out-pointer the provider
         // fills with memory it allocated with malloc.
         let code = unsafe {
-            (self.sign)(
+            (self.loaded.sign)(
                 request.algorithm.api_code(),
                 request.data.as_ptr(),
                 request.data.len(),
@@ -205,9 +275,8 @@ impl SecurityKeyProvider for ExternalProvider {
                 &mut response,
             )
         };
-        if let Some(pin) = pin {
-            drop(Zeroizing::new(pin.into_bytes()));
-        }
+        // Scrub the PIN as soon as the provider is done with it.
+        drop(pin);
         if code != 0 {
             if !response.is_null() {
                 // SAFETY: a non-null response was allocated by the provider
@@ -226,6 +295,9 @@ impl SecurityKeyProvider for ExternalProvider {
         // for us; it is read once and then released exactly as
         // `sshsk_free_sign_response` does.
         let copied = unsafe { copy_response(response) };
+        // SAFETY: `response` is the non-null, provider-allocated struct read
+        // above; `copy_response` copied out of it without keeping pointers,
+        // and it is not touched again after this call.
         unsafe { free_response(response) };
         copied
     }
@@ -233,6 +305,22 @@ impl SecurityKeyProvider for ExternalProvider {
     fn describe(&self) -> String {
         self.path.display().to_string()
     }
+}
+
+/// The PIN as a NUL-terminated C string in memory that is wiped on drop.
+///
+/// The NUL check runs before anything is copied: `CString::new` would hand a
+/// rejected PIN back inside its error, and that copy would be freed without
+/// being wiped. The capacity is reserved up front so no reallocation leaves
+/// an unwiped copy behind either.
+fn pin_buffer(pin: &str) -> Result<Zeroizing<Vec<u8>>, SecurityKeyError> {
+    if pin.as_bytes().contains(&0) {
+        return Err(SecurityKeyError::InvalidRequest("PIN contains NUL"));
+    }
+    let mut buffer = Zeroizing::new(Vec::with_capacity(pin.len() + 1));
+    buffer.extend_from_slice(pin.as_bytes());
+    buffer.push(0);
+    Ok(buffer)
 }
 
 /// Copy a component out of provider memory after validating pointer and
@@ -267,6 +355,8 @@ unsafe fn copy_response(
 ) -> Result<SkSignResponse, SecurityKeyError> {
     // SAFETY: the caller guarantees `response` is a valid, initialized struct.
     let raw = unsafe { &*response };
+    // SAFETY: the provider owns each component as `len` bytes at its pointer
+    // (or NULL); `copy_component` validates the pair before reading.
     let sig_r = unsafe { copy_component(raw.sig_r, raw.sig_r_len, "sig_r invalid") }?;
     let sig_s = unsafe { copy_component(raw.sig_s, raw.sig_s_len, "sig_s invalid") }?;
     Ok(SkSignResponse {
@@ -306,119 +396,5 @@ unsafe fn free_response(response: *mut RawSignResponse) {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn missing_or_unloadable_libraries_report_a_load_failure() {
-        let directory = tempfile::tempdir().unwrap();
-        let missing = directory.path().join("no-such-provider.so");
-        match ExternalProvider::load(&missing).unwrap_err() {
-            SecurityKeyError::LoadFailed { path, reason } => {
-                assert_eq!(path, missing);
-                assert!(!reason.is_empty());
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
-
-        let garbage = directory.path().join("garbage.so");
-        std::fs::write(&garbage, b"this is not an ELF or Mach-O image").unwrap();
-        assert!(matches!(
-            ExternalProvider::load(&garbage).unwrap_err(),
-            SecurityKeyError::LoadFailed { .. }
-        ));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn a_library_without_sk_api_version_is_not_a_provider() {
-        let library: Library = libloading::os::unix::Library::this().into();
-        let path = Path::new("/self");
-        match bind_symbols(path, &library).unwrap_err() {
-            SecurityKeyError::NotAProvider {
-                path: reported,
-                reason,
-            } => {
-                assert_eq!(reported, path);
-                assert!(reason.contains("sk_api_version"), "{reason}");
-            }
-            other => panic!("unexpected error: {other:?}"),
-        }
-        // The handle must not be closed: it is the running program.
-        std::mem::forget(library);
-    }
-
-    #[test]
-    fn provider_validation_enforces_version_and_operation_symbols() {
-        let path = Path::new("/p.so");
-        let all = |_: &[u8]| Ok(());
-        assert!(validate_provider(path, super::super::SK_API_VERSION_MAJOR, all).is_ok());
-
-        let error = validate_provider(path, 0x0009_0000, all).unwrap_err();
-        assert!(matches!(
-            error,
-            SecurityKeyError::UnsupportedVersion {
-                version: 0x0009_0000,
-                ..
-            }
-        ));
-
-        for missing in ["sk_enroll\0", "sk_load_resident_keys\0", "sk_sign\0"] {
-            let error = validate_provider(path, super::super::SK_API_VERSION_MAJOR, |name| {
-                if name == missing.as_bytes() {
-                    Err(format!("undefined symbol {missing}"))
-                } else {
-                    Ok(())
-                }
-            })
-            .unwrap_err();
-            match error {
-                SecurityKeyError::NotAProvider { reason, .. } => {
-                    assert!(reason.contains(missing.trim_end_matches('\0')), "{reason}");
-                }
-                other => panic!("unexpected error: {other:?}"),
-            }
-        }
-    }
-
-    #[test]
-    fn musl_hint_only_appears_on_static_builds() {
-        let error = libloading::Error::DlOpenUnknown;
-        let reason = describe_load_error(&error);
-        assert_eq!(
-            reason.contains("statically linked"),
-            cfg!(target_env = "musl")
-        );
-    }
-
-    #[test]
-    fn response_components_are_validated_before_being_read() {
-        let error = unsafe { copy_component(ptr::null(), 32, "sig_r invalid") }.unwrap_err();
-        assert_eq!(error, SecurityKeyError::InvalidResponse("sig_r invalid"));
-        let bytes = [7u8; 4];
-        let error =
-            unsafe { copy_component(bytes.as_ptr(), MAX_COMPONENT_LEN + 1, "sig_s invalid") }
-                .unwrap_err();
-        assert_eq!(error, SecurityKeyError::InvalidResponse("sig_s invalid"));
-        let copied =
-            unsafe { copy_component(bytes.as_ptr(), bytes.len(), "sig_r invalid") }.unwrap();
-        assert_eq!(&copied[..], &bytes);
-        let empty = unsafe { copy_component(ptr::null(), 0, "sig_r invalid") }.unwrap();
-        assert!(empty.is_empty());
-    }
-
-    /// End-to-end sign through the OpenSSH regress `sk-dummy` middleware when
-    /// its build is present; this is the same library the regress suite uses.
-    #[test]
-    fn sk_dummy_provider_loads_and_reports_the_supported_version() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(
-            "target/openssh-regress/openssh-portable-V_10_3_P1/regress/misc/sk-dummy/sk-dummy.so",
-        );
-        if !path.exists() {
-            eprintln!("sk-dummy.so not built; skipping");
-            return;
-        }
-        let provider = ExternalProvider::load(&path).unwrap();
-        assert_eq!(provider.describe(), path.display().to_string());
-    }
-}
+#[path = "external_tests.rs"]
+mod tests;

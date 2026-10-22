@@ -20,6 +20,9 @@ use zeroize::Zeroizing;
 
 use super::{SecurityKeyError, SkAlgorithm};
 
+/// `crypto_sign_ed25519_BYTES`.
+const ED25519_SIGNATURE_LEN: usize = 64;
+
 /// The provider's `struct sk_sign_response`, copied out of C memory.
 ///
 /// `sig_s` is empty for Ed25519, whose whole signature travels in `sig_r`.
@@ -44,6 +47,22 @@ pub fn encode_signature(
         SkAlgorithm::Ed25519 => {
             if response.sig_r.is_empty() {
                 return Err(SecurityKeyError::InvalidResponse("missing sig_r"));
+            }
+            // An Ed25519 signature is exactly 64 bytes and travels whole in
+            // `sig_r`. The pinned `sshsk_ed25519_sig` only checks that
+            // `sig_r` is present, but `ssh_ed25519_sk_verify` rejects a longer
+            // one and a shorter one cannot verify, so a response of another
+            // shape, or one that also fills `sig_s`, is a broken provider and
+            // is refused before anything is sent to the server.
+            if response.sig_r.len() != ED25519_SIGNATURE_LEN {
+                return Err(SecurityKeyError::InvalidResponse(
+                    "Ed25519 sig_r is not 64 bytes",
+                ));
+            }
+            if !response.sig_s.is_empty() {
+                return Err(SecurityKeyError::InvalidResponse(
+                    "unexpected sig_s for Ed25519",
+                ));
             }
             response.sig_r.to_vec()
         }
@@ -138,6 +157,17 @@ mod tests {
         assert_eq!(
             encode_signature(SkAlgorithm::Ed25519, &response(&[], &[])).unwrap_err(),
             SecurityKeyError::InvalidResponse("missing sig_r")
+        );
+        for len in [32, 63, 65] {
+            assert_eq!(
+                encode_signature(SkAlgorithm::Ed25519, &response(&vec![1; len], &[])).unwrap_err(),
+                SecurityKeyError::InvalidResponse("Ed25519 sig_r is not 64 bytes"),
+                "sig_r of {len} bytes"
+            );
+        }
+        assert_eq!(
+            encode_signature(SkAlgorithm::Ed25519, &response(&[1; 64], &[2; 32])).unwrap_err(),
+            SecurityKeyError::InvalidResponse("unexpected sig_s for Ed25519")
         );
         assert_eq!(
             encode_signature(SkAlgorithm::EcdsaSha2NistP256, &response(&[1; 32], &[])).unwrap_err(),
