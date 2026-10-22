@@ -602,7 +602,7 @@ See [examples/mpi_exit_code.sh](examples/mpi_exit_code.sh) and [examples/health_
 bssh supports multiple authentication methods:
 
 ### SSH Key Authentication
-- **Default keys**: Automatically tries `~/.ssh/id_ed25519`, `~/.ssh/id_ed25519_sk`, `~/.ssh/id_rsa`, `~/.ssh/id_ecdsa`, `~/.ssh/id_ecdsa_sk`, `~/.ssh/id_dsa` (the `*_sk` FIDO keys need a `SecurityKeyProvider`)
+- **Default keys**: Automatically tries `~/.ssh/id_ed25519`, `~/.ssh/id_ed25519_sk`, `~/.ssh/id_rsa`, `~/.ssh/id_ecdsa`, `~/.ssh/id_ecdsa_sk`, `~/.ssh/id_dsa` (the `*_sk` FIDO keys sign with an attached authenticator through the built-in `SecurityKeyProvider internal`, or an sk-api library if configured)
 - **Custom key**: Use `-i` flag to specify a key file
 - **Encrypted keys**: Automatically detects and prompts for passphrase
 

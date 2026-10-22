@@ -78,6 +78,13 @@ libc = "0.2"
 # sk-api (FIDO security key) middleware libraries are dlopened in process;
 # see src/ssh/security_key for why no ssh-sk-helper style subprocess exists.
 libloading = "0.8"
+# The built-in `SecurityKeyProvider internal` (src/ssh/security_key/internal)
+# implements CTAPHID, CTAP2 getAssertion/clientPIN and the U2F fallback in
+# tree; these three only supply the PIN-protocol crypto and are already in the
+# dependency graph through russh/ssh-key, so they add no crate.
+p256 = { version = "0.14", features = ["ecdh", "ecdsa"] }
+aes = "0.9"
+cbc = { version = "0.2", features = ["alloc"] }
 ipnetwork = "0.21"
 bcrypt = "0.19"
 # `argon2` 0.5 uses `crypto-common` 0.1.7, which deliberately pins
@@ -100,13 +107,25 @@ tokio-rustls = "0.26"
 rustls-native-certs = "0.8"
 surge-ping = "0.9.1"
 
+# USB HID transport for the built-in security-key provider. Linux uses
+# hidapi's pure-Rust hidraw backend (sysfs enumeration, no libudev), so the
+# static musl release binaries keep building and no runtime library is added
+# to the Debian, PPA or Homebrew packaging. macOS compiles hidapi's IOKit
+# backend from the vendored C source and links only system frameworks.
+[target.'cfg(target_os = "linux")'.dependencies]
+hidapi = { version = "2.6.7", default-features = false, features = ["linux-native-basic-udev"] }
+
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3.7.0"
+hidapi = { version = "2.6.7", default-features = false }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
+# The mock FIDO authenticator signs Ed25519 assertions; already in the graph
+# through ssh-key.
+ed25519-dalek = "3.0"
 tempfile = "3.27.0"
 mockito = "1.7.2"
 tokio-test = "0.4"

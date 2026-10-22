@@ -239,7 +239,7 @@ fn default_dump_has_the_audited_full_keyword_shape() {
         "logverbose none",
         "obscurekeystroketiming yes",
         "revokedhostkeys none",
-        "securitykeyprovider $SSH_SK_PROVIDER",
+        "securitykeyprovider internal",
         "streamlocalbindmask 0177",
         "streamlocalbindunlink no",
         "tunnel false",

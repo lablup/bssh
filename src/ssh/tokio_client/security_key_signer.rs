@@ -124,12 +124,7 @@ pub(super) async fn open_security_key_provider(
             );
             return Err(unavailable(SecurityKeyError::NoProvider.to_string()));
         }
-        ProviderSource::Internal => {
-            let error = SecurityKeyError::InternalUnavailable;
-            crate::warningln!("SecurityKeyProvider internal: {error}");
-            return Err(unavailable(error.to_string()));
-        }
-        ProviderSource::Library(_) => {}
+        ProviderSource::Internal | ProviderSource::Library(_) => {}
     }
     let opened = tokio::task::spawn_blocking(move || open_provider(&source))
         .await
@@ -787,8 +782,9 @@ mod tests {
         drop(runtime);
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[tokio::test]
-    async fn disabled_and_internal_providers_are_skipped_before_offering_the_key() {
+    async fn disabled_providers_are_skipped_and_internal_opens_before_offering_the_key() {
         let path = Path::new("/home/u/.ssh/id_ed25519_sk");
         let error = open_security_key_provider(Some("none"), path)
             .await
@@ -799,15 +795,14 @@ mod tests {
         ));
         assert!(super::super::authentication::is_retryable_rejection(&error));
 
-        let error = open_security_key_provider(Some("internal"), path)
+        // `internal` (and the unset default) opens the built-in provider
+        // without touching any device; devices are looked up at sign time.
+        let provider = open_security_key_provider(Some("internal"), path)
             .await
-            .unwrap_err();
-        let message = error.to_string();
-        assert!(
-            message.contains("built-in security key support is not available"),
-            "{message}"
-        );
-        assert!(message.contains("id_ed25519_sk"), "{message}");
+            .unwrap();
+        assert_eq!(provider.describe(), "internal");
+        let provider = open_security_key_provider(None, path).await.unwrap();
+        assert_eq!(provider.describe(), "internal");
 
         let error = open_security_key_provider(Some("/nonexistent/provider.so"), path)
             .await
