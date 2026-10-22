@@ -335,3 +335,29 @@ fn signature_algorithm_policy_rejects_unknown_names_and_empty_results() {
             .contains("removed all supported algorithms")
     );
 }
+
+#[test]
+fn revoked_host_keys_list_is_dumped_on_one_line() {
+    let parsed =
+        SshConfig::parse("Host host\n    RevokedHostKeys /etc/ssh/revoked_a /etc/ssh/revoked_%h\n")
+            .unwrap();
+    let output = render_resolved_config("host", &parsed.find_host_config("host")).unwrap();
+    let lines: Vec<&str> = output
+        .lines()
+        .filter(|line| line.starts_with("revokedhostkeys "))
+        .collect();
+    assert_eq!(
+        lines,
+        vec!["revokedhostkeys /etc/ssh/revoked_a /etc/ssh/revoked_host"]
+    );
+    let reparsed = SshConfig::parse(&output).unwrap();
+    assert_eq!(
+        render_resolved_config("host", &reparsed.find_host_config("host")).unwrap(),
+        output
+    );
+
+    let none = SshConfig::parse("Host host\n    RevokedHostKeys none\n").unwrap();
+    let output = render_resolved_config("host", &none.find_host_config("host")).unwrap();
+    assert!(output.lines().any(|line| line == "revokedhostkeys none"));
+    assert!(SshConfig::parse("Host host\n    RevokedHostKeys none /x\n").is_err());
+}

@@ -118,6 +118,13 @@ enum KnownHostsPathState {
 }
 
 fn probe_known_hosts_path(known_hosts_path: &str) -> Result<KnownHostsPathState, super::Error> {
+    probe_known_hosts_path_once(known_hosts_path, true)
+}
+
+fn probe_known_hosts_path_once(
+    known_hosts_path: &str,
+    may_retry: bool,
+) -> Result<KnownHostsPathState, super::Error> {
     let path = Path::new(known_hosts_path);
     match std::fs::metadata(path) {
         Ok(metadata) if !metadata.is_file() => {
@@ -139,8 +146,15 @@ fn probe_known_hosts_path(known_hosts_path: &str) -> Result<KnownHostsPathState,
                 Err(super::Error::ServerCheckFailed)
             }
         },
-        Err(e) if e.kind() == io::ErrorKind::NotFound => {
-            if std::fs::symlink_metadata(path).is_ok() {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => match std::fs::symlink_metadata(path) {
+            Err(_) => Ok(KnownHostsPathState::Missing),
+            // The path appeared between the two calls, typically because a
+            // concurrent first connection just created the file: inspect it
+            // afresh instead of mistaking it for a dangling symlink.
+            Ok(entry) if !entry.file_type().is_symlink() && may_retry => {
+                probe_known_hosts_path_once(known_hosts_path, false)
+            }
+            Ok(_) => {
                 tracing::error!(
                     "Host key verification failed: {known_hosts_path} exists but cannot be resolved"
                 );
@@ -148,10 +162,8 @@ fn probe_known_hosts_path(known_hosts_path: &str) -> Result<KnownHostsPathState,
                     "Host key verification failed: {known_hosts_path} exists but cannot be resolved"
                 );
                 Err(super::Error::ServerCheckFailed)
-            } else {
-                Ok(KnownHostsPathState::Missing)
             }
-        }
+        },
         Err(e) => {
             tracing::error!("Host key verification failed: cannot inspect {known_hosts_path}: {e}");
             eprintln!("Host key verification failed: cannot inspect {known_hosts_path}: {e}");
@@ -393,7 +405,17 @@ fn scan_known_hosts_markers(
     let Ok(contents) = std::fs::read_to_string(known_hosts_path) else {
         return MarkerScan::None;
     };
+    scan_known_hosts_marker_text(hostname, port, server_public_key, &contents)
+}
 
+/// [`scan_known_hosts_markers`] over known_hosts text already in memory, such
+/// as `KnownHostsCommand` output. Both sources share this one matcher.
+fn scan_known_hosts_marker_text(
+    hostname: &str,
+    port: u16,
+    server_public_key: &PublicKey,
+    contents: &str,
+) -> MarkerScan {
     let host_port = known_hosts_entry_name(hostname, port);
     let mut cert_authority: Option<usize> = None;
 
@@ -404,7 +426,10 @@ fn scan_known_hosts_markers(
             continue;
         }
 
-        let mut fields = text.split(' ').filter(|f| !f.is_empty());
+        // Space and tab both separate fields, as in OpenSSH and the other
+        // known_hosts readers here; a tab-separated `@revoked` line must not
+        // slip past as an unrecognized marker.
+        let mut fields = text.split_whitespace();
         let Some(marker) = fields.next() else {
             continue;
         };
@@ -449,25 +474,32 @@ fn scan_known_hosts_markers(
 
 /// Whether a marker line's host field names `hostname`/`host_port`.
 ///
-/// Supports the exact form, the comma-separated list form, and simple `*`
-/// and `?` globs, since marker lines commonly use them (`@cert-authority
-/// *.example.com`). When `lenient` (used for `@revoked` only), a pattern that
-/// does not match the port-qualified form is also tried against the bare
-/// hostname: a `@revoked` line commonly omits the port, and failing to honor
-/// a revocation is worse than an unnecessary rejection.
+/// Supports the exact form, the comma-separated list form, simple `*` and `?`
+/// globs (`@cert-authority *.example.com`), and hashed `|1|salt|hash` fields.
+/// When `lenient` (used for `@revoked` only), a pattern that does not match
+/// the port-qualified form is also tried against the bare hostname: a
+/// `@revoked` line commonly omits the port, and failing to honor a revocation
+/// is worse than an unnecessary rejection.
+///
+/// A `!`-negated pattern never matches and does not veto the other patterns.
+/// For `@revoked` this over-matches, which is the fail-safe direction, so
+/// revocation deliberately gets no negation-veto semantics. The scan's
+/// `@cert-authority` result only feeds a debug note here; certificate trust
+/// uses the negation-aware matcher in `host_certificate`.
 fn marker_host_matches(
     host_port: &str,
     hostname: &str,
     pattern_field: &str,
     lenient: bool,
 ) -> bool {
+    use super::hostkey_rotation::host_pattern_matches;
     pattern_field.split(',').any(|pattern| {
         let pattern = pattern.trim();
-        if pattern.is_empty() {
+        if pattern.is_empty() || pattern.starts_with('!') {
             return false;
         }
-        glob_match(host_port, pattern)
-            || (lenient && host_port != hostname && glob_match(hostname, pattern))
+        host_pattern_matches(pattern, host_port)
+            || (lenient && host_port != hostname && host_pattern_matches(pattern, hostname))
     })
 }
 
@@ -543,7 +575,27 @@ pub(super) fn revoked_marker_line(
     key: &PublicKey,
     known_hosts_path: &str,
 ) -> Option<usize> {
-    match scan_known_hosts_markers(hostname, port, key, known_hosts_path) {
+    revoked_line(scan_known_hosts_markers(
+        hostname,
+        port,
+        key,
+        known_hosts_path,
+    ))
+}
+
+/// [`revoked_marker_line`] over known_hosts text already in memory, such as
+/// `KnownHostsCommand` output.
+pub(super) fn revoked_marker_line_in_text(
+    hostname: &str,
+    port: u16,
+    key: &PublicKey,
+    contents: &str,
+) -> Option<usize> {
+    revoked_line(scan_known_hosts_marker_text(hostname, port, key, contents))
+}
+
+fn revoked_line(scan: MarkerScan) -> Option<usize> {
+    match scan {
         MarkerScan::Revoked { line } => Some(line),
         MarkerScan::CertAuthority { .. } | MarkerScan::None => None,
     }
@@ -2061,13 +2113,39 @@ mod tests {
         }
         for handle in handles {
             let result = handle.await.unwrap();
-            assert!(matches!(result, Ok(true)), "every racer must be accepted");
+            assert!(
+                matches!(result, Ok(true)),
+                "every racer must be accepted, got {result:?}"
+            );
         }
 
         assert_eq!(
             entry_lines(&path).len(),
             1,
             "parallel first-time connections must record exactly one entry"
+        );
+    }
+
+    /// The race fix in `probe_known_hosts_path` re-inspects a path that
+    /// appeared between `metadata` and `symlink_metadata`; a genuinely dangling
+    /// symlink must still fail closed and must not be written through.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn test_accept_new_dangling_symlink_known_hosts_fails_closed() {
+        let (dir, path, path_str) = temp_known_hosts();
+        let target = dir.path().join("missing-target");
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        let key = generate_key();
+
+        let result = verify_accept_new("node1.example.com", 22, key.public_key(), &path_str).await;
+
+        assert!(
+            matches!(result, Err(Error::ServerCheckFailed)),
+            "a dangling known_hosts symlink must be refused, got {result:?}"
+        );
+        assert!(
+            !target.exists(),
+            "nothing may be written through the symlink"
         );
     }
 

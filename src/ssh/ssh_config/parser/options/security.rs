@@ -460,10 +460,21 @@ pub(super) fn parse_security_option(
             host.ca_signature_algorithms = algorithms;
         }
         "revokedhostkeys" => {
-            if args.len() != 1 {
-                anyhow::bail!("RevokedHostKeys requires exactly one value at line {line_number}");
+            if args.is_empty() {
+                anyhow::bail!("RevokedHostKeys requires a value at line {line_number}");
             }
-            host.revoked_host_keys = Some(args[0].clone());
+            // `none` (or `/dev/null`) disables the check and is meaningful
+            // only on its own; next to a path it would silently do nothing.
+            if args.len() > 1
+                && args
+                    .iter()
+                    .any(|arg| arg.eq_ignore_ascii_case("none") || arg == "/dev/null")
+            {
+                anyhow::bail!(
+                    "RevokedHostKeys at line {line_number}: 'none' cannot be combined with files"
+                );
+            }
+            host.revoked_host_keys = args.to_vec();
         }
         "nohostauthenticationforlocalhost" => {
             if args.is_empty() {
@@ -643,3 +654,7 @@ pub(super) fn parse_security_option(
 
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "security_tests.rs"]
+mod tests;

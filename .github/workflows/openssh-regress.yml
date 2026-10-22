@@ -65,6 +65,12 @@ jobs:
       - name: Validate harness
         run: make openssh-regress-selftest
 
+      # ci.yml runs only on Ubuntu; this is where the macOS-only
+      # Unix-listener tests in src/forwarding/streamlocal.rs execute.
+      - name: Run Unix-socket listener tests (macOS)
+        if: runner.os == 'macOS'
+        run: cargo test --lib forwarding::streamlocal
+
       - name: Run compatibility suite
         run: make openssh-regress
 

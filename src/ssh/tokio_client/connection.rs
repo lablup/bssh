@@ -172,8 +172,9 @@ pub struct SshConnectionConfig {
     pub host_key_certificate_preferences: Option<Vec<ssh_key::Algorithm>>,
     /// Raw `CASignatureAlgorithms` policy (with modifiers) for host certificates.
     pub ca_signature_algorithms: Vec<String>,
-    /// `RevokedHostKeys` file template, expanded like a known_hosts path.
-    pub revoked_host_keys: Option<String>,
+    /// `RevokedHostKeys` file templates, each expanded like a known_hosts
+    /// path. Empty means unset; a sole `none` or `/dev/null` disables it.
+    pub revoked_host_keys: Vec<String>,
     /// Whether known-host key types may reorder the default or modified preference list.
     pub order_host_key_algorithms: bool,
     /// Public-key signature policy for the authentication follow-up.
@@ -218,7 +219,7 @@ impl Default for SshConnectionConfig {
             host_key_preferences: None,
             host_key_certificate_preferences: None,
             ca_signature_algorithms: Vec::new(),
-            revoked_host_keys: None,
+            revoked_host_keys: Vec::new(),
             order_host_key_algorithms: true,
             pubkey_accepted_algorithms: None,
             auth_policy: SshAuthenticationPolicy::default(),
@@ -527,7 +528,8 @@ impl SshConnectionConfigResolver {
             .unwrap_or_default();
         let revoked_host_keys = host_config
             .as_ref()
-            .and_then(|config| config.revoked_host_keys.clone());
+            .map(|config| config.revoked_host_keys.clone())
+            .unwrap_or_default();
         let order_host_key_algorithms = host_config.as_ref().is_none_or(|config| {
             config.host_key_algorithms.is_empty()
                 || config.host_key_algorithms[0].starts_with('+')
@@ -957,13 +959,13 @@ impl SshConnectionConfig {
 
     /// Set the host-certificate policy: which certificate algorithms are
     /// advertised, which CA signature algorithms are accepted, and the
-    /// `RevokedHostKeys` file.
+    /// `RevokedHostKeys` files.
     #[must_use]
     pub fn with_host_certificate_policy(
         mut self,
         certificates: Option<Vec<ssh_key::Algorithm>>,
         ca_signature_algorithms: Vec<String>,
-        revoked_host_keys: Option<String>,
+        revoked_host_keys: Vec<String>,
     ) -> Self {
         self.host_key_certificate_preferences = certificates;
         self.ca_signature_algorithms = ca_signature_algorithms;
@@ -2621,7 +2623,7 @@ pub(crate) struct KnownHostRuntimePolicy {
     host_key_algorithms: Vec<ssh_key::Algorithm>,
     /// Resolved `CASignatureAlgorithms` names a host CA may sign with.
     ca_signature_algorithms: Vec<String>,
-    /// Expanded `RevokedHostKeys` file, if configured.
+    /// Expanded `RevokedHostKeys` files, if configured.
     revoked_host_keys: RevokedHostKeysPolicy,
 }
 
@@ -2631,51 +2633,61 @@ enum RevokedHostKeysPolicy {
     /// Not configured, or explicitly `none`.
     #[default]
     Disabled,
-    /// Check presented keys against this file.
-    File(String),
-    /// Configured, but the path could not be expanded (an unset environment
-    /// variable or an unsupported token). The revocation list cannot be
-    /// consulted, so every host key is refused rather than accepted
-    /// unchecked.
+    /// Check presented keys against every one of these files.
+    Files(Vec<String>),
+    /// Configured, but an entry could not be expanded (an unset environment
+    /// variable or an unsupported token), or `none` was mixed with paths. The
+    /// revocation list cannot be consulted as written, so every host key is
+    /// refused rather than accepted unchecked.
     Unusable(String),
 }
 
 impl RevokedHostKeysPolicy {
-    fn from_template(
-        template: Option<&str>,
+    fn from_templates(
+        templates: &[String],
         config: &SshConnectionConfig,
         target_host: &str,
         port: u16,
         username: &str,
     ) -> Self {
-        let Some(template) = template else {
-            return Self::Disabled;
-        };
-        if template.eq_ignore_ascii_case("none") || template == "/dev/null" {
-            return Self::Disabled;
+        let disables =
+            |template: &str| template.eq_ignore_ascii_case("none") || template == "/dev/null";
+        match templates {
+            [] => return Self::Disabled,
+            [sole] if disables(sole) => return Self::Disabled,
+            _ => {}
         }
-        match crate::ssh::known_hosts::expand_known_hosts_path(
-            template,
-            config,
-            target_host,
-            port,
-            username,
-        ) {
-            Some(path) => Self::File(path),
-            None => Self::Unusable(template.to_string()),
+        let mut files = Vec::with_capacity(templates.len());
+        for template in templates {
+            // The parser rejects `none` mixed with paths; a programmatic
+            // config that still mixes them fails closed.
+            if disables(template) {
+                return Self::Unusable(templates.join(" "));
+            }
+            match crate::ssh::known_hosts::expand_known_hosts_path(
+                template,
+                config,
+                target_host,
+                port,
+                username,
+            ) {
+                Some(path) => files.push(path),
+                None => return Self::Unusable(template.clone()),
+            }
         }
+        Self::Files(files)
     }
 
-    /// The file to consult, or an error when the configured list cannot be
-    /// applied.
-    fn file(&self) -> Result<Option<&str>, super::Error> {
+    /// The files to consult (empty when disabled), or an error when the
+    /// configured list cannot be applied.
+    fn files(&self) -> Result<&[String], super::Error> {
         match self {
-            Self::Disabled => Ok(None),
-            Self::File(path) => Ok(Some(path)),
+            Self::Disabled => Ok(&[]),
+            Self::Files(paths) => Ok(paths),
             Self::Unusable(template) => {
-                tracing::error!("RevokedHostKeys {template} cannot be expanded; refusing host key");
+                tracing::error!("RevokedHostKeys {template} cannot be applied; refusing host key");
                 crate::diagnosticln!(
-                    "RevokedHostKeys {template} cannot be expanded; refusing host key"
+                    "RevokedHostKeys {template} cannot be applied; refusing host key"
                 );
                 Err(super::Error::ServerCheckFailed)
             }
@@ -2750,8 +2762,8 @@ impl KnownHostRuntimePolicy {
                 tracing::error!("Invalid CASignatureAlgorithms: {error}");
                 Vec::new()
             }),
-            revoked_host_keys: RevokedHostKeysPolicy::from_template(
-                config.revoked_host_keys.as_deref(),
+            revoked_host_keys: RevokedHostKeysPolicy::from_templates(
+                &config.revoked_host_keys,
                 config,
                 target_host,
                 port,
@@ -2888,22 +2900,72 @@ impl ClientHandler {
         server_key: &russh::keys::PublicKey,
         host_key_alias: Option<&str>,
     ) -> Result<Option<super::host_verification::KnownHostLookup>, super::Error> {
+        if self.policy.known_hosts_command.is_none() {
+            return Ok(None);
+        }
+        let presented = PresentedHostKey::plain(server_key)?;
+        let Some(output) = self
+            .run_known_hosts_command(hostname, port, invocation, &presented, host_key_alias)
+            .await?
+        else {
+            return Ok(None);
+        };
+        super::host_verification::lookup_known_host_data(&output, hostname, port, server_key)
+            .map(Some)
+    }
+
+    /// The `HOSTNAME` lookup for `server_key`, read from output the command
+    /// already printed for this host-key check when there is some.
+    async fn hostname_lookup(
+        &self,
+        hostname: &str,
+        port: u16,
+        server_key: &russh::keys::PublicKey,
+        host_key_alias: Option<&str>,
+        command_output: Option<&str>,
+    ) -> Result<Option<super::host_verification::KnownHostLookup>, super::Error> {
+        match command_output {
+            Some(output) => {
+                super::host_verification::lookup_known_host_data(output, hostname, port, server_key)
+                    .map(Some)
+            }
+            None => {
+                self.run_known_hosts_lookup(hostname, port, "HOSTNAME", server_key, host_key_alias)
+                    .await
+            }
+        }
+    }
+
+    /// Run the `HOSTNAME` invocation for a presented host certificate and
+    /// return its raw output, or `None` when no command is configured.
+    async fn run_known_hosts_command_for_certificate(
+        &self,
+        hostname: &str,
+        port: u16,
+        certificate: &russh::keys::Certificate,
+        host_key_alias: Option<&str>,
+    ) -> Result<Option<String>, super::Error> {
+        if self.policy.known_hosts_command.is_none() {
+            return Ok(None);
+        }
+        let presented = PresentedHostKey::certificate(certificate)?;
+        self.run_known_hosts_command(hostname, port, "HOSTNAME", &presented, host_key_alias)
+            .await
+    }
+
+    async fn run_known_hosts_command(
+        &self,
+        hostname: &str,
+        port: u16,
+        invocation: &'static str,
+        presented: &PresentedHostKey,
+        host_key_alias: Option<&str>,
+    ) -> Result<Option<String>, super::Error> {
         let Some(command) = self.policy.known_hosts_command.as_deref() else {
             return Ok(None);
         };
 
         let lookup_host = super::host_verification::known_hosts_entry_name(hostname, port);
-        let fingerprint = server_key
-            .fingerprint(russh::keys::HashAlg::Sha256)
-            .to_string();
-        let key_blob =
-            server_key
-                .to_bytes()
-                .map_err(|error| super::Error::KnownHostsCommandFailed {
-                    reason: format!("could not encode the offered host key: {error}"),
-                })?;
-        let key_base64 =
-            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, key_blob);
         let local_user = std::env::var("USER")
             .or_else(|_| std::env::var("USERNAME"))
             .or_else(|_| std::env::var("LOGNAME"))
@@ -2918,7 +2980,6 @@ impl ClientHandler {
         let home_dir = dirs::home_dir()
             .map(|path| path.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let key_type = server_key.algorithm().as_str().to_string();
         let context = super::known_hosts_command::KnownHostsCommandContext {
             lookup_host: &lookup_host,
             target_host: &self.policy.target_host,
@@ -2933,12 +2994,12 @@ impl ClientHandler {
             home_dir: &home_dir,
             proxy_jump: &self.policy.proxy_jump,
             invocation,
-            fingerprint: &fingerprint,
-            key_base64: &key_base64,
-            key_type: &key_type,
+            fingerprint: &presented.fingerprint,
+            key_base64: &presented.key_base64,
+            key_type: &presented.key_type,
         };
-        let output = super::known_hosts_command::run_known_hosts_command(command, &context).await?;
-        super::host_verification::lookup_known_host_data(&output, hostname, port, server_key)
+        super::known_hosts_command::run_known_hosts_command(command, &context)
+            .await
             .map(Some)
     }
 
@@ -2948,10 +3009,7 @@ impl ClientHandler {
     fn certificate_authority_paths(&self, method: &ServerCheckMethod) -> Vec<String> {
         // A pinned key is an explicit statement of the one key to accept; a
         // CA in known_hosts must not widen it to any certificate it signed.
-        if matches!(
-            method,
-            ServerCheckMethod::PublicKey(_) | ServerCheckMethod::PublicKeyFile(_)
-        ) {
+        if method_pins_key(method) {
             return Vec::new();
         }
         if !self.policy.known_hosts_paths.is_empty() {
@@ -3086,6 +3144,57 @@ fn host_key_algorithm_permitted(
         (ssh_key::Algorithm::Rsa { .. }, ssh_key::Algorithm::Rsa { .. }) => true,
         (offered, allowed) => offered == allowed,
     })
+}
+
+/// Whether `method` pins one exact host key, which no CA may widen.
+fn method_pins_key(method: &ServerCheckMethod) -> bool {
+    matches!(
+        method,
+        ServerCheckMethod::PublicKey(_) | ServerCheckMethod::PublicKeyFile(_)
+    )
+}
+
+/// The `%f`, `%K`, and `%t` values a `KnownHostsCommand` invocation receives
+/// for the presented host key.
+struct PresentedHostKey {
+    fingerprint: String,
+    key_base64: String,
+    key_type: String,
+}
+
+impl PresentedHostKey {
+    fn plain(key: &russh::keys::PublicKey) -> Result<Self, super::Error> {
+        let blob = key
+            .to_bytes()
+            .map_err(|error| super::Error::KnownHostsCommandFailed {
+                reason: format!("could not encode the offered host key: {error}"),
+            })?;
+        Ok(Self {
+            fingerprint: key.fingerprint(russh::keys::HashAlg::Sha256).to_string(),
+            key_base64: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, blob),
+            key_type: key.algorithm().as_str().to_string(),
+        })
+    }
+
+    /// As OpenSSH's `load_hostkeys_command` does for a certificate, `%K` is
+    /// the certificate blob and `%t` its type, while `%f` fingerprints the
+    /// certified key (OpenSSH fingerprints a certificate's plain key).
+    fn certificate(certificate: &russh::keys::Certificate) -> Result<Self, super::Error> {
+        let blob =
+            certificate
+                .to_bytes()
+                .map_err(|error| super::Error::KnownHostsCommandFailed {
+                    reason: format!("could not encode the offered host certificate: {error}"),
+                })?;
+        let certified_key = russh::keys::PublicKey::new(certificate.public_key().clone(), "");
+        Ok(Self {
+            fingerprint: certified_key
+                .fingerprint(russh::keys::HashAlg::Sha256)
+                .to_string(),
+            key_base64: base64::Engine::encode(&base64::engine::general_purpose::STANDARD, blob),
+            key_type: certificate.algorithm().to_certificate_type(),
+        })
+    }
 }
 
 fn prefer_known_host_algorithms(config: &mut Config, known: &[ssh_key::Algorithm]) {
@@ -3646,12 +3755,15 @@ impl Handler for ClientHandler {
         } else {
             self.host.port()
         };
-        let revoked_host_keys = self.policy.revoked_host_keys.file()?;
+        let revoked_host_keys = self.policy.revoked_host_keys.files()?;
 
         // A host certificate is validated against the configured CA lines
         // first. Only when no CA vouches for the host is its certified key
         // compared against ordinary known_hosts entries, as OpenSSH does.
+        // The KnownHostsCommand HOSTNAME output gathered for the certificate
+        // is reused for that plain-key fallback, so the command runs once.
         let downgraded_certificate_key;
+        let mut certificate_command_output: Option<String> = None;
         let server_public_key = match server_key {
             russh::keys::PublicKeyOrCertificate::PublicKey { key, .. } => key,
             russh::keys::PublicKeyOrCertificate::Certificate(cert) => {
@@ -3660,10 +3772,9 @@ impl Handler for ClientHandler {
                     // StrictHostKeyChecking decision, and to both the
                     // certified key and its CA. A plain key is checked below;
                     // wrapping a revoked key in a certificate must not skip it.
-                    if let Some(revoked_host_keys) = revoked_host_keys {
-                        let ca_key = russh::keys::PublicKey::new(cert.signature_key().clone(), "");
-                        let certified_key =
-                            russh::keys::PublicKey::new(cert.public_key().clone(), "");
+                    let ca_key = russh::keys::PublicKey::new(cert.signature_key().clone(), "");
+                    let certified_key = russh::keys::PublicKey::new(cert.public_key().clone(), "");
+                    for revoked_host_keys in revoked_host_keys {
                         super::host_certificate::ensure_not_revoked_by_file(
                             revoked_host_keys,
                             &[&ca_key, &certified_key],
@@ -3674,11 +3785,25 @@ impl Handler for ClientHandler {
                     return Ok(true);
                 }
                 let paths = self.certificate_authority_paths(method);
+                // OpenSSH loads the command output into the same host-key
+                // set as the files and passes it the certificate itself. A
+                // pinned key consults neither source.
+                if !method_pins_key(method) {
+                    certificate_command_output = self
+                        .run_known_hosts_command_for_certificate(
+                            hostname,
+                            port,
+                            cert,
+                            host_key_alias,
+                        )
+                        .await?;
+                }
                 match super::host_certificate::verify_host_certificate(
                     cert,
                     hostname,
                     port,
                     &paths,
+                    certificate_command_output.as_deref(),
                     &self.policy.ca_signature_algorithms,
                     revoked_host_keys,
                 )? {
@@ -3724,19 +3849,20 @@ impl Handler for ClientHandler {
                 }
             }
         };
-        if let russh::keys::PublicKeyOrCertificate::PublicKey { .. } = server_key
-            && let Some(revoked_host_keys) = revoked_host_keys
-        {
-            super::host_certificate::ensure_not_revoked_by_file(
-                revoked_host_keys,
-                &[server_public_key],
-                hostname,
-                port,
-            )?;
+        if let russh::keys::PublicKeyOrCertificate::PublicKey { .. } = server_key {
+            for revoked_host_keys in revoked_host_keys {
+                super::host_certificate::ensure_not_revoked_by_file(
+                    revoked_host_keys,
+                    &[server_public_key],
+                    hostname,
+                    port,
+                )?;
+            }
         }
 
-        // DNSSEC is evaluated before any KnownHostsCommand lookup or accept-new
-        // write. Only a DNSSEC-secure, consistently matching RRset accepts
+        // DNSSEC is evaluated before the KnownHostsCommand KEY lookup and any
+        // accept-new write; for certificates the HOSTNAME invocation has
+        // already run. Only a DNSSEC-secure, consistently matching RRset accepts
         // immediately. Every other outcome falls back to known_hosts.
         let sshfp = super::sshfp::verify_sshfp(
             &self.policy.target_host,
@@ -3754,12 +3880,12 @@ impl Handler for ClientHandler {
             // persisted. The grouped verifier rechecks both file identities
             // under one lock and atomically appends all unknown rows.
             let hostname_lookup = self
-                .run_known_hosts_lookup(
+                .hostname_lookup(
                     hostname,
                     port,
-                    "HOSTNAME",
                     server_public_key,
                     host_key_alias,
+                    certificate_command_output.as_deref(),
                 )
                 .await?;
             let address_lookup = self
@@ -3796,12 +3922,12 @@ impl Handler for ClientHandler {
                     self.policy.hash_known_hosts,
                     sshfp,
                     || {
-                        self.run_known_hosts_lookup(
+                        self.hostname_lookup(
                             hostname,
                             port,
-                            "HOSTNAME",
                             server_public_key,
                             host_key_alias,
+                            certificate_command_output.as_deref(),
                         )
                     },
                 )
@@ -4483,9 +4609,12 @@ mod known_host_policy_tests {
 mod revoked_host_keys_policy_tests {
     use super::*;
 
-    fn policy(template: Option<&str>) -> RevokedHostKeysPolicy {
-        RevokedHostKeysPolicy::from_template(
-            template,
+    fn policy(templates: &[&str]) -> RevokedHostKeysPolicy {
+        RevokedHostKeysPolicy::from_templates(
+            &templates
+                .iter()
+                .map(|template| (*template).to_string())
+                .collect::<Vec<_>>(),
             &SshConnectionConfig::default(),
             "node1.example.com",
             22,
@@ -4495,37 +4624,151 @@ mod revoked_host_keys_policy_tests {
 
     #[test]
     fn none_and_dev_null_disable_revocation() {
-        for template in [None, Some("none"), Some("NONE"), Some("/dev/null")] {
-            let policy = policy(template);
-            assert_eq!(policy, RevokedHostKeysPolicy::Disabled, "{template:?}");
-            assert!(matches!(policy.file(), Ok(None)));
+        for templates in [&[][..], &["none"], &["NONE"], &["/dev/null"]] {
+            let policy = policy(templates);
+            assert_eq!(policy, RevokedHostKeysPolicy::Disabled, "{templates:?}");
+            assert!(matches!(policy.files(), Ok([])));
         }
     }
 
     #[test]
     fn expanded_path_is_consulted() {
-        let policy = policy(Some("/etc/ssh/revoked_%h"));
+        let policy = policy(&["/etc/ssh/revoked_%h", "/etc/ssh/revoked_all"]);
         assert_eq!(
-            policy.file().unwrap(),
-            Some("/etc/ssh/revoked_node1.example.com")
+            policy.files().unwrap(),
+            ["/etc/ssh/revoked_node1.example.com", "/etc/ssh/revoked_all"]
         );
     }
 
     #[test]
     fn unexpandable_path_fails_closed_instead_of_disabling_revocation() {
-        for template in [
-            "${BSSH_TEST_UNSET_REVOKED_HOST_KEYS_7F3A}/revoked",
-            "/etc/ssh/revoked_%Z",
+        for templates in [
+            &["${BSSH_TEST_UNSET_REVOKED_HOST_KEYS_7F3A}/revoked"][..],
+            &["/etc/ssh/revoked_%Z"],
+            &["/etc/ssh/revoked", "/etc/ssh/revoked_%Z"],
+            &["/etc/ssh/revoked_%Z", "/etc/ssh/revoked"],
+            &["none", "/etc/ssh/revoked"],
         ] {
-            let policy = policy(Some(template));
+            let policy = policy(templates);
             assert!(
                 matches!(policy, RevokedHostKeysPolicy::Unusable(_)),
-                "{template}: {policy:?}"
+                "{templates:?}: {policy:?}"
             );
             assert!(matches!(
-                policy.file(),
+                policy.files(),
                 Err(super::super::Error::ServerCheckFailed)
             ));
+        }
+    }
+
+    fn revoked_key_line(key: &russh::keys::PrivateKey) -> String {
+        format!("{}\n", key.public_key().to_openssh().unwrap())
+    }
+
+    /// Resolve `RevokedHostKeys {value}` through ssh_config and verify `key`
+    /// against a known_hosts file that trusts it, so only the revocation
+    /// list can refuse it.
+    async fn check_with_revoked_host_keys(
+        value: &str,
+        key: &russh::keys::PrivateKey,
+    ) -> Result<bool, super::super::Error> {
+        let dir = tempfile::tempdir().unwrap();
+        let known_hosts = dir.path().join("known_hosts");
+        std::fs::write(
+            &known_hosts,
+            format!(
+                "node1.example.com {}\n",
+                key.public_key().to_openssh().unwrap()
+            ),
+        )
+        .unwrap();
+        let config = crate::ssh::ssh_config::SshConfig::parse(&format!(
+            "Host node1.example.com\n    RevokedHostKeys {value}\n"
+        ))
+        .unwrap();
+        let resolved = SshConnectionConfigResolver::new()
+            .with_ssh_config(Some(config))
+            .resolve_for_host("node1.example.com");
+        let policy = KnownHostRuntimePolicy::from_config(
+            &resolved,
+            "user",
+            "node1.example.com",
+            "node1.example.com",
+            22,
+        );
+        ClientHandler::new_with_policy(
+            "node1.example.com".into(),
+            "127.0.0.1:22".parse().unwrap(),
+            ServerCheckMethod::KnownHostsFile(known_hosts.to_str().unwrap().to_string()),
+            policy,
+        )
+        .check_server_key(&russh::keys::PublicKeyOrCertificate::PublicKey {
+            key: key.public_key().clone(),
+            hash_alg: None,
+        })
+        .await
+    }
+
+    fn generate_key() -> russh::keys::PrivateKey {
+        russh::keys::PrivateKey::random(&mut rand::rng(), russh::keys::Algorithm::Ed25519).unwrap()
+    }
+
+    /// Two revocation files, each listing one key, plus a key in neither.
+    fn two_revocation_files() -> (tempfile::TempDir, String, [russh::keys::PrivateKey; 3]) {
+        let dir = tempfile::tempdir().unwrap();
+        let keys = [generate_key(), generate_key(), generate_key()];
+        let first = dir.path().join("revoked_a");
+        let second = dir.path().join("revoked_b");
+        std::fs::write(&first, revoked_key_line(&keys[0])).unwrap();
+        std::fs::write(&second, revoked_key_line(&keys[1])).unwrap();
+        let value = format!("{} {}", first.display(), second.display());
+        (dir, value, keys)
+    }
+
+    #[tokio::test]
+    async fn revoked_host_keys_list_refuses_a_key_listed_only_in_the_first_file() {
+        let (_dir, value, [only_in_first, _, unlisted]) = two_revocation_files();
+        let result = check_with_revoked_host_keys(&value, &only_in_first).await;
+        assert!(
+            matches!(result, Err(super::super::Error::HostKeyRevoked { .. })),
+            "a key revoked only by the first file must be refused, got {result:?}"
+        );
+        let result = check_with_revoked_host_keys(&value, &unlisted).await;
+        assert!(matches!(result, Ok(true)), "{result:?}");
+    }
+
+    #[tokio::test]
+    async fn revoked_host_keys_list_refuses_a_key_listed_only_in_the_second_file() {
+        let (_dir, value, [_, only_in_second, _]) = two_revocation_files();
+        let result = check_with_revoked_host_keys(&value, &only_in_second).await;
+        assert!(
+            matches!(result, Err(super::super::Error::HostKeyRevoked { .. })),
+            "a key revoked only by the second file must be refused, got {result:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn unreadable_or_krl_file_anywhere_in_the_list_refuses_every_host_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let empty = dir.path().join("empty");
+        std::fs::write(&empty, "# nothing revoked\n").unwrap();
+        let krl = dir.path().join("krl");
+        std::fs::write(&krl, b"SSHKRL\n\0\0\0\0\x01").unwrap();
+        let missing = dir.path().join("missing");
+        let key = generate_key();
+        let result = check_with_revoked_host_keys(&empty.display().to_string(), &key).await;
+        assert!(matches!(result, Ok(true)), "{result:?}");
+        for bad in [&krl, &missing] {
+            for value in [
+                format!("{} {}", bad.display(), empty.display()),
+                format!("{} {}", empty.display(), bad.display()),
+            ] {
+                let result = check_with_revoked_host_keys(&value, &key).await;
+                assert!(
+                    matches!(result, Err(super::super::Error::ServerCheckFailed)),
+                    "RevokedHostKeys {value}: must fail closed, got {result:?}"
+                );
+            }
         }
     }
 }
@@ -4668,7 +4911,7 @@ mod host_certificate_policy_tests {
             format!("{}\n", subject.public_key().to_openssh().unwrap()),
         );
         let mut revoking = policy();
-        revoking.revoked_host_keys = RevokedHostKeysPolicy::File(revoked);
+        revoking.revoked_host_keys = RevokedHostKeysPolicy::Files(vec![revoked]);
         let result = handler(ServerCheckMethod::NoCheck, revoking.clone())
             .check_server_key(&cert)
             .await;
@@ -4680,5 +4923,181 @@ mod host_certificate_policy_tests {
             .check_server_key(&cert)
             .await;
         assert!(matches!(result, Ok(true)), "{result:?}");
+    }
+
+    fn certificate_for(
+        subject: &PrivateKey,
+        ca: &PrivateKey,
+        principal: &str,
+    ) -> PublicKeyOrCertificate {
+        let mut builder =
+            Builder::new_with_random_nonce(&mut rand::rng(), subject.public_key(), 0, u64::MAX)
+                .unwrap();
+        builder.cert_type(CertType::Host).unwrap();
+        builder.valid_principal(principal).unwrap();
+        PublicKeyOrCertificate::Certificate(builder.sign(ca).unwrap())
+    }
+
+    fn openssh_line(prefix: &str, key: &PrivateKey) -> String {
+        format!("{prefix} {}", key.public_key().to_openssh().unwrap())
+    }
+
+    /// A KnownHostsCommand that prints `output` and logs `%I %t %K` of every
+    /// invocation, with a known_hosts file that holds nothing for the host.
+    #[cfg(unix)]
+    fn command_policy(
+        dir: &tempfile::TempDir,
+        output: &[String],
+    ) -> (
+        KnownHostRuntimePolicy,
+        ServerCheckMethod,
+        std::path::PathBuf,
+    ) {
+        use std::os::unix::fs::PermissionsExt;
+        let output_path = write(dir, "command-output", format!("{}\n", output.join("\n")));
+        let log = dir.path().join("command-log");
+        let script = dir.path().join("known-hosts-command");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nprintf '%s %s %s\\n' \"$1\" \"$2\" \"$3\" >> '{}'\ncat '{output_path}'\n",
+                log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let known_hosts = write(dir, "known_hosts", String::new());
+        let mut policy = policy();
+        policy.known_hosts_command = Some(format!("{} %I %t %K", script.display()));
+        (policy, ServerCheckMethod::KnownHostsFile(known_hosts), log)
+    }
+
+    #[cfg(unix)]
+    fn invocations(log: &std::path::Path) -> Vec<String> {
+        std::fs::read_to_string(log)
+            .unwrap_or_default()
+            .lines()
+            .map(str::to_string)
+            .collect()
+    }
+
+    fn certificate_base64(cert: &PublicKeyOrCertificate) -> String {
+        let PublicKeyOrCertificate::Certificate(cert) = cert else {
+            unreachable!("a certificate is built above");
+        };
+        cert.to_openssh()
+            .unwrap()
+            .split_whitespace()
+            .nth(1)
+            .unwrap()
+            .to_string()
+    }
+
+    /// OpenSSH loads KnownHostsCommand output into the same host-key set it
+    /// checks certificates against, so a CA printed only by the command
+    /// vouches for the host. The command sees the certificate itself.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn known_hosts_command_certificate_authority_vouches_for_the_certificate() {
+        let (ca, subject) = (generate_key(), generate_key());
+        let cert = certificate_for(&subject, &ca, "node1.example.com");
+        let dir = tempfile::tempdir().unwrap();
+        let (policy, method, log) =
+            command_policy(&dir, &[openssh_line("@cert-authority *.example.com", &ca)]);
+        let result = handler(method, policy.clone())
+            .check_server_key(&cert)
+            .await;
+        assert!(
+            matches!(result, Ok(true)),
+            "a CA printed by KnownHostsCommand must vouch for the certificate, got {result:?}"
+        );
+        assert_eq!(
+            invocations(&log),
+            vec![format!(
+                "HOSTNAME ssh-ed25519-cert-v01@openssh.com {}",
+                certificate_base64(&cert)
+            )],
+            "the command runs once and receives the certificate as %t and %K"
+        );
+
+        // A pinned key is not widened by a CA in the command output either.
+        let pinned = generate_key()
+            .public_key()
+            .to_openssh()
+            .unwrap()
+            .split_whitespace()
+            .nth(1)
+            .unwrap()
+            .to_string();
+        let result = handler(ServerCheckMethod::PublicKey(pinned), policy)
+            .check_server_key(&cert)
+            .await;
+        assert!(matches!(result, Ok(false)), "{result:?}");
+    }
+
+    /// A certificate from a CA the command trusts gets every check a file CA
+    /// line gets, and a failure is not downgraded to the certified plain key
+    /// even when the command also prints that key.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn known_hosts_command_certificate_with_wrong_principal_is_not_downgraded() {
+        let (ca, subject) = (generate_key(), generate_key());
+        let cert = certificate_for(&subject, &ca, "other.example.com");
+        let dir = tempfile::tempdir().unwrap();
+        let (policy, method, _log) = command_policy(
+            &dir,
+            &[
+                openssh_line("@cert-authority *.example.com", &ca),
+                openssh_line("node1.example.com", &subject),
+            ],
+        );
+        let result = handler(method, policy).check_server_key(&cert).await;
+        assert!(
+            matches!(result, Err(super::super::Error::ServerCheckFailed)),
+            "an invalid certificate from a command-trusted CA must be refused, got {result:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn known_hosts_command_revoked_ca_refuses_the_certificate() {
+        let (ca, subject) = (generate_key(), generate_key());
+        let cert = certificate_for(&subject, &ca, "node1.example.com");
+        let dir = tempfile::tempdir().unwrap();
+        let (policy, method, _log) = command_policy(
+            &dir,
+            &[
+                openssh_line("@cert-authority *.example.com", &ca),
+                openssh_line("@revoked *", &ca),
+            ],
+        );
+        let result = handler(method, policy).check_server_key(&cert).await;
+        assert!(
+            matches!(result, Err(super::super::Error::HostKeyRevoked { .. })),
+            "a @revoked CA in the command output must refuse the certificate, got {result:?}"
+        );
+    }
+
+    /// With no CA for the host, the certified key is checked as a plain key
+    /// against the same command output; the command is not run twice.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn known_hosts_command_output_is_reused_for_the_plain_key_fallback() {
+        let (ca, subject) = (generate_key(), generate_key());
+        let cert = certificate_for(&subject, &ca, "node1.example.com");
+        let dir = tempfile::tempdir().unwrap();
+        let (policy, method, log) =
+            command_policy(&dir, &[openssh_line("node1.example.com", &subject)]);
+        let result = handler(method, policy).check_server_key(&cert).await;
+        assert!(
+            matches!(result, Ok(true)),
+            "the downgraded plain key matches the command output, got {result:?}"
+        );
+        let calls = invocations(&log);
+        assert_eq!(calls.len(), 1, "{calls:?}");
+        assert!(
+            calls[0].starts_with("HOSTNAME ssh-ed25519-cert-v01@openssh.com "),
+            "{calls:?}"
+        );
     }
 }

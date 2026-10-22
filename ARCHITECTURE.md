@@ -884,26 +884,32 @@ Other platforms accept the Apple-specific keyword for portable configuration par
 #### OpenSSH host certificates
 
 russh 0.63 widened `client::Handler::check_server_key` from `&PublicKey` to
-`&PublicKeyOrCertificate`, so the callback can now also receive an OpenSSH host
-certificate. bssh does not participate in that scheme:
+`&PublicKeyOrCertificate`, so the callback can receive an OpenSSH host
+certificate. Since #314 bssh advertises certificate host key algorithms and
+validates the certificates it is offered:
 
-- It never advertises certificate host key algorithms. Both `Preferred`
-  overrides (`src/ssh/tokio_client/connection.rs` for the client,
-  `src/server/mod.rs` for the server) change only `compression` and inherit
-  `host_key_certificates` from `Preferred::DEFAULT`, which is empty. A server
-  therefore cannot negotiate a certificate with bssh.
-- If a peer sends one regardless, `ClientHandler::check_server_key` refuses it
-  and returns `ServerCheckFailed`. bssh verifies no CA signatures (the
-  `@cert-authority` scan in `src/ssh/tokio_client/host_verification.rs` only
-  warns and falls back to TOFU), so the key inside a certificate has never been
-  vouched for by anything bssh trusts. Matching it against known_hosts would
-  answer a different question than the one the certificate poses.
+- The client `Preferred` override (`src/ssh/tokio_client/connection.rs`)
+  advertises the certificate form of the host key algorithms permitted by
+  `HostKeyAlgorithms`. The server `Preferred` override (`src/server/mod.rs`)
+  changes only `compression`, so `bssh-server` still presents a plain host key.
+- `ClientHandler::check_server_key` hands a certificate to
+  `src/ssh/tokio_client/host_certificate.rs`. It is accepted only when a
+  `@cert-authority` line, from a known_hosts file or from `KnownHostsCommand`
+  output, names the host and the CA signature, principals, validity window,
+  critical options and `CASignatureAlgorithms` all check out, and neither the
+  certificate nor its CA is revoked by `@revoked` lines or by any file listed
+  in `RevokedHostKeys`. With a matching CA, any failure refuses the connection
+  instead of downgrading to TOFU.
+- `KnownHostsCommand` receives the certificate as `%K` and its type as `%t`
+  and runs the `HOSTNAME` invocation before the DNSSEC and known_hosts checks.
+- Without a matching CA the certified key is checked as a plain host key if
+  `HostKeyAlgorithms` permits its plain type.
 - `ServerCheckMethod::NoCheck` still accepts, because there the operator has
   turned host verification off outright.
 
-`server::Config` likewise gained a `certificates` field; bssh's construction
-ends in `..Default::default()`, so it stays empty and the server keeps
-presenting a plain host key.
+`server::Config` has a `certificates` field that bssh leaves empty
+(construction ends in `..Default::default()`), so the server keeps presenting
+a plain host key.
 
 ### Data Protection
 
