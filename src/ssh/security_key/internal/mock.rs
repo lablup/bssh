@@ -165,6 +165,8 @@ pub struct MockAuthenticator {
     pub u2f_presence_retries: usize,
     /// Answer every getAssertion with this status instead of signing.
     pub forced_status: Option<u8>,
+    /// Answer `getPinUvAuthTokenUsingUvWithPermissions` with this status.
+    pub uv_token_status: Option<u8>,
     pub requests: Vec<Request>,
     pub cancels: usize,
     cid: [u8; 4],
@@ -189,6 +191,7 @@ impl MockAuthenticator {
             stall: None,
             u2f_presence_retries: 0,
             forced_status: None,
+            uv_token_status: None,
             requests: Vec::new(),
             cancels: 0,
             cid: [0x0b, 0x55, 0x47, 0x01],

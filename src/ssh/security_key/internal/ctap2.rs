@@ -299,6 +299,7 @@ impl CosePublicKey {
 
 const PIN_SUB_GET_KEY_AGREEMENT: i64 = 0x02;
 const PIN_SUB_GET_PIN_TOKEN: i64 = 0x05;
+const PIN_SUB_GET_UV_TOKEN_WITH_PERMISSIONS: i64 = 0x06;
 const PIN_SUB_GET_PIN_TOKEN_WITH_PERMISSIONS: i64 = 0x09;
 /// `pinUvAuthToken` permission bit for `getAssertion`.
 pub const PERMISSION_GET_ASSERTION: i64 = 0x02;
@@ -347,6 +348,30 @@ pub fn encode_client_pin_get_token(
     }
     let mut out = vec![CMD_CLIENT_PIN];
     out.extend(cbor::encode(&Value::Map(pairs)));
+    out
+}
+
+/// `getPinUvAuthTokenUsingUvWithPermissions` (0x06). Unlike the PIN
+/// variants, this request deliberately carries no `pinHashEnc`: the
+/// authenticator performs user verification through its built-in method.
+#[must_use]
+pub fn encode_client_pin_get_uv_token(
+    protocol: u64,
+    platform_key: &CosePublicKey,
+    permissions: (i64, &str),
+) -> Vec<u8> {
+    let (bits, rp_id) = permissions;
+    let mut out = vec![CMD_CLIENT_PIN];
+    out.extend(cbor::encode(&Value::Map(vec![
+        (Value::Int(1), Value::Int(protocol as i64)),
+        (
+            Value::Int(2),
+            Value::Int(PIN_SUB_GET_UV_TOKEN_WITH_PERMISSIONS),
+        ),
+        (Value::Int(3), platform_key.to_value()),
+        (Value::Int(9), Value::Int(bits)),
+        (Value::Int(10), Value::from(rp_id)),
+    ])));
     out
 }
 

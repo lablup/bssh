@@ -139,6 +139,7 @@ fn verify_required_without_a_pin_needs_one_unless_the_device_verifies_itself() {
         "nothing is sent before the PIN is known"
     );
 
+    // CTAP 2.0 keeps the direct `options.uv = true` path.
     let mut biometric = Fido2Config::plain();
     biometric.options.insert("uv".to_string(), true);
     let (provider, devices) = provider_with(vec![(

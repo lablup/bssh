@@ -213,6 +213,17 @@ fn client_pin_requests_select_the_subcommand_and_carry_permissions() {
         decoded.get_int(6).unwrap().as_bytes(),
         Some(&[0x9c; 32][..])
     );
+
+    let uv = encode_client_pin_get_uv_token(2, &platform, (PERMISSION_GET_ASSERTION, "ssh:"));
+    assert_eq!(&uv[..6], &[0x06, 0xa5, 0x01, 0x02, 0x02, 0x06]);
+    let decoded = cbor::decode(&uv[1..]).unwrap();
+    assert_eq!(
+        CosePublicKey::from_value(decoded.get_int(3).unwrap()).unwrap(),
+        platform
+    );
+    assert_eq!(decoded.get_int(6), None, "UV token request has no PIN hash");
+    assert_eq!(decoded.get_int(9).and_then(Value::as_int), Some(0x02));
+    assert_eq!(decoded.get_int(10).and_then(Value::as_text), Some("ssh:"));
 }
 
 #[test]
