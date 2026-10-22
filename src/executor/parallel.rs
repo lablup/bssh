@@ -2021,6 +2021,7 @@ mod tests {
 
     #[test]
     fn connection_config_for_node_resolves_each_node_host_block() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let ssh_config = SshConfig::parse(
             r#"
 Host v4node

@@ -22,6 +22,7 @@ mod tests {
 
     #[test]
     fn test_certificate_file_merging_across_host_blocks() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let content = r#"
 Host *
     CertificateFile ~/.ssh/global-cert.pub
@@ -48,6 +49,7 @@ Host example.com
 
     #[test]
     fn test_certificate_file_deduplication() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let content = r#"
 Host *
     CertificateFile ~/.ssh/shared-cert.pub
@@ -77,6 +79,7 @@ Host example.com
 
     #[test]
     fn test_certificate_file_limit_during_merge() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         // Create a config with more than 100 certificate files
         let mut config_lines = vec!["Host example.com".to_string()];
         for i in 0..110 {
@@ -93,6 +96,7 @@ Host example.com
 
     #[test]
     fn test_permit_remote_open_keeps_first_obtained_list_across_host_blocks() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let content = r#"
 Host *
     PermitRemoteOpen localhost:8080
@@ -108,6 +112,7 @@ Host example.com
 
     #[test]
     fn test_permit_remote_open_none_cannot_be_broadened_by_later_blocks() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let content = r#"
 Host *
     PermitRemoteOpen none
@@ -123,6 +128,7 @@ Host example.com
 
     #[test]
     fn test_cli_permit_remote_open_none_cannot_be_broadened_by_file() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let mut config = SshConfig::parse("Host example.com\n    PermitRemoteOpen any\n").unwrap();
         config
             .apply_cli_options(&["PermitRemoteOpen=none".to_string()])
@@ -138,6 +144,7 @@ Host example.com
     /// silently widen an explicit restriction.
     #[test]
     fn test_certificate_only_host_key_algorithms_survive_resolution() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let content = r#"
 Host example.com
     HostKeyAlgorithms sk-ssh-ed25519-cert-v01@openssh.com
@@ -153,6 +160,7 @@ Host example.com
 
     #[test]
     fn test_ca_signature_algorithms_keeps_first_obtained_list() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let content = r#"
 Host *
     CASignatureAlgorithms ssh-rsa,ssh-dss
@@ -171,6 +179,7 @@ Host example.com
 
     #[test]
     fn test_hostbased_accepted_algorithms_keeps_first_obtained_list() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let content = r#"
 Host *
     HostbasedAcceptedAlgorithms ssh-rsa,ssh-dss
@@ -189,6 +198,7 @@ Host example.com
 
     #[test]
     fn test_gateway_ports_keeps_first_obtained_value() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let content = r#"
 Host *
     GatewayPorts no
@@ -205,6 +215,7 @@ Host example.com
 
     #[test]
     fn test_exit_on_forward_failure_keeps_first_obtained_value() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let content = r#"
 Host *
     ExitOnForwardFailure no
@@ -221,6 +232,7 @@ Host example.com
 
     #[test]
     fn test_hostbased_authentication_keeps_first_obtained_value() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let content = r#"
 Host *
     HostbasedAuthentication no
@@ -237,6 +249,7 @@ Host example.com
 
     #[test]
     fn test_multiple_host_blocks_with_priority() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         // SSH config: the first matching value wins; additive lists accumulate
         // Lists accumulate across all matches
         let content = r#"
@@ -283,6 +296,7 @@ Host *
 
     #[test]
     fn later_host_user_does_not_retroactively_change_earlier_match() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let hosts = parse(
             "Match user audit-no-such-user\n    Port 2200\nHost *\n    User audit-no-such-user\n",
         )
@@ -295,6 +309,7 @@ Host *
 
     #[test]
     fn match_final_cannot_supply_the_first_hostname() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let hosts = parse("Host alias\nMatch final\n    HostName final.example\n").unwrap();
 
         let config = find_host_config(&hosts, "alias");
@@ -303,6 +318,7 @@ Host *
 
     #[test]
     fn hostname_percent_h_expands_once_from_original_destination() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let hosts = parse("Host alias\n    HostName %h.example\n").unwrap();
 
         let config = find_host_config(&hosts, "alias");
@@ -315,6 +331,7 @@ Host *
 
     #[test]
     fn test_all_new_options_together() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let content = r#"
 Host secure.example.com
     CertificateFile ~/.ssh/user-cert.pub
@@ -343,6 +360,7 @@ Host secure.example.com
 
     #[test]
     fn test_empty_vs_unset_options() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let content = r#"
 Host example.com
     User testuser
@@ -362,6 +380,7 @@ Host example.com
 
     #[test]
     fn test_partial_option_set() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let content = r#"
 Host example.com
     CertificateFile ~/.ssh/cert.pub
@@ -384,6 +403,7 @@ Host example.com
 
     #[test]
     fn test_proxy_settings_keep_first_obtained_values() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         // OpenSSH keeps the first value obtained across matching host blocks.
         let content = r#"
 Host *
@@ -407,6 +427,7 @@ Host example.com
 
     #[test]
     fn test_proxy_use_fdpass_inherits_from_global() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         // Test that ProxyUseFdpass is inherited from global config when not overridden
         let content = r#"
 Host *
@@ -431,6 +452,7 @@ Host example.com
     #[test]
     #[cfg(target_os = "macos")]
     fn test_use_keychain_host_specific_value_precedes_global_default() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let content = r#"
 Host example.com
     UseKeychain yes
@@ -448,6 +470,7 @@ Host *
     #[test]
     #[cfg(target_os = "macos")]
     fn test_use_keychain_inherits_from_global() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         // Test that UseKeychain is inherited from global config when not overridden
         let content = r#"
 Host *
@@ -467,6 +490,7 @@ Host example.com
     #[test]
     #[cfg(target_os = "macos")]
     fn test_use_keychain_first_match_wins() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         // SSH config merges all matching blocks while preserving the first value obtained.
         let content = r#"
 Host example.com
@@ -485,6 +509,7 @@ Host example.com
     #[test]
     #[cfg(target_os = "macos")]
     fn test_use_keychain_with_identity_files() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         // UseKeychain is commonly used with IdentityFile
         let content = r#"
 Host *
@@ -515,6 +540,7 @@ Host example.com
     #[test]
     #[cfg(target_os = "macos")]
     fn test_use_keychain_default_none() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         // Verify that UseKeychain defaults to None when not specified
         let content = r#"
 Host example.com

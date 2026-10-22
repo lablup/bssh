@@ -20,6 +20,7 @@ fn node() -> Node {
 
 #[test]
 fn environment_requests_are_sorted_removed_bounded_and_setenv_wins() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let mut config = SshHostConfig {
         send_env: vec![
             "TEST_*".into(),
@@ -69,6 +70,7 @@ fn environment_requests_are_sorted_removed_bounded_and_setenv_wins() {
 
 #[test]
 fn remote_command_conflicts_and_session_request_kinds_are_exact() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let mut config = SshHostConfig {
         remote_command: Some("echo %n %% %h".into()),
         ..Default::default()
@@ -110,6 +112,7 @@ fn remote_command_conflicts_and_session_request_kinds_are_exact() {
 
 #[test]
 fn request_tty_obeys_cli_precedence_and_config_modes() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let mut config = SshHostConfig {
         request_tty: Some("force".into()),
         ..Default::default()
@@ -141,6 +144,7 @@ fn request_tty_obeys_cli_precedence_and_config_modes() {
 
 #[test]
 fn stdin_null_disables_automatic_pty_but_not_forced_pty() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let config = SshHostConfig {
         stdin_null: Some(true),
         request_tty: Some("yes".into()),
@@ -157,6 +161,7 @@ fn stdin_null_disables_automatic_pty_but_not_forced_pty() {
 
 #[test]
 fn forward_agent_is_an_explicit_session_policy_independent_of_authentication() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let enabled = SessionPolicy::resolve(
         &SshHostConfig {
             forward_agent: Some(true),
@@ -183,6 +188,7 @@ fn forward_agent_is_an_explicit_session_policy_independent_of_authentication() {
 
 #[test]
 fn session_purpose_tracks_the_resolved_pty_policy() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let interactive = SessionPolicy::resolve(
         &SshHostConfig {
             request_tty: Some("force".into()),
@@ -213,6 +219,7 @@ fn session_purpose_tracks_the_resolved_pty_policy() {
 #[cfg(unix)]
 #[tokio::test]
 async fn local_command_runs_once_and_propagates_failure() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let denied = SshHostConfig {
         permit_local_command: Some(false),
         local_command: Some("exit 99".into()),
@@ -250,6 +257,7 @@ async fn local_command_runs_once_and_propagates_failure() {
 
 #[test]
 fn environment_name_value_and_request_count_bounds_are_enforced() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     assert!(validate_environment("BAD=NAME", "value").is_err());
     assert!(validate_environment(&"N".repeat(MAX_ENVIRONMENT_NAME_BYTES + 1), "value").is_err());
     assert!(validate_environment("NAME", &"v".repeat(MAX_ENVIRONMENT_VALUE_BYTES + 1)).is_err());
@@ -292,6 +300,7 @@ fn environment_name_value_and_request_count_bounds_are_enforced() {
 
 #[test]
 fn directive_token_sets_jump_hash_and_setenv_dollar_expansion_are_exact() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let jump_spec = "jump@example.net:2200";
     let mut config = SshHostConfig {
         proxy_jump: Some("ignored-config-jump".into()),
@@ -410,6 +419,7 @@ fn directive_token_sets_jump_hash_and_setenv_dollar_expansion_are_exact() {
 
 #[test]
 fn expanded_shell_values_and_command_size_remain_bounded() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let mut config = SshHostConfig {
         remote_command: Some("echo %h".into()),
         ..Default::default()
@@ -431,6 +441,7 @@ fn expanded_shell_values_and_command_size_remain_bounded() {
 #[cfg(unix)]
 #[test]
 fn local_command_rejects_spaced_remote_user_before_shell_execution() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let directory = tempfile::tempdir().unwrap();
     let marker = directory.path().join("remote-user-injection");
     let hostile_node = Node::new(

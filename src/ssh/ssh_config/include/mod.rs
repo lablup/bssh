@@ -952,6 +952,7 @@ mod tests {
 
     #[tokio::test]
     async fn nested_relative_includes_keep_the_origin_anchor() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let temp_dir = TempDir::new().unwrap();
         let anchor = temp_dir.path().join("anchor");
         let elsewhere = temp_dir.path().join("elsewhere");
@@ -990,6 +991,7 @@ mod tests {
 
     #[tokio::test]
     async fn percent_h_uses_streaming_effective_hostname() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let temp_dir = TempDir::new().unwrap();
         let main = temp_dir.path().join("config");
         let content = "Host alias\n    HostName effective.example\n    Include %h.conf\n";
@@ -1020,6 +1022,7 @@ mod tests {
 
     #[test]
     fn include_percent_tokens_use_current_streaming_context() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let initial = super::super::types::SshHostConfig {
             hostname: Some("effective.example".to_string()),
             user: Some("deploy".to_string()),
@@ -1061,6 +1064,7 @@ mod tests {
 
     #[tokio::test]
     async fn include_depth_accepts_sixteen_edges_and_rejects_seventeen() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         assert!(resolve_include_chain(16).await.is_ok());
         let error = resolve_include_chain(17).await.unwrap_err();
         assert!(format!("{error:?}").contains("Maximum include depth (16)"));

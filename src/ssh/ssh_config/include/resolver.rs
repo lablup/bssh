@@ -142,6 +142,7 @@ mod tests {
 
     #[test]
     fn test_parse_include_line() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         // Test space syntax
         assert_eq!(
             parse_include_line("Include ~/.ssh/config.d/*").unwrap(),
@@ -178,6 +179,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_resolve_include_pattern_glob() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         use crate::ssh::ssh_config::include::IncludeContext;
 
         let temp_dir = TempDir::new().unwrap();
@@ -229,6 +231,7 @@ mod tests {
 
     #[tokio::test]
     async fn system_source_rejects_tilde_include_while_user_source_accepts_it() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let anchor = tempfile::tempdir().unwrap();
         let system = IncludeContext::with_anchor(anchor.path().to_path_buf(), false);
         assert!(
@@ -247,6 +250,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_include_with_tilde_expansion() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         // Test that tilde expansion is handled
         let patterns = parse_include_line("Include ~/.ssh/config.d/*.conf")
             .unwrap()

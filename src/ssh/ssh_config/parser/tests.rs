@@ -286,6 +286,7 @@ Match exec "test -f /tmp/vpn"
 
 #[test]
 fn test_parse_include_directive_skipped() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     // Include directives should be skipped in direct parse mode
     let content = r#"
 Include ~/.ssh/config.d/*
@@ -570,6 +571,7 @@ Host db.example.com
 
 #[test]
 fn test_parse_certificate_file() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let content = r#"
 Host example.com
     CertificateFile ~/.ssh/id_rsa-cert.pub
@@ -593,6 +595,7 @@ Host example.com
 
 #[test]
 fn test_parse_certificate_file_with_equals() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     // Test Option=Value syntax
     let content = r#"
 Host example.com
@@ -893,6 +896,7 @@ Host example.com
 
 #[test]
 fn test_parse_all_new_options_combined() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     // Test all new options together in a realistic scenario
     let content = r#"
 Host secure.example.com
@@ -919,6 +923,7 @@ Host secure.example.com
 
 #[test]
 fn test_parse_new_options_with_mixed_syntax() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     // Test mixing Option=Value and Option Value syntax
     let content = r#"
 Host example.com
@@ -1163,6 +1168,7 @@ Host example.com
 
 #[test]
 fn test_parse_identity_agent_socket_path() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let content = r#"
 Host example.com
     IdentityAgent ~/.1password/agent.sock
@@ -1559,6 +1565,7 @@ Host example.com
 
 #[test]
 fn test_parse_auth_security_combined() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     // Test all authentication and security management options together
     let content = r#"
 Host secure-server
@@ -1920,6 +1927,7 @@ Host proxy.example.com
 
 #[tokio::test]
 async fn test_includes_preserve_global_and_host_first_obtained_context() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     use tempfile::TempDir;
 
     let temp_dir = TempDir::new().unwrap();

@@ -345,6 +345,7 @@ mod tests {
 
     #[test]
     fn direct_exec_keeps_expanded_whitespace_in_one_argument_and_rejects_dynamic_programs() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let directory = tempfile::tempdir().unwrap();
         let marker = directory.path().join("dynamic-program-ran");
         let hostile = format!("touch {}", marker.display());
@@ -362,6 +363,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn shell_operators_and_substitutions_follow_openssh_semantics() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let context = MatchContext::new("example.com".to_string(), None).unwrap();
         assert!(
             execute_match_command(
@@ -377,6 +379,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn test_exec_timeout() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         use std::time::Instant;
 
         let context = MatchContext::new("example.com".to_string(), None).unwrap();
@@ -400,6 +403,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn timeout_kills_descendant_process_group() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let directory = tempfile::tempdir().unwrap();
         let marker = directory.path().join("descendant-survived");
         let context = MatchContext::new("example.com".to_string(), None).unwrap();
@@ -416,6 +420,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn test_exec_nonexistent_command() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let context = MatchContext::new("example.com".to_string(), None).unwrap();
 
         // Test command that doesn't exist
@@ -428,6 +433,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn test_exec_exit_code_handling() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let context = MatchContext::new("example.com".to_string(), None).unwrap();
 
         // Test command that exits with success (0)
@@ -442,6 +448,7 @@ mod tests {
     #[test]
     #[cfg(windows)]
     fn test_exec_uses_platform_shell_on_windows() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let context = MatchContext::new("example.com".to_string(), None).unwrap();
         assert!(execute_match_command("exit /B 0", &context).unwrap());
     }

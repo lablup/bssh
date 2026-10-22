@@ -490,6 +490,7 @@ mod tests {
 
     #[test]
     fn test_get_default_known_hosts_path() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let path = get_default_known_hosts_path();
         assert!(path.is_some());
         if let Some(p) = path {
@@ -499,6 +500,7 @@ mod tests {
 
     #[test]
     fn test_get_check_method() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         // Test with No mode
         let method = get_check_method(StrictHostKeyChecking::No);
         assert!(matches!(method, ServerCheckMethod::NoCheck));
@@ -535,6 +537,7 @@ mod tests {
 
     #[test]
     fn configured_known_hosts_files_preserve_order_and_expand_tokens() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let config = SshConnectionConfig::new().with_known_hosts_files(
             Some(vec![
                 "/tmp/user-first".to_string(),
@@ -568,6 +571,7 @@ mod tests {
 
     #[test]
     fn accept_new_records_only_to_first_expanded_user_file() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let config = SshConnectionConfig::new().with_known_hosts_files(
             Some(vec!["/tmp/%h-first".to_string(), "/tmp/second".to_string()]),
             Some(vec!["/tmp/global".to_string()]),
@@ -595,6 +599,7 @@ mod tests {
 
     #[test]
     fn configured_empty_stores_do_not_fall_back_to_default() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let config = SshConnectionConfig::new().with_known_hosts_files(
             Some(vec!["none".to_string(), "/dev/null".to_string()]),
             None,
@@ -607,6 +612,7 @@ mod tests {
 
     #[test]
     fn resolver_preserves_multiple_known_hosts_paths_and_empty_sentinels() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let ssh_config = crate::ssh::SshConfig::parse(
             "Host target\n  HostKeyAlias config-alias.example.com\n  UserKnownHostsFile ~/.ssh/one /dev/null none\n  GlobalKnownHostsFile %d/global %h-%p-%r-%u\n",
         )
@@ -630,6 +636,7 @@ mod tests {
 
     #[test]
     fn cli_host_key_alias_overrides_effective_host_config() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let ssh_config = crate::ssh::SshConfig::parse(
             "Host target\n  HostKeyAlias config-alias.example.com\n  UserKnownHostsFile /tmp/known_hosts\n",
         )
@@ -662,6 +669,7 @@ mod tests {
 
     #[test]
     fn expands_home_directory_tokens_and_tilde() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let home = dirs::home_dir().expect("test environment must have a home directory");
         let config = SshConnectionConfig::new();
         assert_eq!(
@@ -676,6 +684,7 @@ mod tests {
 
     #[test]
     fn expands_full_known_hosts_token_set_and_environment() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let config = SshConnectionConfig::new()
             .with_original_host("alias")
             .with_host_key_alias(Some("key-alias".to_string()))

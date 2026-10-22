@@ -42,6 +42,7 @@ fn test_cache_entry_expiration() {
 
 #[test]
 fn test_env_cache_basic_operations() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let cache = EnvironmentCache::new();
 
     // Test getting a safe environment variable
@@ -60,6 +61,7 @@ fn test_env_cache_basic_operations() {
 
 #[test]
 fn test_env_cache_unsafe_variable_blocked() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let cache = EnvironmentCache::new();
 
     // Try to access a dangerous variable
@@ -77,6 +79,7 @@ fn test_env_cache_unsafe_variable_blocked() {
 
 #[test]
 fn test_env_cache_ttl_expiration() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let config = EnvCacheConfig {
         ttl: Duration::from_millis(50),
         enabled: true,
@@ -99,6 +102,7 @@ fn test_env_cache_ttl_expiration() {
 
 #[test]
 fn test_env_cache_size_limit() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let config = EnvCacheConfig {
         ttl: Duration::from_secs(60),
         enabled: true,
@@ -117,6 +121,7 @@ fn test_env_cache_size_limit() {
 
 #[test]
 fn test_env_cache_clear_and_refresh() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let cache = EnvironmentCache::new();
 
     // Cache some variables
@@ -137,6 +142,7 @@ fn test_env_cache_clear_and_refresh() {
 
 #[test]
 fn test_env_cache_maintenance() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let config = EnvCacheConfig {
         ttl: Duration::from_millis(50),
         enabled: true,
@@ -159,6 +165,7 @@ fn test_env_cache_maintenance() {
 
 #[test]
 fn test_env_cache_disabled() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let config = EnvCacheConfig {
         ttl: Duration::from_secs(60),
         enabled: false,
@@ -202,6 +209,7 @@ fn test_env_cache_safe_variables_list() {
 
 #[test]
 fn test_env_cache_concurrent_access() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let cache = Arc::new(EnvironmentCache::new());
     let counter = Arc::new(AtomicUsize::new(0));
 

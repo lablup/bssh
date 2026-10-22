@@ -738,6 +738,7 @@ mod tests {
 
     #[test]
     fn default_identities_include_the_fido_key_files() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let ctx = AuthContext::new("user".to_string(), "host".to_string()).unwrap();
         let names = ctx
             .default_key_paths()
@@ -864,6 +865,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_determine_method_with_key_file() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let temp_dir = TempDir::new().unwrap();
         let key_path = temp_dir.path().join("test_key");
         write_test_key(&key_path);
@@ -891,6 +893,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_timing_attack_mitigation() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let ctx = AuthContext::new("user".to_string(), "host".to_string()).unwrap();
 
         // Measure time for failed authentication
@@ -1061,6 +1064,7 @@ mod tests {
 
     #[tokio::test]
     async fn disabled_and_unpreferred_methods_are_never_planned() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let home = TempDir::new().unwrap();
         let key_path = home.path().join("identity");
         write_test_key(&key_path);
@@ -1099,6 +1103,7 @@ mod tests {
 
     #[tokio::test]
     async fn batch_mode_never_plans_password_or_passphrase_prompts() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let password_policy = SshAuthenticationPolicy {
             preferred_authentications: vec!["password".into()],
             pubkey_authentication: false,
@@ -1156,6 +1161,7 @@ mod tests {
 
     #[tokio::test]
     async fn later_invalid_keys_and_password_prompt_stay_lazy_and_ordered() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let home = TempDir::new().unwrap();
         let first_key = home.path().join("first-key");
         let encrypted_key = home.path().join("encrypted-key");
@@ -1204,6 +1210,7 @@ mod tests {
     }
     #[tokio::test]
     async fn number_of_password_prompts_is_the_exact_attempt_bound() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let policy = SshAuthenticationPolicy {
             preferred_authentications: vec!["password".into()],
             pubkey_authentication: false,
@@ -1222,6 +1229,7 @@ mod tests {
 
     #[tokio::test]
     async fn matching_user_certificate_precedes_plain_key() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let home = TempDir::new().unwrap();
         let key_path = home.path().join("user-key");
         let certificate_path = home.path().join("user-cert.pub");
@@ -1254,6 +1262,7 @@ mod tests {
 
     #[tokio::test]
     async fn automatic_certificate_companion_precedes_plain_identity() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let home = TempDir::new().unwrap();
         let key_path = home.path().join("automatic-key");
         let certificate_path = AuthContext::automatic_certificate_paths(&key_path)[1].clone();
@@ -1352,6 +1361,7 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn explicit_cli_identity_uses_public_companion_when_private_identity_is_offline() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let home = TempDir::new().unwrap();
         let _socket = EnvGuard::remove("SSH_AUTH_SOCK");
         let private_path = home.path().join("cli-key");
@@ -1381,6 +1391,7 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn offline_cli_identity_preserves_base_path_for_automatic_certificate() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let home = TempDir::new().unwrap();
         let _socket = EnvGuard::remove("SSH_AUTH_SOCK");
         let private_path = home.path().join("cli-key");
@@ -1455,6 +1466,7 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn mismatched_local_certificate_remains_a_retryable_agent_candidate() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let home = TempDir::new().unwrap();
         let _socket = EnvGuard::remove("SSH_AUTH_SOCK");
         let key_path = home.path().join("configured-key");
@@ -1489,6 +1501,7 @@ mod tests {
 
     #[tokio::test]
     async fn missing_and_malformed_cli_identities_leave_later_keys_reachable() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let home = TempDir::new().unwrap();
         let missing = home.path().join("missing-key");
         let malformed = home.path().join("malformed-key");
@@ -1519,6 +1532,7 @@ mod tests {
     #[tokio::test]
     #[serial]
     async fn identities_only_public_identity_keeps_matching_agent_certificate_first() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let home = TempDir::new().unwrap();
         let private_path = home.path().join("listed-key");
         let public_path = home.path().join("listed-key.pub");
@@ -1555,6 +1569,7 @@ mod tests {
 
     #[tokio::test]
     async fn encrypted_rsa_companion_is_filtered_before_any_passphrase_prompt() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let home = TempDir::new().unwrap();
         let rsa_path = home.path().join("encrypted-rsa");
         crate::keygen::generate_rsa(&rsa_path, 2048, None).unwrap();

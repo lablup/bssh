@@ -4300,6 +4300,7 @@ mod known_host_policy_tests {
 
     #[tokio::test]
     async fn check_host_ip_rejects_a_conflicting_address_key() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let directory = tempdir().unwrap();
         let path = directory.path().join("known_hosts");
         let offered = key();
@@ -4339,6 +4340,7 @@ mod known_host_policy_tests {
 
     #[tokio::test]
     async fn hashed_alias_write_uses_alias_identity_and_selected_path() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let directory = tempdir().unwrap();
         let path = directory.path().join("selected-known-hosts");
         let offered = key();
@@ -4386,6 +4388,7 @@ mod known_host_policy_tests {
     }
     #[test]
     fn order_eligibility_preserves_raw_host_key_algorithm_modifiers() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         for (directive, expected) in [
             (None, true),
             (Some("+ssh-rsa"), true),
@@ -4489,6 +4492,7 @@ mod known_host_policy_tests {
     }
     #[tokio::test]
     async fn dns_secure_only_match_skips_lookup_address_and_tofu() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let directory = tempdir().unwrap();
         let path = directory.path().join("known_hosts");
         let method =
@@ -4522,6 +4526,7 @@ mod known_host_policy_tests {
 
     #[tokio::test]
     async fn dns_mismatch_bogus_and_insecure_outcomes_fall_back_to_tofu() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let directory = tempdir().unwrap();
         let path = directory.path().join("known_hosts");
         let method =
@@ -4560,6 +4565,7 @@ mod known_host_policy_tests {
 
     #[tokio::test]
     async fn check_host_ip_conflict_leaves_unknown_hostname_unrecorded() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let directory = tempdir().unwrap();
         let path = directory.path().join("known_hosts");
         let offered = key();
@@ -4590,6 +4596,7 @@ mod known_host_policy_tests {
 
     #[tokio::test]
     async fn check_host_ip_records_both_unknown_identities_atomically() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let directory = tempdir().unwrap();
         let offered = key();
         for hash_known_hosts in [false, true] {
@@ -4749,6 +4756,7 @@ mod revoked_host_keys_policy_tests {
 
     #[tokio::test]
     async fn revoked_host_keys_list_refuses_a_key_listed_only_in_the_first_file() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let (_dir, value, [only_in_first, _, unlisted]) = two_revocation_files();
         let result = check_with_revoked_host_keys(&value, &only_in_first).await;
         assert!(
@@ -4761,6 +4769,7 @@ mod revoked_host_keys_policy_tests {
 
     #[tokio::test]
     async fn revoked_host_keys_list_refuses_a_key_listed_only_in_the_second_file() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let (_dir, value, [_, only_in_second, _]) = two_revocation_files();
         let result = check_with_revoked_host_keys(&value, &only_in_second).await;
         assert!(
@@ -4771,6 +4780,7 @@ mod revoked_host_keys_policy_tests {
 
     #[tokio::test]
     async fn unreadable_or_krl_file_anywhere_in_the_list_refuses_every_host_key() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let dir = tempfile::tempdir().unwrap();
         let empty = dir.path().join("empty");
         std::fs::write(&empty, "# nothing revoked\n").unwrap();
@@ -4838,6 +4848,7 @@ mod host_certificate_policy_tests {
     /// falls back to known_hosts or trust on first use.
     #[tokio::test]
     async fn certificate_only_policy_refuses_the_downgraded_plain_key() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let (ca, subject) = (generate_key(), generate_key());
         let cert = host_certificate(&subject, &ca);
         let dir = tempfile::tempdir().unwrap();
@@ -4878,6 +4889,7 @@ mod host_certificate_policy_tests {
     /// known_hosts stores.
     #[tokio::test]
     async fn pinned_key_ignores_certificate_authorities() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let (ca, subject, pinned) = (generate_key(), generate_key(), generate_key());
         let cert = host_certificate(&subject, &ca);
         let dir = tempfile::tempdir().unwrap();
@@ -4924,6 +4936,7 @@ mod host_certificate_policy_tests {
     /// OpenSSH, and wrapping the revoked key in a certificate does not skip it.
     #[tokio::test]
     async fn no_check_still_honors_revoked_host_keys_for_certificates() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let (ca, subject) = (generate_key(), generate_key());
         let cert = host_certificate(&subject, &ca);
         let dir = tempfile::tempdir().unwrap();
@@ -5021,6 +5034,7 @@ mod host_certificate_policy_tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn known_hosts_command_certificate_authority_vouches_for_the_certificate() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let (ca, subject) = (generate_key(), generate_key());
         let cert = certificate_for(&subject, &ca, "node1.example.com");
         let dir = tempfile::tempdir().unwrap();
@@ -5063,6 +5077,7 @@ mod host_certificate_policy_tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn known_hosts_command_certificate_with_wrong_principal_is_not_downgraded() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let (ca, subject) = (generate_key(), generate_key());
         let cert = certificate_for(&subject, &ca, "other.example.com");
         let dir = tempfile::tempdir().unwrap();
@@ -5083,6 +5098,7 @@ mod host_certificate_policy_tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn known_hosts_command_revoked_ca_refuses_the_certificate() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let (ca, subject) = (generate_key(), generate_key());
         let cert = certificate_for(&subject, &ca, "node1.example.com");
         let dir = tempfile::tempdir().unwrap();
@@ -5105,6 +5121,7 @@ mod host_certificate_policy_tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn known_hosts_command_output_is_reused_for_the_plain_key_fallback() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let (ca, subject) = (generate_key(), generate_key());
         let cert = certificate_for(&subject, &ca, "node1.example.com");
         let dir = tempfile::tempdir().unwrap();
@@ -5113,7 +5130,9 @@ mod host_certificate_policy_tests {
         let result = handler(method, policy).verify_server_key(&cert).await;
         assert!(
             matches!(result, Ok(true)),
-            "the downgraded plain key matches the command output, got {result:?}"
+            "the downgraded plain key matches the command output, got {result:?}; invocations: {:?}; command output: {:?}",
+            invocations(&log),
+            std::fs::read_to_string(dir.path().join("command-output"))
         );
         let calls = invocations(&log);
         assert_eq!(calls.len(), 1, "{calls:?}");
@@ -5151,6 +5170,7 @@ mod negotiated_host_key_type_tests {
     /// any host-key policy runs.
     #[tokio::test]
     async fn check_server_key_refuses_a_key_of_another_type_than_negotiated() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let offered = PublicKeyOrCertificate::from(ed25519().public_key().clone());
         let p256 = Algorithm::Ecdsa {
             curve: EcdsaCurve::NistP256,
@@ -5179,6 +5199,7 @@ mod negotiated_host_key_type_tests {
 
     #[tokio::test]
     async fn check_server_key_refuses_a_certificate_for_another_key_type() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let mut builder =
             Builder::new_with_random_nonce(&mut rand::rng(), ed25519().public_key(), 0, u64::MAX)
                 .unwrap();

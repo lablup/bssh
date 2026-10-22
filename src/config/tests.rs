@@ -63,6 +63,7 @@ fn test_expand_tilde() {
 
 #[test]
 fn test_config_parsing() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let yaml = r#"
 defaults:
   user: admin

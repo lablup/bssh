@@ -480,6 +480,7 @@ mod tests {
 
     #[test]
     fn test_match_host_condition() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let context =
             MatchContext::new("web1.example.com".to_string(), Some("testuser".to_string()))
                 .unwrap();
@@ -493,6 +494,7 @@ mod tests {
 
     #[test]
     fn test_match_user_condition() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let context =
             MatchContext::new("example.com".to_string(), Some("admin".to_string())).unwrap();
 
@@ -511,6 +513,7 @@ mod tests {
 
     #[test]
     fn test_match_localuser_condition() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let context = MatchContext::new("example.com".to_string(), None).unwrap();
 
         let local_user = whoami::username().unwrap();
@@ -523,6 +526,7 @@ mod tests {
 
     #[test]
     fn test_match_all_condition() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let context = MatchContext::new("example.com".to_string(), None).unwrap();
 
         let condition = MatchCondition::All;
@@ -538,6 +542,7 @@ mod tests {
 
     #[test]
     fn test_match_block() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let mut block = MatchBlock::new(10);
         block
             .conditions
@@ -564,6 +569,7 @@ mod tests {
 
     #[test]
     fn test_match_host_with_negation() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         // A negated pattern vetoes a positive wildcard match.
         let context_internal =
             MatchContext::new("web.internal.com".to_string(), Some("testuser".to_string()))
@@ -596,6 +602,7 @@ mod tests {
 
     #[test]
     fn test_match_user_multiple_patterns() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let context =
             MatchContext::new("example.com".to_string(), Some("admin".to_string())).unwrap();
 
@@ -609,6 +616,7 @@ mod tests {
 
     #[test]
     fn test_match_localuser_with_wildcards() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let context = MatchContext::new("example.com".to_string(), None).unwrap();
 
         let local_user = whoami::username().unwrap();
@@ -648,6 +656,7 @@ mod tests {
 
     #[test]
     fn test_match_block_all_conditions() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         // Test Match all alone (should match everything)
         let mut block = MatchBlock::new(10);
         block.conditions.push(MatchCondition::All);
@@ -679,6 +688,7 @@ mod tests {
     #[test]
     #[cfg(unix)]
     fn trusted_shell_policy_is_explicit_and_negated_exec_is_preserved() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let direct = MatchContext::new("example.com".to_string(), None).unwrap();
         let shell = direct.clone().with_trusted_shell_exec();
         let shell_expression = MatchCondition::Exec("false || true".to_string());
@@ -695,6 +705,7 @@ mod tests {
 
     #[test]
     fn only_positive_final_requests_the_second_pass() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let context = MatchContext::new("example.com".to_string(), None).unwrap();
         let positive_after_false = MatchBlock {
             conditions: vec![

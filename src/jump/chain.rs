@@ -590,6 +590,7 @@ mod tests {
 
     #[test]
     fn test_chain_materializes_jump_alias_endpoint_and_preserves_cli_fields() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let ssh_config = SshConfig::parse(
             r#"
 Host bastion
@@ -629,6 +630,7 @@ Host templated
 
     #[test]
     fn test_chain_resolves_connection_config_per_jump_host() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let ssh_config = SshConfig::parse(
             r#"
 Host bastion
