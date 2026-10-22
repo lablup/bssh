@@ -729,6 +729,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn public_host_loader_rejects_unsafe_tokens_before_match_exec() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let temp_dir = TempDir::new().unwrap();
         let config_path = temp_dir.path().join("config");
         let host_marker = temp_dir.path().join("host-marker");
@@ -766,6 +767,7 @@ mod tests {
 
     #[tokio::test]
     async fn later_config_files_use_earlier_effective_include_context() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let temp_dir = TempDir::new().unwrap();
         let user_anchor = temp_dir.path().join("user");
         let system_anchor = temp_dir.path().join("system");
@@ -809,6 +811,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn file_match_exec_runs_once_per_pass_and_is_cached_for_resolution() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let temp_dir = TempDir::new().unwrap();
         let marker = temp_dir.path().join("match-exec-marker");
         let config_path = temp_dir.path().join("config");
@@ -831,6 +834,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn cli_port_is_available_to_match_exec_and_include_tokens() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let temp_dir = TempDir::new().unwrap();
         let config_path = temp_dir.path().join("config");
         write_config(
@@ -858,6 +862,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn cli_canonicalization_does_not_fix_hostname_before_explicit_file() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         use clap::Parser as _;
         use sha1::{Digest as _, Sha1};
 
@@ -939,6 +944,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn later_source_match_and_include_use_all_prior_source_tokens_once() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let temp_dir = TempDir::new().unwrap();
         let user_anchor = temp_dir.path().join("user");
         let system_anchor = temp_dir.path().join("system");
@@ -1008,6 +1014,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn final_pass_match_and_include_use_first_pass_tokens_and_hash_once() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         use sha1::{Digest as _, Sha1};
 
         let temp_dir = TempDir::new().unwrap();
@@ -1070,6 +1077,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn outer_match_exec_guards_include_without_reexecution() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let temp_dir = TempDir::new().unwrap();
         let marker = temp_dir.path().join("outer-marker");
         let config_path = temp_dir.path().join("config");
@@ -1101,6 +1109,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn positive_final_requests_pass_independently_of_exec_order() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let temp_dir = TempDir::new().unwrap();
         let before = temp_dir.path().join("before-final");
         let after = temp_dir.path().join("after-final");
@@ -1136,6 +1145,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn generic_runtime_does_not_inherit_config_dump_shell_policy() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let temp_dir = TempDir::new().unwrap();
         let config_path = temp_dir.path().join("config");
         write_config(
@@ -1149,6 +1159,7 @@ mod tests {
 
     #[tokio::test]
     async fn later_sources_expand_raw_hostname_percent_h_once_for_includes() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let temp_dir = TempDir::new().unwrap();
         let user_anchor = temp_dir.path().join("user");
         let system_anchor = temp_dir.path().join("system");
@@ -1181,6 +1192,7 @@ mod tests {
 
     #[tokio::test]
     async fn final_pass_keeps_entry_hostname_and_preserves_first_include_values() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt;
 
@@ -1218,6 +1230,7 @@ mod tests {
 
     #[test]
     fn canonical_only_activates_when_nonnegated_final_requests_second_pass() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let without_final = SshConfig::parse("Match canonical\n    Port 2201\n").unwrap();
         assert_eq!(without_final.find_host_config("host").port, None);
 
@@ -1231,6 +1244,7 @@ mod tests {
 
     #[tokio::test]
     async fn final_inside_inactive_include_scope_does_not_request_second_pass() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let directory = TempDir::new().unwrap();
         let main = directory.path().join("config");
         let child = directory.path().join("child.conf");
@@ -1257,6 +1271,7 @@ mod tests {
 
     #[test]
     fn canonicalization_value_requests_canonical_match_pass_without_dns() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let config =
             SshConfig::parse("CanonicalizeHostname yes\nMatch canonical\n    Port 2201\n").unwrap();
         let resolved = config.find_host_config("alias");
@@ -1272,6 +1287,7 @@ mod tests {
 
     #[tokio::test]
     async fn all_first_pass_sources_precede_every_final_pass_source() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let directory = TempDir::new().unwrap();
         let user = directory.path().join("user.conf");
         let system = directory.path().join("system.conf");
@@ -1325,6 +1341,7 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn system_first_pass_can_obtain_hostname_after_user_requests_final() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let directory = TempDir::new().unwrap();
         let user = directory.path().join("user.conf");
         let system = directory.path().join("system.conf");
@@ -1417,6 +1434,7 @@ mod tests {
 
     #[test]
     fn final_pass_refreshes_user_before_each_match_but_keeps_entry_hostname() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let config = SshConfig::parse(
             "Match final\n    User final-user\n    HostName final.example\nMatch user final-user host final.example\n    Port 2202\n",
         )
@@ -1429,6 +1447,7 @@ mod tests {
 
     #[test]
     fn final_replay_does_not_duplicate_identical_additive_values() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let config = SshConfig::parse(
             "IdentityFile /tmp/key\nSendEnv LANG\nLocalForward 8080 localhost:80\nMatch final\n    User final\n",
         )
@@ -1441,6 +1460,7 @@ mod tests {
 
     #[test]
     fn test_parse_basic_host_config() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let config_content = r#"
 Host example.com
     User testuser
@@ -1486,6 +1506,7 @@ Host db*.example.com
 
     #[test]
     fn test_find_host_config_uses_source_order_first_obtained_values() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let config_content = r#"
 Host *.example.com
     User defaultuser
@@ -1519,6 +1540,7 @@ Host web1.example.com
 
     #[test]
     fn cli_option_overlay_precedes_files_and_repeated_scalars_keep_first_value() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let mut config = SshConfig::parse(
             "Host *\n    User file-user\n    Port 22\n    ConnectionAttempts 1\n    TCPKeepAlive yes\n",
         )
@@ -1586,6 +1608,7 @@ Host test.example.com
 
     #[test]
     fn test_parse_certificate_and_forwarding_options() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         // Test parsing of certificate authentication and advanced port forwarding options
         let config_content = r#"
 Host *.secure.example.com
@@ -1637,6 +1660,7 @@ Host web1.secure.example.com
 
     #[test]
     fn test_merge_certificate_and_forwarding_options() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         // Test that certificate and forwarding options are properly merged according to SSH config precedence
         let config_content = r#"
 Host *.example.com
@@ -1832,6 +1856,7 @@ Host desktop-server
 
     #[test]
     fn test_merge_host_key_and_network_options() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         // Test that host key verification and network options are properly merged according to SSH config precedence
         let config_content = r#"
 Host *
@@ -2131,6 +2156,7 @@ Host test
 
     #[test]
     fn test_get_compression_option() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         // Issue #219: the resolved `Compression` directive must be readable
         // through the public API so callers can wire it into the russh
         // client config (see SshConnectionConfig::to_russh_config).
@@ -2150,6 +2176,7 @@ Host plain.example.com
     }
     #[test]
     fn known_hosts_command_environment_expansion_reaches_runtime() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let config = SshConfig::parse(
             "Host test\n    KnownHostsCommand /usr/bin/helper %I ${PATH} %f %K %t\n",
         )

@@ -387,6 +387,7 @@ mod tests {
     #[tokio::test]
     #[cfg(unix)]
     async fn success_empty_nonzero_and_output_bounds_are_enforced() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let success = run_known_hosts_command("/usr/bin/printf 'key-line\\n'", &context())
             .await
             .unwrap();
@@ -413,6 +414,7 @@ mod tests {
     #[tokio::test]
     #[cfg(unix)]
     async fn timeout_is_fail_closed() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let error = run_known_hosts_command("/bin/sleep 10", &context())
             .await
             .unwrap_err();

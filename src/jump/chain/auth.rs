@@ -125,6 +125,7 @@ mod tests {
     #[tokio::test]
     #[serial_test::serial]
     async fn test_determine_auth_method_fallback_to_key_file() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         // Clear SSH_AUTH_SOCK to ensure agent is "unavailable"; guard restores on drop.
         let _sock = EnvGuard::remove("SSH_AUTH_SOCK");
 

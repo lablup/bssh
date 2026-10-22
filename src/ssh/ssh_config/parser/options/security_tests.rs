@@ -22,6 +22,7 @@ fn revoked_host_keys(source: &str) -> anyhow::Result<Vec<String>> {
 
 #[test]
 fn revoked_host_keys_accepts_a_list_of_files() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     assert_eq!(
         revoked_host_keys("Host *\n    RevokedHostKeys /etc/ssh/revoked_a ~/.ssh/revoked_b\n")
             .unwrap(),
@@ -44,6 +45,7 @@ fn revoked_host_keys_accepts_a_list_of_files() {
 
 #[test]
 fn revoked_host_keys_none_is_valid_only_as_the_sole_value() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     for sole in ["none", "NONE", "/dev/null"] {
         assert_eq!(
             revoked_host_keys(&format!("Host *\n    RevokedHostKeys {sole}\n")).unwrap(),

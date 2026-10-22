@@ -80,6 +80,7 @@ mod tests {
 
     #[test]
     fn ssh_policy_shell_uses_raw_runner_when_remote_pty_is_disabled() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let cmd = InteractiveCommand {
             single_node: true,
             multiplex: false,
@@ -159,6 +160,7 @@ mod tests {
 
     #[test]
     fn test_format_prompt() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let cmd = InteractiveCommand {
             single_node: false,
             multiplex: true,

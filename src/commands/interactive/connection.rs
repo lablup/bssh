@@ -819,6 +819,7 @@ Host beta
 
     #[tokio::test]
     async fn connect_to_node_resolves_each_alias_auth_policy_before_authentication() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         // The shared fallback intentionally carries alpha's policy. The beta
         // connection must still stop with beta's BatchMode decision before any
         // network connection is attempted.
@@ -839,6 +840,7 @@ Host beta
 
     #[tokio::test]
     async fn connect_to_node_pty_resolves_each_alias_auth_policy_before_authentication() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         // Reverse the shared fallback. The alpha PTY path must use alpha's
         // PasswordAuthentication policy instead of inheriting beta's BatchMode.
         let (command, alpha, beta) = alias_auth_command("beta");
@@ -886,6 +888,7 @@ Host beta
 
     #[test]
     fn interactive_jump_selection_is_cli_then_ssh_config_then_yaml() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let node = Node::new("effective-target".to_string(), 22, "user".to_string())
             .with_original_host("target-alias".to_string());
         let resolve = |ssh_config: SshConfig, cli_jump: Option<&str>| {
@@ -937,6 +940,7 @@ Host target-alias
 
     #[test]
     fn interactive_jump_chain_keeps_distinct_bastion_and_target_socket_policies() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let ssh_config = SshConfig::parse(
             r#"
 Host bastion

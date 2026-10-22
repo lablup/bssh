@@ -59,6 +59,7 @@ fn test_proxy_command_rejects_invalid_structure() {
 
 #[test]
 fn test_validate_control_path_legitimate() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let legitimate_paths = vec![
         "/tmp/ssh-control-%h-%p-%r",
         "~/.ssh/control-%h-%p-%r",
@@ -94,6 +95,7 @@ fn test_validate_control_path_malicious() {
 
 #[test]
 fn test_secure_validate_path_traversal() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let traversal_paths = vec![
         "../../../etc/passwd",
         "/home/user/../../../etc/shadow",

@@ -394,6 +394,7 @@ mod tests {
 
     #[test]
     fn command_and_transfer_jump_chain_preserves_alias_target_policy() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let ssh_config = SshConfig::parse(
             r#"
 Host bastion
@@ -483,6 +484,7 @@ Host effective-target
 
     #[tokio::test]
     async fn test_determine_auth_method_with_key() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let temp_dir = TempDir::new().unwrap();
         let key_path = temp_dir.path().join("test_key");
         write_test_key(&key_path);

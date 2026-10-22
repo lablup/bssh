@@ -1987,6 +1987,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_strict_mode_rejects_revoked_key() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let (_dir, path, path_str) = temp_known_hosts();
         let revoked = generate_key();
         std::fs::write(
@@ -2049,6 +2050,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_strict_mode_hostname_matching_is_case_insensitive() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let (_dir, _path, path_str) = temp_known_hosts();
         let key = generate_key();
 
@@ -2372,6 +2374,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_strict_mode_missing_known_hosts_rejects_unknown_host() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         // Regression test for #239's second defect: a missing known_hosts
         // file in strict mode must behave as an empty file (unknown host
         // rejected), never as disabled verification.
@@ -2388,6 +2391,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_strict_mode_reports_changed_key_specifically() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let (_dir, _path, path_str) = temp_known_hosts();
         let original = generate_key();
         let imposter = generate_key();
@@ -2419,6 +2423,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_strict_mode_accepts_key_matching_any_recorded_entry() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let (_dir, path, path_str) = temp_known_hosts();
         let stale = generate_key();
         let current = generate_key();
@@ -2450,6 +2455,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_no_check_accepts_without_touching_filesystem() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let (_dir, path, _path_str) = temp_known_hosts();
         let key = generate_key();
 
@@ -2461,6 +2467,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_accept_new_through_client_handler() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         // The handler arm must reach the TOFU path end to end.
         let (_dir, path, path_str) = temp_known_hosts();
         let key = generate_key();
@@ -2558,6 +2565,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_strict_mode_rejects_hostname_that_cannot_be_recorded() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         // Strict mode never records, so it cannot be poisoned, but it shares
         // the guard so both modes fail for the same stated reason instead of
         // reporting a misleading "not in known_hosts" for a hostname that
@@ -2584,6 +2592,7 @@ mod tests {
     /// is accepted, and the certified key becomes the verified server key.
     #[tokio::test]
     async fn test_host_certificate_from_trusted_ca_is_accepted() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let ca = generate_key();
         let subject = generate_key();
         let cert = host_certificate(&subject, &ca);
@@ -2637,6 +2646,7 @@ mod tests {
     /// downgraded to its plain key and checked like any other host key.
     #[tokio::test]
     async fn test_host_certificate_without_matching_ca_uses_plain_key_rules() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let ca = generate_key();
         let subject = generate_key();
         let cert = host_certificate(&subject, &ca);
@@ -2670,6 +2680,7 @@ mod tests {
     /// certificate is refused even when its plain key is pinned.
     #[tokio::test]
     async fn test_host_certificate_with_trusted_ca_but_wrong_principal_is_refused() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let ca = generate_key();
         let subject = generate_key();
         let mut builder = russh::keys::ssh_key::certificate::Builder::new_with_random_nonce(
@@ -2707,6 +2718,7 @@ mod tests {
     /// stays permissive for certificates too.
     #[tokio::test]
     async fn test_host_certificate_is_accepted_under_no_check() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let ca = generate_key();
         let subject = generate_key();
         let cert = host_certificate(&subject, &ca);
@@ -2733,6 +2745,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_host_key_alias_changes_lookup_identity_at_non_default_port() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let (_alias_dir, _alias_path, alias_store) = temp_known_hosts();
         let (_target_dir, _target_path, target_store) = temp_known_hosts();
         let key = generate_key();
@@ -2808,6 +2821,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_host_key_alias_accept_new_records_unbracketed_alias() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let (_dir, path, path_str) = temp_known_hosts();
         let key = generate_key();
         let mut handler = ClientHandler::new(
@@ -2839,6 +2853,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_known_hosts_files_distinguishes_matching_and_empty_user_store() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let (_matching_dir, _matching_path, matching) = temp_known_hosts();
         let (_empty_dir, _empty_path, empty) = temp_known_hosts();
         let expected = generate_key();
@@ -2871,6 +2886,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_known_hosts_files_accepts_match_after_earlier_conflict() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let (_first_dir, _first_path, first) = temp_known_hosts();
         let (_second_dir, _second_path, second) = temp_known_hosts();
         let expected = generate_key();
@@ -2893,6 +2909,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_known_hosts_files_with_no_stores_fails_closed_as_unknown() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let key = generate_key();
         let mut handler = handler_for(ServerCheckMethod::KnownHostsFiles(Vec::new()));
         assert!(matches!(
@@ -2903,6 +2920,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_accept_new_files_records_only_explicit_user_write_path() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let (_user_dir, user_path, user) = temp_known_hosts();
         let (_global_dir, global_path, global) = temp_known_hosts();
         let (_second_user_dir, second_user_path, second_user) = temp_known_hosts();
@@ -2926,6 +2944,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_accept_new_files_uses_global_match_without_writing_user_file() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let (_user_dir, user_path, user) = temp_known_hosts();
         let (_global_dir, _global_path, global) = temp_known_hosts();
         let key = generate_key();
@@ -2951,6 +2970,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_accept_new_files_without_write_path_keeps_process_pin() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let original = generate_key();
         let changed = generate_key();
         let method = ServerCheckMethod::AcceptNewKnownHostsFiles {

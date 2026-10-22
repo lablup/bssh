@@ -26,6 +26,7 @@ mod tests {
 
     #[test]
     fn test_path_expansion_uses_cache() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         // Clear the global cache to start fresh
         GLOBAL_ENV_CACHE.clear();
 
@@ -68,6 +69,7 @@ mod tests {
 
     #[test]
     fn test_path_expansion_with_multiple_variables() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         // Clear cache
         GLOBAL_ENV_CACHE.clear();
 
@@ -98,6 +100,7 @@ mod tests {
 
     #[test]
     fn test_path_expansion_security_with_unsafe_variables() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         // Clear cache
         GLOBAL_ENV_CACHE.clear();
 
@@ -150,6 +153,7 @@ mod tests {
 
     #[test]
     fn test_cache_performance_improvement() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         // Create a cache with very short TTL for testing
         let cache_config = EnvCacheConfig {
             ttl: Duration::from_secs(10),
@@ -191,6 +195,7 @@ mod tests {
 
     #[test]
     fn test_cache_with_nonexistent_variable() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let cache = EnvironmentCache::new();
 
         // Try to get a safe variable that doesn't exist
@@ -226,6 +231,7 @@ mod tests {
     #[test]
     #[serial]
     fn test_cache_ttl_behavior() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         // Create cache with very short TTL
         let config = EnvCacheConfig {
             ttl: Duration::from_millis(50),

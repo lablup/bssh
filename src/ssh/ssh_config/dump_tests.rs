@@ -57,6 +57,7 @@ Host target
 
 #[test]
 fn path_keywords_follow_openssh_dump_expansion_categories() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let source = r#"
 Host target
     HostName final.example
@@ -82,6 +83,7 @@ Host target
 
 #[test]
 fn proxy_jump_none_is_omitted_from_config_dump() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let config = SshConfig::parse("Host target\n    ProxyJump none\n").unwrap();
     let output = render_resolved_config("target", &config.find_host_config("target")).unwrap();
     assert!(!output.lines().any(|line| line.starts_with("proxyjump ")));
@@ -90,6 +92,7 @@ fn proxy_jump_none_is_omitted_from_config_dump() {
 
 #[test]
 fn renderer_rejects_line_injection() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let mut config = SshHostConfig {
         hostname: Some("safe.example\nport 1".to_string()),
         ..Default::default()
@@ -104,6 +107,7 @@ fn renderer_rejects_line_injection() {
 
 #[test]
 fn command_tokens_expand_only_at_the_openssh_dump_stages() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let config = SshConfig::parse(
         "LocalCommand printf '%h local'\nRemoteCommand printf '%h remote'\nKnownHostsCommand printf '%h known'\nProxyCommand printf '%h|${HOME}'\n",
     )
@@ -121,6 +125,7 @@ fn command_tokens_expand_only_at_the_openssh_dump_stages() {
 
 #[test]
 fn quoted_scalar_and_list_elements_round_trip_without_collapsing() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let source = r#"
 Host target
     IdentityFile "/tmp/identity a#b"
@@ -155,6 +160,7 @@ Host target
 
 #[test]
 fn forwarding_arguments_are_serialized_individually() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let source = r#"
 Host target
     LocalForward "/tmp/local socket#one" "/tmp/destination 'quoted'"
@@ -184,6 +190,7 @@ Host target
 
 #[test]
 fn final_pass_forward_dedup_keeps_the_first_argument_boundaries() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let config = SshConfig::parse(
         "Host target\n    LocalForward \"a b\" c\nMatch final\n    LocalForward a \"b c\"\n",
     )
@@ -200,6 +207,7 @@ fn final_pass_forward_dedup_keeps_the_first_argument_boundaries() {
 
 #[test]
 fn configured_canonicalization_values_render_and_round_trip() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let config = SshConfig::parse(
         "CanonicalizeHostname yes\nCanonicalizeFallbackLocal no\nCanonicalizeMaxDots 4\nCanonicalDomains one.example two.example\nCanonicalizePermittedCNAMEs a:b c:d\nMatch canonical\n    Port 2201\n",
     )
@@ -218,6 +226,7 @@ fn configured_canonicalization_values_render_and_round_trip() {
 
 #[test]
 fn default_dump_has_the_audited_full_keyword_shape() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let output = render_resolved_config("host", &SshHostConfig::default()).unwrap();
     let keywords = output
         .lines()
@@ -269,6 +278,7 @@ fn default_dump_has_the_audited_full_keyword_shape() {
 
 #[test]
 fn signature_algorithm_modifiers_resolve_against_independent_defaults() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let cases = [
         (
             "HostbasedAcceptedAlgorithms +ssh-rsa\n",
@@ -319,6 +329,7 @@ fn signature_algorithm_modifiers_resolve_against_independent_defaults() {
 
 #[test]
 fn signature_algorithm_policy_rejects_unknown_names_and_empty_results() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let unknown = SshConfig::parse("CASignatureAlgorithms +not-a-real-key\n").unwrap();
     let error = render_resolved_config("host", &unknown.find_host_config("host")).unwrap_err();
     assert!(
@@ -338,6 +349,7 @@ fn signature_algorithm_policy_rejects_unknown_names_and_empty_results() {
 
 #[test]
 fn revoked_host_keys_list_is_dumped_on_one_line() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let parsed =
         SshConfig::parse("Host host\n    RevokedHostKeys /etc/ssh/revoked_a /etc/ssh/revoked_%h\n")
             .unwrap();
@@ -364,6 +376,7 @@ fn revoked_host_keys_list_is_dumped_on_one_line() {
 
 #[test]
 fn security_key_provider_renders_its_raw_value_and_first_match_wins() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let config = SshConfig::parse(
         "Host target\n    SecurityKeyProvider $MY_SK_PROVIDER\nHost *\n    SecurityKeyProvider /usr/lib/libsk-libfido2.so\n",
     )

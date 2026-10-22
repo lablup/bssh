@@ -155,6 +155,7 @@ async fn probe_resolves_the_expanded_hostname_not_the_ssh_alias() {
 
 #[tokio::test]
 async fn run_expands_cluster_alias_through_ssh_config_hostname() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let address = IpAddr::from([192, 0, 2, 11]);
     let mut probe = FakeProbe::default();
     probe
@@ -190,6 +191,7 @@ async fn run_expands_cluster_alias_through_ssh_config_hostname() {
 
 #[tokio::test]
 async fn mocked_probe_is_family_aware_and_bounded() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let mut probe = FakeProbe::default();
     for index in 1..=4 {
         let host = format!("host{index}");

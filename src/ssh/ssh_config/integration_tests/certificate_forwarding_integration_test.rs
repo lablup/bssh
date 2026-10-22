@@ -38,6 +38,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn test_include_with_certificate_options() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let temp_dir = TempDir::new().unwrap();
 
         // Create an included file with certificate options
@@ -98,6 +99,7 @@ Host web.prod.example.com
 
     #[tokio::test]
     async fn test_include_with_forwarding_options() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let temp_dir = TempDir::new().unwrap();
 
         // Create an included file with forwarding options
@@ -138,6 +140,7 @@ Host app.secure.example.com
 
     #[tokio::test]
     async fn test_match_with_certificate_options() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         use crate::ssh::ssh_config::match_directive::MatchCondition;
         use crate::ssh::ssh_config::types::ConfigBlock;
 
@@ -214,6 +217,7 @@ Host app.secure.example.com
 
     #[tokio::test]
     async fn test_complex_include_match_host_combination() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let temp_dir = TempDir::new().unwrap();
 
         // Create a base config with Match
@@ -273,6 +277,7 @@ Host web.prod.corp.example.com
 
     #[tokio::test]
     async fn test_nested_includes_with_all_new_options() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let temp_dir = TempDir::new().unwrap();
 
         // Deep include: base authentication
@@ -352,6 +357,7 @@ Host web1.prod.example.com
 
     #[tokio::test]
     async fn test_all_new_options_in_real_scenario() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let temp_dir = TempDir::new().unwrap();
 
         // Create a comprehensive config file

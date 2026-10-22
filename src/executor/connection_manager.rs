@@ -341,6 +341,7 @@ mod tests {
 
     #[test]
     fn command_and_transfer_selection_is_cli_then_ssh_config_then_yaml() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let config_jump = SshConfig::parse(
             r#"
 Host target-alias
@@ -383,6 +384,7 @@ Host target-alias
 
     #[test]
     fn command_and_transfer_proxy_jump_uses_original_host_alias() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let ssh_config = SshConfig::parse(
             r#"
 Host target-alias
@@ -406,6 +408,7 @@ Host effective-target
     /// Test that CLI jump hosts take precedence over SSH config
     #[test]
     fn test_resolve_effective_jump_hosts_cli_precedence() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let ssh_config_content = r#"
 Host example.com
     ProxyJump bastion.example.com
@@ -433,6 +436,7 @@ Host example.com
     /// Test that SSH config ProxyJump is used when no CLI jump hosts
     #[test]
     fn test_resolve_effective_jump_hosts_ssh_config_fallback() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let ssh_config_content = r#"
 Host example.com
     ProxyJump bastion.example.com
@@ -446,6 +450,7 @@ Host example.com
     /// Test that no jump hosts is returned when neither CLI nor SSH config specifies one
     #[test]
     fn test_resolve_effective_jump_hosts_none() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let ssh_config = SshConfig::new();
 
         let result = resolve_effective_jump_hosts(None, Some(&ssh_config), "example.com");
@@ -455,6 +460,7 @@ Host example.com
     /// Test that no jump hosts is returned when SSH config is not provided
     #[test]
     fn test_resolve_effective_jump_hosts_no_ssh_config() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let result = resolve_effective_jump_hosts(None, None, "example.com");
         assert_eq!(result, None);
     }
@@ -462,6 +468,7 @@ Host example.com
     /// Test multi-hop ProxyJump chain from SSH config
     #[test]
     fn test_resolve_effective_jump_hosts_multi_hop() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let ssh_config_content = r#"
 Host internal.example.com
     ProxyJump jump1.example.com,jump2.example.com
@@ -478,6 +485,7 @@ Host internal.example.com
     /// Test ProxyJump with port specification
     #[test]
     fn test_resolve_effective_jump_hosts_with_port() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let ssh_config_content = r#"
 Host internal.example.com
     ProxyJump bastion.example.com:2222
@@ -491,6 +499,7 @@ Host internal.example.com
     /// Test ProxyJump with user@host:port format
     #[test]
     fn test_resolve_effective_jump_hosts_with_user_and_port() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let ssh_config_content = r#"
 Host internal.example.com
     ProxyJump admin@bastion.example.com:2222
@@ -504,6 +513,7 @@ Host internal.example.com
     /// Test wildcard pattern matching for ProxyJump
     #[test]
     fn test_resolve_effective_jump_hosts_wildcard() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let ssh_config_content = r#"
 Host db.internal.example.com
     ProxyJump db-gateway.example.com
@@ -527,6 +537,7 @@ Host *.internal.example.com
     /// Test that unmatched hosts get no ProxyJump
     #[test]
     fn test_resolve_effective_jump_hosts_no_match() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let ssh_config_content = r#"
 Host *.internal.example.com
     ProxyJump gateway.example.com
@@ -540,6 +551,7 @@ Host *.internal.example.com
 
     #[test]
     fn direct_proxy_jump_values_normalize_to_an_empty_chain() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         for directive in ["none", "direct", "NONE", "DIRECT"] {
             let ssh_config_content = format!(
                 r#"
@@ -665,6 +677,7 @@ Host *.example.com
 
     #[tokio::test]
     async fn command_and_all_transfer_paths_never_dial_proxy_jump_none() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
         let port = listener.local_addr().unwrap().port();
         drop(listener);
@@ -697,6 +710,7 @@ Host direct-target
 
     #[tokio::test]
     async fn all_connection_paths_prefer_config_then_cli_over_yaml() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let ssh_config = SshConfig::parse(
             r#"
 Host target-alias
@@ -733,6 +747,7 @@ Host target-alias
     /// Test complex multi-hop chain with user and ports
     #[test]
     fn test_resolve_effective_jump_hosts_complex_chain() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         let ssh_config_content = r#"
 Host production.internal
     ProxyJump user1@jump1.example.com:22,user2@jump2.example.com:2222,jump3.example.com

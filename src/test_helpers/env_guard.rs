@@ -31,6 +31,12 @@
 //! tests racing against `EnvGuard` mutations are undefined behaviour at the
 //! libc level on glibc/musl/macOS.
 //!
+//! HOME has an additional shared mutex: `set/remove("HOME", ...)` acquire it
+//! automatically. A HOME-only reader must hold `EnvGuard::lock_home()` instead
+//! of relying on a serial annotation. This includes indirect readers in SSH
+//! path/token expansion, configuration resolution, and authentication. Never
+//! take both guards in one test: the HOME mutex is not reentrant.
+//!
 //! Note: `#[serial]` only serializes against other `#[serial]` and
 //! `#[parallel]` tests. Tests with neither attribute may run concurrently
 //! with serial tests and are not covered by the serial ordering guarantee.
@@ -145,7 +151,15 @@ impl EnvGuard {
     }
 
     /// Lock the process-global `HOME` environment variable for tests that only
-    /// read it.
+    /// read it, including indirect reads through path expansion, MatchContext,
+    /// SSH configuration resolution/dumping, session policy, default identity
+    /// lookup, and KnownHostsCommand context construction. Acquire at test entry
+    /// and retain it until every spawned reader has finished.
+    ///
+    /// This mutex is NOT reentrant: use either this guard or `set/remove("HOME",
+    /// ...)` for a test, never both, and do not acquire it again in helpers.
+    /// HOME writers must retain their existing serial annotation; readers use
+    /// this shared lock even when they do not have a serial annotation.
     #[allow(dead_code)]
     pub fn lock_home() -> HomeEnvLock {
         HomeEnvLock {

@@ -21,6 +21,7 @@ Host example.com
 
     #[test]
     fn test_certificate_file_blocks_private_key() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         // Test that private keys without -cert.pub extension are blocked
         let content = r#"
 Host example.com
@@ -37,6 +38,7 @@ Host example.com
 
     #[test]
     fn test_certificate_file_allows_valid_cert() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         // Test that valid certificate files are allowed
         let content = r#"
 Host example.com
@@ -50,6 +52,7 @@ Host example.com
 
     #[test]
     fn test_max_certificate_files_during_merge() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         // Test that certificate files are limited during merging
         let mut content = String::new();
 
@@ -80,6 +83,7 @@ Host example.com
 
     #[test]
     fn test_deduplication_of_certificate_files() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         // Test that duplicate certificate files are deduplicated
         let content = r#"
 Host *.example.com
@@ -114,6 +118,7 @@ Host test.example.com
 
     #[test]
     fn test_max_permit_remote_open_entries() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         // Test that PermitRemoteOpen entries are limited
         let mut content = String::from("Host example.com\n");
 
@@ -249,6 +254,7 @@ Host example.com
 
     #[test]
     fn test_sensitive_paths_in_certificate() {
+        let _home_lock = crate::test_helpers::EnvGuard::lock_home();
         // Test various sensitive paths are blocked
         let sensitive_paths = vec![
             "/etc/shadow",

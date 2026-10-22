@@ -137,6 +137,7 @@ fn test_with_address_family_is_chainable_and_leaves_other_settings_alone() {
 
 #[test]
 fn test_connection_config_resolver_applies_ssh_config_per_host() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let ssh_config = SshConfig::parse(
         r#"
 Host v4node
@@ -180,6 +181,7 @@ Host v6node
 
 #[test]
 fn test_connection_config_resolver_preserves_cli_precedence() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let ssh_config = SshConfig::parse(
         r#"
 Host target
@@ -206,6 +208,7 @@ Host target
 
 #[test]
 fn auth_banner_suppression_resolves_from_quiet_cli_or_log_level() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let ssh_config =
         SshConfig::parse("Host quiet-config\n    LogLevel QUIET\nHost normal\n    LogLevel INFO\n")
             .unwrap();
@@ -226,6 +229,7 @@ fn auth_banner_suppression_resolves_from_quiet_cli_or_log_level() {
 
 #[test]
 fn debug_log_level_enables_kex_diagnostics_without_changing_info() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let ssh_config =
         SshConfig::parse("Host debug\n    LogLevel DEBUG3\nHost normal\n    LogLevel INFO\n")
             .unwrap();
@@ -242,6 +246,7 @@ fn debug_log_level_enables_kex_diagnostics_without_changing_info() {
 
 #[test]
 fn stdio_forward_defaults_clear_forwards_but_preserves_explicit_no() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let implicit =
         SshConfig::parse("Host target\n    LocalForward 127.0.0.1:2200 example.com:22\n").unwrap();
     let implicit = SshConnectionConfigResolver::new()
@@ -273,6 +278,7 @@ fn stdio_forward_defaults_clear_forwards_but_preserves_explicit_no() {
 /// list and the function returns before the first `TcpStream::connect`.
 #[tokio::test]
 async fn test_forced_ipv6_with_no_ipv6_candidate_fails_with_specific_error() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let addr: std::net::SocketAddr = "127.0.0.1:22".parse().expect("valid IPv4 socket address");
     let config = SshConnectionConfig::new().with_address_family(AddressFamily::V6);
 
@@ -301,6 +307,7 @@ async fn test_forced_ipv6_with_no_ipv6_candidate_fails_with_specific_error() {
 
 #[tokio::test]
 async fn test_forced_ipv4_with_no_ipv4_candidate_fails_with_specific_error() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let addr: std::net::SocketAddr = "[::1]:22".parse().expect("valid IPv6 socket address");
     let config = SshConnectionConfig::new().with_address_family(AddressFamily::V4);
 
@@ -329,6 +336,7 @@ async fn test_forced_ipv4_with_no_ipv4_candidate_fails_with_specific_error() {
 
 #[test]
 fn test_proxy_resolution_keeps_first_ssh_config_directive() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let command_first = SshConfig::parse(
         r#"
 Host target
@@ -361,6 +369,7 @@ Host target
 
 #[test]
 fn test_cli_proxy_jump_overrides_ssh_config_proxy_command() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let ssh_config = SshConfig::parse(
         r#"
 Host target
@@ -381,6 +390,7 @@ Host target
 
 #[test]
 fn test_proxy_tokens_use_effective_alias_original_and_resolved_hosts() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let ssh_config = SshConfig::parse(
         r#"
 Host original-host
@@ -408,6 +418,7 @@ Host original-host
 
 #[test]
 fn test_proxy_none_disables_yaml_jump_fallback() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     for directive in [
         "ProxyCommand none",
         "ProxyJump none",
@@ -426,6 +437,7 @@ fn test_proxy_none_disables_yaml_jump_fallback() {
 
 #[test]
 fn test_yaml_jump_is_used_only_as_proxy_fallback() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let config = SshConnectionConfigResolver::new()
         .with_yaml_proxy_jump(Some("yaml-bastion.example.com".to_string()))
         .resolve_for_host("target");
@@ -439,6 +451,7 @@ fn test_yaml_jump_is_used_only_as_proxy_fallback() {
 #[cfg(unix)]
 #[tokio::test]
 async fn test_proxy_command_routes_ssh_transport_through_child() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
@@ -489,6 +502,7 @@ async fn test_proxy_command_routes_ssh_transport_through_child() {
 #[cfg(unix)]
 #[tokio::test]
 async fn test_proxy_command_failure_is_actionable_at_connection_boundary() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let proxy = ProxyCommandConfig::new(
         "sh -c 'printf connection\\ proxy\\ failed >&2; exit 23'",
         "target-alias",
@@ -520,6 +534,7 @@ async fn test_proxy_command_failure_is_actionable_at_connection_boundary() {
 
 #[tokio::test]
 async fn test_proxy_use_fdpass_is_rejected_at_connection_boundary() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let proxy = ProxyCommandConfig::new("unused", "target-alias").with_fdpass(true);
     let config = SshConnectionConfig::new().with_proxy_mode(Some(ProxyMode::Command(proxy)));
     let error = Client::connect_with_ssh_config(
@@ -544,6 +559,7 @@ async fn test_proxy_use_fdpass_is_rejected_at_connection_boundary() {
 
 #[tokio::test]
 async fn test_unforced_family_does_not_produce_the_family_error() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     // Port 0 is never connectable, so this fails fast at the TCP layer without
     // depending on anything being reachable.
     let addr: std::net::SocketAddr = "127.0.0.1:0".parse().expect("valid IPv4 socket address");
@@ -593,6 +609,7 @@ impl super::ToSocketAddrsWithHostname for CountingAddress {
 
 #[tokio::test]
 async fn connection_attempts_reresolves_dns_for_each_carrier_round() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let address = CountingAddress {
         calls: std::sync::Arc::clone(&calls),
@@ -624,6 +641,7 @@ async fn connection_attempts_reresolves_dns_for_each_carrier_round() {
 
 #[tokio::test]
 async fn connection_attempts_preserves_the_last_typed_tcp_failure() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let address = CountingAddress {
         calls: std::sync::Arc::clone(&calls),
@@ -655,6 +673,7 @@ async fn connection_attempts_preserves_the_last_typed_tcp_failure() {
 
 #[tokio::test]
 async fn connection_attempts_never_retries_ssh_handshake_failure() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let socket_addr = listener.local_addr().unwrap();
     let server = tokio::spawn(async move {
@@ -715,6 +734,7 @@ async fn tcp_keep_alive_sets_and_verifies_the_os_socket_option() {
 
 #[test]
 fn configured_algorithms_reach_the_russh_transport_preferences() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let ssh_config = SshConfig::parse(
         "Host target\n    Ciphers aes128-ctr\n    MACs hmac-sha2-256\n    KexAlgorithms curve25519-sha256\n    HostKeyAlgorithms ssh-ed25519\n    PubkeyAcceptedAlgorithms rsa-sha2-*\n",
     )
@@ -745,6 +765,7 @@ fn configured_algorithms_reach_the_russh_transport_preferences() {
 /// plain list empty instead of falling back to the defaults.
 #[test]
 fn certificate_only_host_key_algorithms_are_never_widened() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     for name in [
         "sk-ssh-ed25519-cert-v01@openssh.com",
         "sk-ecdsa-sha2-nistp256-cert-v01@openssh.com",
@@ -795,6 +816,7 @@ fn connection_attempts_rejects_zero() {
 
 #[test]
 fn resolved_authentication_directives_reach_runtime_policy() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let ssh_config = SshConfig::parse(
         "Host target\n    IdentityFile ~/.ssh/config-key\n    CertificateFile ~/.ssh/config-key-cert.pub\n    IdentitiesOnly yes\n    PreferredAuthentications password,publickey\n    PubkeyAuthentication no\n    PasswordAuthentication yes\n    NumberOfPasswordPrompts 2\n    BatchMode yes\n    PubkeyAcceptedAlgorithms ssh-ed25519\n",
     )
@@ -817,6 +839,7 @@ fn resolved_authentication_directives_reach_runtime_policy() {
 
 #[test]
 fn cli_identities_precede_ssh_config_identities() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let ssh_config = SshConfig::parse("Host target\n    IdentityFile /config-key\n").unwrap();
     let policy = SshConnectionConfigResolver::new()
         .with_ssh_config(Some(ssh_config))
@@ -836,6 +859,7 @@ fn cli_identities_precede_ssh_config_identities() {
 
 #[test]
 fn authentication_yes_no_defaults_and_overrides_are_preserved() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let defaults = SshConnectionConfigResolver::new()
         .resolve_for_host("target")
         .auth_policy;
@@ -860,6 +884,7 @@ fn authentication_yes_no_defaults_and_overrides_are_preserved() {
 
 #[test]
 fn source_binding_and_ipqos_reach_the_connection_config() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let ssh_config = SshConfig::parse(
         "Host target\n    BindAddress 127.0.0.1\n    BindInterface lo\n    IPQoS ef cs1\n",
     )
@@ -890,6 +915,7 @@ fn source_binding_and_ipqos_reach_the_connection_config() {
 
 #[test]
 fn forward_agent_socket_path_reaches_the_connection_config() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let ssh_config =
         SshConfig::parse("Host target\n    ForwardAgent $FORWARD_AGENT_SOCK\n").unwrap();
     let config = SshConnectionConfigResolver::new()
@@ -1015,6 +1041,7 @@ fn ipv6_qos_sets_the_exact_traffic_class_byte() {
 
 #[test]
 fn rekey_limit_reaches_the_russh_transport() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let ssh_config = SshConfig::parse("Host target\n    RekeyLimit 4K 30s\n").unwrap();
     let connection_config = SshConnectionConfigResolver::new()
         .with_ssh_config(Some(ssh_config))
@@ -1035,6 +1062,7 @@ fn rekey_limit_reaches_the_russh_transport() {
 
 #[test]
 fn rekey_limit_default_none_preserves_russh_nonce_safety_ceiling() {
+    let _home_lock = crate::test_helpers::EnvGuard::lock_home();
     let ssh_config = SshConfig::parse("Host target\n    RekeyLimit default none\n").unwrap();
     let connection_config = SshConnectionConfigResolver::new()
         .with_ssh_config(Some(ssh_config))
