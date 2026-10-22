@@ -55,6 +55,12 @@ auth:
 - Restrict authorized_keys file permissions to 0600
 - Regularly rotate keys (annually or when personnel changes)
 
+### Security-key user authentication
+
+bssh-server currently cannot inspect the user-presence (UP/touch) or user-verification (UV/PIN or biometric) flags of security-key signatures through russh. It therefore rejects `sk-ssh-ed25519@openssh.com` and `sk-ecdsa-sha2-nistp256@openssh.com` user keys by default. A matching `authorized_keys` entry is accepted only if it explicitly contains `no-touch-required` and does not contain `verify-required`. Adding both options still rejects the key. Rejections are logged at info level.
+
+Use an ordinary key or an SSH server that enforces UP/UV when touch or verification is required. Only use `no-touch-required` when deliberately authorizing authentication without either requirement; it is a relaxation of policy, not a way to enforce touch. Ordinary public keys are unaffected. Signature-flag enforcement is tracked in [#340](https://github.com/lablup/bssh/issues/340); security-key user certificates are outside this support.
+
 ### Password Authentication
 
 If password authentication is required, use strong passwords with Argon2id hashing:
