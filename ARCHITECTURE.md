@@ -863,6 +863,7 @@ but not with themselves; omit the key (plain `#[serial]`) when in doubt.
 - Private key files with passphrase support
 - Password authentication (discouraged in production)
 - Public key authentication preferred
+- FIDO security-key identities (`sk-ssh-ed25519@openssh.com`, `sk-ecdsa-sha2-nistp256@openssh.com`): the default identity list includes `id_ed25519_sk` and `id_ecdsa_sk`. Signing goes through a `SecurityKeyProvider` (`src/ssh/security_key/`, `src/ssh/tokio_client/security_key_signer.rs`): the default is `$SSH_SK_PROVIDER`, an external library implementing OpenSSH's `sk-api.h` is loaded with `dlopen` and called on a blocking thread, and `internal` reports a diagnostic because bssh has no built-in provider. A missing or failing provider declines that identity and authentication continues with the next one. Keys held by an agent sign through the agent and need no provider. Static musl builds cannot `dlopen` and report a diagnostic instead.
 
 #### macOS `UseKeychain`
 
@@ -904,6 +905,7 @@ validates the certificates it is offered:
   and runs the `HOSTNAME` invocation before the DNSSEC and known_hosts checks.
 - Without a matching CA the certified key is checked as a plain host key if
   `HostKeyAlgorithms` permits its plain type.
+- The key or certificate the server sends must have the type the key exchange negotiated (`src/ssh/tokio_client/host_key_type.rs`, mirroring OpenSSH `kex_verify_host_key`), including the `sk-*` types; a mismatch refuses the connection, so a `HostKeyAlgorithms` restriction also limits which trusted key type a server may present.
 - `ServerCheckMethod::NoCheck` still accepts, because there the operator has
   turned host verification off outright.
 

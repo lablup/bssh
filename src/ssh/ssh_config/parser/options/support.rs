@@ -242,7 +242,11 @@ pub(super) const ACCEPTED_KEYWORDS: &[(&str, &str, KeywordSupport)] = &[
         "rhostsauthentication",
         Unimplemented,
     ),
-    ("securitykeyprovider", "securitykeyprovider", Unimplemented),
+    (
+        "securitykeyprovider",
+        "securitykeyprovider",
+        Runtime(Authentication),
+    ),
     ("userknownhostsfile2", "userknownhostsfile2", Unimplemented),
     ("useroaming", "useroaming", Unimplemented),
     ("usersh", "usersh", Unimplemented),
@@ -310,8 +314,8 @@ mod tests {
     use std::collections::HashSet;
 
     const ACCEPTED_SPELLING_COUNT: usize = 108;
-    const RUNTIME_SPELLING_COUNT: usize = 62;
-    const UNIMPLEMENTED_SPELLING_COUNT: usize = 46;
+    const RUNTIME_SPELLING_COUNT: usize = 63;
+    const UNIMPLEMENTED_SPELLING_COUNT: usize = 45;
 
     #[test]
     fn accepted_keywords_and_aliases_have_one_consistent_classification() {
@@ -413,6 +417,7 @@ mod tests {
             ("forkafterauthentication", Session),
             ("sessiontype", Session),
             ("stdinnull", Session),
+            ("securitykeyprovider", Authentication),
             ("revokedhostkeys", HostVerification),
         ];
         let runtime = ACCEPTED_KEYWORDS
@@ -458,7 +463,6 @@ mod tests {
             "fallbacktorsh",
             "globalknownhostsfile2",
             "rhostsauthentication",
-            "securitykeyprovider",
             "userknownhostsfile2",
             "useroaming",
             "usersh",

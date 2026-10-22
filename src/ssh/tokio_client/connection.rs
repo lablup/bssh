@@ -572,6 +572,7 @@ impl SshConnectionConfigResolver {
                         .resolved_pubkey_accepted_algorithms
                         .clone()
                         .or_else(|| SshAuthenticationPolicy::default().pubkey_accepted_algorithms),
+                    security_key_provider: config.security_key_provider.clone(),
                 }
             })
             .unwrap_or_default();
@@ -2823,6 +2824,9 @@ pub struct ClientHandler {
     suppress_auth_banner: bool,
     emit_kex_diagnostics: bool,
     connection_info: ConnectionInfoState,
+    /// Host-key algorithm of the latest key exchange (`Names::key`), which
+    /// `check_server_key` compares the server's key against.
+    negotiated_host_key: Option<russh::keys::Algorithm>,
 }
 
 impl ClientHandler {
@@ -2859,6 +2863,7 @@ impl ClientHandler {
             suppress_auth_banner: false,
             emit_kex_diagnostics: false,
             connection_info: ConnectionInfoState::new(host),
+            negotiated_host_key: None,
         }
     }
 
@@ -3579,6 +3584,7 @@ impl Handler for ClientHandler {
         _session: &mut russh::client::Session,
     ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
         self.connection_info.update_names(names);
+        self.negotiated_host_key = Some(names.key.clone());
         if self.emit_kex_diagnostics || tracing::enabled!(tracing::Level::DEBUG) {
             for line in kex_diagnostic_lines(names) {
                 crate::diagnosticln!("{line}");
@@ -3739,6 +3745,111 @@ impl Handler for ClientHandler {
         &mut self,
         server_key: &russh::keys::PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
+        super::host_key_type::ensure_recorded_host_key_type(
+            self.negotiated_host_key.as_ref(),
+            server_key,
+        )?;
+        self.verify_server_key(server_key).await
+    }
+
+    fn openssh_ext_host_keys_announced(
+        &mut self,
+        keys: Vec<russh::keys::PublicKey>,
+        _session: &mut russh::client::Session,
+    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
+        match self.policy.update_host_keys {
+            UpdateHostKeysPolicy::No => return std::future::ready(Ok(())),
+            UpdateHostKeysPolicy::Ask => {
+                tracing::warn!(
+                    "UpdateHostKeys=ask requires a controlling terminal; bssh is non-interactive at the host-key callback and refuses the update"
+                );
+                return std::future::ready(Ok(()));
+            }
+            UpdateHostKeysPolicy::Yes => {}
+        }
+        let keys = keys
+            .into_iter()
+            .filter(|key| {
+                host_key_algorithm_permitted(&self.policy.host_key_algorithms, &key.algorithm())
+            })
+            .collect::<Vec<_>>();
+        if !self.rotation_allowed.load(Ordering::Acquire) || keys.is_empty() {
+            return std::future::ready(Ok(()));
+        }
+        if let Err(error) = super::hostkey_rotation::validate_announced_keys(&keys) {
+            tracing::warn!("Ignoring host-key announcement: {error}");
+            return std::future::ready(Ok(()));
+        }
+        if self
+            .proof_in_flight
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            tracing::warn!("Ignoring repeated host-key announcement while proof is pending");
+            return std::future::ready(Ok(()));
+        }
+
+        let mut method = &self.server_check;
+        let mut host_key_alias = None;
+        while let ServerCheckMethod::HostKeyAlias {
+            alias,
+            method: inner,
+        } = method
+        {
+            host_key_alias.get_or_insert(alias.as_str());
+            method = inner;
+        }
+        let hostname = host_key_alias.unwrap_or(&self.hostname).to_string();
+        let port = if host_key_alias.is_some() {
+            22
+        } else {
+            self.host.port()
+        };
+        let paths = self.rotation_paths(method);
+        if paths.is_empty() {
+            self.proof_in_flight.store(false, Ordering::Release);
+            tracing::debug!(
+                "UpdateHostKeys is enabled but no writable user known_hosts file is configured"
+            );
+            return std::future::ready(Ok(()));
+        }
+        let mut identities = vec![(hostname.clone(), port)];
+        if let Some(address) = check_host_ip_address(&self.policy, self.host, host_key_alias) {
+            identities.push((address, self.host.port()));
+        }
+        let current_key = match self.verified_server_key.lock() {
+            Ok(guard) => guard.clone(),
+            Err(_) => {
+                self.proof_in_flight.store(false, Ordering::Release);
+                return std::future::ready(Err(super::Error::ServerCheckFailed));
+            }
+        };
+        let Some(current_key) = current_key else {
+            self.proof_in_flight.store(false, Ordering::Release);
+            return std::future::ready(Ok(()));
+        };
+
+        self.hostkey_rotation.submit(PendingHostkeyProof {
+            hostname,
+            keys,
+            known_hosts_paths: paths,
+            identities,
+            current_key,
+            hash_known_hosts: self.policy.hash_known_hosts,
+            proof_in_flight: Arc::clone(&self.proof_in_flight),
+        });
+        std::future::ready(Ok(()))
+    }
+}
+
+impl ClientHandler {
+    /// Host-key policy for a key whose type already matches the negotiated
+    /// algorithm: CA lines, known_hosts, KnownHostsCommand, SSHFP, revocation,
+    /// and the StrictHostKeyChecking decision.
+    pub(super) async fn verify_server_key(
+        &mut self,
+        server_key: &russh::keys::PublicKeyOrCertificate,
+    ) -> Result<bool, super::Error> {
         let mut method = &self.server_check;
         let mut host_key_alias = None;
         while let ServerCheckMethod::HostKeyAlias {
@@ -3994,95 +4105,6 @@ impl Handler for ClientHandler {
             .store(verification.eligible_for_rotation, Ordering::Release);
         Ok(true)
     }
-
-    fn openssh_ext_host_keys_announced(
-        &mut self,
-        keys: Vec<russh::keys::PublicKey>,
-        _session: &mut russh::client::Session,
-    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
-        match self.policy.update_host_keys {
-            UpdateHostKeysPolicy::No => return std::future::ready(Ok(())),
-            UpdateHostKeysPolicy::Ask => {
-                tracing::warn!(
-                    "UpdateHostKeys=ask requires a controlling terminal; bssh is non-interactive at the host-key callback and refuses the update"
-                );
-                return std::future::ready(Ok(()));
-            }
-            UpdateHostKeysPolicy::Yes => {}
-        }
-        let keys = keys
-            .into_iter()
-            .filter(|key| {
-                host_key_algorithm_permitted(&self.policy.host_key_algorithms, &key.algorithm())
-            })
-            .collect::<Vec<_>>();
-        if !self.rotation_allowed.load(Ordering::Acquire) || keys.is_empty() {
-            return std::future::ready(Ok(()));
-        }
-        if let Err(error) = super::hostkey_rotation::validate_announced_keys(&keys) {
-            tracing::warn!("Ignoring host-key announcement: {error}");
-            return std::future::ready(Ok(()));
-        }
-        if self
-            .proof_in_flight
-            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-            .is_err()
-        {
-            tracing::warn!("Ignoring repeated host-key announcement while proof is pending");
-            return std::future::ready(Ok(()));
-        }
-
-        let mut method = &self.server_check;
-        let mut host_key_alias = None;
-        while let ServerCheckMethod::HostKeyAlias {
-            alias,
-            method: inner,
-        } = method
-        {
-            host_key_alias.get_or_insert(alias.as_str());
-            method = inner;
-        }
-        let hostname = host_key_alias.unwrap_or(&self.hostname).to_string();
-        let port = if host_key_alias.is_some() {
-            22
-        } else {
-            self.host.port()
-        };
-        let paths = self.rotation_paths(method);
-        if paths.is_empty() {
-            self.proof_in_flight.store(false, Ordering::Release);
-            tracing::debug!(
-                "UpdateHostKeys is enabled but no writable user known_hosts file is configured"
-            );
-            return std::future::ready(Ok(()));
-        }
-        let mut identities = vec![(hostname.clone(), port)];
-        if let Some(address) = check_host_ip_address(&self.policy, self.host, host_key_alias) {
-            identities.push((address, self.host.port()));
-        }
-        let current_key = match self.verified_server_key.lock() {
-            Ok(guard) => guard.clone(),
-            Err(_) => {
-                self.proof_in_flight.store(false, Ordering::Release);
-                return std::future::ready(Err(super::Error::ServerCheckFailed));
-            }
-        };
-        let Some(current_key) = current_key else {
-            self.proof_in_flight.store(false, Ordering::Release);
-            return std::future::ready(Ok(()));
-        };
-
-        self.hostkey_rotation.submit(PendingHostkeyProof {
-            hostname,
-            keys,
-            known_hosts_paths: paths,
-            identities,
-            current_key,
-            hash_known_hosts: self.policy.hash_known_hosts,
-            proof_in_flight: Arc::clone(&self.proof_in_flight),
-        });
-        std::future::ready(Ok(()))
-    }
 }
 
 #[cfg(test)]
@@ -4302,7 +4324,7 @@ mod known_host_policy_tests {
         );
 
         let error = handler
-            .check_server_key(&PublicKeyOrCertificate::from(offered))
+            .verify_server_key(&PublicKeyOrCertificate::from(offered))
             .await
             .unwrap_err();
         assert!(matches!(
@@ -4338,7 +4360,7 @@ mod known_host_policy_tests {
 
         assert!(
             handler
-                .check_server_key(&PublicKeyOrCertificate::from(offered.clone()))
+                .verify_server_key(&PublicKeyOrCertificate::from(offered.clone()))
                 .await
                 .unwrap()
         );
@@ -4702,7 +4724,7 @@ mod revoked_host_keys_policy_tests {
             ServerCheckMethod::KnownHostsFile(known_hosts.to_str().unwrap().to_string()),
             policy,
         )
-        .check_server_key(&russh::keys::PublicKeyOrCertificate::PublicKey {
+        .verify_server_key(&russh::keys::PublicKeyOrCertificate::PublicKey {
             key: key.public_key().clone(),
             hash_alg: None,
         })
@@ -4835,7 +4857,7 @@ mod host_certificate_policy_tests {
             ServerCheckMethod::AcceptNewInMemory,
         ] {
             let result = handler(method.clone(), certificate_only.clone())
-                .check_server_key(&cert)
+                .verify_server_key(&cert)
                 .await;
             assert!(
                 matches!(result, Err(super::super::Error::ServerCheckFailed)),
@@ -4844,7 +4866,7 @@ mod host_certificate_policy_tests {
         }
 
         let result = handler(ServerCheckMethod::KnownHostsFile(known_hosts), policy())
-            .check_server_key(&cert)
+            .verify_server_key(&cert)
             .await;
         assert!(
             matches!(result, Ok(true)),
@@ -4883,14 +4905,14 @@ mod host_certificate_policy_tests {
             ServerCheckMethod::PublicKey(base64(&pinned)),
             with_ca.clone(),
         )
-        .check_server_key(&cert)
+        .verify_server_key(&cert)
         .await;
         assert!(
             matches!(result, Ok(false)),
             "a CA-signed certificate must not satisfy a pin on another key, got {result:?}"
         );
         let result = handler(ServerCheckMethod::PublicKey(base64(&subject)), with_ca)
-            .check_server_key(&cert)
+            .verify_server_key(&cert)
             .await;
         assert!(
             matches!(result, Ok(true)),
@@ -4913,14 +4935,14 @@ mod host_certificate_policy_tests {
         let mut revoking = policy();
         revoking.revoked_host_keys = RevokedHostKeysPolicy::Files(vec![revoked]);
         let result = handler(ServerCheckMethod::NoCheck, revoking.clone())
-            .check_server_key(&cert)
+            .verify_server_key(&cert)
             .await;
         assert!(
             matches!(result, Err(super::super::Error::HostKeyRevoked { .. })),
             "a revoked certified key is refused under NoCheck, got {result:?}"
         );
         let result = handler(ServerCheckMethod::NoCheck, policy())
-            .check_server_key(&cert)
+            .verify_server_key(&cert)
             .await;
         assert!(matches!(result, Ok(true)), "{result:?}");
     }
@@ -5005,7 +5027,7 @@ mod host_certificate_policy_tests {
         let (policy, method, log) =
             command_policy(&dir, &[openssh_line("@cert-authority *.example.com", &ca)]);
         let result = handler(method, policy.clone())
-            .check_server_key(&cert)
+            .verify_server_key(&cert)
             .await;
         assert!(
             matches!(result, Ok(true)),
@@ -5030,7 +5052,7 @@ mod host_certificate_policy_tests {
             .unwrap()
             .to_string();
         let result = handler(ServerCheckMethod::PublicKey(pinned), policy)
-            .check_server_key(&cert)
+            .verify_server_key(&cert)
             .await;
         assert!(matches!(result, Ok(false)), "{result:?}");
     }
@@ -5051,7 +5073,7 @@ mod host_certificate_policy_tests {
                 openssh_line("node1.example.com", &subject),
             ],
         );
-        let result = handler(method, policy).check_server_key(&cert).await;
+        let result = handler(method, policy).verify_server_key(&cert).await;
         assert!(
             matches!(result, Err(super::super::Error::ServerCheckFailed)),
             "an invalid certificate from a command-trusted CA must be refused, got {result:?}"
@@ -5071,7 +5093,7 @@ mod host_certificate_policy_tests {
                 openssh_line("@revoked *", &ca),
             ],
         );
-        let result = handler(method, policy).check_server_key(&cert).await;
+        let result = handler(method, policy).verify_server_key(&cert).await;
         assert!(
             matches!(result, Err(super::super::Error::HostKeyRevoked { .. })),
             "a @revoked CA in the command output must refuse the certificate, got {result:?}"
@@ -5088,7 +5110,7 @@ mod host_certificate_policy_tests {
         let dir = tempfile::tempdir().unwrap();
         let (policy, method, log) =
             command_policy(&dir, &[openssh_line("node1.example.com", &subject)]);
-        let result = handler(method, policy).check_server_key(&cert).await;
+        let result = handler(method, policy).verify_server_key(&cert).await;
         assert!(
             matches!(result, Ok(true)),
             "the downgraded plain key matches the command output, got {result:?}"
@@ -5098,6 +5120,92 @@ mod host_certificate_policy_tests {
         assert!(
             calls[0].starts_with("HOSTNAME ssh-ed25519-cert-v01@openssh.com "),
             "{calls:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod negotiated_host_key_type_tests {
+    use super::*;
+    use russh::keys::ssh_key::EcdsaCurve;
+    use russh::keys::ssh_key::certificate::{Builder, CertType};
+    use russh::keys::{Algorithm, PrivateKey, PublicKeyOrCertificate};
+
+    fn handler(negotiated: Option<Algorithm>) -> ClientHandler {
+        let mut handler = ClientHandler::new_with_policy(
+            "node1.example.com".into(),
+            "127.0.0.1:22".parse().unwrap(),
+            ServerCheckMethod::NoCheck,
+            KnownHostRuntimePolicy::unconfigured("user", "node1.example.com", 22),
+        );
+        handler.negotiated_host_key = negotiated;
+        handler
+    }
+
+    fn ed25519() -> PrivateKey {
+        PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519).unwrap()
+    }
+
+    /// Even with StrictHostKeyChecking off, a key of a type the exchange did
+    /// not negotiate is refused, as `kex_verify_host_key` refuses it before
+    /// any host-key policy runs.
+    #[tokio::test]
+    async fn check_server_key_refuses_a_key_of_another_type_than_negotiated() {
+        let offered = PublicKeyOrCertificate::from(ed25519().public_key().clone());
+        let p256 = Algorithm::Ecdsa {
+            curve: EcdsaCurve::NistP256,
+        };
+        let error = handler(Some(p256))
+            .check_server_key(&offered)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                super::super::Error::HostKeyTypeMismatch { negotiated, received }
+                    if negotiated == "ecdsa-sha2-nistp256" && received == "ssh-ed25519"
+            ),
+            "{error:?}"
+        );
+
+        assert!(
+            handler(Some(Algorithm::Ed25519))
+                .check_server_key(&offered)
+                .await
+                .unwrap()
+        );
+        assert!(handler(None).check_server_key(&offered).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn check_server_key_refuses_a_certificate_for_another_key_type() {
+        let mut builder =
+            Builder::new_with_random_nonce(&mut rand::rng(), ed25519().public_key(), 0, u64::MAX)
+                .unwrap();
+        builder.cert_type(CertType::Host).unwrap();
+        builder.valid_principal("node1.example.com").unwrap();
+        let certificate = PublicKeyOrCertificate::Certificate(builder.sign(&ed25519()).unwrap());
+        let rsa = Algorithm::Rsa {
+            hash: Some(russh::keys::HashAlg::Sha512),
+        };
+        let error = handler(Some(rsa))
+            .check_server_key(&certificate)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                &error,
+                super::super::Error::HostKeyTypeMismatch { negotiated, received }
+                    if negotiated == "rsa-sha2-512-cert-v01@openssh.com"
+                        && received == "ssh-ed25519-cert-v01@openssh.com"
+            ),
+            "{error:?}"
+        );
+        assert!(
+            handler(Some(Algorithm::Ed25519))
+                .check_server_key(&certificate)
+                .await
+                .unwrap()
         );
     }
 }

@@ -213,9 +213,10 @@ pub fn render_resolved_config(original_host: &str, config: &SshHostConfig) -> Re
     }
     output.line(
         "securitykeyprovider",
-        raw_option(config, "securitykeyprovider")
+        config
+            .security_key_provider
             .as_deref()
-            .unwrap_or("$SSH_SK_PROVIDER"),
+            .unwrap_or(crate::ssh::security_key::DEFAULT_PROVIDER_SETTING),
     )?;
     output.line(
         "xauthlocation",
@@ -441,7 +442,6 @@ const EMITTED_UNIMPLEMENTED: &[&str] = &[
     "logverbose",
     "obscurekeystroketiming",
     "revokedhostkeys",
-    "securitykeyprovider",
     "streamlocalbindunlink",
     "streamlocalbindmask",
     "tunnel",

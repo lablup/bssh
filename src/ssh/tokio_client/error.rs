@@ -49,6 +49,23 @@ pub enum Error {
     AuthenticationPolicy(String),
     #[error("SSH identity algorithm is excluded by PubkeyAcceptedAlgorithms: {0}")]
     IdentityAlgorithmExcluded(String),
+    /// An authenticator-hosted (`sk-*`) identity could not be used because no
+    /// usable `SecurityKeyProvider` was available before it was offered;
+    /// authentication continues with the next identity.
+    #[error("authenticator-hosted key {path} skipped: {reason}")]
+    SecurityKeyUnavailable {
+        path: std::path::PathBuf,
+        reason: String,
+    },
+    /// The security-key provider failed after the server accepted the key.
+    /// The signer declines without sending a signature (see
+    /// `security_key_signer::authenticate_declinable`), so authentication
+    /// continues with the next identity on the same transport.
+    #[error("security key signing failed for {path}: {reason}")]
+    SecurityKeySignFailed {
+        path: std::path::PathBuf,
+        reason: String,
+    },
     #[error("Permission denied (password).")]
     PasswordWrong,
     #[error(
@@ -173,6 +190,16 @@ pub enum Error {
     CommandDidntExit,
     #[error("Host key verification failed")]
     ServerCheckFailed,
+    /// The server's host key (or certified key) does not have the type the
+    /// key exchange negotiated; OpenSSH's `kex_verify_host_key` fails the
+    /// same case with `SSH_ERR_KEY_TYPE_MISMATCH`.
+    #[error(
+        "Host key verification failed: host key type {received} does not match the negotiated host key algorithm {negotiated}"
+    )]
+    HostKeyTypeMismatch {
+        negotiated: String,
+        received: String,
+    },
     #[error("KnownHostsCommand failed: {reason}")]
     KnownHostsCommandFailed { reason: String },
     /// `port` is not interpolated into the `Display` text, but carrying it is
@@ -294,6 +321,7 @@ impl Error {
                 | Self::NoAddressForFamily { .. }
                 | Self::CommandDidntExit
                 | Self::ServerCheckFailed
+                | Self::HostKeyTypeMismatch { .. }
                 | Self::KnownHostsCommandFailed { .. }
                 | Self::HostKeyChanged { .. }
                 | Self::HostKeyRevoked { .. }
@@ -302,6 +330,8 @@ impl Error {
                 | Self::TransportIntegrity { .. }
                 | Self::AgentAuthError(_)
                 | Self::IdentityAlgorithmExcluded(_)
+                | Self::SecurityKeyUnavailable { .. }
+                | Self::SecurityKeySignFailed { .. }
                 | Self::AgentConnectionFailed
                 | Self::AgentRequestIdentitiesFailed
                 | Self::AgentOperationTimeout { .. }

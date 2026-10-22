@@ -59,6 +59,17 @@ pub(super) fn parse_authentication_option(
             }
             host.add_keys_to_agent = Some(value);
         }
+        "securitykeyprovider" => {
+            // OpenSSH stores the value verbatim: a library path, `internal`,
+            // `none`, or `$VAR`, which `ssh.c` expands at startup. Expansion
+            // happens when an sk-* identity is used so `-G` shows the raw value.
+            if args.len() != 1 || args[0].is_empty() {
+                anyhow::bail!(
+                    "SecurityKeyProvider requires exactly one value at line {line_number}"
+                );
+            }
+            host.security_key_provider = Some(args[0].clone());
+        }
         "identityagent" => {
             if args.is_empty() {
                 anyhow::bail!("IdentityAgent requires a value at line {line_number}");

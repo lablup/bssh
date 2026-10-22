@@ -559,6 +559,7 @@ impl AuthContext {
                     accepted.clone(),
                     !self.policy.batch_mode,
                     use_keychain,
+                    self.policy.security_key_provider.clone(),
                 ));
             }
         }
@@ -668,6 +669,7 @@ impl AuthContext {
                     accepted.clone(),
                     allow_passphrase_prompt,
                     use_keychain,
+                    self.policy.security_key_provider.clone(),
                 ));
             }
             if identity.algorithm.as_ref().is_none_or(|algorithm| {
@@ -678,6 +680,7 @@ impl AuthContext {
                     accepted.clone(),
                     allow_passphrase_prompt,
                     use_keychain,
+                    self.policy.security_key_provider.clone(),
                 ));
             }
         }
@@ -688,10 +691,19 @@ impl AuthContext {
             return Vec::new();
         };
         let ssh_dir = home_dir.join(".ssh");
-        ["id_ed25519", "id_rsa", "id_ecdsa", "id_dsa"]
-            .into_iter()
-            .map(|name| ssh_dir.join(name))
-            .collect()
+        // OpenSSH also tries the FIDO `*_sk` defaults; they are skipped before
+        // any prompt when no SecurityKeyProvider is usable.
+        [
+            "id_ed25519",
+            "id_ed25519_sk",
+            "id_rsa",
+            "id_ecdsa",
+            "id_ecdsa_sk",
+            "id_dsa",
+        ]
+        .into_iter()
+        .map(|name| ssh_dir.join(name))
+        .collect()
     }
 }
 
@@ -722,6 +734,29 @@ mod tests {
         assert!(!ctx.use_agent);
         assert!(!ctx.use_password);
         assert!(ctx.password.is_none());
+    }
+
+    #[test]
+    fn default_identities_include_the_fido_key_files() {
+        let ctx = AuthContext::new("user".to_string(), "host".to_string()).unwrap();
+        let names = ctx
+            .default_key_paths()
+            .iter()
+            .filter_map(|path| path.file_name()?.to_str().map(str::to_string))
+            .collect::<Vec<_>>();
+        if dirs::home_dir().is_none() {
+            assert!(names.is_empty());
+            return;
+        }
+        for name in [
+            "id_ed25519_sk",
+            "id_ecdsa_sk",
+            "id_ed25519",
+            "id_rsa",
+            "id_ecdsa",
+        ] {
+            assert!(names.iter().any(|found| found == name), "{name}: {names:?}");
+        }
     }
 
     #[tokio::test]

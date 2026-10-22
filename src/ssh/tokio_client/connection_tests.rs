@@ -739,6 +739,54 @@ fn configured_algorithms_reach_the_russh_transport_preferences() {
     );
 }
 
+/// `hostkey-agent` restricts the client to one `*-cert-v01@openssh.com`
+/// name. The KEXINIT host-key list russh writes is `host_key_certificates`
+/// followed by `key`, so an explicit certificate-only policy must leave the
+/// plain list empty instead of falling back to the defaults.
+#[test]
+fn certificate_only_host_key_algorithms_are_never_widened() {
+    for name in [
+        "sk-ssh-ed25519-cert-v01@openssh.com",
+        "sk-ecdsa-sha2-nistp256-cert-v01@openssh.com",
+        "ssh-ed25519-cert-v01@openssh.com",
+    ] {
+        let ssh_config =
+            SshConfig::parse(&format!("Host target\n    HostKeyAlgorithms {name}\n")).unwrap();
+        let config = SshConnectionConfigResolver::new()
+            .with_ssh_config(Some(ssh_config))
+            .resolve_for_host("target")
+            .to_russh_config();
+        assert!(
+            config.preferred.key.is_empty(),
+            "{name}: plain host keys advertised: {:?}",
+            config.preferred.key
+        );
+        let certificates = config
+            .preferred
+            .host_key_certificates
+            .iter()
+            .map(|algorithm| algorithm.to_certificate_type().to_string())
+            .collect::<Vec<_>>();
+        assert_eq!(certificates, [name]);
+    }
+
+    let defaults = SshConnectionConfigResolver::new()
+        .resolve_for_host("target")
+        .to_russh_config();
+    assert!(
+        defaults
+            .preferred
+            .key
+            .contains(&russh::keys::ssh_key::Algorithm::SkEd25519)
+    );
+    assert!(
+        defaults
+            .preferred
+            .host_key_certificates
+            .contains(&russh::keys::ssh_key::Algorithm::SkEcdsaSha2NistP256)
+    );
+}
+
 #[test]
 fn connection_attempts_rejects_zero() {
     let error = SshConfig::parse("Host target\n    ConnectionAttempts 0\n").unwrap_err();

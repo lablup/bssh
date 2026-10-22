@@ -16,31 +16,66 @@
 
 use bssh::diagnosticln as eprintln;
 
-/// Plain host/user key types bssh can verify and authenticate with.
-const PLAIN_KEY_TYPES: &[&str] = &[
-    "ssh-ed25519",
-    "ecdsa-sha2-nistp256",
-    "ecdsa-sha2-nistp384",
-    "ecdsa-sha2-nistp521",
-    "ssh-rsa",
+/// Key types bssh can verify and authenticate with, as `(plain, certificate)`
+/// name pairs in the order the reference `ssh -Q key` prints them. The
+/// FIDO `sk-*` certificate names do not derive from their plain names by
+/// suffixing, so the table spells both out.
+const KEY_TYPES: &[(&str, &str)] = &[
+    ("ssh-ed25519", "ssh-ed25519-cert-v01@openssh.com"),
+    (
+        "sk-ssh-ed25519@openssh.com",
+        "sk-ssh-ed25519-cert-v01@openssh.com",
+    ),
+    (
+        "ecdsa-sha2-nistp256",
+        "ecdsa-sha2-nistp256-cert-v01@openssh.com",
+    ),
+    (
+        "ecdsa-sha2-nistp384",
+        "ecdsa-sha2-nistp384-cert-v01@openssh.com",
+    ),
+    (
+        "ecdsa-sha2-nistp521",
+        "ecdsa-sha2-nistp521-cert-v01@openssh.com",
+    ),
+    (
+        "sk-ecdsa-sha2-nistp256@openssh.com",
+        "sk-ecdsa-sha2-nistp256-cert-v01@openssh.com",
+    ),
+    ("ssh-rsa", "ssh-rsa-cert-v01@openssh.com"),
 ];
 
-/// Signature algorithm names, which add the SHA-2 RSA variants.
-const SIGNATURE_KEY_TYPES: &[&str] = &[
-    "ssh-ed25519",
-    "ecdsa-sha2-nistp256",
-    "ecdsa-sha2-nistp384",
-    "ecdsa-sha2-nistp521",
-    "ssh-rsa",
-    "rsa-sha2-256",
-    "rsa-sha2-512",
+/// Signature algorithms (`-Q key-sig`): the key types plus the SHA-2 RSA
+/// variants. OpenSSH also lists `webauthn-sk-ecdsa-sha2-nistp256@openssh.com`
+/// here; bssh cannot verify WebAuthn signatures and leaves it out.
+const SIGNATURE_TYPES: &[(&str, &str)] = &[
+    ("rsa-sha2-256", "rsa-sha2-256-cert-v01@openssh.com"),
+    ("rsa-sha2-512", "rsa-sha2-512-cert-v01@openssh.com"),
 ];
 
-fn certificate_names(plain: &[&str]) -> Vec<String> {
-    plain
+fn plain_names(pairs: &[(&'static str, &'static str)]) -> Vec<&'static str> {
+    pairs.iter().map(|(plain, _)| *plain).collect::<Vec<_>>()
+}
+
+fn certificate_names(pairs: &[(&'static str, &'static str)]) -> Vec<&'static str> {
+    pairs
         .iter()
-        .map(|name| format!("{name}-cert-v01@openssh.com"))
-        .collect()
+        .map(|(_, certificate)| *certificate)
+        .collect::<Vec<_>>()
+}
+
+/// `ssh -Q key` interleaves each plain name with its certificate form.
+fn interleaved_names(pairs: &[(&'static str, &'static str)]) -> Vec<&'static str> {
+    pairs
+        .iter()
+        .flat_map(|(plain, certificate)| [*plain, *certificate])
+        .collect::<Vec<_>>()
+}
+
+fn key_sig_names() -> Vec<&'static str> {
+    let mut names = interleaved_names(KEY_TYPES);
+    names.extend(interleaved_names(SIGNATURE_TYPES));
+    names
 }
 
 pub fn is_supported_query(query: &str) -> bool {
@@ -90,16 +125,10 @@ pub fn handle_query(query: &str) {
             // underlying transport currently corrupts post-auth packets.
             println!("none\nzlib");
         }
-        "key-plain" => println!("{}", PLAIN_KEY_TYPES.join("\n")),
-        "key-cert" => println!("{}", certificate_names(PLAIN_KEY_TYPES).join("\n")),
-        "key" => {
-            println!("{}", PLAIN_KEY_TYPES.join("\n"));
-            println!("{}", certificate_names(PLAIN_KEY_TYPES).join("\n"));
-        }
-        "key-sig" => {
-            println!("{}", SIGNATURE_KEY_TYPES.join("\n"));
-            println!("{}", certificate_names(SIGNATURE_KEY_TYPES).join("\n"));
-        }
+        "key-plain" => println!("{}", plain_names(KEY_TYPES).join("\n")),
+        "key-cert" => println!("{}", certificate_names(KEY_TYPES).join("\n")),
+        "key" => println!("{}", interleaved_names(KEY_TYPES).join("\n")),
+        "key-sig" => println!("{}", key_sig_names().join("\n")),
         "protocol-version" => {
             println!("2");
         }
@@ -132,13 +161,55 @@ mod tests {
         }
     }
 
+    /// Reference lists from the pinned OpenSSH 10.3p1 `ssh -Q`, minus the
+    /// `webauthn-sk-*` signature names bssh does not verify.
     #[test]
-    fn certificate_key_names_follow_openssh_naming() {
-        assert_eq!(
-            certificate_names(&["ssh-ed25519"]),
-            vec!["ssh-ed25519-cert-v01@openssh.com".to_string()]
-        );
+    fn key_queries_match_the_reference_client_order() {
         assert!(is_supported_query("key-cert"));
+        assert_eq!(
+            plain_names(KEY_TYPES),
+            [
+                "ssh-ed25519",
+                "sk-ssh-ed25519@openssh.com",
+                "ecdsa-sha2-nistp256",
+                "ecdsa-sha2-nistp384",
+                "ecdsa-sha2-nistp521",
+                "sk-ecdsa-sha2-nistp256@openssh.com",
+                "ssh-rsa",
+            ]
+        );
+        assert_eq!(
+            certificate_names(KEY_TYPES),
+            [
+                "ssh-ed25519-cert-v01@openssh.com",
+                "sk-ssh-ed25519-cert-v01@openssh.com",
+                "ecdsa-sha2-nistp256-cert-v01@openssh.com",
+                "ecdsa-sha2-nistp384-cert-v01@openssh.com",
+                "ecdsa-sha2-nistp521-cert-v01@openssh.com",
+                "sk-ecdsa-sha2-nistp256-cert-v01@openssh.com",
+                "ssh-rsa-cert-v01@openssh.com",
+            ]
+        );
+        assert_eq!(
+            &interleaved_names(KEY_TYPES)[..4],
+            [
+                "ssh-ed25519",
+                "ssh-ed25519-cert-v01@openssh.com",
+                "sk-ssh-ed25519@openssh.com",
+                "sk-ssh-ed25519-cert-v01@openssh.com",
+            ]
+        );
+        assert_eq!(
+            &key_sig_names()[14..],
+            [
+                "rsa-sha2-256",
+                "rsa-sha2-256-cert-v01@openssh.com",
+                "rsa-sha2-512",
+                "rsa-sha2-512-cert-v01@openssh.com",
+            ]
+        );
+        assert_eq!(key_sig_names().len(), 18);
+        assert!(!key_sig_names().iter().any(|name| name.contains("webauthn")));
     }
 
     #[test]

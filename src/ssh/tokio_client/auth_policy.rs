@@ -34,6 +34,9 @@ pub struct SshAuthenticationPolicy {
     pub number_of_password_prompts: u32,
     pub batch_mode: bool,
     pub pubkey_accepted_algorithms: Option<Vec<String>>,
+    /// Raw `SecurityKeyProvider` value (`$VAR` unexpanded); `None` is the
+    /// OpenSSH default `$SSH_SK_PROVIDER`.
+    pub security_key_provider: Option<String>,
 }
 
 impl Default for SshAuthenticationPolicy {
@@ -54,6 +57,7 @@ impl Default for SshAuthenticationPolicy {
             number_of_password_prompts: DEFAULT_PASSWORD_PROMPTS,
             batch_mode: false,
             pubkey_accepted_algorithms: Some(super::algorithms::default_pubkey_algorithms()),
+            security_key_provider: None,
         }
     }
 }

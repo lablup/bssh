@@ -361,3 +361,41 @@ fn revoked_host_keys_list_is_dumped_on_one_line() {
     assert!(output.lines().any(|line| line == "revokedhostkeys none"));
     assert!(SshConfig::parse("Host host\n    RevokedHostKeys none /x\n").is_err());
 }
+
+#[test]
+fn security_key_provider_renders_its_raw_value_and_first_match_wins() {
+    let config = SshConfig::parse(
+        "Host target\n    SecurityKeyProvider $MY_SK_PROVIDER\nHost *\n    SecurityKeyProvider /usr/lib/libsk-libfido2.so\n",
+    )
+    .unwrap();
+    let host = config.find_host_config("target");
+    assert_eq!(
+        host.security_key_provider.as_deref(),
+        Some("$MY_SK_PROVIDER"),
+        "the first matching block wins and $VAR stays unexpanded for -G"
+    );
+    assert!(
+        !host
+            .unimplemented_options
+            .contains_key("securitykeyprovider")
+    );
+    let output = render_resolved_config("target", &host).unwrap();
+    assert!(output.contains("securitykeyprovider $MY_SK_PROVIDER\n"));
+    assert_eq!(
+        output
+            .lines()
+            .filter(|line| line.starts_with("securitykeyprovider "))
+            .count(),
+        1
+    );
+
+    let other = render_resolved_config("other", &config.find_host_config("other")).unwrap();
+    assert!(other.contains("securitykeyprovider /usr/lib/libsk-libfido2.so\n"));
+    for value in ["internal", "none"] {
+        let config =
+            SshConfig::parse(&format!("Host *\n    SecurityKeyProvider {value}\n")).unwrap();
+        let output = render_resolved_config("x", &config.find_host_config("x")).unwrap();
+        assert!(output.contains(&format!("securitykeyprovider {value}\n")));
+    }
+    assert!(SshConfig::parse("Host *\n    SecurityKeyProvider a b\n").is_err());
+}
