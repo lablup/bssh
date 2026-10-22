@@ -17,6 +17,7 @@
 - `tokio_client/authentication.rs` - Authentication methods (378 lines)
 - `tokio_client/security_key_signer.rs` - russh `Signer` for FIDO `sk-*` identities: resolves `SecurityKeyProvider`, checks the provider before decrypting an `sk-*` key file, calls the provider on a blocking thread (serialized process-wide), prints the touch notice, prompts once for a PIN, and declines a failed signature so authentication continues with the next identity (`authenticate_declinable`)
 - `ssh/security_key/` - provider interface (`SecurityKeyProvider` trait, `$VAR` resolution, `internal`/`none` handling), the `sk-api.h` `dlopen` binding (`external.rs`), and the `sk-*` signature blob encoder (`signature.rs`)
+- `tokio_client/host_key_type.rs` - refuses a server host key or certificate whose type differs from the negotiated host-key algorithm (OpenSSH `kex_verify_host_key`), including `sk-*` types and ECDSA curves
 - `tokio_client/channel_manager.rs` - Channel operations (230 lines)
 - `tokio_client/file_transfer.rs` - SFTP file operations (285 lines)
 
