@@ -903,6 +903,10 @@ These options control SSH proxy connection behavior:
 
 **ProxyCommand** uses the user's shell so OpenSSH-style quoting, redirection, and pipelines work. `ProxyCommand none` explicitly selects a direct connection. `ProxyCommand` and `ProxyJump` follow OpenSSH's first-obtained ssh_config rule, while command-line `-J` takes precedence over both.
 
+Endpoint data for `%h`, `%n`, `%r`, and `%k` is checked before starting any ProxyCommand, including data from CLI arguments, YAML inventory, environment expansion, and library callers. Only values actually substituted into the command are checked; unused fields and escaped literal tokens such as `%%h` are unrestricted. Substituted values must be nonempty and contain only ASCII letters, digits, `.`, `_`, `:`, `@`, or `-`, with no leading `-`. Whitespace, shell substitutions, wildcards, quotes, and non-ASCII characters are rejected even when the template quotes the token. Use ASCII/punycode names and unbracketed IPv6 literals; scoped IPv6 (`%zone`) and raw bracketed literals are unsupported at this boundary. Normal aliases and authored quoting, redirection, and pipelines continue to work. ProxyCommand templates (including nested shells or `eval`) remain trusted executable code; endpoint data must never be used as code deliberately by a template.
+
+`%h`, `%n`, `%r`, `%k`의 값은 CLI, YAML, 환경 변수 및 라이브러리 입력 경로 모두에서 ProxyCommand 실행 전에 검증됩니다. 실제로 치환되는 값만 검증하며 사용하지 않는 필드와 `%%h` 같은 리터럴 토큰은 제한하지 않습니다. 비어 있지 않은 ASCII 영문자·숫자와 `.`, `_`, `:`, `@`, `-`만 허용하며 첫 문자는 `-`일 수 없습니다. 공백, 셸 치환, 와일드카드 및 비ASCII 문자는 따옴표 안에서도 거부됩니다. IPv6는 대괄호와 영역 식별자 없이 사용하고 국제화 호스트명은 punycode를 사용하세요. 별칭과 명령에 직접 작성한 인용·리다이렉션·파이프라인은 계속 지원됩니다. 명령 템플릿 자체는 신뢰할 수 있는 코드여야 합니다.
+
 *Note: `ProxyUseFdpass yes` is rejected with an actionable error before the command starts. Use a streaming ProxyCommand without `-F`, or set `ProxyUseFdpass no`.*
 
 ### Command Execution and Automation Options

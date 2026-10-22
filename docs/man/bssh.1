@@ -725,6 +725,13 @@ The command is run by the user's shell, preserving OpenSSH-style quoting,
 redirection, and pipelines.
 .br
 Supported tokens are %%, %h, %k, %n, %p, and %r.
+Endpoint values for %h, %n, %r, and %k are validated before spawning,
+regardless of whether they came from CLI, inventory, environment, or library APIs.
+Only substituted values are checked; unused fields and escaped literal tokens
+(such as %%h) are unrestricted. Substituted values must be nonempty ASCII letters/digits or ., _, :, @, - and cannot start
+with -. Whitespace, shell substitutions, glob patterns, and quotes are rejected
+even in quoted tokens. Use punycode names and unbracketed IPv6 without a zone
+identifier. The command template itself remains trusted executable code.
 .br
 .I ProxyCommand none
 explicitly selects a direct connection. When ProxyCommand and ProxyJump both

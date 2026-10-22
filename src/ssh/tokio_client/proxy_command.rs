@@ -85,6 +85,15 @@ impl ProxyCommandConfig {
         self
     }
 
+    /// Expand endpoint tokens only when their data is safe in a shell word.
+    ///
+    /// Only expanded token values are checked; unused fields are unrestricted.
+    /// Token values must be nonempty ASCII letters/digits or `.`, `_`, `:`,
+    /// `@`, `-`, and must not begin with `-`. This intentionally rejects shell
+    /// expansions, whitespace, glob patterns, and option-like values, even
+    /// inside quotes. Use unbracketed IPv6 and ASCII (punycode) hostnames.
+    /// The authored command remains trusted executable code, including any
+    /// explicit reinterpretation of its arguments by `eval` or nested shells.
     pub fn expand(&self, host: &str, port: u16, remote_user: &str) -> Result<String, Error> {
         let key_alias = self
             .host_key_alias
@@ -108,11 +117,28 @@ impl ProxyCommandConfig {
             };
             match token {
                 '%' => expanded.push('%'),
-                'h' => expanded.push_str(host),
-                'k' => expanded.push_str(key_alias),
-                'n' => expanded.push_str(&self.original_host),
                 'p' => expanded.push_str(&port),
-                'r' => expanded.push_str(remote_user),
+                'h' | 'k' | 'n' | 'r' => {
+                    let (token, value) = match token {
+                        'h' => ("%h", host),
+                        'k' => ("%k", key_alias),
+                        'n' => ("%n", self.original_host.as_str()),
+                        _ => ("%r", remote_user),
+                    };
+                    // Check only data entering the shell program, at the
+                    // common boundary shared by every input path. Literal
+                    // %% escapes and unused endpoint fields need no check.
+                    if value.is_empty()
+                        || value.starts_with('-')
+                        || !value.bytes().all(|byte| {
+                            byte.is_ascii_alphanumeric()
+                                || matches!(byte, b'.' | b'_' | b':' | b'@' | b'-')
+                        })
+                    {
+                        return Err(Error::UnsafeProxyCommandValue { token });
+                    }
+                    expanded.push_str(value);
+                }
                 other => {
                     return Err(Error::InvalidProxyCommandToken {
                         command: self.command.clone(),
@@ -407,6 +433,213 @@ mod tests {
         let error = config.expand("target", 22, "alice").unwrap_err();
         assert!(matches!(error, Error::InvalidProxyCommandToken { .. }));
         assert!(error.to_string().contains("%x"));
+    }
+
+    #[test]
+    fn unused_endpoint_fields_and_escaped_tokens_are_not_validated() {
+        let unsafe_value = "$(touch unused)";
+        let config = ProxyCommandConfig::new("nc %h %p", unsafe_value)
+            .with_host_key_alias(Some(unsafe_value.to_string()));
+        assert_eq!(
+            config.expand("target", 22, unsafe_value).unwrap(),
+            "nc target 22"
+        );
+
+        for command in ["fixed-proxy", "echo %%h %%n %%r %%k"] {
+            let config = ProxyCommandConfig::new(command, unsafe_value)
+                .with_host_key_alias(Some(unsafe_value.to_string()));
+            assert_eq!(
+                config.expand(unsafe_value, 22, unsafe_value).unwrap(),
+                command.replace("%%", "%")
+            );
+        }
+        let config = ProxyCommandConfig::new("nc %h %p; echo %r", "alias");
+        assert!(matches!(
+            config.expand("target", 22, unsafe_value),
+            Err(Error::UnsafeProxyCommandValue { token: "%r" })
+        ));
+    }
+
+    #[tokio::test]
+    async fn unsafe_endpoint_tokens_are_rejected_before_any_shell_side_effect() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("proxy-started");
+        let substitution = format!("$(touch {})", marker.display());
+        let backticks = format!("`touch {}`", marker.display());
+        let values = [
+            "",
+            "two words",
+            "host\toption",
+            "host\ncommand",
+            "host\rcommand",
+            "host\0suffix",
+            "-oProxyCommand=evil",
+            "a;b",
+            "a|b",
+            "a&b",
+            "a>b",
+            "a<b",
+            "a'b",
+            "a\"b",
+            "a\\b",
+            "$USER",
+            "${USER}",
+            "*",
+            "?",
+            "[ab]",
+            "{a,b}",
+            "~root",
+            "!value!",
+            "%PATH%",
+            "høst",
+            "[::1]",
+            "fe80::1%eth0",
+            substitution.as_str(),
+            backticks.as_str(),
+        ];
+        for token in ["%h", "%n", "%r", "%k"] {
+            for value in values {
+                for quoted_token in [
+                    token.to_string(),
+                    format!("'{token}'"),
+                    format!("\"{token}\""),
+                ] {
+                    // A launch itself would create the marker, independently
+                    // of whether the payload happens to work in this shell.
+                    let command =
+                        format!("touch {}; printf '%%s' {quoted_token}", marker.display());
+                    let mut config = ProxyCommandConfig::new(command, "alias");
+                    let mut host = "target";
+                    let mut user = "alice";
+                    match token {
+                        "%h" => host = value,
+                        "%n" => config.original_host = value.to_string(),
+                        "%r" => user = value,
+                        "%k" => config.host_key_alias = Some(value.to_string()),
+                        _ => unreachable!(),
+                    }
+                    assert!(
+                        matches!(
+                            spawn_proxy_command(&config, host, 22, user),
+                            Err(Error::UnsafeProxyCommandValue { token: rejected }) if rejected == token
+                        ),
+                        "accepted {token} value {value:?}"
+                    );
+                    assert!(!marker.exists(), "proxy shell was launched for {token}");
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn detailed_inventory_values_cannot_execute_proxy_shell_code() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("inventory-injection");
+        for field in ["host", "user"] {
+            let yaml = format!(
+                "clusters:\n  test:\n    nodes:\n      - host: target\n        user: alice\n        {field}: '$(touch {})'\n",
+                marker.display()
+            );
+            // Build a single occurrence of each key to exercise normal YAML
+            // deserialization rather than duplicate-key handling.
+            let yaml = if field == "host" {
+                yaml.replace(
+                    "      - host: target\n        user: alice",
+                    "      - user: alice",
+                )
+            } else {
+                yaml.replace("        user: alice\n", "")
+            };
+            let inventory: crate::config::Config = serde_yaml::from_str(&yaml).unwrap();
+            let nodes = inventory.resolve_nodes("test").unwrap();
+            let node = &nodes[0];
+            let proxy = ProxyCommandConfig::new("cat %h %r", "inventory-alias");
+            assert!(matches!(
+                spawn_proxy_command(&proxy, &node.host, node.port, &node.username),
+                Err(Error::UnsafeProxyCommandValue { .. })
+            ));
+            assert!(!marker.exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn environment_inventory_tokens_are_checked_after_expansion() {
+        const PAYLOAD_ENV: &str = "BSSH_TEST_PROXY_TOKEN_PAYLOAD_326";
+        if let Ok(payload) = std::env::var(PAYLOAD_ENV) {
+            for field in ["host", "user"] {
+                let yaml = if field == "host" {
+                    format!(
+                        "clusters:\n  test:\n    nodes:\n      - host: '${{{PAYLOAD_ENV}}}'\n        user: alice\n"
+                    )
+                } else {
+                    format!(
+                        "clusters:\n  test:\n    nodes:\n      - host: target\n        user: '${{{PAYLOAD_ENV}}}'\n"
+                    )
+                };
+                let inventory: crate::config::Config = serde_yaml::from_str(&yaml).unwrap();
+                let nodes = inventory.resolve_nodes("test").unwrap();
+                let node = &nodes[0];
+                assert_eq!(
+                    if field == "host" {
+                        &node.host
+                    } else {
+                        &node.username
+                    },
+                    &payload
+                );
+                let proxy = ProxyCommandConfig::new("cat %h %r", "inventory-alias");
+                assert!(matches!(
+                    spawn_proxy_command(&proxy, &node.host, node.port, &node.username),
+                    Err(Error::UnsafeProxyCommandValue { .. })
+                ));
+            }
+            return;
+        }
+        // Give only a subprocess the environment override: parallel tests
+        // must not observe process-global environment mutation.
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("environment-injection");
+        let mut child = tokio::process::Command::new(std::env::current_exe().unwrap());
+        child
+            .args(["--exact", "ssh::tokio_client::proxy_command::tests::environment_inventory_tokens_are_checked_after_expansion", "--nocapture"])
+            .env(PAYLOAD_ENV, format!("$(touch {})", marker.display()))
+            .kill_on_drop(true);
+        let output = tokio::time::timeout(Duration::from_secs(10), child.output())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed"));
+        assert!(!marker.exists());
+    }
+
+    #[tokio::test]
+    async fn ipv6_aliases_and_quoted_pipeline_tokens_remain_literal_arguments() {
+        let spec = crate::node::parse_node_spec("alice@[2001:db8::1]:2222").unwrap();
+        let proxy = ProxyCommandConfig::new(
+            "printf '%%s\\n' %h '%n' \"%k\" %p %r | tr A-Z a-z",
+            "Prod_alias-1",
+        )
+        .with_host_key_alias(Some("Key_alias-1".to_string()));
+        let mut session =
+            spawn_proxy_command(&proxy, spec.host, spec.port.unwrap(), spec.user.unwrap()).unwrap();
+        let mut output = String::new();
+        tokio::time::timeout(
+            Duration::from_secs(5),
+            session.stream.read_to_string(&mut output),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            output,
+            "2001:db8::1\nprod_alias-1\nkey_alias-1\n2222\nalice\n"
+        );
     }
 
     #[tokio::test]

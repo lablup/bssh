@@ -157,6 +157,10 @@ pub enum Error {
     AuthenticationPromptTimeout { prompt: &'static str, seconds: u64 },
     #[error("ProxyCommand '{command}' contains unsupported token '{token}'")]
     InvalidProxyCommandToken { command: String, token: String },
+    #[error(
+        "ProxyCommand token {token} contains unsafe endpoint data; use nonempty ASCII letters, digits, '.', '_', ':', '@', or '-', without a leading '-'"
+    )]
+    UnsafeProxyCommandValue { token: &'static str },
     #[error("Failed to start ProxyCommand '{command}': {source}")]
     ProxyCommandSpawn {
         command: String,
@@ -315,6 +319,7 @@ impl Error {
                 | Self::ConnectionTimeout { .. }
                 | Self::ProtocolNegotiation { .. }
                 | Self::InvalidProxyCommandToken { .. }
+                | Self::UnsafeProxyCommandValue { .. }
                 | Self::ProxyCommandSpawn { .. }
                 | Self::ProxyCommandFailed { .. }
                 | Self::ProxyUseFdpassUnsupported { .. }
