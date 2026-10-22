@@ -589,6 +589,42 @@ mod tests {
         assert!(error.contains("device not found"), "{error}");
     }
 
+    #[tokio::test]
+    async fn an_internal_provider_past_its_deadline_fails_the_signature() {
+        use crate::ssh::security_key::internal::mock::{
+            Credential, CredentialKey, Fido2Config, Flood, MockAuthenticator, MockBackend, Protocol,
+        };
+        use crate::ssh::security_key::internal::{InternalProvider, Timing};
+
+        let mut config = Fido2Config::plain();
+        config.options.insert("uv".to_string(), false);
+        let credential = Credential {
+            rp_id: "ssh:example".to_string(),
+            id: vec![1, 2, 3, 4],
+            key: CredentialKey::ed25519(1),
+        };
+        let mut stalled = MockAuthenticator::new(Protocol::Fido2(config), Some(credential));
+        stalled.stall = Some((Flood::Keepalive, std::time::Duration::from_secs(3)));
+        let mut backend = MockBackend::default();
+        backend.add("/dev/hidraw1", stalled);
+        let provider = InternalProvider::with_backend(Arc::new(backend)).with_timing(Timing {
+            sign_timeout: std::time::Duration::from_millis(200),
+            ..Timing::default()
+        });
+        let key = sk_ed25519_key(0x01);
+        let identity = SecurityKeyIdentity::from_private_key(&key, Path::new("/id_sk")).unwrap();
+        let signer = SecurityKeySigner::new(Arc::new(provider), identity, true);
+        // Twice: the second call gets the provider lock back from the first.
+        for _ in 0..2 {
+            let error = signer.sign_blob(vec![1]).await.unwrap_err().to_string();
+            assert!(error.contains("/id_sk"), "{error}");
+            assert!(
+                error.contains("timed out waiting for the security key"),
+                "{error}"
+            );
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn provider_calls_never_overlap_across_signers() {
         use std::sync::atomic::{AtomicUsize, Ordering};

@@ -20,39 +20,77 @@
 //! one, on both platforms.
 
 use std::ffi::CString;
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 
 use super::CtapError;
 use super::ctaphid::{HidBackend, HidDevice, HidDeviceInfo, REPORT_LEN, Report};
 
-#[derive(Debug, Default)]
-pub struct HidapiBackend;
+/// One hidapi context, created by the first enumeration and refreshed by
+/// later ones, which device opens reuse instead of building (and so
+/// re-enumerating) a context of their own.
+#[derive(Default)]
+pub struct HidapiBackend {
+    api: Mutex<Option<hidapi::HidApi>>,
+    /// Contexts created, so tests can check the reuse.
+    #[cfg(test)]
+    contexts: AtomicUsize,
+}
+
+impl std::fmt::Debug for HidapiBackend {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HidapiBackend").finish_non_exhaustive()
+    }
+}
 
 fn transport(error: hidapi::HidError) -> CtapError {
     CtapError::Transport(error.to_string())
 }
 
+impl HidapiBackend {
+    /// Run `f` with the context, creating it first if there is none.
+    fn with_api<T>(
+        &self,
+        refresh: bool,
+        f: impl FnOnce(&hidapi::HidApi) -> Result<T, CtapError>,
+    ) -> Result<T, CtapError> {
+        let mut guard = self.api.lock().unwrap_or_else(PoisonError::into_inner);
+        match guard.as_mut() {
+            Some(api) if refresh => api.refresh_devices().map_err(transport)?,
+            Some(_) => {}
+            None => {
+                *guard = Some(hidapi::HidApi::new().map_err(transport)?);
+                #[cfg(test)]
+                self.contexts.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        f(guard.as_ref().expect("context created above"))
+    }
+}
+
 impl HidBackend for HidapiBackend {
     fn enumerate(&self) -> Result<Vec<HidDeviceInfo>, CtapError> {
-        let api = hidapi::HidApi::new().map_err(transport)?;
-        Ok(api
-            .device_list()
-            .map(|device| HidDeviceInfo {
-                path: device.path().to_string_lossy().into_owned(),
-                usage_page: device.usage_page(),
-                usage: device.usage(),
-                vendor_id: device.vendor_id(),
-                product_id: device.product_id(),
-                product: device.product_string().map(str::to_string),
-            })
-            .collect())
+        self.with_api(true, |api| {
+            Ok(api
+                .device_list()
+                .map(|device| HidDeviceInfo {
+                    path: device.path().to_string_lossy().into_owned(),
+                    usage_page: device.usage_page(),
+                    usage: device.usage(),
+                    vendor_id: device.vendor_id(),
+                    product_id: device.product_id(),
+                    product: device.product_string().map(str::to_string),
+                })
+                .collect())
+        })
     }
 
     fn open(&self, path: &str) -> Result<Box<dyn HidDevice>, CtapError> {
-        let api = hidapi::HidApi::new().map_err(transport)?;
         let path = CString::new(path)
             .map_err(|_| CtapError::Transport("device path contains NUL".to_string()))?;
-        let device = api.open_path(&path).map_err(transport)?;
+        let device = self.with_api(false, |api| api.open_path(&path).map_err(transport))?;
         Ok(Box::new(HidapiDevice(device)))
     }
 }
@@ -91,5 +129,24 @@ impl HidDevice for HidapiDevice {
             )));
         }
         Ok(Some(report))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn opening_a_device_reuses_the_enumeration_context() {
+        let backend = HidapiBackend::default();
+        if backend.enumerate().is_err() {
+            // No HID subsystem here (a container without sysfs); nothing
+            // to check.
+            return;
+        }
+        assert!(backend.open("/nonexistent/bssh-hidraw-test").is_err());
+        assert!(backend.open("/nonexistent/bssh-hidraw-test").is_err());
+        backend.enumerate().unwrap();
+        assert_eq!(backend.contexts.load(Ordering::Relaxed), 1);
     }
 }

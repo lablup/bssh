@@ -26,6 +26,7 @@
 use aes::Aes256;
 use cbc::cipher::block_padding::NoPadding;
 use cbc::cipher::{BlockModeDecrypt, BlockModeEncrypt, KeyIvInit};
+use hkdf::Hkdf;
 use hmac::{Hmac, KeyInit, Mac};
 use p256::ecdh::EphemeralSecret;
 use p256::elliptic_curve::Generate;
@@ -168,12 +169,8 @@ impl SharedSecret {
             }
             PinProtocol::V2 => {
                 let salt = [0u8; 32];
-                let hmac = hkdf_sha256(&salt, point_x, b"CTAP2 HMAC key", 32);
-                let aes = hkdf_sha256(&salt, point_x, b"CTAP2 AES key", 32);
-                let mut hmac_key = Zeroizing::new([0u8; 32]);
-                hmac_key.copy_from_slice(&hmac);
-                let mut aes_key = Zeroizing::new([0u8; 32]);
-                aes_key.copy_from_slice(&aes);
+                let hmac_key = hkdf_sha256::<32>(&salt, point_x, b"CTAP2 HMAC key");
+                let aes_key = hkdf_sha256::<32>(&salt, point_x, b"CTAP2 AES key");
                 Self {
                     protocol,
                     hmac_key,
@@ -279,25 +276,15 @@ pub fn authenticate_with(protocol: PinProtocol, key: &[u8], message: &[u8]) -> V
     tag[..protocol.auth_len()].to_vec()
 }
 
-/// HKDF-SHA-256 (RFC 5869) extract-and-expand.
+/// HKDF-SHA-256 (RFC 5869) extract-and-expand into `N` bytes of
+/// `Zeroizing` memory, through the `hkdf` crate.
 #[must_use]
-pub fn hkdf_sha256(salt: &[u8], ikm: &[u8], info: &[u8], len: usize) -> Zeroizing<Vec<u8>> {
-    let mut extract = HmacSha256::new_from_slice(salt).expect("HMAC accepts any key length");
-    extract.update(ikm);
-    let prk = Zeroizing::new(extract.finalize().into_bytes());
-    let mut okm = Zeroizing::new(Vec::with_capacity(len));
-    let mut previous: Vec<u8> = Vec::new();
-    let mut counter = 1u8;
-    while okm.len() < len {
-        let mut expand = HmacSha256::new_from_slice(&prk[..]).expect("HMAC accepts any key length");
-        expand.update(&previous);
-        expand.update(info);
-        expand.update(&[counter]);
-        previous = expand.finalize().into_bytes().to_vec();
-        let take = (len - okm.len()).min(previous.len());
-        okm.extend_from_slice(&previous[..take]);
-        counter += 1;
-    }
+pub fn hkdf_sha256<const N: usize>(salt: &[u8], ikm: &[u8], info: &[u8]) -> Zeroizing<[u8; N]> {
+    const { assert!(N <= 255 * 32, "HKDF-SHA-256 output is at most 8160 bytes") };
+    let mut okm = Zeroizing::new([0u8; N]);
+    Hkdf::<Sha256>::new(Some(salt), ikm)
+        .expand(info, &mut okm[..])
+        .expect("length checked at compile time");
     okm
 }
 

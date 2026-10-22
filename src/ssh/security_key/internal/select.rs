@@ -15,16 +15,19 @@
 //! Device discovery and selection, after `sk_probe`, `sk_select_by_cred`
 //! and `sk_select_by_touch` in `sk-usbhid.c`.
 
+use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use super::ctaphid::{HidBackend, HidDeviceInfo};
 use super::device::{AssertionRequest, Authenticator};
-use super::{CtapError, UserPresence};
+use super::{CtapError, Timing, UserPresence};
 
-/// `SELECT_MS`: how long a touch is awaited when several devices are attached.
-const SELECT_TIMEOUT: Duration = Duration::from_secs(15);
 /// `FIDO_POLL_MS`: per-device wait in each polling round.
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
+/// `MAX_FIDO_DEVICES`: how many attached devices are considered at most.
+pub const MAX_FIDO_DEVICES: usize = 8;
+/// Bound on the silent assertion that asks one device for the credential.
+const PROBE_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// How `sk_probe` chooses among attached devices.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,19 +42,29 @@ pub enum Probe<'a> {
     ByTouch,
 }
 
-/// Attached devices on the FIDO usage page.
+/// Attached devices on the FIDO usage page, each path once and at most
+/// [`MAX_FIDO_DEVICES`] of them, in enumeration order. hidapi lists a device
+/// once per top-level collection, so a crafted report descriptor could
+/// otherwise repeat one node many times, and every entry costs channel
+/// allocation, `getInfo` and a probe under the provider lock.
 pub fn fido_devices(backend: &dyn HidBackend) -> Result<Vec<HidDeviceInfo>, CtapError> {
+    let mut seen = HashSet::new();
     Ok(backend
         .enumerate()?
         .into_iter()
         .filter(HidDeviceInfo::is_fido)
+        .filter(|device| seen.insert(device.path.clone()))
+        .take(MAX_FIDO_DEVICES)
         .collect())
 }
 
-/// `sk_probe`: `Ok(None)` when no attached device fits.
+/// `sk_probe`: `Ok(None)` when no attached device fits; nothing waits
+/// past `deadline`.
 pub fn probe<R: rand::CryptoRng + ?Sized>(
     backend: &dyn HidBackend,
     probe: Probe<'_>,
+    timing: &Timing,
+    deadline: Instant,
     rng: &mut R,
 ) -> Result<Option<Authenticator>, CtapError> {
     let devices = fido_devices(backend)?;
@@ -59,7 +72,7 @@ pub fn probe<R: rand::CryptoRng + ?Sized>(
     if devices.is_empty() {
         return Ok(None);
     }
-    let (opened, failures) = open_all(backend, &devices, rng);
+    let (opened, failures) = open_all(backend, &devices, deadline, rng);
     if opened.is_empty() {
         let detail = failures.first().cloned().unwrap_or_default();
         return Err(CtapError::Transport(format!(
@@ -71,8 +84,14 @@ pub fn probe<R: rand::CryptoRng + ?Sized>(
         Probe::ByCredential {
             application,
             key_handle,
-        } => Ok(select_by_credential(opened, application, key_handle, rng)),
-        Probe::ByTouch => select_by_touch(opened),
+        } => Ok(select_by_credential(
+            opened,
+            application,
+            key_handle,
+            deadline,
+            rng,
+        )),
+        Probe::ByTouch => select_by_touch(opened, timing, deadline),
     }
 }
 
@@ -81,12 +100,13 @@ pub fn probe<R: rand::CryptoRng + ?Sized>(
 fn open_all<R: rand::CryptoRng + ?Sized>(
     backend: &dyn HidBackend,
     devices: &[HidDeviceInfo],
+    deadline: Instant,
     rng: &mut R,
 ) -> (Vec<Authenticator>, Vec<String>) {
     let mut opened = Vec::with_capacity(devices.len());
     let mut failures = Vec::new();
     for device in devices {
-        match Authenticator::open(backend, device, rng) {
+        match Authenticator::open(backend, device, deadline, rng) {
             Ok(authenticator) => opened.push(authenticator),
             Err(error) => {
                 tracing::debug!("{}: open failed: {error}", device.path);
@@ -104,6 +124,7 @@ fn holds_credential<R: rand::CryptoRng + ?Sized>(
     device: &mut Authenticator,
     application: &str,
     key_handle: &[u8],
+    deadline: Instant,
     rng: &mut R,
 ) -> bool {
     let request = AssertionRequest {
@@ -113,7 +134,8 @@ fn holds_credential<R: rand::CryptoRng + ?Sized>(
         up: Some(false),
         uv: None,
     };
-    match device.get_assertion(&request, None, Some(Duration::from_secs(5)), rng) {
+    let deadline = deadline.min(Instant::now() + PROBE_TIMEOUT);
+    match device.get_assertion(&request, None, deadline, rng) {
         Ok(_) | Err(CtapError::UserPresenceRequired) => true,
         Err(error) => {
             tracing::debug!("{}: credential probe failed: {error}", device.path());
@@ -127,6 +149,7 @@ fn select_by_credential<R: rand::CryptoRng + ?Sized>(
     mut devices: Vec<Authenticator>,
     application: &str,
     key_handle: &[u8],
+    deadline: Instant,
     rng: &mut R,
 ) -> Option<Authenticator> {
     if devices.len() == 1 && devices[0].option("uv").is_some() {
@@ -136,7 +159,7 @@ fn select_by_credential<R: rand::CryptoRng + ?Sized>(
     }
     let position = devices
         .iter_mut()
-        .position(|device| holds_credential(device, application, key_handle, rng))?;
+        .position(|device| holds_credential(device, application, key_handle, deadline, rng))?;
     let selected = devices.swap_remove(position);
     tracing::debug!("found key in {}", selected.path());
     Some(selected)
@@ -144,8 +167,13 @@ fn select_by_credential<R: rand::CryptoRng + ?Sized>(
 
 /// `sk_select_by_touch`: with one device there is nothing to choose; with
 /// several, every device is asked to wait for a touch and the first one
-/// that reports it wins. The others are cancelled.
-fn select_by_touch(mut devices: Vec<Authenticator>) -> Result<Option<Authenticator>, CtapError> {
+/// that reports it wins. The others are cancelled. Each polling round
+/// starts after a [`Timing::poll_sleep`] pause, as `sk_touch_poll` does.
+fn select_by_touch(
+    mut devices: Vec<Authenticator>,
+    timing: &Timing,
+    deadline: Instant,
+) -> Result<Option<Authenticator>, CtapError> {
     if devices.len() < 2 {
         return Ok(devices.pop());
     }
@@ -161,9 +189,14 @@ fn select_by_touch(mut devices: Vec<Authenticator>) -> Result<Option<Authenticat
             "no attached device accepted a touch request".to_string(),
         ));
     }
-    let deadline = Instant::now() + SELECT_TIMEOUT;
+    let deadline = deadline.min(Instant::now() + timing.select_timeout);
     let mut selected = None;
     'select: while Instant::now() + POLL_INTERVAL <= deadline && !polling.is_empty() {
+        std::thread::sleep(
+            timing
+                .poll_sleep
+                .min(deadline.saturating_duration_since(Instant::now())),
+        );
         let mut index = 0;
         while index < polling.len() {
             match polling[index].touch_status(POLL_INTERVAL) {

@@ -247,46 +247,43 @@ impl std::fmt::Debug for CtapHidChannel {
 impl CtapHidChannel {
     /// Allocate a channel with `CTAPHID_INIT`; `nonce` identifies our reply
     /// among those of other hosts sharing the broadcast channel.
-    pub fn open(mut device: Box<dyn HidDevice>, nonce: [u8; 8]) -> Result<Self, CtapError> {
-        for report in frame_message(BROADCAST_CID, CMD_INIT, &nonce)? {
-            device.write_report(&report)?;
-        }
-        let deadline = Instant::now() + INIT_TIMEOUT;
-        loop {
-            let remaining = deadline.saturating_duration_since(Instant::now());
-            if remaining.is_zero() {
-                return Err(CtapError::Timeout);
-            }
-            let Some(report) = device.read_report(Some(remaining))? else {
-                return Err(CtapError::Timeout);
-            };
-            let Frame::Init {
-                cid,
-                cmd,
-                len,
-                data,
-                ..
-            } = Frame::parse(&report)
-            else {
-                continue;
-            };
-            if cid != BROADCAST_CID || cmd != CMD_INIT {
-                continue;
-            }
-            if len < 17 || data[..8] != nonce {
-                continue;
-            }
-            let cid: [u8; 4] = data[8..12].try_into().expect("four bytes");
-            if cid == BROADCAST_CID || cid == [0; 4] {
-                return Err(CtapError::Protocol("device allocated an invalid channel"));
-            }
-            return Ok(Self {
-                device,
-                cid,
-                capabilities: data[16],
-                pending: false,
-            });
-        }
+    pub fn open(device: Box<dyn HidDevice>, nonce: [u8; 8]) -> Result<Self, CtapError> {
+        Self::open_within(device, nonce, INIT_TIMEOUT)
+    }
+
+    /// [`open`](Self::open), waiting at most `timeout` (capped at the usual
+    /// `INIT` bound) for the reply.
+    pub fn open_within(
+        mut device: Box<dyn HidDevice>,
+        nonce: [u8; 8],
+        timeout: Duration,
+    ) -> Result<Self, CtapError> {
+        let (cid, capabilities) = allocate(&mut *device, nonce, timeout.min(INIT_TIMEOUT))?;
+        Ok(Self {
+            device,
+            cid,
+            capabilities,
+            pending: false,
+        })
+    }
+
+    /// Allocate a fresh channel on the same device. The device abandons the
+    /// pending transaction, and a reply to it that is still in flight
+    /// carries the old channel ID, so [`receive`](Self::receive) drops it.
+    pub fn reinit(&mut self, nonce: [u8; 8], timeout: Duration) -> Result<(), CtapError> {
+        let (cid, capabilities) = allocate(&mut *self.device, nonce, timeout.min(INIT_TIMEOUT))?;
+        self.cid = cid;
+        self.capabilities = capabilities;
+        self.pending = false;
+        Ok(())
+    }
+
+    /// Treat the device as U2F-only from now on, as libfido2's
+    /// `fido_dev_force_u2f` does when `getInfo` fails: it clears the CBOR
+    /// capability, and with it the `CANCEL` libfido2 only sends to FIDO2
+    /// devices.
+    pub fn force_u2f(&mut self) {
+        self.capabilities &= !CAPABILITY_CBOR;
     }
 
     /// `CAPFLAG_CBOR`: the device accepts CTAP2 commands.
@@ -364,17 +361,71 @@ impl CtapHidChannel {
         Ok(reply)
     }
 
-    /// `CTAPHID_CANCEL` for the pending request, if any.
+    /// `CTAPHID_CANCEL` for the pending request, if any. U2F-only devices
+    /// are left alone: `fido_dev_cancel` refuses them, since `CANCEL` is a
+    /// CTAP2 command a U2F device may not implement.
     pub fn cancel(&mut self) -> Result<(), CtapError> {
-        if !self.pending {
+        let pending = std::mem::replace(&mut self.pending, false);
+        if !pending || !self.supports_cbor() {
             return Ok(());
         }
-        self.pending = false;
         for report in frame_message(self.cid, CMD_CANCEL, &[])? {
             self.device.write_report(&report)?;
         }
         Ok(())
     }
+}
+
+/// `CTAPHID_INIT` on the broadcast channel: the allocated channel ID and
+/// the capability flags.
+fn allocate(
+    device: &mut dyn HidDevice,
+    nonce: [u8; 8],
+    timeout: Duration,
+) -> Result<([u8; 4], u8), CtapError> {
+    for report in frame_message(BROADCAST_CID, CMD_INIT, &nonce)? {
+        device.write_report(&report)?;
+    }
+    let deadline = Instant::now() + timeout;
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(CtapError::Timeout);
+        }
+        let Some(report) = device.read_report(Some(remaining))? else {
+            return Err(CtapError::Timeout);
+        };
+        let Frame::Init {
+            cid,
+            cmd,
+            len,
+            data,
+            ..
+        } = Frame::parse(&report)
+        else {
+            continue;
+        };
+        if cid != BROADCAST_CID || cmd != CMD_INIT {
+            continue;
+        }
+        if len < 17 || data[..8] != nonce {
+            continue;
+        }
+        let cid: [u8; 4] = data[8..12].try_into().expect("four bytes");
+        if cid == BROADCAST_CID || cid == [0; 4] {
+            return Err(CtapError::Protocol("device allocated an invalid channel"));
+        }
+        return Ok((cid, data[16]));
+    }
+}
+
+/// Time left before `deadline`; [`CtapError::Timeout`] once it has passed.
+pub fn remaining(deadline: Instant) -> Result<Duration, CtapError> {
+    let left = deadline.saturating_duration_since(Instant::now());
+    if left.is_zero() {
+        return Err(CtapError::Timeout);
+    }
+    Ok(left)
 }
 
 impl Drop for CtapHidChannel {

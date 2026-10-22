@@ -25,6 +25,16 @@
 //!
 //! Only signing exists. Enrollment (`ssh-keygen -t ed25519-sk`) and resident
 //! key loading (`ssh-keygen -K`) stay with OpenSSH's tools.
+//!
+//! One deliberate deviation from libfido2: a whole `sk_sign` call is bounded
+//! by [`SIGN_TIMEOUT`] (120 s, sshd's default `LoginGraceTime`). libfido2
+//! waits without limit for a reply, so a device that streams KEEPALIVE or
+//! frames for other channels forever, or a U2F key nobody touches, holds
+//! `ssh` until the user interrupts it. bssh serializes every provider call
+//! in the process behind one lock, so such a device would stall
+//! authentication to every host. On expiry the pending request is cancelled
+//! (on CTAP2 devices), the signature fails with "timed out waiting for the
+//! security key", and authentication moves on to the next identity.
 
 pub mod cbor;
 pub mod ctap2;
@@ -39,6 +49,7 @@ pub mod select;
 pub mod u2f;
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use p256::ecdsa::Signature as EcdsaSignature;
 use zeroize::Zeroizing;
@@ -63,6 +74,9 @@ pub enum CtapError {
     Protocol(&'static str),
     #[error("timed out waiting for the authenticator")]
     Timeout,
+    /// The overall [`SIGN_TIMEOUT`] of one signature ran out.
+    #[error("timed out waiting for the security key")]
+    DeadlineExceeded,
     #[error("authenticator returned CTAP2 status {code:#04x} ({name})", code = .0, name = ctap2::status_name(*.0))]
     Status(u8),
     #[error("authenticator returned U2F status {0:#06x}")]
@@ -101,9 +115,35 @@ impl From<CtapError> for SecurityKeyError {
     }
 }
 
+/// Bound on one whole `sk_sign` call; see the module documentation.
+pub const SIGN_TIMEOUT: Duration = Duration::from_secs(120);
+/// `SELECT_MS`: how long a touch is awaited when several devices are attached.
+pub const SELECT_TIMEOUT: Duration = Duration::from_secs(15);
+/// `POLL_SLEEP_NS`: pause before each touch-polling round.
+pub const POLL_SLEEP: Duration = Duration::from_millis(200);
+
+/// The provider's waits. Only tests change them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Timing {
+    pub sign_timeout: Duration,
+    pub select_timeout: Duration,
+    pub poll_sleep: Duration,
+}
+
+impl Default for Timing {
+    fn default() -> Self {
+        Self {
+            sign_timeout: SIGN_TIMEOUT,
+            select_timeout: SELECT_TIMEOUT,
+            poll_sleep: POLL_SLEEP,
+        }
+    }
+}
+
 /// `sk_sign` over USB HID.
 pub struct InternalProvider {
     backend: Arc<dyn HidBackend>,
+    timing: Timing,
 }
 
 impl std::fmt::Debug for InternalProvider {
@@ -124,12 +164,22 @@ impl InternalProvider {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     #[must_use]
     pub fn new() -> Self {
-        Self::with_backend(Arc::new(hidapi_backend::HidapiBackend))
+        Self::with_backend(Arc::new(hidapi_backend::HidapiBackend::default()))
     }
 
     #[must_use]
     pub fn with_backend(backend: Arc<dyn HidBackend>) -> Self {
-        Self { backend }
+        Self {
+            backend,
+            timing: Timing::default(),
+        }
+    }
+
+    /// Replace the waits (tests use short ones).
+    #[must_use]
+    pub fn with_timing(mut self, timing: Timing) -> Self {
+        self.timing = timing;
+        self
     }
 }
 
@@ -140,6 +190,7 @@ impl SecurityKeyProvider for InternalProvider {
         pin: Option<&str>,
     ) -> Result<SkSignResponse, SecurityKeyError> {
         request.validate()?;
+        let deadline = Instant::now() + self.timing.sign_timeout;
         let mut rng = rand::rng();
         let wants_uv = request.flags & SK_FLAG_USER_VERIFICATION_REQUIRED != 0;
         // With a PIN in hand or verification required, the probe assertion
@@ -152,8 +203,15 @@ impl SecurityKeyProvider for InternalProvider {
                 key_handle: request.key_handle,
             }
         };
-        let mut device = select::probe(&*self.backend, probe, &mut rng)?
-            .ok_or(SecurityKeyError::DeviceNotFound)?;
+        let selected = select::probe(&*self.backend, probe, &self.timing, deadline, &mut rng)
+            .map_err(|error| past_deadline(error, deadline))?;
+        let Some(mut device) = selected else {
+            return Err(if Instant::now() >= deadline {
+                CtapError::DeadlineExceeded.into()
+            } else {
+                SecurityKeyError::DeviceNotFound
+            });
+        };
         if !device.is_fido2() && request.algorithm == SkAlgorithm::Ed25519 {
             return Err(SecurityKeyError::Unsupported);
         }
@@ -176,14 +234,34 @@ impl SecurityKeyProvider for InternalProvider {
                 uv,
             },
             pin,
-            None,
+            deadline,
             &mut rng,
-        )?;
+        );
+        let assertion = match assertion {
+            Ok(assertion) => assertion,
+            Err(error) => {
+                let error = past_deadline(error, deadline);
+                if error == CtapError::DeadlineExceeded {
+                    // Stop the device from waiting for a touch nobody gives.
+                    device.cancel();
+                }
+                return Err(error.into());
+            }
+        };
         pack_signature(request.algorithm, &assertion)
     }
 
     fn describe(&self) -> String {
         "internal".to_string()
+    }
+}
+
+/// A wait that ended because the overall deadline passed.
+fn past_deadline(error: CtapError, deadline: Instant) -> CtapError {
+    if error == CtapError::Timeout && Instant::now() >= deadline {
+        CtapError::DeadlineExceeded
+    } else {
+        error
     }
 }
 
@@ -234,3 +312,7 @@ mod tests;
 #[cfg(test)]
 #[path = "selection_tests.rs"]
 mod selection_tests;
+
+#[cfg(test)]
+#[path = "robustness_tests.rs"]
+mod robustness_tests;

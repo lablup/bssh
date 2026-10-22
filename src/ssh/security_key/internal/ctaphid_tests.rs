@@ -261,3 +261,40 @@ fn dropping_a_channel_with_a_pending_request_cancels_it() {
     assert_eq!(written.len(), 3);
     assert_eq!(written[2][4], CMD_CANCEL | 0x80);
 }
+
+#[test]
+fn u2f_only_channels_are_never_sent_a_cancel() {
+    let (mut channel, written) = open_scripted(vec![init_reply(NONCE, CID, 0)]);
+    channel.send(CMD_MSG, &[0x00, 0x01]).unwrap();
+    channel.cancel().unwrap();
+    assert!(!channel.pending);
+    drop(channel);
+    assert_eq!(
+        written.lock().unwrap().len(),
+        2,
+        "INIT and the request only"
+    );
+
+    // A CBOR device forced to U2F after a failed getInfo is treated the same.
+    let (mut channel, written) = open_scripted(vec![init_reply(NONCE, CID, CAPABILITY_CBOR)]);
+    channel.force_u2f();
+    assert!(!channel.supports_cbor());
+    channel.send(CMD_MSG, &[0x00, 0x01]).unwrap();
+    drop(channel);
+    assert_eq!(written.lock().unwrap().len(), 2);
+}
+
+#[test]
+fn reinit_moves_to_a_new_channel_and_drops_the_old_channels_replies() {
+    const NEW_CID: [u8; 4] = [0x55, 0x66, 0x77, 0x88];
+    let next_nonce = [1; 8];
+    let mut script = vec![init_reply(NONCE, CID, CAPABILITY_CBOR)];
+    // The late reply to the abandoned request, then the new INIT reply.
+    script.extend(frame_message(CID, CMD_CBOR, &[0x00, 0xa0]).unwrap());
+    script.push(init_reply(next_nonce, NEW_CID, CAPABILITY_CBOR));
+    let (mut channel, _) = open_scripted(script);
+    channel.send(CMD_CBOR, &[0x04]).unwrap();
+    channel.reinit(next_nonce, Duration::from_secs(1)).unwrap();
+    assert_eq!(channel.cid, NEW_CID);
+    assert!(!channel.pending, "the device abandoned the old request");
+}

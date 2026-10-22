@@ -69,10 +69,11 @@ pub fn encode_authenticate(
 }
 
 /// U2F REGISTER with dummy parameters, used only to make a device wait for a
-/// touch during multi-device selection.
+/// touch during multi-device selection. `P1` is 0, as in libfido2's
+/// `u2f_get_touch_begin`.
 #[must_use]
 pub fn encode_touch_probe() -> Vec<u8> {
-    encode_apdu(INS_REGISTER, P1_ENFORCE_USER_PRESENCE, &[0u8; 64])
+    encode_apdu(INS_REGISTER, 0x00, &[0u8; 64])
 }
 
 /// Split a response into its data and status word.

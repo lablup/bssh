@@ -413,16 +413,17 @@ fn a_u2f_device_among_several_is_selected_by_touch_too() {
         .sign(&request(SkAlgorithm::Ed25519, 0x05), Some("123456"))
         .unwrap();
     let untouched = devices[0].lock().unwrap();
-    // Re-sent REGISTER probes while it kept answering "not touched", then
-    // the CANCEL once the other device was chosen.
-    assert!(untouched.requests.contains(&Request::U2fRegister));
+    // Re-sent REGISTER probes (P1 0, as libfido2 sends them) while it kept
+    // answering "not touched", and no CANCEL once the other device was
+    // chosen: libfido2 sends CANCEL to CTAP2 devices only.
     assert!(
-        untouched
-            .requests
-            .iter()
-            .all(|request| matches!(request, Request::U2fRegister | Request::Cancel)),
+        !untouched.requests.is_empty()
+            && untouched
+                .requests
+                .iter()
+                .all(|request| *request == Request::U2fRegister { p1: 0 }),
         "{:?}",
         untouched.requests
     );
-    assert_eq!(untouched.requests.last(), Some(&Request::Cancel));
+    assert_eq!(untouched.cancels, 0);
 }

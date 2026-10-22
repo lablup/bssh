@@ -23,11 +23,10 @@ fn hex(text: &str) -> Vec<u8> {
 
 #[test]
 fn hkdf_matches_rfc_5869_test_case_1() {
-    let okm = hkdf_sha256(
+    let okm = hkdf_sha256::<42>(
         &hex("000102030405060708090a0b0c"),
         &[0x0b; 22],
         &hex("f0f1f2f3f4f5f6f7f8f9"),
-        42,
     );
     assert_eq!(
         okm[..],
@@ -90,14 +89,10 @@ fn authenticate_is_hmac_sha256_truncated_only_in_protocol_1() {
 fn protocol_2_derives_separate_keys_and_prefixes_a_random_iv() {
     let x = [0x24; 32];
     let secret = SharedSecret::derive(PinProtocol::V2, &x);
-    let expected_hmac = hkdf_sha256(&[0; 32], &x, b"CTAP2 HMAC key", 32);
-    let expected_aes = hkdf_sha256(&[0; 32], &x, b"CTAP2 AES key", 32);
+    let expected_hmac = hkdf_sha256::<32>(&[0; 32], &x, b"CTAP2 HMAC key");
+    let expected_aes = hkdf_sha256::<32>(&[0; 32], &x, b"CTAP2 AES key");
     assert_ne!(expected_hmac[..], expected_aes[..]);
-    let expected = SharedSecret::from_keys(
-        PinProtocol::V2,
-        expected_hmac[..].try_into().unwrap(),
-        expected_aes[..].try_into().unwrap(),
-    );
+    let expected = SharedSecret::from_keys(PinProtocol::V2, *expected_hmac, *expected_aes);
     assert_eq!(secret.authenticate(b"m"), expected.authenticate(b"m"));
 
     let mut rng = rand::rng();

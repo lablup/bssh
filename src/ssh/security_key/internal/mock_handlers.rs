@@ -70,7 +70,7 @@ impl MockAuthenticator {
             ctap2::CMD_CLIENT_PIN => self.handle_client_pin(body),
             ctap2::CMD_MAKE_CREDENTIAL => {
                 self.requests.push(Request::TouchProbe);
-                self.touch_on_probe.then(|| vec![status::PIN_NOT_SET])
+                self.touch_on_probe.then(|| vec![self.touch_status])
             }
             _ => Some(vec![0x01]),
         }
@@ -213,7 +213,7 @@ impl MockAuthenticator {
         let data = &apdu[7..7 + len];
         match ins {
             u2f::INS_REGISTER => {
-                self.requests.push(Request::U2fRegister);
+                self.requests.push(Request::U2fRegister { p1 });
                 Some(if self.touch_on_probe {
                     let mut reply = vec![0x05; 70];
                     reply.extend_from_slice(&u2f::SW_NO_ERROR.to_be_bytes());

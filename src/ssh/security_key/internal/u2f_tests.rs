@@ -49,6 +49,7 @@ fn authenticate_requests_carry_challenge_application_and_key_handle() {
     assert!(encode_authenticate(P1_CHECK_ONLY, &challenge, &application, &[1; 255]).is_ok());
     let probe = encode_touch_probe();
     assert_eq!(probe[1], INS_REGISTER);
+    assert_eq!(probe[2], 0, "P1 0, as libfido2's u2f_get_touch_begin sends");
     assert_eq!(probe.len(), 7 + 64 + 2);
 }
 

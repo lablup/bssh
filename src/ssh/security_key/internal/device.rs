@@ -23,13 +23,29 @@ use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use super::ctap2::{self, AuthenticatorInfo, GetAssertionRequest, PERMISSION_GET_ASSERTION};
-use super::ctaphid::{CMD_CBOR, CMD_MSG, CtapHidChannel, HidBackend, HidDeviceInfo};
+use super::ctaphid::{CMD_CBOR, CMD_MSG, CtapHidChannel, HidBackend, HidDeviceInfo, remaining};
 use super::pin_protocol::{PinProtocol, PlatformKeyAgreement, authenticate_with};
 use super::u2f;
 use super::{CtapError, UserPresence};
 
 /// Pause between U2F presence retries (`U2F_PACE_MS` in libfido2).
 const U2F_PACE: Duration = Duration::from_millis(100);
+/// Bound on `getInfo` while opening; a device that does not answer it is
+/// treated as U2F.
+const GET_INFO_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// CTAP2 replies to the dummy `makeCredential` that mean the user touched
+/// the device (`fido_dev_get_touch_status`): success, or the PIN errors a
+/// device reports only after the touch. Anything else is a device that
+/// refused the probe, which `sk_touch_poll` drops from the selection.
+#[must_use]
+pub fn counts_as_touch(status: u8) -> bool {
+    use ctap2::status;
+    matches!(
+        status,
+        status::OK | status::PIN_AUTH_INVALID | status::PIN_INVALID | status::PIN_NOT_SET
+    )
+}
 
 /// What the provider asks the device to sign.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,30 +84,41 @@ impl std::fmt::Debug for Authenticator {
 }
 
 impl Authenticator {
+    /// `fido_dev_open`: allocate a channel and, on a CBOR-capable device,
+    /// read `getInfo`; every wait ends by `deadline`.
     pub fn open<R: rand::CryptoRng + ?Sized>(
         backend: &dyn HidBackend,
         device: &HidDeviceInfo,
+        deadline: Instant,
         rng: &mut R,
     ) -> Result<Self, CtapError> {
         let hid = backend.open(&device.path)?;
         let mut nonce = [0u8; 8];
         rng.fill_bytes(&mut nonce);
-        let mut channel = CtapHidChannel::open(hid, nonce)?;
+        let mut channel = CtapHidChannel::open_within(hid, nonce, remaining(deadline)?)?;
         let info = if channel.supports_cbor() {
-            match channel
-                .transact(
+            let reply = remaining(deadline).and_then(|left| {
+                channel.transact(
                     CMD_CBOR,
                     &[ctap2::CMD_GET_INFO],
-                    Some(Duration::from_secs(2)),
+                    Some(left.min(GET_INFO_TIMEOUT)),
                 )
-                .and_then(|reply| ctap2::parse_get_info(&reply))
-            {
+            });
+            match reply.and_then(|reply| ctap2::parse_get_info(&reply)) {
                 Ok(info) => Some(info),
                 Err(error) => {
                     tracing::debug!(
                         "{}: getInfo failed ({error}); falling back to U2F",
                         device.path
                     );
+                    if error == CtapError::Timeout {
+                        // The reply may still arrive and would then answer
+                        // the first U2F request; a new channel leaves it
+                        // behind on the old channel ID.
+                        rng.fill_bytes(&mut nonce);
+                        channel.reinit(nonce, remaining(deadline)?)?;
+                    }
+                    channel.force_u2f();
                     None
                 }
             }
@@ -127,16 +154,16 @@ impl Authenticator {
         &mut self,
         request: &AssertionRequest<'_>,
         pin: Option<&str>,
-        timeout: Option<Duration>,
+        deadline: Instant,
         rng: &mut R,
     ) -> Result<AssertionResult, CtapError> {
         let client_data_hash: [u8; 32] = Sha256::digest(request.data).into();
         match &self.info {
             Some(info) => {
                 let info = info.clone();
-                self.get_assertion_fido2(&info, request, &client_data_hash, pin, timeout, rng)
+                self.get_assertion_fido2(&info, request, &client_data_hash, pin, deadline, rng)
             }
-            None => self.get_assertion_u2f(request, &client_data_hash, pin, timeout),
+            None => self.get_assertion_u2f(request, &client_data_hash, pin, deadline),
         }
     }
 
@@ -146,12 +173,12 @@ impl Authenticator {
         request: &AssertionRequest<'_>,
         client_data_hash: &[u8; 32],
         pin: Option<&str>,
-        timeout: Option<Duration>,
+        deadline: Instant,
         rng: &mut R,
     ) -> Result<AssertionResult, CtapError> {
         let pin_auth: Option<(Zeroizing<Vec<u8>>, PinProtocol)> = match pin {
             Some(pin) => {
-                let (token, protocol) = self.pin_token(info, request.rp_id, pin, timeout, rng)?;
+                let (token, protocol) = self.pin_token(info, request.rp_id, pin, deadline, rng)?;
                 let param = Zeroizing::new(authenticate_with(protocol, &token, client_data_hash));
                 Some((param, protocol))
             }
@@ -167,7 +194,9 @@ impl Authenticator {
                 .as_ref()
                 .map(|(param, protocol)| (&param[..], protocol.number())),
         });
-        let reply = self.channel.transact(CMD_CBOR, &encoded, timeout)?;
+        let reply = self
+            .channel
+            .transact(CMD_CBOR, &encoded, Some(remaining(deadline)?))?;
         let assertion = ctap2::parse_get_assertion(&reply)?;
         Ok(AssertionResult {
             flags: assertion.flags(),
@@ -183,7 +212,7 @@ impl Authenticator {
         info: &AuthenticatorInfo,
         rp_id: &str,
         pin: &str,
-        timeout: Option<Duration>,
+        deadline: Instant,
         rng: &mut R,
     ) -> Result<(Zeroizing<Vec<u8>>, PinProtocol), CtapError> {
         let protocol = PinProtocol::select(&info.pin_protocols);
@@ -191,7 +220,7 @@ impl Authenticator {
         let reply = self.channel.transact(
             CMD_CBOR,
             &ctap2::encode_client_pin_key_agreement(protocol.number()),
-            timeout,
+            Some(remaining(deadline)?),
         )?;
         let peer = ctap2::parse_key_agreement(&reply)?;
         let secret = platform.shared_secret(protocol, &peer)?;
@@ -207,7 +236,7 @@ impl Authenticator {
                 &pin_hash_enc,
                 permissions,
             ),
-            timeout,
+            Some(remaining(deadline)?),
         )?;
         let token = secret.decrypt(&ctap2::parse_pin_token(&reply)?)?;
         Ok((token, protocol))
@@ -221,7 +250,7 @@ impl Authenticator {
         request: &AssertionRequest<'_>,
         client_data_hash: &[u8; 32],
         pin: Option<&str>,
-        timeout: Option<Duration>,
+        deadline: Instant,
     ) -> Result<AssertionResult, CtapError> {
         if pin.is_some() || request.uv == Some(true) {
             return Err(CtapError::Unsupported(
@@ -235,7 +264,9 @@ impl Authenticator {
             &application,
             request.credential_id,
         )?;
-        let reply = self.channel.transact(CMD_MSG, &lookup, timeout)?;
+        let reply = self
+            .channel
+            .transact(CMD_MSG, &lookup, Some(remaining(deadline)?))?;
         match u2f::split_status(&reply)?.1 {
             u2f::SW_CONDITIONS_NOT_SATISFIED => {}
             u2f::SW_WRONG_DATA => return Err(CtapError::Status(ctap2::status::NO_CREDENTIALS)),
@@ -251,9 +282,10 @@ impl Authenticator {
             &application,
             request.credential_id,
         )?;
-        let deadline = timeout.map(|timeout| Instant::now() + timeout);
         loop {
-            let reply = self.channel.transact(CMD_MSG, &sign, timeout)?;
+            let reply = self
+                .channel
+                .transact(CMD_MSG, &sign, Some(remaining(deadline)?))?;
             let (data, sw) = u2f::split_status(&reply)?;
             match sw {
                 u2f::SW_NO_ERROR => {
@@ -265,10 +297,7 @@ impl Authenticator {
                     });
                 }
                 u2f::SW_CONDITIONS_NOT_SATISFIED => {
-                    if deadline.is_some_and(|deadline| Instant::now() >= deadline) {
-                        return Err(CtapError::Timeout);
-                    }
-                    std::thread::sleep(U2F_PACE);
+                    std::thread::sleep(U2F_PACE.min(remaining(deadline)?));
                 }
                 other => return Err(CtapError::Apdu(other)),
             }
@@ -291,14 +320,31 @@ impl Authenticator {
     }
 
     /// `fido_dev_get_touch_status`: did the device answer the probe within
-    /// `poll`? Any CTAP2 answer means the user touched it; a U2F device
-    /// answering "conditions not satisfied" is asked again.
+    /// `poll`? A CTAP2 answer means a touch only when its status is one
+    /// [`counts_as_touch`] accepts; any other status is an error, which
+    /// drops the device from the selection. A U2F device answering
+    /// "conditions not satisfied" is asked again.
     pub fn touch_status(&mut self, poll: Duration) -> Result<UserPresence, CtapError> {
-        let Some((_, reply)) = self.channel.receive(Some(poll))? else {
+        let Some((cmd, reply)) = self.channel.receive(Some(poll))? else {
             return Ok(UserPresence::Waiting);
         };
+        let expected = if self.info.is_some() {
+            CMD_CBOR
+        } else {
+            CMD_MSG
+        };
+        if cmd != expected {
+            return Err(CtapError::Protocol("reply for a different command"));
+        }
         if self.info.is_some() {
-            return Ok(UserPresence::Touched);
+            let status = *reply
+                .first()
+                .ok_or(CtapError::Protocol("empty CTAP2 reply"))?;
+            return if counts_as_touch(status) {
+                Ok(UserPresence::Touched)
+            } else {
+                Err(CtapError::Status(status))
+            };
         }
         match u2f::split_status(&reply)?.1 {
             u2f::SW_NO_ERROR => Ok(UserPresence::Touched),

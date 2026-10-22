@@ -72,6 +72,7 @@ socket2 = { version = "0.6", features = ["all"] }
 shell-words = "1.1.1"
 base64 = "0.22.1"
 hmac = "0.13.0"
+hkdf = "0.13.0"
 sha2 = "0.11.0"
 hickory-resolver = { version = "0.26.1", features = ["dnssec-ring"] }
 libc = "0.2"
@@ -117,7 +118,9 @@ hidapi = { version = "2.6.7", default-features = false, features = ["linux-nativ
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "3.7.0"
-hidapi = { version = "2.6.7", default-features = false }
+# `macos-shared-device` opens devices non-exclusively, as libfido2 does, so a
+# browser can still use the key while bssh has it open.
+hidapi = { version = "2.6.7", default-features = false, features = ["macos-shared-device"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }

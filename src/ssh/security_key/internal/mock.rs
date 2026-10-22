@@ -20,13 +20,13 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use p256::ecdsa::signature::Signer as _;
 
 use super::CtapError;
 use super::cbor::{self, Value};
-use super::ctap2::status;
+use super::ctap2::{self, status};
 use super::ctaphid::{
     Assembler, BROADCAST_CID, CAPABILITY_CBOR, CMD_CANCEL, CMD_CBOR, CMD_ERROR, CMD_INIT,
     CMD_KEEPALIVE, CMD_MSG, FIDO_USAGE_CTAPHID, FIDO_USAGE_PAGE, Frame, HidBackend, HidDevice,
@@ -87,8 +87,24 @@ pub enum Request {
     TouchProbe,
     U2fCheck,
     U2fSign,
-    U2fRegister,
+    U2fRegister {
+        p1: u8,
+    },
     Cancel,
+}
+
+/// What a stalled device sends while it holds a `getAssertion` reply back.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Flood {
+    /// KEEPALIVE frames on our channel.
+    Keepalive,
+    /// Frames addressed to another host's channel.
+    ForeignChannel,
+}
+
+struct Stalled {
+    since: Instant,
+    reports: Vec<Report>,
 }
 
 pub struct Fido2Config {
@@ -135,6 +151,15 @@ pub struct MockAuthenticator {
     /// Whether a touch probe (dummy makeCredential or REGISTER) is answered,
     /// standing in for the user touching this device.
     pub touch_on_probe: bool,
+    /// The CTAP2 status a touched device answers the dummy makeCredential
+    /// with.
+    pub touch_status: u8,
+    /// Hold the first `getInfo` reply back until the next report arrives,
+    /// as a device does that answers after the host stopped waiting.
+    pub late_get_info: bool,
+    /// Hold every `getAssertion` reply back for this long, sending the
+    /// given frames meanwhile.
+    pub stall: Option<(Flood, Duration)>,
     /// U2F: ENFORCE requests answered with "conditions not satisfied"
     /// before the device signs.
     pub u2f_presence_retries: usize,
@@ -145,6 +170,8 @@ pub struct MockAuthenticator {
     cid: [u8; 4],
     assembler: Assembler,
     outbound: VecDeque<Report>,
+    late: Vec<Report>,
+    stalled: Option<Stalled>,
     agreement: Option<PlatformKeyAgreement>,
     pin_token: [u8; 32],
 }
@@ -157,6 +184,9 @@ impl MockAuthenticator {
             counter: 41,
             keepalives_before_reply: 0,
             touch_on_probe: true,
+            touch_status: status::PIN_NOT_SET,
+            late_get_info: false,
+            stall: None,
             u2f_presence_retries: 0,
             forced_status: None,
             requests: Vec::new(),
@@ -164,6 +194,8 @@ impl MockAuthenticator {
             cid: [0x0b, 0x55, 0x47, 0x01],
             assembler: Assembler::default(),
             outbound: VecDeque::new(),
+            late: Vec::new(),
+            stalled: None,
             agreement: None,
             pin_token: [0x7a; 32],
         }
@@ -181,6 +213,8 @@ impl MockAuthenticator {
     }
 
     fn handle_report(&mut self, report: &Report) {
+        let late = std::mem::take(&mut self.late);
+        self.outbound.extend(late);
         let frame = Frame::parse(report);
         if let Frame::Init {
             cid: BROADCAST_CID,
@@ -189,6 +223,8 @@ impl MockAuthenticator {
             ..
         } = frame
         {
+            // Every INIT allocates a new channel, as real devices do.
+            self.cid[3] = self.cid[3].wrapping_add(1);
             let mut reply = Vec::with_capacity(17);
             reply.extend_from_slice(&data[..8]);
             reply.extend_from_slice(&self.cid);
@@ -209,9 +245,20 @@ impl MockAuthenticator {
                 self.requests.push(Request::Cancel);
             }
             CMD_CBOR => {
+                let command = payload.first().copied();
                 if let Some(reply) = self.handle_cbor(&payload) {
-                    let keepalives = self.keepalives_before_reply;
-                    self.queue(CMD_CBOR, &reply, self.cid, keepalives);
+                    if command == Some(ctap2::CMD_GET_INFO) && self.late_get_info {
+                        self.late_get_info = false;
+                        self.late = frame_message(self.cid, CMD_CBOR, &reply).expect("fits");
+                    } else if command == Some(ctap2::CMD_GET_ASSERTION) && self.stall.is_some() {
+                        self.stalled = Some(Stalled {
+                            since: Instant::now(),
+                            reports: frame_message(self.cid, CMD_CBOR, &reply).expect("fits"),
+                        });
+                    } else {
+                        let keepalives = self.keepalives_before_reply;
+                        self.queue(CMD_CBOR, &reply, self.cid, keepalives);
+                    }
                 }
             }
             CMD_MSG => {
@@ -221,6 +268,29 @@ impl MockAuthenticator {
             }
             _ => self.queue(CMD_ERROR, &[0x01], self.cid, 0),
         }
+    }
+
+    /// The next report the device sends, if any.
+    fn next_report(&mut self) -> Option<Report> {
+        if let Some(report) = self.outbound.pop_front() {
+            return Some(report);
+        }
+        let (flood, duration) = self.stall?;
+        let stalled = self.stalled.as_ref()?;
+        if stalled.since.elapsed() < duration {
+            let cid = match flood {
+                Flood::Keepalive => self.cid,
+                Flood::ForeignChannel => [0x99; 4],
+            };
+            let cmd = match flood {
+                Flood::Keepalive => CMD_KEEPALIVE,
+                Flood::ForeignChannel => CMD_CBOR,
+            };
+            return Some(frame_message(cid, cmd, &[0x02]).expect("fits")[0]);
+        }
+        let stalled = self.stalled.take()?;
+        self.outbound.extend(stalled.reports);
+        self.outbound.pop_front()
     }
 
     fn queue(&mut self, cmd: u8, payload: &[u8], cid: [u8; 4], keepalives: usize) {
@@ -251,7 +321,7 @@ impl HidDevice for MockDevice {
     }
 
     fn read_report(&mut self, _timeout: Option<Duration>) -> Result<Option<Report>, CtapError> {
-        Ok(self.inner.lock().unwrap().outbound.pop_front())
+        Ok(self.inner.lock().unwrap().next_report())
     }
 }
 
@@ -281,6 +351,18 @@ impl MockBackend {
             Some(Arc::clone(&shared)),
         ));
         shared
+    }
+
+    /// Another enumeration entry for a device already added, as hidapi lists
+    /// one per top-level collection of the report descriptor.
+    pub fn add_alias(&mut self, path: &str) {
+        let entry = self
+            .devices
+            .iter()
+            .find(|(info, _)| info.path == path)
+            .map(|(info, device)| (info.clone(), device.clone()))
+            .expect("device added before its alias");
+        self.devices.push(entry);
     }
 
     /// A HID device on another usage page (a keyboard), which must be ignored.

@@ -276,3 +276,12 @@ fn status_names_cover_the_codes_the_sign_path_maps() {
         "authenticator returned CTAP2 status 0x36 (PIN required)"
     );
 }
+
+#[test]
+fn get_assertion_debug_output_redacts_the_pin_auth_param() {
+    let param = [0xab; 32];
+    let shown = format!("{:?}", request(Some(true), None, Some((&param, 2))));
+    assert!(shown.contains("<redacted>"), "{shown}");
+    assert!(!shown.contains("171"), "{shown}");
+    assert!(shown.contains("ssh:"), "{shown}");
+}

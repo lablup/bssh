@@ -151,7 +151,8 @@ pub fn parse_get_info(response: &[u8]) -> Result<AuthenticatorInfo, CtapError> {
 }
 
 /// `authenticatorGetAssertion` parameters for one allowed credential.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `Debug` leaves `pinUvAuthParam` out: it is a MAC under the PIN token.
+#[derive(Clone, PartialEq, Eq)]
 pub struct GetAssertionRequest<'a> {
     pub rp_id: &'a str,
     pub client_data_hash: &'a [u8; 32],
@@ -162,6 +163,22 @@ pub struct GetAssertionRequest<'a> {
     pub uv: Option<bool>,
     /// `pinUvAuthParam` and `pinUvAuthProtocol`.
     pub pin_auth: Option<(&'a [u8], u64)>,
+}
+
+impl std::fmt::Debug for GetAssertionRequest<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GetAssertionRequest")
+            .field("rp_id", &self.rp_id)
+            .field("client_data_hash", &self.client_data_hash)
+            .field("credential_id", &self.credential_id)
+            .field("up", &self.up)
+            .field("uv", &self.uv)
+            .field(
+                "pin_auth",
+                &self.pin_auth.map(|(_, protocol)| ("<redacted>", protocol)),
+            )
+            .finish()
+    }
 }
 
 #[must_use]
