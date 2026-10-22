@@ -218,12 +218,14 @@ fn move_without_replacing(from: &Path, to: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Hard-link `from` at `to` and drop the temporary name. `link(2)` fails
-/// with `EEXIST` instead of replacing whatever exists at `to`.
+/// Hard-link `from` at `to`. `link(2)` fails with `EEXIST` instead of
+/// replacing whatever exists at `to`. Once the link exists the move is done:
+/// a failure to drop the temporary name is not reported, so the configured
+/// path never keeps a node after an error. [`PrivateBindDir`] removes the
+/// temporary name when it is dropped.
 #[cfg(not(any(target_os = "linux", target_os = "android", target_vendor = "apple")))]
 fn move_without_replacing(from: &Path, to: &Path) -> std::io::Result<()> {
-    std::fs::hard_link(from, to)?;
-    std::fs::remove_file(from)
+    std::fs::hard_link(from, to)
 }
 
 /// Verify that `path` is a socket node and leave it with no permission bit

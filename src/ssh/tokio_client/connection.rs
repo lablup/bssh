@@ -3860,8 +3860,9 @@ impl Handler for ClientHandler {
             }
         }
 
-        // DNSSEC is evaluated before any KnownHostsCommand lookup or accept-new
-        // write. Only a DNSSEC-secure, consistently matching RRset accepts
+        // DNSSEC is evaluated before the KnownHostsCommand KEY lookup and any
+        // accept-new write; for certificates the HOSTNAME invocation has
+        // already run. Only a DNSSEC-secure, consistently matching RRset accepts
         // immediately. Every other outcome falls back to known_hosts.
         let sshfp = super::sshfp::verify_sshfp(
             &self.policy.target_host,
