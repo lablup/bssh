@@ -85,3 +85,9 @@ Security regression coverage preserves trusted-file-only shell Match execution, 
 The binding API proposal is [russh PR #794](https://github.com/Eugeny/russh/pull/794). Dependency adoption is conditional on upstream merge: only an immutable merged revision from the official upstream may be used temporarily, followed by a crates.io release. An unmerged contributor branch is not an approved dependency. Current code must continue to fail closed on unsupported agent constraints.
 
 Remaining control details include complete forwarding-channel enumeration, allocated remote-port replies, multiplexed `-W`, TTY-failure notifications and `~user` expansion. Unix-domain forwarding is implemented; raw mux-v4 interoperability is not. Eager `zlib` is validated; delayed `zlib@openssh.com` is not advertised. Non-pipe/socket character-device stdin still uses the existing blocking adapter; the SCP fix does not claim every stdin source is cancellation-safe.
+
+### Server security-key authorization
+
+bssh-server fails closed for `sk-ssh-ed25519@openssh.com` and `sk-ecdsa-sha2-nistp256@openssh.com` user keys: russh does not expose signature UP/UV flags to the authentication callback. An `authorized_keys` line must have `no-touch-required` and must not have `verify-required` to authorize either type. The default touch policy and every verification-required policy are rejected and logged at info level. Ordinary keys are unaffected. This server restriction is distinct from client-side security-key signing and host-key verification described above; [#340](https://github.com/lablup/bssh/issues/340) tracks actual signature-flag enforcement. Security-key user certificates remain out of scope.
+
+For duplicate user-key entries, the first matching `authorized_keys` line determines the security-key policy. A later `no-touch-required` entry cannot override an earlier matching line that requires touch or verification; unrelated keys are skipped.

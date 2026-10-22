@@ -213,6 +213,12 @@ pub struct AuthKeyOptions {
     /// Disable agent forwarding
     pub no_agent_forwarding: bool,
 
+    /// Permit security-key signatures without user presence (touch).
+    pub no_touch_required: bool,
+
+    /// Require security-key user verification (PIN or biometric).
+    pub verify_required: bool,
+
     /// Disable X11 forwarding
     pub no_x11_forwarding: bool,
 }
@@ -286,6 +292,24 @@ impl PublicKeyVerifier {
         // Check if key matches any authorized key
         for authorized_key in &authorized_keys {
             if self.keys_match(key, authorized_key) {
+                // russh verifies the signature but does not expose its UP/UV flags
+                // to auth_publickey. Never authorize a policy we cannot enforce.
+                if matches!(
+                    key.algorithm(),
+                    russh::keys::ssh_key::Algorithm::SkEd25519
+                        | russh::keys::ssh_key::Algorithm::SkEcdsaSha2NistP256
+                ) && (!authorized_key.options.no_touch_required
+                    || authorized_key.options.verify_required)
+                {
+                    tracing::info!(
+                        user = %username,
+                        key_type = %key.algorithm(),
+                        "Security key rejected: user presence or verification policy cannot be enforced; only no-touch-required without verify-required is supported"
+                    );
+                    // The first matching entry determines the policy; a later
+                    // duplicate must not weaken its presence/verification requirement.
+                    return Ok(false);
+                }
                 tracing::info!(
                     user = %username,
                     key_type = %key.algorithm(),
@@ -635,6 +659,8 @@ fn parse_key_options(options_str: &str) -> Result<AuthKeyOptions> {
         } else {
             // Boolean option
             match option {
+                "no-touch-required" => options.no_touch_required = true,
+                "verify-required" => options.verify_required = true,
                 "no-pty" => options.no_pty = true,
                 "no-port-forwarding" => options.no_port_forwarding = true,
                 "no-agent-forwarding" => options.no_agent_forwarding = true,
