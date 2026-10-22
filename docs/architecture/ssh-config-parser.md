@@ -207,6 +207,7 @@ bssh supports 40+ SSH configuration directives organized into categories:
 - `ConnectTimeout` - Connection timeout in seconds
 - `ServerAliveInterval` - Keepalive interval
 - `ServerAliveCountMax` - Keepalive retry count
+- `SecurityKeyProvider` - Library implementing OpenSSH's `sk-api.h` for `sk-*` identities, `internal`, `none`, or a `$VAR` reference (default `$SSH_SK_PROVIDER`). Stored verbatim in `security_key_provider`; `-G` prints the raw value and expansion happens in `src/ssh/tokio_client/security_key_signer.rs` when an `sk-*` identity is used.
 - `Compression` - Advertise transport compression to the server (yes/no, default: no). `yes` offers eager `zlib` ahead of `none`; `no`/unset offers only `none`. `zlib@openssh.com` is never advertised because russh's delayed-zlib codec desyncs the flate2 stream a few packets after activation; wiring is in `SshConnectionConfig::to_russh_config` (`src/ssh/tokio_client/connection.rs`).
 
 **Authentication Options:**

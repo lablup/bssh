@@ -15,6 +15,8 @@
 **Tokio Client Module Structure :**
 - `tokio_client/connection.rs` - Connection management (293 lines)
 - `tokio_client/authentication.rs` - Authentication methods (378 lines)
+- `tokio_client/security_key_signer.rs` - russh `Signer` for FIDO `sk-*` identities: resolves `SecurityKeyProvider`, calls the provider on a blocking thread, prints the touch notice and prompts once for a PIN
+- `ssh/security_key/` - provider interface (`SecurityKeyProvider` trait, `$VAR` resolution, `internal`/`none` handling), the `sk-api.h` `dlopen` binding (`external.rs`), and the `sk-*` signature blob encoder (`signature.rs`)
 - `tokio_client/channel_manager.rs` - Channel operations (230 lines)
 - `tokio_client/file_transfer.rs` - SFTP file operations (285 lines)
 

@@ -122,7 +122,7 @@ Example: -J jump1@proxy1,jump2@proxy2
 
 .TP
 .BR \-Q " " \fIquery_option\fR
-Query SSH configuration options (cipher, kex, mac, key, protocol-version, help)
+Query SSH configuration options (cipher, cipher-auth, mac, kex, compression, key, key-plain, key-cert, key-sig, protocol-version, help). The key lists include the FIDO types sk-ssh-ed25519@openssh.com and sk-ecdsa-sha2-nistp256@openssh.com in OpenSSH's order; webauthn-sk-ecdsa-sha2-nistp256@openssh.com is not listed because bssh does not verify it.
 
 .TP
 .BR \-4 ", " \-\-ipv4
@@ -1095,6 +1095,13 @@ Special values:
 .IP
 Example:
 .I IdentityAgent ~/.1password/agent.sock
+
+.TP
+.B SecurityKeyProvider
+Specifies the library used to access FIDO authenticator-hosted keys (sk-ssh-ed25519@openssh.com and sk-ecdsa-sha2-nistp256@openssh.com identity files, as enrolled by ssh-keygen -t ed25519-sk or ecdsa-sk). The value is a path to a shared library implementing OpenSSH's sk-api (for example libsk-libfido2.so), or a name starting with $ that selects an environment variable holding that path. The default is $SSH_SK_PROVIDER; when the variable is unset, or the value is none, sk-* identities are skipped. The value internal (OpenSSH's built-in USB HID provider) is not available in this build and is reported before the next identity is tried. The library is loaded with dlopen(3); statically linked musl builds cannot load it and say so. When a key requires user presence and standard error is a terminal, bssh prints a confirmation notice while waiting for the touch; when the provider asks for a PIN and BatchMode is off, bssh prompts for it once. Keys held by an agent keep signing through the agent.
+.br
+Example:
+.I SecurityKeyProvider /usr/lib/libsk-libfido2.so
 
 .TP
 .B PubkeyAcceptedAlgorithms

@@ -104,6 +104,7 @@ pub fn parse_option(
         | "hostbasedkeytypes"
         | "numberofpasswordprompts"
         | "enablesshkeysign"
+        | "securitykeyprovider"
         | "usekeychain" => {
             authentication::parse_authentication_option(host, keyword, args, line_number)
         }
@@ -190,7 +191,6 @@ pub fn parse_option(
         | "fallbacktorsh"
         | "globalknownhostsfile2"
         | "rhostsauthentication"
-        | "securitykeyprovider"
         | "userknownhostsfile2"
         | "useroaming"
         | "usersh"
@@ -297,7 +297,7 @@ fn validate_retained_option(keyword: &str, args: &[String], line_number: usize) 
                 anyhow::bail!("Invalid obscurekeystroketiming at line {line_number}");
             }
         }
-        "securitykeyprovider" | "xauthlocation" => one()?,
+        "xauthlocation" => one()?,
         "channeltimeout" | "logverbose" if args.is_empty() => {
             anyhow::bail!("{keyword} expects at least one value at line {line_number}");
         }

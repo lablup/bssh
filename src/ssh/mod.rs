@@ -19,6 +19,7 @@ pub mod control;
 pub mod handler;
 pub mod known_hosts;
 pub mod pool;
+pub mod security_key;
 pub mod session_policy;
 pub mod ssh_config;
 pub mod tokio_client;

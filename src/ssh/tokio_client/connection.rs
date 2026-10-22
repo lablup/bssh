@@ -572,6 +572,7 @@ impl SshConnectionConfigResolver {
                         .resolved_pubkey_accepted_algorithms
                         .clone()
                         .or_else(|| SshAuthenticationPolicy::default().pubkey_accepted_algorithms),
+                    security_key_provider: config.security_key_provider.clone(),
                 }
             })
             .unwrap_or_default();

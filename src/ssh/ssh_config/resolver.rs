@@ -563,6 +563,9 @@ pub(super) fn merge_host_config(base: &mut SshHostConfig, overlay: &SshHostConfi
     if base.identity_agent.is_none() && overlay.identity_agent.is_some() {
         base.identity_agent = overlay.identity_agent.clone();
     }
+    if base.security_key_provider.is_none() && overlay.security_key_provider.is_some() {
+        base.security_key_provider = overlay.security_key_provider.clone();
+    }
     #[cfg(target_os = "macos")]
     if base.use_keychain.is_none() && overlay.use_keychain.is_some() {
         base.use_keychain = overlay.use_keychain;

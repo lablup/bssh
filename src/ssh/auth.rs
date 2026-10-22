@@ -559,6 +559,7 @@ impl AuthContext {
                     accepted.clone(),
                     !self.policy.batch_mode,
                     use_keychain,
+                    self.policy.security_key_provider.clone(),
                 ));
             }
         }
@@ -668,6 +669,7 @@ impl AuthContext {
                     accepted.clone(),
                     allow_passphrase_prompt,
                     use_keychain,
+                    self.policy.security_key_provider.clone(),
                 ));
             }
             if identity.algorithm.as_ref().is_none_or(|algorithm| {
@@ -678,6 +680,7 @@ impl AuthContext {
                     accepted.clone(),
                     allow_passphrase_prompt,
                     use_keychain,
+                    self.policy.security_key_provider.clone(),
                 ));
             }
         }

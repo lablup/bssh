@@ -75,6 +75,9 @@ hmac = "0.13.0"
 sha2 = "0.11.0"
 hickory-resolver = { version = "0.26.1", features = ["dnssec-ring"] }
 libc = "0.2"
+# sk-api (FIDO security key) middleware libraries are dlopened in process;
+# see src/ssh/security_key for why no ssh-sk-helper style subprocess exists.
+libloading = "0.8"
 ipnetwork = "0.21"
 bcrypt = "0.19"
 # `argon2` 0.5 uses `crypto-common` 0.1.7, which deliberately pins

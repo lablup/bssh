@@ -211,7 +211,7 @@ pub(crate) fn resolve_kex(values: &[String]) -> Result<Vec<kex::Name>, String> {
 }
 
 fn supported_key_algorithms() -> Vec<Algorithm> {
-    let mut supported = russh::Preferred::DEFAULT.key.to_vec();
+    let mut supported = default_host_key_algorithms().to_vec();
     for algorithm in russh::keys::key::ALL_KEY_TYPES {
         if !supported.contains(algorithm) {
             supported.push(algorithm.clone());
@@ -220,18 +220,33 @@ fn supported_key_algorithms() -> Vec<Algorithm> {
     supported
 }
 
-/// russh's default host-key order without the SHA-1 `ssh-rsa` signature.
-///
-/// OpenSSH no longer offers `ssh-rsa` by default; bssh matches that for both
-/// its client and server. `HostKeyAlgorithms +ssh-rsa` still opts back in.
+/// OpenSSH's default plain host-key order (`KEX_DEFAULT_PK_ALG` in
+/// `myproposal.h`): Ed25519, the ECDSA curves, the FIDO `sk-*` types, then
+/// the SHA-2 RSA signatures. The SHA-1 `ssh-rsa` signature is not offered;
+/// `HostKeyAlgorithms +ssh-rsa` opts back in. bssh does not verify
+/// `webauthn-sk-ecdsa-sha2-nistp256@openssh.com`, so that entry is absent.
 pub(crate) fn default_host_key_algorithms() -> &'static [Algorithm] {
     static DEFAULTS: LazyLock<Vec<Algorithm>> = LazyLock::new(|| {
-        russh::Preferred::DEFAULT
-            .key
-            .iter()
-            .filter(|algorithm| **algorithm != Algorithm::Rsa { hash: None })
-            .cloned()
-            .collect()
+        vec![
+            Algorithm::Ed25519,
+            Algorithm::Ecdsa {
+                curve: russh::keys::ssh_key::EcdsaCurve::NistP256,
+            },
+            Algorithm::Ecdsa {
+                curve: russh::keys::ssh_key::EcdsaCurve::NistP384,
+            },
+            Algorithm::Ecdsa {
+                curve: russh::keys::ssh_key::EcdsaCurve::NistP521,
+            },
+            Algorithm::SkEd25519,
+            Algorithm::SkEcdsaSha2NistP256,
+            Algorithm::Rsa {
+                hash: Some(russh::keys::HashAlg::Sha512),
+            },
+            Algorithm::Rsa {
+                hash: Some(russh::keys::HashAlg::Sha256),
+            },
+        ]
     });
     &DEFAULTS
 }
@@ -351,8 +366,10 @@ fn public_key_names(algorithms: &[Algorithm]) -> Vec<String> {
         .collect()
 }
 
+/// OpenSSH's default `PubkeyAcceptedAlgorithms`: every certificate name
+/// first, then every plain name, in `KEX_DEFAULT_PK_ALG` order.
 pub(crate) fn default_pubkey_algorithms() -> Vec<String> {
-    public_key_names(default_host_key_algorithms())
+    host_key_names(default_host_key_algorithms())
 }
 
 pub(crate) fn resolve_pubkey_algorithms(values: &[String]) -> Result<Vec<String>, String> {
@@ -491,7 +508,7 @@ mod tests {
                 .collect::<Vec<_>>()
         );
 
-        let nondefault = Algorithm::SkEd25519;
+        let nondefault = Algorithm::Dsa;
         assert!(!defaults.contains(&nondefault));
         let prepended = resolve_host_keys(&[format!("^{}", nondefault.as_ref())])
             .unwrap()
@@ -587,7 +604,7 @@ mod tests {
                 .collect::<Vec<_>>()
         );
 
-        let nondefault = Algorithm::SkEd25519.to_string();
+        let nondefault = Algorithm::Dsa.to_string();
         assert!(!defaults.contains(&nondefault));
         let prepended = resolve_pubkey_algorithms(&[format!("^{nondefault}")]).unwrap();
         assert_eq!(prepended.first(), Some(&nondefault));
@@ -599,6 +616,62 @@ mod tests {
             1
         );
         assert_eq!(&prepended[1..], defaults);
+    }
+
+    /// `ssh -G` from the pinned OpenSSH 10.3p1 prints these lists minus the
+    /// `webauthn-sk-ecdsa-sha2-nistp256@openssh.com` entries bssh cannot verify.
+    #[test]
+    fn default_host_key_and_pubkey_lists_follow_openssh_order_with_sk_types() {
+        let expected_plain = [
+            "ssh-ed25519",
+            "ecdsa-sha2-nistp256",
+            "ecdsa-sha2-nistp384",
+            "ecdsa-sha2-nistp521",
+            "sk-ssh-ed25519@openssh.com",
+            "sk-ecdsa-sha2-nistp256@openssh.com",
+            "rsa-sha2-512",
+            "rsa-sha2-256",
+        ];
+        let plain = default_host_key_algorithms()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        assert_eq!(plain, expected_plain);
+
+        let mut expected_pubkey = expected_plain
+            .iter()
+            .map(|name| match *name {
+                "sk-ssh-ed25519@openssh.com" => "sk-ssh-ed25519-cert-v01@openssh.com".to_string(),
+                "sk-ecdsa-sha2-nistp256@openssh.com" => {
+                    "sk-ecdsa-sha2-nistp256-cert-v01@openssh.com".to_string()
+                }
+                other => format!("{other}-cert-v01@openssh.com"),
+            })
+            .collect::<Vec<_>>();
+        expected_pubkey.extend(expected_plain.iter().map(ToString::to_string));
+        assert_eq!(default_pubkey_algorithms(), expected_pubkey);
+        assert_eq!(
+            host_key_names(default_host_key_algorithms()),
+            expected_pubkey
+        );
+    }
+
+    #[test]
+    fn sk_wildcards_expand_to_the_supported_fido_types() {
+        let hosts = resolve_host_keys(&[String::from("sk-*")]).unwrap();
+        assert_eq!(
+            hosts.keys,
+            vec![Algorithm::SkEd25519, Algorithm::SkEcdsaSha2NistP256]
+        );
+        assert_eq!(hosts.certificates, hosts.keys);
+        let pubkey = resolve_pubkey_algorithms(&[String::from("sk-ssh-ed25519*")]).unwrap();
+        assert_eq!(
+            pubkey,
+            [
+                "sk-ssh-ed25519-cert-v01@openssh.com",
+                "sk-ssh-ed25519@openssh.com"
+            ]
+        );
     }
 
     #[test]

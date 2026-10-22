@@ -29,6 +29,7 @@ mod hostkey_rotation;
 mod known_hosts_command;
 mod process_stdin;
 mod proxy_command;
+mod security_key_signer;
 mod session;
 pub mod sftp_client;
 mod sshfp;

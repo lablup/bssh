@@ -49,6 +49,23 @@ pub enum Error {
     AuthenticationPolicy(String),
     #[error("SSH identity algorithm is excluded by PubkeyAcceptedAlgorithms: {0}")]
     IdentityAlgorithmExcluded(String),
+    /// An authenticator-hosted (`sk-*`) identity could not be used because no
+    /// usable `SecurityKeyProvider` was available before it was offered;
+    /// authentication continues with the next identity.
+    #[error("authenticator-hosted key {path} skipped: {reason}")]
+    SecurityKeyUnavailable {
+        path: std::path::PathBuf,
+        reason: String,
+    },
+    /// The security-key provider failed after the server requested a
+    /// signature; like [`Self::LocalSignerFailed`], this ends the transport.
+    #[error(
+        "security key signing failed for {path} after the server requested a signature: {reason}"
+    )]
+    SecurityKeySignFailed {
+        path: std::path::PathBuf,
+        reason: String,
+    },
     #[error("Permission denied (password).")]
     PasswordWrong,
     #[error(
@@ -302,6 +319,8 @@ impl Error {
                 | Self::TransportIntegrity { .. }
                 | Self::AgentAuthError(_)
                 | Self::IdentityAlgorithmExcluded(_)
+                | Self::SecurityKeyUnavailable { .. }
+                | Self::SecurityKeySignFailed { .. }
                 | Self::AgentConnectionFailed
                 | Self::AgentRequestIdentitiesFailed
                 | Self::AgentOperationTimeout { .. }

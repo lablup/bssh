@@ -1,9 +1,9 @@
 test	disposition	reason	timeout_seconds
 addrmatch	run
 agent-getpeereid	run
-agent-pkcs11-cert	skip	Permanent candidate skip: PKCS#11 and FIDO/security-key middleware are outside the compatibility target.
-agent-pkcs11-restrict	skip	Permanent candidate skip: PKCS#11 and FIDO/security-key middleware are outside the compatibility target.
-agent-pkcs11	skip	Permanent candidate skip: PKCS#11 and FIDO/security-key middleware are outside the compatibility target.
+agent-pkcs11-cert	skip	Permanent candidate skip: PKCS#11 token middleware is outside the compatibility target (FIDO security keys are supported through SecurityKeyProvider).
+agent-pkcs11-restrict	skip	Permanent candidate skip: PKCS#11 token middleware is outside the compatibility target (FIDO security keys are supported through SecurityKeyProvider).
+agent-pkcs11	skip	Permanent candidate skip: PKCS#11 token middleware is outside the compatibility target (FIDO security keys are supported through SecurityKeyProvider).
 agent-ptrace	run
 agent-restrict	run
 agent-subprocess	run
@@ -101,7 +101,7 @@ ssh-com-client	exclude	Permanent exclusion: ssh.com interoperability is outside 
 ssh-com-keygen	exclude	Permanent exclusion: ssh.com interoperability is outside the compatibility target.
 ssh-com-sftp	exclude	Permanent exclusion: ssh.com interoperability is outside the compatibility target.
 ssh-com	exclude	Permanent exclusion: ssh.com interoperability is outside the compatibility target.
-ssh-pkcs11	skip	Permanent candidate skip: PKCS#11 and FIDO/security-key middleware are outside the compatibility target.
+ssh-pkcs11	skip	Permanent candidate skip: PKCS#11 token middleware is outside the compatibility target (FIDO security keys are supported through SecurityKeyProvider).
 ssh-tty	run
 ssh2putty	exclude	Upstream conversion helper; it is not a standalone regression test.
 sshcfgparse	run
