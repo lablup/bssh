@@ -28,7 +28,7 @@
 use std::future::Future;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use tokio::sync::Notify;
 
@@ -128,10 +128,19 @@ pub(super) async fn open_security_key_provider(
 /// Serializes every provider call in the process. sk-api makes no
 /// thread-safety promise and OpenSSH never calls a provider concurrently
 /// (each signature runs in its own `ssh-sk-helper`), while bssh may
-/// authenticate to many hosts at once. The lock is taken inside the blocking
-/// task, so a dropped authentication future cannot release it while the
-/// provider is still running.
-static PROVIDER_CALL_LOCK: Mutex<()> = Mutex::new(());
+/// authenticate to many hosts at once.
+///
+/// The lock is an async FIFO mutex acquired before the blocking task is
+/// spawned, and the owned guard moves into that task. Waiting for a touch on
+/// one host therefore occupies a single blocking thread rather than one per
+/// queued host, which would otherwise exhaust tokio's blocking pool and stall
+/// `tokio::fs` and DNS for every connection. A connection that times out
+/// while queued leaves the queue without ever reaching the provider, so the
+/// user is never asked to touch the key for a dead connection. Once the call
+/// has started, the guard lives in the blocking task, so a dropped
+/// authentication future cannot release it while the provider is running.
+static PROVIDER_CALL_LOCK: LazyLock<Arc<tokio::sync::Mutex<()>>> =
+    LazyLock::new(|| Arc::new(tokio::sync::Mutex::new(())));
 
 /// Records a signature the signer declined to produce.
 #[derive(Debug, Default)]
@@ -257,13 +266,6 @@ impl SecurityKeySigner {
         };
         let notify = self.interactive && self.identity.wants_user_presence();
         let notify = notify && std::io::stderr().is_terminal();
-        if notify {
-            crate::diagnosticln!(
-                "Confirm user presence for key {} {}",
-                self.identity.algorithm.ssh_name(),
-                self.identity.fingerprint
-            );
-        }
         let data = Arc::new(data);
         let mut pin: Option<Zeroizing<String>> = None;
         let mut retried = false;
@@ -272,7 +274,19 @@ impl SecurityKeySigner {
             let identity = Arc::clone(&self.identity);
             let data = Arc::clone(&data);
             let attempt_pin = pin.clone();
+            let serialized = Arc::clone(&PROVIDER_CALL_LOCK).lock_owned().await;
+            // Announced only once this identity holds the provider, so the
+            // notice matches the authenticator that is actually waiting
+            // (`identity_sign` notifies again on the PIN retry as well).
+            if notify {
+                crate::diagnosticln!(
+                    "Confirm user presence for key {} {}",
+                    self.identity.algorithm.ssh_name(),
+                    self.identity.fingerprint
+                );
+            }
             let result = tokio::task::spawn_blocking(move || {
+                let _serialized = serialized;
                 let request = SkSignRequest {
                     algorithm: identity.algorithm,
                     data: &data,
@@ -280,9 +294,6 @@ impl SecurityKeySigner {
                     key_handle: &identity.key_handle,
                     flags: identity.flags,
                 };
-                let _serialized = PROVIDER_CALL_LOCK
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 provider.sign(&request, attempt_pin.as_deref().map(String::as_str))
             })
             .await
@@ -561,6 +572,152 @@ mod tests {
             task.await.unwrap().unwrap();
         }
         assert_eq!(provider.max_in_flight.load(Ordering::SeqCst), 1);
+    }
+
+    /// A provider that blocks inside `sign` until released, standing in for
+    /// an authenticator that waits for a touch.
+    #[derive(Debug, Default)]
+    struct GatedProvider {
+        calls: std::sync::atomic::AtomicUsize,
+        open: Mutex<bool>,
+        opened: std::sync::Condvar,
+    }
+
+    impl GatedProvider {
+        fn calls(&self) -> usize {
+            self.calls.load(std::sync::atomic::Ordering::SeqCst)
+        }
+
+        fn release(&self) {
+            *self.open.lock().unwrap_or_else(|e| e.into_inner()) = true;
+            self.opened.notify_all();
+        }
+
+        async fn wait_for_calls(&self, expected: usize) {
+            let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+            while self.calls() < expected {
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "provider never reached {expected} calls"
+                );
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        }
+    }
+
+    impl SecurityKeyProvider for GatedProvider {
+        fn sign(
+            &self,
+            request: &SkSignRequest<'_>,
+            _: Option<&str>,
+        ) -> Result<SkSignResponse, SecurityKeyError> {
+            self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            let mut open = self.open.lock().unwrap_or_else(|e| e.into_inner());
+            while !*open {
+                open = self.opened.wait(open).unwrap_or_else(|e| e.into_inner());
+            }
+            Ok(SkSignResponse {
+                flags: request.flags,
+                counter: 1,
+                sig_r: Zeroizing::new(vec![0x5a; 64]),
+                sig_s: Zeroizing::new(Vec::new()),
+            })
+        }
+
+        fn describe(&self) -> String {
+            "gated".to_string()
+        }
+    }
+
+    /// Releases the gate even when an assertion fails, so a blocked provider
+    /// thread never outlives the test.
+    struct ReleaseOnDrop(Arc<GatedProvider>);
+
+    impl Drop for ReleaseOnDrop {
+        fn drop(&mut self) {
+            self.0.release();
+        }
+    }
+
+    fn gated_signer(provider: &Arc<GatedProvider>) -> SecurityKeySigner {
+        let key = sk_ed25519_key(0x00);
+        let identity = SecurityKeyIdentity::from_private_key(&key, Path::new("/k")).unwrap();
+        SecurityKeySigner::new(
+            Arc::clone(provider) as Arc<dyn SecurityKeyProvider>,
+            identity,
+            false,
+        )
+    }
+
+    /// A connection that gives up (ConnectTimeout) while another host holds
+    /// the authenticator must leave the queue: it must never reach the
+    /// provider afterwards and ask for a touch nobody is waiting for.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_cancelled_queued_signature_never_reaches_the_provider() {
+        let provider = Arc::new(GatedProvider::default());
+        let _release = ReleaseOnDrop(Arc::clone(&provider));
+
+        let holder = gated_signer(&provider);
+        let holder = tokio::spawn(async move { holder.sign_blob(vec![1]).await });
+        provider.wait_for_calls(1).await;
+
+        let queued = gated_signer(&provider);
+        let queued = tokio::spawn(async move { queued.sign_blob(vec![2]).await });
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        queued.abort();
+        assert!(queued.await.unwrap_err().is_cancelled());
+
+        provider.release();
+        holder.await.unwrap().unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert_eq!(
+            provider.calls(),
+            1,
+            "the cancelled signature was still sent to the provider"
+        );
+    }
+
+    /// Hosts queued behind a touch must not each pin a blocking thread: with
+    /// a small blocking pool, unrelated `spawn_blocking` work (tokio::fs, DNS)
+    /// still has to run while the authenticator waits.
+    #[test]
+    fn queued_signatures_do_not_occupy_blocking_threads() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .max_blocking_threads(2)
+            .enable_all()
+            .build()
+            .unwrap();
+        let provider = Arc::new(GatedProvider::default());
+        let release = ReleaseOnDrop(Arc::clone(&provider));
+        runtime.block_on(async {
+            let signers = (0..4)
+                .map(|index| {
+                    let signer = gated_signer(&provider);
+                    tokio::spawn(async move { signer.sign_blob(vec![index]).await })
+                })
+                .collect::<Vec<_>>();
+            provider.wait_for_calls(1).await;
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+            let unrelated = tokio::time::timeout(
+                std::time::Duration::from_secs(3),
+                tokio::task::spawn_blocking(|| 42),
+            )
+            .await;
+            provider.release();
+            assert_eq!(
+                unrelated
+                    .expect("blocking pool exhausted by queued security-key signers")
+                    .unwrap(),
+                42
+            );
+            for signer in signers {
+                signer.await.unwrap().unwrap();
+            }
+        });
+        drop(release);
+        drop(runtime);
     }
 
     #[tokio::test]
