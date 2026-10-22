@@ -35,7 +35,7 @@ pub struct SshAuthenticationPolicy {
     pub batch_mode: bool,
     pub pubkey_accepted_algorithms: Option<Vec<String>>,
     /// Raw `SecurityKeyProvider` value (`$VAR` unexpanded); `None` is the
-    /// OpenSSH default `$SSH_SK_PROVIDER`.
+    /// OpenSSH default (`internal`).
     pub security_key_provider: Option<String>,
 }
 

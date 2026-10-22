@@ -52,7 +52,7 @@ pub enum AuthMethod {
         allow_passphrase_prompt: bool,
         use_keychain: bool,
         /// `SecurityKeyProvider` for `sk-*` identities; `None` is the
-        /// OpenSSH default (`$SSH_SK_PROVIDER`).
+        /// OpenSSH default (`internal`).
         security_key_provider: Option<String>,
     },
     OpenSshCertificateFile {
@@ -63,7 +63,7 @@ pub enum AuthMethod {
         key_pass: Option<Zeroizing<String>>,
         accepted_algorithms: Vec<String>,
         /// `SecurityKeyProvider` for `sk-*` identities; `None` is the
-        /// OpenSSH default (`$SSH_SK_PROVIDER`).
+        /// OpenSSH default (`internal`).
         security_key_provider: Option<String>,
     },
     PasswordPrompt {

@@ -17,13 +17,13 @@
 //! OpenSSH signs with authenticator-hosted keys through a middleware library
 //! that implements `sk-api.h` (`sk_api_version`, `sk_sign`, ...). bssh loads
 //! the same libraries so an identity enrolled with `ssh-keygen -t ed25519-sk`
-//! works unchanged. The narrow [`SecurityKeyProvider`] trait is the seam a
-//! built-in USB HID provider plugs into later: `SecurityKeyProvider internal`
-//! resolves to [`ProviderSource::Internal`] and [`open_provider`] is the only
-//! place that needs to learn about it.
+//! works unchanged, and ships the built-in USB HID provider (`internal`, the
+//! default, as in OpenSSH built with `ENABLE_SK_INTERNAL`) behind the same
+//! narrow [`SecurityKeyProvider`] trait: [`open_provider`] is the only place
+//! that distinguishes the two.
 //!
-//! The provider runs in-process (`dlopen`) rather than through an
-//! `ssh-sk-helper`-style subprocess. OpenSSH's helper keeps the middleware
+//! Both providers run in-process (`dlopen`, or the in-tree CTAPHID stack in
+//! [`internal`]) rather than through an `ssh-sk-helper`-style subprocess. OpenSSH's helper keeps the middleware
 //! out of its `pledge`d client and shares one implementation between `ssh`,
 //! `ssh-agent`, and `ssh-keygen`; bssh has no such sandbox, and a re-exec
 //! helper would add a private wire protocol without changing what code runs
@@ -42,6 +42,7 @@
 //!   hosts. Only configure a provider library you would trust with them.
 
 mod external;
+pub mod internal;
 mod signature;
 
 use std::fmt;
@@ -59,9 +60,10 @@ pub const SK_FLAG_USER_PRESENCE_REQUIRED: u8 = 0x01;
 /// `SSH_SK_USER_VERIFICATION_REQD`: the authenticator wants a PIN or biometric.
 pub const SK_FLAG_USER_VERIFICATION_REQUIRED: u8 = 0x04;
 
-/// The ssh_config default for `SecurityKeyProvider` when no built-in provider
-/// exists (`readconf.c`): a `$`-prefixed environment variable name.
-pub const DEFAULT_PROVIDER_SETTING: &str = "$SSH_SK_PROVIDER";
+/// The ssh_config default for `SecurityKeyProvider`: OpenSSH built with
+/// `ENABLE_SK_INTERNAL` defaults to its built-in provider (`readconf.c`), and
+/// so does bssh. A `$`-prefixed value names an environment variable instead.
+pub const DEFAULT_PROVIDER_SETTING: &str = "internal";
 
 /// Key algorithms the sk-api distinguishes (`SSH_SK_ECDSA`, `SSH_SK_ED25519`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -116,7 +118,7 @@ impl SkSignRequest<'_> {
 pub enum ProviderSource {
     /// No provider: unset environment variable or `none`.
     Disabled,
-    /// `internal`: the built-in provider, which this build does not include.
+    /// `internal`: the built-in USB HID provider ([`internal`]).
     Internal,
     /// A shared library implementing `sk-api.h`.
     Library(PathBuf),
@@ -128,7 +130,7 @@ pub enum SecurityKeyError {
     #[error("no SecurityKeyProvider has been specified")]
     NoProvider,
     #[error(
-        "built-in security key support is not available in this build; set SecurityKeyProvider to an sk-api library"
+        "built-in security key support is not available on this platform; set SecurityKeyProvider to an sk-api library"
     )]
     InternalUnavailable,
     #[error("Provider \"{path}\" dlopen failed: {reason}")]
@@ -151,6 +153,9 @@ pub enum SecurityKeyError {
     Unsupported,
     #[error("sk_sign failed with code {0}")]
     SignFailed(i32),
+    /// The built-in provider failed with a described reason.
+    #[error("sk_sign failed: {0}")]
+    Failed(String),
     #[error("sk_sign response invalid: {0}")]
     InvalidResponse(&'static str),
     #[error("sk_sign request invalid: {0}")]
@@ -235,9 +240,20 @@ pub fn open_provider(
 ) -> Result<Box<dyn SecurityKeyProvider>, SecurityKeyError> {
     match source {
         ProviderSource::Disabled => Err(SecurityKeyError::NoProvider),
-        ProviderSource::Internal => Err(SecurityKeyError::InternalUnavailable),
+        ProviderSource::Internal => open_internal(),
         ProviderSource::Library(path) => open_library(path),
     }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn open_internal() -> Result<Box<dyn SecurityKeyProvider>, SecurityKeyError> {
+    Ok(Box::new(internal::InternalProvider::new()))
+}
+
+/// The HID transport is only wired up for Linux (hidraw) and macOS (IOKit).
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn open_internal() -> Result<Box<dyn SecurityKeyProvider>, SecurityKeyError> {
+    Err(SecurityKeyError::InternalUnavailable)
 }
 
 fn open_library(path: &Path) -> Result<Box<dyn SecurityKeyProvider>, SecurityKeyError> {
@@ -272,12 +288,26 @@ mod tests {
     }
 
     #[test]
-    fn default_setting_follows_the_ssh_sk_provider_variable() {
+    fn default_setting_is_the_internal_provider() {
+        assert_eq!(DEFAULT_PROVIDER_SETTING, "internal");
+        assert_eq!(resolve_provider(None, no_env), ProviderSource::Internal);
+        // The environment variable OpenSSH-without-internal consults is not
+        // read unless the setting names it.
         assert_eq!(
             resolve_provider(None, env_with("SSH_SK_PROVIDER", "/opt/sk.so")),
+            ProviderSource::Internal
+        );
+        assert_eq!(
+            resolve_provider(
+                Some("$SSH_SK_PROVIDER"),
+                env_with("SSH_SK_PROVIDER", "/opt/sk.so")
+            ),
             ProviderSource::Library(PathBuf::from("/opt/sk.so"))
         );
-        assert_eq!(resolve_provider(None, no_env), ProviderSource::Disabled);
+        assert_eq!(
+            resolve_provider(Some("$SSH_SK_PROVIDER"), no_env),
+            ProviderSource::Disabled
+        );
     }
 
     #[test]
@@ -325,6 +355,18 @@ mod tests {
         );
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn internal_provider_opens_without_touching_any_device() {
+        let provider = open_provider(&ProviderSource::Internal).unwrap();
+        assert_eq!(provider.describe(), "internal");
+        assert_eq!(
+            open_provider(&ProviderSource::Disabled).unwrap_err(),
+            SecurityKeyError::NoProvider
+        );
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     #[test]
     fn internal_provider_reports_an_explicit_unavailable_diagnostic() {
         let error = open_provider(&ProviderSource::Internal).unwrap_err();
@@ -333,10 +375,6 @@ mod tests {
             error
                 .to_string()
                 .contains("built-in security key support is not available")
-        );
-        assert_eq!(
-            open_provider(&ProviderSource::Disabled).unwrap_err(),
-            SecurityKeyError::NoProvider
         );
     }
 
