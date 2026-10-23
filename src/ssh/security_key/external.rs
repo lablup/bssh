@@ -174,11 +174,21 @@ fn open_library(path: &Path) -> Result<Library, libloading::Error> {
     unsafe { Library::new(path) }
 }
 
+/// The loader's own explanation of a libloading failure. Since libloading
+/// 0.9 the `Display` text is only "dlopen failed" or "dlsym failed"; the
+/// `dlerror()` message that names the file or symbol is the error's source.
+fn loader_reason(error: &libloading::Error) -> String {
+    match std::error::Error::source(error) {
+        Some(source) => source.to_string(),
+        None => error.to_string(),
+    }
+}
+
 /// Explain a failed `dlopen`, naming the static-linking limitation of musl
 /// release builds instead of leaving the user with "Dynamic loading not
 /// supported".
 fn describe_load_error(error: &libloading::Error) -> String {
-    let reason = error.to_string();
+    let reason = loader_reason(error);
     if cfg!(target_env = "musl") {
         format!(
             "{reason}; this bssh build is statically linked and cannot load shared libraries, so an external SecurityKeyProvider needs a dynamically linked bssh"
@@ -228,7 +238,7 @@ fn bind_symbols(
     let api_version: Symbol<'_, SkApiVersionFn> = unsafe { library.get(b"sk_api_version\0") }
         .map_err(|error| SecurityKeyError::NotAProvider {
             path: path.to_path_buf(),
-            reason: error.to_string(),
+            reason: loader_reason(&error),
         })?;
     // SAFETY: calling a provider function with no arguments and no
     // preconditions; it only reports a constant.
@@ -238,7 +248,7 @@ fn bind_symbols(
         // handle, so an opaque pointer type is used on purpose.
         unsafe { library.get::<*const c_void>(name) }
             .map(|_| ())
-            .map_err(|error| error.to_string())
+            .map_err(|error| loader_reason(&error))
     })?;
     // SAFETY: the symbol is declared in sk-api.h as `int sk_sign(...)` with
     // exactly the parameter list `SkSignFn` spells out, and
@@ -246,20 +256,20 @@ fn bind_symbols(
     let sign: Symbol<'_, SkSignFn> =
         unsafe { library.get(b"sk_sign\0") }.map_err(|error| SecurityKeyError::NotAProvider {
             path: path.to_path_buf(),
-            reason: error.to_string(),
+            reason: loader_reason(&error),
         })?;
     // SAFETY: these types exactly match the pinned sk-api.h prototypes; the
     // library remains loaded for the process lifetime.
     let enroll: Symbol<'_, SkEnrollFn> =
         unsafe { library.get(b"sk_enroll\0") }.map_err(|error| SecurityKeyError::NotAProvider {
             path: path.to_path_buf(),
-            reason: error.to_string(),
+            reason: loader_reason(&error),
         })?;
     // SAFETY: same ABI and lifetime guarantees as for sk_enroll above.
     let resident: Symbol<'_, SkLoadResidentFn> = unsafe { library.get(b"sk_load_resident_keys\0") }
         .map_err(|error| SecurityKeyError::NotAProvider {
             path: path.to_path_buf(),
-            reason: error.to_string(),
+            reason: loader_reason(&error),
         })?;
     Ok((*sign, *enroll, *resident))
 }

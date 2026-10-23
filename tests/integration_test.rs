@@ -14,6 +14,7 @@
 
 use bssh::executor::ParallelExecutor;
 use bssh::node::Node;
+use bssh::ssh::known_hosts::StrictHostKeyChecking;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -46,6 +47,25 @@ fn can_ssh_to_localhost() -> bool {
     }
 }
 
+/// Build an executor that authenticates like `can_ssh_to_localhost`.
+///
+/// The probe disables host key checking, so the executor must too: otherwise
+/// a stale `localhost` entry in the user's known_hosts passes the probe and
+/// then fails every transfer. It also keeps the tests from recording
+/// `localhost` and `127.0.0.1` keys in the user's known_hosts.
+fn localhost_executor(nodes: Vec<Node>, max_parallel: usize) -> ParallelExecutor {
+    // Try to find an SSH key - use None if not found (will try SSH agent)
+    let ssh_key = dirs::home_dir().and_then(|h| {
+        let key_path = h.join(".ssh/id_rsa");
+        if key_path.exists() {
+            Some(key_path.to_string_lossy().to_string())
+        } else {
+            None
+        }
+    });
+    ParallelExecutor::new_with_strict_mode(nodes, max_parallel, ssh_key, StrictHostKeyChecking::No)
+}
+
 #[tokio::test]
 async fn test_localhost_upload_download_roundtrip() {
     if !can_ssh_to_localhost() {
@@ -68,16 +88,7 @@ async fn test_localhost_upload_download_roundtrip() {
         22,
         std::env::var("USER").unwrap_or_else(|_| "root".to_string()),
     )];
-    // Try to find an SSH key - use None if not found (will try SSH agent)
-    let ssh_key = dirs::home_dir().and_then(|h| {
-        let key_path = h.join(".ssh/id_rsa");
-        if key_path.exists() {
-            Some(key_path.to_string_lossy().to_string())
-        } else {
-            None
-        }
-    });
-    let executor = ParallelExecutor::new(nodes, 1, ssh_key);
+    let executor = localhost_executor(nodes, 1);
 
     // Test upload
     let remote_path = format!("{}/uploaded_file.txt", remote_temp.path().display());
@@ -87,10 +98,11 @@ async fn test_localhost_upload_download_roundtrip() {
         .unwrap();
 
     assert_eq!(upload_results.len(), 1);
-    if !upload_results[0].is_success() {
-        eprintln!("Upload failed: {:?}", upload_results[0].result);
-        return;
-    }
+    assert!(
+        upload_results[0].is_success(),
+        "{:?}",
+        upload_results[0].result
+    );
 
     // Verify file was uploaded
     assert!(PathBuf::from(&remote_path).exists());
@@ -105,7 +117,11 @@ async fn test_localhost_upload_download_roundtrip() {
         .unwrap();
 
     assert_eq!(download_results.len(), 1);
-    assert!(download_results[0].is_success());
+    assert!(
+        download_results[0].is_success(),
+        "{:?}",
+        download_results[0].result
+    );
 
     // Verify downloaded file
     if let Ok(downloaded_path) = &download_results[0].result {
@@ -143,16 +159,7 @@ async fn test_localhost_multiple_file_upload() {
         22,
         std::env::var("USER").unwrap_or_else(|_| "root".to_string()),
     )];
-    // Try to find an SSH key - use None if not found (will try SSH agent)
-    let ssh_key = dirs::home_dir().and_then(|h| {
-        let key_path = h.join(".ssh/id_rsa");
-        if key_path.exists() {
-            Some(key_path.to_string_lossy().to_string())
-        } else {
-            None
-        }
-    });
-    let executor = ParallelExecutor::new(nodes, 1, ssh_key);
+    let executor = localhost_executor(nodes, 1);
 
     // Upload each file
     for (name, content) in &files {
@@ -163,7 +170,7 @@ async fn test_localhost_multiple_file_upload() {
             .upload_file(&local_file, &remote_path)
             .await
             .unwrap();
-        assert!(results[0].is_success());
+        assert!(results[0].is_success(), "{:?}", results[0].result);
 
         // Verify upload
         let uploaded_content = fs::read_to_string(&remote_path).unwrap();
@@ -187,23 +194,14 @@ async fn test_parallel_execution_with_multiple_nodes() {
         Node::new("127.0.0.1".to_string(), 22, user.clone()),
     ];
 
-    // Try to find an SSH key - use None if not found (will try SSH agent)
-    let ssh_key = dirs::home_dir().and_then(|h| {
-        let key_path = h.join(".ssh/id_rsa");
-        if key_path.exists() {
-            Some(key_path.to_string_lossy().to_string())
-        } else {
-            None
-        }
-    });
-    let executor = ParallelExecutor::new(nodes, 2, ssh_key);
+    let executor = localhost_executor(nodes, 2);
 
     // Execute a simple command
     let results = executor.execute("echo 'test'").await.unwrap();
 
     assert_eq!(results.len(), 2);
     for result in &results {
-        assert!(result.is_success());
+        assert!(result.is_success(), "{:?}", result.result);
         if let Ok(cmd_result) = &result.result {
             assert!(cmd_result.stdout_string().contains("test"));
         }
@@ -229,16 +227,7 @@ async fn test_download_with_unique_filenames() {
         Node::new("127.0.0.1".to_string(), 22, user),
     ];
 
-    // Try to find an SSH key - use None if not found (will try SSH agent)
-    let ssh_key = dirs::home_dir().and_then(|h| {
-        let key_path = h.join(".ssh/id_rsa");
-        if key_path.exists() {
-            Some(key_path.to_string_lossy().to_string())
-        } else {
-            None
-        }
-    });
-    let executor = ParallelExecutor::new(nodes, 2, ssh_key);
+    let executor = localhost_executor(nodes, 2);
 
     // Download from both nodes
     let download_temp = TempDir::new().unwrap();
