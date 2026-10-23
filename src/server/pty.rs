@@ -174,7 +174,11 @@ impl PtyMaster {
         Self::set_nonblocking(master_fd.as_fd())?;
 
         // Wrap in AsyncFd for tokio integration
-        let async_fd = AsyncFd::new(master_fd).context("Failed to create AsyncFd")?;
+        // SAFETY: master_fd is an OwnedFd moved into the AsyncFd, so the
+        // descriptor stays open and unchanged until the AsyncFd is dropped.
+        let async_fd = unsafe { AsyncFd::register(master_fd) }
+            .map_err(io::Error::from)
+            .context("Failed to create AsyncFd")?;
 
         Ok(Self {
             config,

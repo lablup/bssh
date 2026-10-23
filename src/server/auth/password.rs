@@ -56,7 +56,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use argon2::{
     Algorithm, Argon2, Params, Version,
-    password_hash::{PasswordHash, PasswordHasher, PasswordVerifier as _, rand_core::OsRng},
+    password_hash::{PasswordHasher, PasswordVerifier as _, phc::PasswordHash},
 };
 use async_trait::async_trait;
 use russh::keys::ssh_key::PublicKey;
@@ -299,7 +299,7 @@ impl PasswordVerifier {
 
         match argon2.verify_password(password, &hash) {
             Ok(()) => Ok(true),
-            Err(argon2::password_hash::Error::Password) => Ok(false),
+            Err(argon2::password_hash::Error::PasswordInvalid) => Ok(false),
             Err(e) => Err(anyhow::anyhow!("Argon2 verification error: {}", e)),
         }
     }
@@ -440,10 +440,6 @@ struct UsersFile {
 /// println!("Hash: {}", hash);
 /// ```
 pub fn hash_password(password: &str) -> Result<String> {
-    use argon2::password_hash::SaltString;
-
-    let salt = SaltString::generate(&mut OsRng);
-
     // Use Argon2id with secure parameters
     // These parameters balance security and performance:
     // - m=19456 KiB (19 MiB memory)
@@ -459,8 +455,8 @@ pub fn hash_password(password: &str) -> Result<String> {
 
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
 
-    let hash = argon2
-        .hash_password(password.as_bytes(), &salt)
+    let hash: PasswordHash = argon2
+        .hash_password(password.as_bytes())
         .map_err(|e| anyhow::anyhow!("Failed to hash password: {}", e))?;
 
     Ok(hash.to_string())
@@ -484,7 +480,7 @@ pub fn verify_password_hash(password: &str, hash: &str) -> Result<bool> {
 
     match argon2.verify_password(password.as_bytes(), &parsed_hash) {
         Ok(()) => Ok(true),
-        Err(argon2::password_hash::Error::Password) => Ok(false),
+        Err(argon2::password_hash::Error::PasswordInvalid) => Ok(false),
         Err(e) => Err(anyhow::anyhow!("Verification error: {}", e)),
     }
 }

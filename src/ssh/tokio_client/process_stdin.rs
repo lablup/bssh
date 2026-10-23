@@ -58,7 +58,9 @@ mod imp {
             Some(StreamKind::Pipe) => {
                 // Register before mutating the shared file-description flags.
                 // If registration fails, process stdin remains untouched.
-                let fd = AsyncFd::new(fd)?;
+                // SAFETY: fd is an OwnedFd moved into the AsyncFd, so the
+                // descriptor stays open and unchanged until it is dropped.
+                let fd = unsafe { AsyncFd::register(fd) }?;
                 let restore_flags = set_pipe_nonblocking(fd.get_ref().as_fd())?;
                 return Ok(Box::new(AsyncStreamInput {
                     fd,
@@ -67,8 +69,10 @@ mod imp {
                 }));
             }
             Some(StreamKind::Socket) => {
+                // SAFETY: as above, the OwnedFd is owned by the AsyncFd.
+                let fd = unsafe { AsyncFd::register(fd) }?;
                 return Ok(Box::new(AsyncStreamInput {
-                    fd: AsyncFd::new(fd)?,
+                    fd,
                     kind: StreamKind::Socket,
                     restore_flags: None,
                 }));
