@@ -19,7 +19,7 @@ use russh::keys::ssh_key::{
     PublicKey,
     public::{Ed25519PublicKey, KeyData, SkEcdsaSha2NistP256, SkEd25519},
 };
-use russh::server::{Auth, Handler};
+use russh::server::Auth;
 use tokio::sync::RwLock;
 
 fn keys() -> [PublicKey; 3] {
@@ -59,7 +59,7 @@ async fn authenticate(key: &PublicKey, lines: &[String]) -> bool {
         Arc::new(RwLock::new(SessionManager::new())),
     );
     matches!(
-        handler.auth_publickey("alice", key).await.unwrap(),
+        handler.authenticate_publickey("alice", key).await.unwrap(),
         Auth::Accept
     )
 }

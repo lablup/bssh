@@ -245,112 +245,15 @@ impl SshHandler {
             .as_ref()
             .is_some_and(|s| s.auth_attempts >= self.config.max_auth_attempts)
     }
-}
 
-impl russh::server::Handler for SshHandler {
-    type Error = anyhow::Error;
-
-    /// Called when a new session channel is created.
-    fn channel_open_session(
-        &mut self,
-        channel: Channel<Msg>,
-        reply: ChannelOpenHandle,
-        _session: &mut Session,
-    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
-        let channel_id = channel.id();
-        tracing::debug!(
-            peer = ?self.peer_addr,
-            channel = ?channel_id,
-            "Channel opened for session"
-        );
-
-        // Store the channel itself so we can use it for subsystems like SFTP
-        self.channels
-            .insert(channel_id, ChannelState::with_channel(channel));
-        async move {
-            reply.accept().await;
-            Ok(())
-        }
-    }
-
-    /// Handle 'none' authentication.
-    ///
-    /// Always rejects and advertises available authentication methods.
-    fn auth_none(
-        &mut self,
-        user: &str,
-    ) -> impl std::future::Future<Output = Result<Auth, Self::Error>> + Send {
-        tracing::debug!(
-            user = %user,
-            peer = ?self.peer_addr,
-            "Auth none attempt"
-        );
-
-        // If connection was rejected by IP access control, immediately reject
-        if self.rejected {
-            tracing::debug!(
-                peer = ?self.peer_addr,
-                "Rejecting auth for IP-blocked connection"
-            );
-            return std::future::ready(Ok(Auth::Reject {
-                proceed_with_methods: None,
-                partial_success: false,
-            }))
-            .left_future();
-        }
-
-        // Create session info if not already created
-        let peer_addr = self.peer_addr;
-        let sessions = Arc::clone(&self.sessions);
-        let methods = self.allowed_methods();
-
-        // We need to handle session creation
-        let session_info_ref = &mut self.session_info;
-
-        async move {
-            if session_info_ref.is_none() {
-                let mut sessions_guard = sessions.write().await;
-                if let Some(info) = sessions_guard.create_session(peer_addr) {
-                    tracing::info!(
-                        session_id = %info.id,
-                        peer = ?peer_addr,
-                        "New session created"
-                    );
-                    *session_info_ref = Some(info);
-                } else {
-                    tracing::warn!(
-                        peer = ?peer_addr,
-                        "Session limit reached, rejecting connection"
-                    );
-                    return Ok(Auth::Reject {
-                        proceed_with_methods: None,
-                        partial_success: false,
-                    });
-                }
-            }
-
-            // Reject with available methods
-            tracing::debug!(
-                methods = ?methods,
-                "Rejecting auth_none, advertising methods"
-            );
-
-            Ok(Auth::Reject {
-                proceed_with_methods: Some(methods),
-                partial_success: false,
-            })
-        }
-        .right_future()
-    }
-
-    /// Handle public key authentication.
+    /// Authorize a public key whose signature the transport has verified.
     ///
     /// Verifies the public key against the user's authorized_keys file.
-    fn auth_publickey(
+    pub fn authenticate_publickey(
         &mut self,
         user: &str,
         public_key: &ssh_key::PublicKey,
-    ) -> impl std::future::Future<Output = Result<Auth, Self::Error>> + Send {
+    ) -> impl std::future::Future<Output = Result<Auth, anyhow::Error>> + Send {
         tracing::debug!(
             user = %user,
             peer = ?self.peer_addr,
@@ -577,6 +480,116 @@ impl russh::server::Handler for SshHandler {
                 }
             }
         }
+    }
+}
+
+impl russh::server::Handler for SshHandler {
+    type Error = anyhow::Error;
+
+    /// Called when a new session channel is created.
+    fn channel_open_session(
+        &mut self,
+        channel: Channel<Msg>,
+        reply: ChannelOpenHandle,
+        _session: &mut Session,
+    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
+        let channel_id = channel.id();
+        tracing::debug!(
+            peer = ?self.peer_addr,
+            channel = ?channel_id,
+            "Channel opened for session"
+        );
+
+        // Store the channel itself so we can use it for subsystems like SFTP
+        self.channels
+            .insert(channel_id, ChannelState::with_channel(channel));
+        async move {
+            reply.accept().await;
+            Ok(())
+        }
+    }
+
+    /// Handle 'none' authentication.
+    ///
+    /// Always rejects and advertises available authentication methods.
+    fn auth_none(
+        &mut self,
+        user: &str,
+    ) -> impl std::future::Future<Output = Result<Auth, Self::Error>> + Send {
+        tracing::debug!(
+            user = %user,
+            peer = ?self.peer_addr,
+            "Auth none attempt"
+        );
+
+        // If connection was rejected by IP access control, immediately reject
+        if self.rejected {
+            tracing::debug!(
+                peer = ?self.peer_addr,
+                "Rejecting auth for IP-blocked connection"
+            );
+            return std::future::ready(Ok(Auth::Reject {
+                proceed_with_methods: None,
+                partial_success: false,
+            }))
+            .left_future();
+        }
+
+        // Create session info if not already created
+        let peer_addr = self.peer_addr;
+        let sessions = Arc::clone(&self.sessions);
+        let methods = self.allowed_methods();
+
+        // We need to handle session creation
+        let session_info_ref = &mut self.session_info;
+
+        async move {
+            if session_info_ref.is_none() {
+                let mut sessions_guard = sessions.write().await;
+                if let Some(info) = sessions_guard.create_session(peer_addr) {
+                    tracing::info!(
+                        session_id = %info.id,
+                        peer = ?peer_addr,
+                        "New session created"
+                    );
+                    *session_info_ref = Some(info);
+                } else {
+                    tracing::warn!(
+                        peer = ?peer_addr,
+                        "Session limit reached, rejecting connection"
+                    );
+                    return Ok(Auth::Reject {
+                        proceed_with_methods: None,
+                        partial_success: false,
+                    });
+                }
+            }
+
+            // Reject with available methods
+            tracing::debug!(
+                methods = ?methods,
+                "Rejecting auth_none, advertising methods"
+            );
+
+            Ok(Auth::Reject {
+                proceed_with_methods: Some(methods),
+                partial_success: false,
+            })
+        }
+        .right_future()
+    }
+
+    /// Handle public key authentication.
+    ///
+    /// russh has verified the request signature before calling this, and
+    /// `VerifiedPublicKey` cannot be constructed elsewhere, so the policy lives
+    /// in [`SshHandler::authenticate_publickey`].
+    fn auth_publickey(
+        &mut self,
+        user: &str,
+        key: russh::server::VerifiedPublicKey<'_>,
+    ) -> impl std::future::Future<Output = Result<Auth, Self::Error>> + Send {
+        self.authenticate_publickey(user, key.public_key)
     }
 
     /// Handle password authentication.

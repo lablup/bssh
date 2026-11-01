@@ -20,17 +20,12 @@
 //!
 //! A provider failure (device absent, PIN required in `BatchMode`, provider
 //! error) skips the identity the way a failed `identity_sign` does in
-//! OpenSSH: the signer hands russh the request back unsigned, which russh
-//! then does not send, and [`authenticate_declinable`] stops waiting for a
-//! server reply that will never come. The transport stays usable for the
-//! next identity.
+//! OpenSSH: the signer returns an error, russh abandons that request without
+//! sending anything, and the transport stays usable for the next identity.
 
-use std::future::Future;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock, Mutex};
-
-use tokio::sync::Notify;
+use std::sync::{Arc, LazyLock};
 
 use russh::keys::ssh_encoding::Encode as _;
 use russh::keys::ssh_key::HashAlg;
@@ -155,66 +150,6 @@ pub(super) async fn open_security_key_provider(
 static PROVIDER_CALL_LOCK: LazyLock<Arc<tokio::sync::Mutex<()>>> =
     LazyLock::new(|| Arc::new(tokio::sync::Mutex::new(())));
 
-/// Records a signature the signer declined to produce.
-#[derive(Debug, Default)]
-pub(super) struct SignatureDecline {
-    error: Mutex<Option<super::Error>>,
-    notify: Notify,
-}
-
-impl SignatureDecline {
-    fn record(&self, error: super::Error) {
-        *self
-            .error
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(error);
-        self.notify.notify_one();
-    }
-
-    fn take(&self) -> Option<super::Error> {
-        self.error
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take()
-    }
-}
-
-/// Drive one russh public-key or certificate exchange that signs with a
-/// [`SecurityKeySigner`], ending it as soon as the signer declines.
-///
-/// When the signer declines, it has returned the request unsigned. russh's
-/// session loop compares the returned buffer with the request it handed out
-/// and, finding it unchanged, sends nothing; the `Msg::Signed` that carries
-/// it is queued on russh's bounded handle channel in the same poll, because
-/// authentication holds the handle exclusively and that channel is otherwise
-/// empty. The handle-side future then waits for a server reply that will
-/// never arrive, so it is dropped here (its receive is cancellation-safe) and
-/// the recorded signing error is returned instead. The server never saw a
-/// signed request, so the next identity can be offered on the same transport,
-/// as OpenSSH's `sign_and_send_pubkey` failure path does.
-pub(super) async fn authenticate_declinable<T, F>(
-    decline: &SignatureDecline,
-    exchange: F,
-) -> Result<T, super::Error>
-where
-    F: Future<Output = Result<T, super::Error>>,
-{
-    tokio::pin!(exchange);
-    let result = tokio::select! {
-        biased;
-        result = &mut exchange => result,
-        () = decline.notify.notified() => Err(decline
-            .take()
-            .unwrap_or_else(|| super::Error::AuthenticationPolicy(
-                "security key signature declined".to_string(),
-            ))),
-    };
-    match decline.take() {
-        Some(error) => Err(error),
-        None => result,
-    }
-}
-
 /// Resolve the provider for an `sk-*` identity file before its private half
 /// is decrypted, as OpenSSH skips such keys from their public half when no
 /// provider is configured. The public key of an OpenSSH-format private key is
@@ -249,7 +184,6 @@ pub(super) struct SecurityKeySigner {
     identity: Arc<SecurityKeyIdentity>,
     /// `BatchMode no`: a touch notice may be printed and a PIN prompted.
     interactive: bool,
-    decline: Arc<SignatureDecline>,
 }
 
 impl SecurityKeySigner {
@@ -262,14 +196,7 @@ impl SecurityKeySigner {
             provider,
             identity: Arc::new(identity),
             interactive,
-            decline: Arc::new(SignatureDecline::default()),
         }
-    }
-
-    /// Where a declined signature is reported; pass it to
-    /// [`authenticate_declinable`] around the russh exchange.
-    pub(super) fn decline(&self) -> Arc<SignatureDecline> {
-        Arc::clone(&self.decline)
     }
 
     pub(super) async fn sign_blob(&self, data: Vec<u8>) -> Result<Vec<u8>, super::Error> {
@@ -372,7 +299,7 @@ impl russh::Signer for SecurityKeySigner {
     ) -> Result<Vec<u8>, Self::Error> {
         let signed = match self.sign_blob(to_sign.clone()).await {
             Ok(blob) => {
-                let mut signed = to_sign.clone();
+                let mut signed = to_sign;
                 blob.as_slice()
                     .encode(&mut signed)
                     .map(|()| signed)
@@ -395,9 +322,7 @@ impl russh::Signer for SecurityKeySigner {
                         self.identity.path.display()
                     ),
                 }
-                self.decline.record(error);
-                // Unchanged length: russh sends nothing for this request.
-                Ok(to_sign)
+                Err(error)
             }
         }
     }

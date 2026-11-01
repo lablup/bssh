@@ -58,9 +58,8 @@ pub enum Error {
         reason: String,
     },
     /// The security-key provider failed after the server accepted the key.
-    /// The signer declines without sending a signature (see
-    /// `security_key_signer::authenticate_declinable`), so authentication
-    /// continues with the next identity on the same transport.
+    /// russh abandons the request without sending a signature, so
+    /// authentication continues with the next identity on the same transport.
     #[error("security key signing failed for {path}: {reason}")]
     SecurityKeySignFailed {
         path: std::path::PathBuf,

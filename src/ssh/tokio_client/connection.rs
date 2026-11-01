@@ -1537,6 +1537,7 @@ impl ConnectionInfoState {
 pub(crate) struct AgentForwardingState {
     active_leases: Arc<AtomicUsize>,
     socket_path: Arc<Mutex<Option<String>>>,
+    session_binding: Arc<Mutex<Option<russh::keys::agent::AgentSessionBinding>>>,
 }
 
 impl AgentForwardingState {
@@ -1549,6 +1550,21 @@ impl AgentForwardingState {
 
     fn is_enabled(&self) -> bool {
         self.active_leases.load(Ordering::Acquire) > 0
+    }
+
+    fn set_session_binding(&self, binding: Option<russh::keys::agent::AgentSessionBinding>) {
+        *self
+            .session_binding
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = binding;
+    }
+
+    #[cfg(unix)]
+    fn session_binding(&self) -> Option<russh::keys::agent::AgentSessionBinding> {
+        self.session_binding
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     fn set_socket_path(&self, socket_path: Option<String>) {
@@ -2312,6 +2328,8 @@ impl Client {
         &self,
         channel: &russh::Channel<russh::client::Msg>,
     ) -> Result<AgentForwardingLease, super::Error> {
+        self.agent_forwarding
+            .set_session_binding(self.connection_handle.agent_session_binding().cloned());
         let lease = self.agent_forwarding.acquire();
         if let Err(source) = channel.agent_forward(true).await {
             return Err(self.session_error_or(super::Error::CommandExecution {
@@ -3705,7 +3723,7 @@ impl Handler for ClientHandler {
                     reply.reject(russh::ChannelOpenFailure::ConnectFailed).await;
                     return Ok(());
                 };
-                let mut agent = match tokio::net::UnixStream::connect(&socket_path).await {
+                let agent = match tokio::net::UnixStream::connect(&socket_path).await {
                     Ok(agent) => agent,
                     Err(error) => {
                         tracing::warn!(
@@ -3719,7 +3737,22 @@ impl Handler for ClientHandler {
                 };
 
                 reply.accept().await;
+                let binding = forwarding.session_binding();
                 tokio::spawn(async move {
+                    // Bound here, not above, so a slow agent cannot stall the
+                    // session task. Requests wait in the channel until then.
+                    let mut agent = russh::keys::agent::client::AgentClient::connect(agent);
+                    if let Err(error) = super::authentication::bind_agent_session(
+                        &mut agent,
+                        binding.as_ref(),
+                        true,
+                    )
+                    .await
+                    {
+                        tracing::warn!(%error, "Closing the forwarded SSH agent channel");
+                        return;
+                    }
+                    let mut agent = agent.into_inner();
                     let mut stream = channel.into_stream();
                     if let Err(error) = tokio::io::copy_bidirectional(&mut stream, &mut agent).await
                     {
