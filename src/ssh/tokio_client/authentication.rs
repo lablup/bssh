@@ -564,6 +564,51 @@ where
         })?
 }
 
+/// Send `session-bind@openssh.com` on one agent connection.
+///
+/// Like `ssh_agent_bind_hostkey` in OpenSSH, an agent's refusal is not fatal:
+/// agents without the extension keep working, and an agent enforcing
+/// destination constraints refuses the constrained keys on an unbound
+/// connection. A timeout is reported because a late reply would desynchronize
+/// the stream, so the connection must not be used afterwards.
+#[cfg(not(target_os = "windows"))]
+pub(super) async fn bind_agent_session<S>(
+    agent: &mut russh::keys::agent::client::AgentClient<S>,
+    binding: Option<&russh::keys::agent::AgentSessionBinding>,
+    forwarding: bool,
+) -> Result<(), super::Error>
+where
+    S: russh::keys::agent::client::AgentStream + Unpin,
+{
+    let Some(binding) = binding else {
+        return Ok(());
+    };
+    bounded_agent_setup_operation("bind session", async {
+        match agent.bind_session(binding, forwarding).await {
+            Ok(()) => tracing::debug!(forwarding, "Bound SSH agent to the session host key"),
+            Err(error) => tracing::debug!(forwarding, %error, "SSH agent session binding failed"),
+        }
+        Ok(())
+    })
+    .await
+}
+
+/// Connect to the agent and bind it for direct authentication, which the agent
+/// requires before it lists or uses destination-constrained keys.
+#[cfg(not(target_os = "windows"))]
+async fn connect_bound_agent<H: Handler>(
+    handle: &Handle<H>,
+) -> Result<russh::keys::agent::client::AgentClient<tokio::net::UnixStream>, super::Error> {
+    let mut agent = bounded_agent_setup_operation("connect", async {
+        russh::keys::agent::client::AgentClient::connect_env()
+            .await
+            .map_err(|_| super::Error::AgentConnectionFailed)
+    })
+    .await?;
+    bind_agent_session(&mut agent, handle.agent_session_binding(), false).await?;
+    Ok(agent)
+}
+
 #[cfg(not(target_os = "windows"))]
 async fn bounded_agent_signer_operation<T, F>(
     action: &'static str,
@@ -838,12 +883,9 @@ async fn authenticate_private_key_with_policy<H: Handler>(
             }
         }
         LocalSigner::SecurityKey(mut signer) => {
-            let decline = signer.decline();
-            let result = super::security_key_signer::authenticate_declinable(
-                &decline,
-                handle.authenticate_publickey_with(username, public_key, None, &mut signer),
-            )
-            .await?;
+            let result = handle
+                .authenticate_publickey_with(username, public_key, None, &mut signer)
+                .await?;
             if result.success() {
                 return Ok(());
             }
@@ -1027,19 +1069,10 @@ async fn authenticate_certificate_file<H: Handler>(
         allow_passphrase_prompt,
     )
     .await?;
-    let decline = match &signer {
-        LocalSigner::SecurityKey(signer) => Some(signer.decline()),
-        LocalSigner::Software(_) => None,
-    };
     for hash in hashes {
-        let exchange =
-            handle.authenticate_certificate_with(username, certificate.clone(), hash, &mut signer);
-        let result = match &decline {
-            Some(decline) => {
-                super::security_key_signer::authenticate_declinable(decline, exchange).await
-            }
-            None => exchange.await,
-        }?;
+        let result = handle
+            .authenticate_certificate_with(username, certificate.clone(), hash, &mut signer)
+            .await?;
         if result.success() {
             return Ok(());
         }
@@ -1101,12 +1134,7 @@ async fn authenticate_agent_public_key_file<H: Handler>(
             public_key.algorithm()
         )));
     }
-    let mut agent = bounded_agent_setup_operation("connect", async {
-        russh::keys::agent::client::AgentClient::connect_env()
-            .await
-            .map_err(|_| super::Error::AgentConnectionFailed)
-    })
-    .await?;
+    let mut agent = connect_bound_agent(handle).await?;
     let identities = bounded_agent_setup_operation("request identities", async {
         agent
             .request_identities()
@@ -1151,12 +1179,7 @@ async fn authenticate_agent_with_policy<H: Handler>(
 ) -> Result<(), super::Error> {
     use russh::keys::agent::AgentIdentity;
 
-    let mut agent = bounded_agent_setup_operation("connect", async {
-        russh::keys::agent::client::AgentClient::connect_env()
-            .await
-            .map_err(|_| super::Error::AgentConnectionFailed)
-    })
-    .await?;
+    let mut agent = connect_bound_agent(handle).await?;
     let identities = bounded_agent_setup_operation("request identities", async {
         agent
             .request_identities()
@@ -1272,12 +1295,7 @@ async fn authenticate_agent_certificate_file<H: Handler>(
         )));
     }
 
-    let mut agent = bounded_agent_setup_operation("connect", async {
-        russh::keys::agent::client::AgentClient::connect_env()
-            .await
-            .map_err(|_| super::Error::AgentConnectionFailed)
-    })
-    .await?;
+    let mut agent = connect_bound_agent(handle).await?;
     let identities = bounded_agent_setup_operation("request identities", async {
         agent
             .request_identities()
@@ -1361,13 +1379,9 @@ pub(crate) async fn authenticate<H: Handler>(
 }
 
 pub(super) fn is_retryable_rejection(error: &super::Error) -> bool {
-    // Agent setup fails before russh requests a signature, so the plan may
-    // safely continue. Signer failures are intentionally absent: russh may be
-    // waiting for `Msg::Signed`, and reusing that transport could then hang.
-    // `SecurityKeyUnavailable` is raised before the identity is offered.
-    // `SecurityKeySignFailed` is the exception among signer failures: the
-    // security-key signer declines without sending anything and
-    // `authenticate_declinable` releases the transport (see there).
+    // A failed signer leaves the transport usable: russh abandons the pending
+    // request, so the plan moves on as OpenSSH's `sign_and_send_pubkey` does.
+    // `AgentAuthError::Send` means the session itself is gone.
     matches!(
         error,
         super::Error::KeyboardInteractiveAuthFailed
@@ -1382,6 +1396,9 @@ pub(super) fn is_retryable_rejection(error: &super::Error) -> bool {
             | super::Error::AgentConnectionFailed
             | super::Error::AgentRequestIdentitiesFailed
             | super::Error::AgentOperationTimeout { .. }
+            | super::Error::AgentSignerTimeout { .. }
+            | super::Error::AgentAuthError(russh::AgentAuthError::Key(_))
+            | super::Error::LocalSignerFailed { .. }
             | super::Error::AgentNoIdentities
             | super::Error::AgentAuthenticationFailed
     )
@@ -1507,9 +1524,7 @@ async fn authenticate_single<H: Handler>(
         AuthMethod::PublicKeyFile { key_file_path } => {
             let cpubk =
                 russh::keys::load_public_key(key_file_path).map_err(super::Error::KeyInvalid)?;
-            let mut agent = russh::keys::agent::client::AgentClient::connect_env()
-                .await
-                .map_err(|_| super::Error::AgentConnectionFailed)?;
+            let mut agent = connect_bound_agent(handle).await?;
             let mut auth_identity_found = false;
             for identity in agent
                 .request_identities()
@@ -1540,9 +1555,7 @@ async fn authenticate_single<H: Handler>(
         }
         #[cfg(not(target_os = "windows"))]
         AuthMethod::Agent => {
-            let mut agent = russh::keys::agent::client::AgentClient::connect_env()
-                .await
-                .map_err(|_| super::Error::AgentConnectionFailed)?;
+            let mut agent = connect_bound_agent(handle).await?;
 
             let identities = agent
                 .request_identities()
@@ -1676,7 +1689,7 @@ mod policy_execution_tests {
         async fn auth_publickey_offered(
             &mut self,
             _user: &str,
-            _public_key: &russh::keys::PublicKey,
+            _offer: russh::server::PublicKeyOffer<'_>,
         ) -> Result<Auth, Self::Error> {
             Ok(Auth::Accept)
         }
@@ -1684,11 +1697,11 @@ mod policy_execution_tests {
         async fn auth_publickey(
             &mut self,
             _user: &str,
-            public_key: &russh::keys::PublicKey,
+            key: russh::server::VerifiedPublicKey<'_>,
         ) -> Result<Auth, Self::Error> {
             let name = self
                 .key_names
-                .get(public_key.key_data())
+                .get(key.public_key.key_data())
                 .cloned()
                 .unwrap_or_else(|| "unknown-key".to_string());
             self.attempts.lock().await.push(name.clone());
@@ -1918,19 +1931,11 @@ mod policy_execution_tests {
             identity,
             false,
         );
-        let decline = signer.decline();
         let outcome = tokio::time::timeout(std::time::Duration::from_secs(10), async {
-            let error = super::super::security_key_signer::authenticate_declinable(
-                &decline,
-                handle.authenticate_publickey_with(
-                    "user",
-                    sk_key.public_key().clone(),
-                    None,
-                    &mut signer,
-                ),
-            )
-            .await
-            .unwrap_err();
+            let error = handle
+                .authenticate_publickey_with("user", sk_key.public_key().clone(), None, &mut signer)
+                .await
+                .unwrap_err();
             assert!(is_retryable_rejection(&error), "{error:?}");
             assert!(error.to_string().contains("device not found"), "{error}");
 
@@ -1947,6 +1952,114 @@ mod policy_execution_tests {
             "the server accepted the sk key, so the provider was asked to sign"
         );
         assert_eq!(attempts.lock().await.as_slice(), ["software-key"]);
+        task.abort();
+    }
+
+    /// Read one framed agent request and answer it with `reply`.
+    async fn answer_agent_frame(agent: &mut tokio::io::DuplexStream, reply: u8) -> Vec<u8> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let mut length = [0u8; 4];
+        agent.read_exact(&mut length).await.unwrap();
+        let mut frame = vec![0u8; u32::from_be_bytes(length) as usize];
+        agent.read_exact(&mut frame).await.unwrap();
+        agent.write_all(&[0, 0, 0, 1, reply]).await.unwrap();
+        frame
+    }
+
+    fn read_string<'a>(frame: &mut &'a [u8]) -> &'a [u8] {
+        let (length, rest) = frame.split_at(4);
+        let (value, rest) = rest.split_at(u32::from_be_bytes(length.try_into().unwrap()) as usize);
+        *frame = rest;
+        value
+    }
+
+    /// Both binding modes send the initial host key, session ID, and server
+    /// signature from the real key exchange, differing only in the final flag.
+    #[tokio::test]
+    async fn session_bind_carries_the_key_exchange_proof_in_both_modes() {
+        const SSH_AGENTC_EXTENSION: u8 = 27;
+        const SSH_AGENT_SUCCESS: u8 = 6;
+
+        let (address, task) = start_server(ScriptedAuthServer {
+            attempts: Arc::new(Mutex::new(Vec::new())),
+            key_names: HashMap::new(),
+            accepted_key: None,
+            accepted_certificate: None,
+        })
+        .await;
+        let handle = connect(address).await;
+        let binding = handle
+            .agent_session_binding()
+            .expect("initial key exchange")
+            .clone();
+
+        for forwarding in [false, true] {
+            let (client, mut agent) = tokio::io::duplex(4096);
+            let mut client = russh::keys::agent::client::AgentClient::connect(client);
+            let (result, frame) = tokio::join!(
+                bind_agent_session(&mut client, Some(&binding), forwarding),
+                answer_agent_frame(&mut agent, SSH_AGENT_SUCCESS)
+            );
+            result.unwrap();
+
+            let (kind, mut body) = frame.split_first().unwrap();
+            assert_eq!(*kind, SSH_AGENTC_EXTENSION);
+            assert_eq!(read_string(&mut body), b"session-bind@openssh.com");
+            assert_eq!(read_string(&mut body), binding.host_key());
+            assert_eq!(read_string(&mut body), &binding.session_id()[..]);
+            assert_eq!(read_string(&mut body), binding.signature());
+            assert_eq!(body, [u8::from(forwarding)]);
+        }
+        task.abort();
+    }
+
+    /// An agent without the extension still serves unconstrained keys.
+    #[tokio::test]
+    async fn session_bind_refusal_is_not_fatal() {
+        const SSH_AGENT_FAILURE: u8 = 5;
+
+        let (address, task) = start_server(ScriptedAuthServer {
+            attempts: Arc::new(Mutex::new(Vec::new())),
+            key_names: HashMap::new(),
+            accepted_key: None,
+            accepted_certificate: None,
+        })
+        .await;
+        let handle = connect(address).await;
+        let (client, mut agent) = tokio::io::duplex(4096);
+        let mut client = russh::keys::agent::client::AgentClient::connect(client);
+        let (result, _) = tokio::join!(
+            bind_agent_session(&mut client, handle.agent_session_binding(), false),
+            answer_agent_frame(&mut agent, SSH_AGENT_FAILURE)
+        );
+        result.unwrap();
+        task.abort();
+    }
+
+    /// A stalled agent must not hang authentication, and the caller must see
+    /// the timeout because a late reply would desynchronize the connection.
+    #[tokio::test(start_paused = true)]
+    async fn session_bind_timeout_is_reported() {
+        let (address, task) = start_server(ScriptedAuthServer {
+            attempts: Arc::new(Mutex::new(Vec::new())),
+            key_names: HashMap::new(),
+            accepted_key: None,
+            accepted_certificate: None,
+        })
+        .await;
+        let handle = connect(address).await;
+        let (client, _agent) = tokio::io::duplex(4096);
+        let mut client = russh::keys::agent::client::AgentClient::connect(client);
+        let error = bind_agent_session(&mut client, handle.agent_session_binding(), false)
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            super::super::Error::AgentOperationTimeout {
+                action: "bind session",
+                ..
+            }
+        ));
         task.abort();
     }
 
@@ -2280,7 +2393,7 @@ mod policy_execution_tests {
 
     #[cfg(not(target_os = "windows"))]
     #[tokio::test(start_paused = true)]
-    async fn agent_signer_operations_have_a_fatal_typed_timeout_bound() {
+    async fn agent_signer_operations_have_a_retryable_typed_timeout_bound() {
         let error = bounded_agent_signer_operation("sign certificate", async {
             std::future::pending::<Result<(), super::super::Error>>().await
         })
@@ -2294,7 +2407,7 @@ mod policy_execution_tests {
                 seconds: 5,
             }
         ));
-        assert!(!is_retryable_rejection(&error));
+        assert!(is_retryable_rejection(&error));
         assert!(error.is_ssh_client_failure());
     }
 
@@ -2417,13 +2530,13 @@ mod policy_execution_tests {
                 seconds: 5,
             }
         ));
-        assert!(!is_retryable_rejection(
+        assert!(is_retryable_rejection(
             &super::super::Error::AgentSignerTimeout {
                 action: "sign public key",
                 seconds: 5,
             }
         ));
-        assert!(!is_retryable_rejection(
+        assert!(is_retryable_rejection(
             &super::super::Error::AgentAuthError(russh::AgentAuthError::Key(
                 russh::keys::Error::AgentFailure,
             ))
@@ -2434,7 +2547,7 @@ mod policy_execution_tests {
         assert!(is_retryable_rejection(&super::super::Error::KeyInvalid(
             russh::keys::Error::KeyIsCorrupt
         )));
-        assert!(!is_retryable_rejection(
+        assert!(is_retryable_rejection(
             &super::super::Error::LocalSignerFailed {
                 source: russh::keys::Error::KeyIsCorrupt,
             }
@@ -2442,14 +2555,14 @@ mod policy_execution_tests {
     }
 
     #[test]
-    fn local_certificate_signer_wraps_post_request_failures_as_fatal() {
+    fn local_certificate_signer_wraps_post_request_failures_as_retryable() {
         let error = complete_local_signature(
             b"signed-userauth-request".to_vec(),
             Err(russh::keys::Error::KeyIsCorrupt),
         )
         .unwrap_err();
 
-        assert!(!is_retryable_rejection(&error));
+        assert!(is_retryable_rejection(&error));
         assert!(error.is_ssh_client_failure());
         assert!(matches!(
             error,

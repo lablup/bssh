@@ -19,7 +19,7 @@
 //! (`sshkey_type_from_name`), and, for plain ECDSA, whose curve differs, with
 //! `SSH_ERR_KEY_TYPE_MISMATCH`. Signature-algorithm names map to their key
 //! type: `rsa-sha2-256` and `rsa-sha2-512` select an RSA key, and
-//! `rsa-sha2-512-cert-v01@openssh.com` an RSA certificate. russh 0.64.1
+//! `rsa-sha2-512-cert-v01@openssh.com` an RSA certificate. russh 0.65.0
 //! verifies the exchange signature with whatever key the server sends, so
 //! without this check a `HostKeyAlgorithms` restriction would not limit which
 //! trusted key type the server may use.

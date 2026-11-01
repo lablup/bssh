@@ -213,6 +213,26 @@ async fn agent_channel_bridges_only_after_forwarding_is_requested() {
             .await
             .expect("client did not connect to fake SSH agent")
             .expect("accept fake SSH agent connection");
+
+        // The client binds the relayed connection before any forwarded byte.
+        let mut length = [0; 4];
+        timeout(TEST_TIMEOUT, stream.read_exact(&mut length))
+            .await
+            .expect("session bind timed out")
+            .expect("read session bind length");
+        let mut bind = vec![0; u32::from_be_bytes(length) as usize];
+        stream
+            .read_exact(&mut bind)
+            .await
+            .expect("read session bind");
+        assert_eq!(bind[0], 27, "SSH_AGENTC_EXTENSION");
+        assert_eq!(&bind[5..29], b"session-bind@openssh.com");
+        assert_eq!(bind.last(), Some(&1), "forwarded connections set the flag");
+        stream
+            .write_all(&[0, 0, 0, 1, 6])
+            .await
+            .expect("acknowledge session bind");
+
         let mut request = vec![0; AGENT_REQUEST.len()];
         timeout(TEST_TIMEOUT, stream.read_exact(&mut request))
             .await
