@@ -20,9 +20,9 @@ dependencies = [
 
 [[package]]
 name = "aes"
-version = "0.9.3"
+version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "35f0f96ce78e38c3dc6d8948aa8163d06385be74000f3c7a95bf1eef35d3ea32"
+checksum = "fc0fc36d7440d015b45468ba08a21e80e056ebbd014c611c6298bb7503e04bd1"
 dependencies = [
  "cipher",
  "cpubits",
@@ -150,6 +150,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ar_archive_writer"
+version = "0.5.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73cd58deff2140a0a8eae87e417bd01db68a33e148aa93d1e8cd837e55e312b6"
+dependencies = [
+ "object",
+]
+
+[[package]]
 name = "argon2"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -173,9 +182,9 @@ dependencies = [
 
 [[package]]
 name = "async-compression"
-version = "0.4.51"
+version = "0.4.52"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d5755640120b24961f8231e05892e4a4f7e0d04e8aeca161508c9c397946970"
+checksum = "6ad47a740fb906fffdd891e8b6d5fde2511600f7bfaebd68939fa08a14999459"
 dependencies = [
  "compression-codecs",
  "compression-core",
@@ -222,7 +231,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "048006790404103c488e6c5616b3e7e702a71292aadda08e8f7698a9e0d2eb53"
 dependencies = [
  "aws-lc-sys",
- "untrusted 0.7.1",
  "zeroize",
 ]
 
@@ -505,9 +513,9 @@ dependencies = [
 
 [[package]]
 name = "cc"
-version = "1.10.0"
+version = "1.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "86e055fa6e3e40ad6187ba25b6855eeb635d5271f8e0f0e1e9a5826b8d75bea0"
+checksum = "375989decec1a0fa424442bed520fa12ede43a48475ce8c7417d2c69b32b5f6b"
 dependencies = [
  "find-msvc-tools",
  "jobserver",
@@ -698,9 +706,9 @@ dependencies = [
 
 [[package]]
 name = "compression-codecs"
-version = "0.4.46"
+version = "0.4.47"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cae36683101b2899f48bd31f8db9839437356188e3b1ff23096e73dab09ba8fe"
+checksum = "84f840cff84d10085260e460023934d0af699e71212b09b2a41452e8bd9cda43"
 dependencies = [
  "compression-core",
  "flate2",
@@ -792,9 +800,9 @@ dependencies = [
 
 [[package]]
 name = "crc32fast"
-version = "1.5.3"
+version = "1.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0ba106e844045ddc02c20768ac4b0b7cb45f2cc2ecbd833ac9f5dacb183c2055"
+checksum = "5f97d3416d5337d15c4b0d78c8c91df922ca143f57ec20e2d1c188333047ef04"
 dependencies = [
  "cfg-if",
 ]
@@ -976,9 +984,9 @@ dependencies = [
 
 [[package]]
 name = "ctutils"
-version = "0.4.7"
+version = "0.4.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a2376ffd6f96d8a9db59875b4b6b0237d6900b5baf64279714e05493ce64828a"
+checksum = "261af4dc7a06ea8a527a8717d8cbba3417530d6ea14e1edb3de6b67806be474f"
 dependencies = [
  "cmov",
  "subtle",
@@ -1394,9 +1402,9 @@ checksum = "1c66915cc5391097de7a2b0b972e8505aa33c0df401fd3a6811dbdb32881ba48"
 
 [[package]]
 name = "finl_unicode"
-version = "1.5.0"
+version = "1.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80bb028c8b4148c9ee0cca68fcd9add6044e81d3619f48577ddf13a263d047a2"
+checksum = "09ded33109e99472f809cb7495544506eea45e366725dacf2a383e184f660456"
 
 [[package]]
 name = "fixedbitset"
@@ -1561,7 +1569,6 @@ version = "1.4.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "337d46834ee672ab3e48caca2cb0c78cc174fb12b3a68d0d88f99a0519a5e36e"
 dependencies = [
- "generic-array 0.14.7",
  "rustversion",
  "typenum",
 ]
@@ -2742,6 +2749,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "object"
+version = "0.39.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2e5a6c098c7a3b6547378093f5cc30bc54fd361ce711e05293a5cc589562739b"
+dependencies = [
+ "memchr",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3075,9 +3091,9 @@ dependencies = [
 
 [[package]]
 name = "pest_stack_guard"
-version = "1.0.0"
+version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "97e6cd2217057fa86b6eaa512917e58089d875b957a31e35e7ab729977e0a5f2"
+checksum = "9ac6154fd4418b8f0b82532c59c26f303f9ca59a64c883e8ce3971fd82733439"
 dependencies = [
  "psm",
  "stacker",
@@ -3447,10 +3463,11 @@ dependencies = [
 
 [[package]]
 name = "psm"
-version = "0.1.24"
+version = "0.1.32"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "200b9ff220857e53e184257720a14553b2f4aa02577d2ed9842d45d4b9654810"
+checksum = "4dcd034599e63b970727f70d79e02d62390a4a84f7c6b827c27c46d5ac3fa622"
 dependencies = [
+ "ar_archive_writer",
  "cc",
 ]
 
@@ -3772,7 +3789,7 @@ dependencies = [
  "cfg-if",
  "getrandom 0.2.17",
  "libc",
- "untrusted 0.9.0",
+ "untrusted",
  "windows-sys 0.52.0",
 ]
 
@@ -3818,9 +3835,9 @@ dependencies = [
 
 [[package]]
 name = "russh"
-version = "0.65.0"
+version = "0.65.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3bb77a4b259312b2abbc541bca1c13cb4e9b61c560a7fd894068c3b92e0c9dc3"
+checksum = "94be3d86c71b9ed220a675c405e35c7a02565a009bf8da2e9cc13a700320a5c5"
 dependencies = [
  "aes",
  "aws-lc-rs",
@@ -3998,7 +4015,7 @@ dependencies = [
  "aws-lc-rs",
  "ring",
  "rustls-pki-types",
- "untrusted 0.9.0",
+ "untrusted",
 ]
 
 [[package]]
@@ -5182,12 +5199,6 @@ name = "unsafe-libyaml"
 version = "0.2.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
-
-[[package]]
-name = "untrusted"
-version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a156c684c91ea7d62626509bce3cb4e1d9ed5c4d978f7b4352658f96a4c26b4a"
 
 [[package]]
 name = "untrusted"

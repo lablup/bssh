@@ -2825,6 +2825,13 @@ impl HostVerification {
     }
 }
 
+#[derive(Debug, Clone)]
+struct PendingHostKeyVerification {
+    key_type: super::host_key_type::HostKeyType,
+    certificate: bool,
+    trust: super::host_verification::HostKeyTrust,
+}
+
 /// SSH client handler for managing server key verification.
 #[derive(Debug, Clone)]
 pub struct ClientHandler {
@@ -2842,9 +2849,10 @@ pub struct ClientHandler {
     suppress_auth_banner: bool,
     emit_kex_diagnostics: bool,
     connection_info: ConnectionInfoState,
-    /// Host-key algorithm of the latest key exchange (`Names::key`), which
-    /// `check_server_key` compares the server's key against.
-    negotiated_host_key: Option<russh::keys::Algorithm>,
+    /// Trust is preflighted before russh exposes the KEX names. Persistence
+    /// and connection state are published only after their type check.
+    pending_host_key: Option<PendingHostKeyVerification>,
+    initial_host_key_verified: bool,
 }
 
 impl ClientHandler {
@@ -2881,7 +2889,8 @@ impl ClientHandler {
             suppress_auth_banner: false,
             emit_kex_diagnostics: false,
             connection_info: ConnectionInfoState::new(host),
-            negotiated_host_key: None,
+            pending_host_key: None,
+            initial_host_key_verified: false,
         }
     }
 
@@ -3304,6 +3313,7 @@ fn accept_new_stores(method: &ServerCheckMethod) -> Option<(Vec<String>, Option<
 
 #[allow(clippy::too_many_arguments)]
 async fn verify_accept_new_host_and_address(
+    trust: &mut super::host_verification::HostKeyTrust,
     method: &ServerCheckMethod,
     hostname: &str,
     hostname_port: u16,
@@ -3350,14 +3360,15 @@ async fn verify_accept_new_host_and_address(
         }
     }
 
-    super::host_verification::verify_accept_new_identities_files_with_hash(
-        &configured_identities,
-        server_key,
-        &paths,
-        write_path.as_deref(),
-        hash_known_hosts,
-    )
-    .await?;
+    trust
+        .accept_new(
+            &configured_identities,
+            server_key,
+            &paths,
+            write_path.as_deref(),
+            hash_known_hosts,
+        )
+        .await?;
 
     Ok(if primary_from_command {
         HostVerification::command()
@@ -3397,6 +3408,7 @@ fn verify_configured_stores_without_recording(
 }
 
 async fn verify_server_check_method(
+    trust: &mut super::host_verification::HostKeyTrust,
     method: &ServerCheckMethod,
     hostname: &str,
     port: u16,
@@ -3436,29 +3448,21 @@ async fn verify_server_check_method(
                 &path.to_string_lossy(),
             )
         }
-        ServerCheckMethod::AcceptNewKnownHostsFile(path) => {
-            super::host_verification::verify_accept_new_with_hash(
-                hostname,
-                port,
-                server_key,
-                path,
-                hash_known_hosts,
-            )
-            .await
-        }
-        ServerCheckMethod::AcceptNewKnownHostsFiles { files, write_path } => {
-            super::host_verification::verify_accept_new_files_with_hash(
-                hostname,
-                port,
-                server_key,
-                files,
-                write_path.as_deref(),
-                hash_known_hosts,
-            )
-            .await
-        }
-        ServerCheckMethod::AcceptNewInMemory => {
-            super::host_verification::verify_accept_new_in_memory(hostname, port, server_key).await
+        ServerCheckMethod::AcceptNewKnownHostsFile(_)
+        | ServerCheckMethod::AcceptNewKnownHostsFiles { .. }
+        | ServerCheckMethod::AcceptNewInMemory => {
+            let (paths, write_path) =
+                accept_new_stores(method).ok_or(super::Error::ServerCheckFailed)?;
+            trust
+                .accept_new(
+                    &[(hostname, port)],
+                    server_key,
+                    &paths,
+                    write_path.as_deref(),
+                    hash_known_hosts,
+                )
+                .await?;
+            Ok(true)
         }
         ServerCheckMethod::HostKeyAlias { .. } => {
             unreachable!("aliases are unwrapped by ClientHandler")
@@ -3482,6 +3486,7 @@ fn command_conflict(
 }
 
 async fn verify_with_known_hosts_command(
+    trust: &mut super::host_verification::HostKeyTrust,
     method: &ServerCheckMethod,
     hostname: &str,
     port: u16,
@@ -3491,7 +3496,7 @@ async fn verify_with_known_hosts_command(
 ) -> Result<HostVerification, super::Error> {
     if !method_uses_known_hosts(method) {
         let accepted =
-            verify_server_check_method(method, hostname, port, server_key, hash_known_hosts)
+            verify_server_check_method(trust, method, hostname, port, server_key, hash_known_hosts)
                 .await?;
         return Ok(HostVerification::configured(accepted, method));
     }
@@ -3515,26 +3520,39 @@ async fn verify_with_known_hosts_command(
             }
         }
         Some(super::host_verification::KnownHostLookup::Conflict { line }) => {
-            match verify_server_check_method(method, hostname, port, server_key, hash_known_hosts)
-                .await?
+            match verify_server_check_method(
+                trust,
+                method,
+                hostname,
+                port,
+                server_key,
+                hash_known_hosts,
+            )
+            .await?
             {
                 true => Ok(HostVerification::configured(true, method)),
                 false => Err(command_conflict(hostname, port, server_key, line)),
             }
         }
         Some(super::host_verification::KnownHostLookup::Unknown) | None => {
-            let accepted =
-                verify_server_check_method(method, hostname, port, server_key, hash_known_hosts)
-                    .await?;
+            let accepted = verify_server_check_method(
+                trust,
+                method,
+                hostname,
+                port,
+                server_key,
+                hash_known_hosts,
+            )
+            .await?;
             Ok(HostVerification::configured(accepted, method))
         }
     }
 }
 
 async fn verify_primary_host_after_sshfp<Lookup, LookupFuture>(
+    trust: &mut super::host_verification::HostKeyTrust,
     method: &ServerCheckMethod,
-    hostname: &str,
-    port: u16,
+    (hostname, port): (&str, u16),
     server_key: &russh::keys::PublicKey,
     hash_known_hosts: bool,
     sshfp: super::sshfp::SshfpDecision,
@@ -3551,6 +3569,7 @@ where
         super::sshfp::SshfpDecision::Continue => {
             let command_lookup = command_lookup().await?;
             verify_with_known_hosts_command(
+                trust,
                 method,
                 hostname,
                 port,
@@ -3595,20 +3614,20 @@ fn kex_diagnostic_lines(names: &russh::Names) -> [String; 5] {
 impl Handler for ClientHandler {
     type Error = super::Error;
 
-    fn kex_done(
+    async fn kex_done(
         &mut self,
         _shared_secret: Option<&[u8]>,
         names: &russh::Names,
         _session: &mut russh::client::Session,
-    ) -> impl std::future::Future<Output = Result<(), Self::Error>> + Send {
+    ) -> Result<(), Self::Error> {
+        self.finish_host_key_verification(&names.key).await?;
         self.connection_info.update_names(names);
-        self.negotiated_host_key = Some(names.key.clone());
         if self.emit_kex_diagnostics || tracing::enabled!(tracing::Level::DEBUG) {
             for line in kex_diagnostic_lines(names) {
                 crate::diagnosticln!("{line}");
             }
         }
-        std::future::ready(Ok(()))
+        Ok(())
     }
 
     fn auth_banner(
@@ -3778,11 +3797,22 @@ impl Handler for ClientHandler {
         &mut self,
         server_key: &russh::keys::PublicKeyOrCertificate,
     ) -> Result<bool, Self::Error> {
-        super::host_key_type::ensure_recorded_host_key_type(
-            self.negotiated_host_key.as_ref(),
-            server_key,
-        )?;
-        self.verify_server_key(server_key).await
+        if self.pending_host_key.is_some() || self.initial_host_key_verified {
+            return Err(super::Error::ServerCheckFailed);
+        }
+        let mut trust = super::host_verification::HostKeyTrust::default();
+        if !self.preflight_server_key(server_key, &mut trust).await? {
+            return Ok(false);
+        }
+        self.pending_host_key = Some(PendingHostKeyVerification {
+            key_type: super::host_key_type::HostKeyType::presented(server_key),
+            certificate: matches!(
+                server_key,
+                russh::keys::PublicKeyOrCertificate::Certificate(_)
+            ),
+            trust,
+        });
+        Ok(true)
     }
 
     fn openssh_ext_host_keys_announced(
@@ -3876,12 +3906,62 @@ impl Handler for ClientHandler {
 }
 
 impl ClientHandler {
-    /// Host-key policy for a key whose type already matches the negotiated
-    /// algorithm: CA lines, known_hosts, KnownHostsCommand, SSHFP, revocation,
-    /// and the StrictHostKeyChecking decision.
+    /// Complete initial host trust before russh publishes the connected handle.
+    /// Rekey does not provide a new host key in russh 0.65.1; do not compare
+    /// the old key with a new epoch's algorithm or claim to reverify it.
+    async fn finish_host_key_verification(
+        &mut self,
+        negotiated: &russh::keys::Algorithm,
+    ) -> Result<(), super::Error> {
+        let Some(pending) = self.pending_host_key.take() else {
+            return if self.initial_host_key_verified {
+                Ok(())
+            } else {
+                Err(super::Error::ServerCheckFailed)
+            };
+        };
+        super::host_key_type::ensure_host_key_types_match(
+            &super::host_key_type::HostKeyType::negotiated(negotiated, pending.certificate),
+            &pending.key_type,
+        )?;
+        self.publish_host_key_trust(pending.trust).await?;
+        self.initial_host_key_verified = true;
+        Ok(())
+    }
+
+    async fn publish_host_key_trust(
+        &mut self,
+        trust: super::host_verification::HostKeyTrust,
+    ) -> Result<(), super::Error> {
+        trust.commit().await?;
+        *self
+            .verified_server_key
+            .lock()
+            .map_err(|_| super::Error::ServerCheckFailed)? = trust.verified_key;
+        self.rotation_allowed
+            .store(trust.rotation_allowed, Ordering::Release);
+        Ok(())
+    }
+
+    #[cfg(test)]
     pub(super) async fn verify_server_key(
         &mut self,
+        key: &russh::keys::PublicKeyOrCertificate,
+    ) -> Result<bool, super::Error> {
+        let mut trust = super::host_verification::HostKeyTrust::default();
+        let accepted = self.preflight_server_key(key, &mut trust).await?;
+        if accepted {
+            self.publish_host_key_trust(trust).await?;
+        }
+        Ok(accepted)
+    }
+
+    /// Check host trust without writing TOFU files, process pins, or publishing
+    /// verified connection state. External policy commands run only once.
+    async fn preflight_server_key(
+        &mut self,
         server_key: &russh::keys::PublicKeyOrCertificate,
+        trust: &mut super::host_verification::HostKeyTrust,
     ) -> Result<bool, super::Error> {
         let mut method = &self.server_check;
         let mut host_key_alias = None;
@@ -3956,14 +4036,11 @@ impl ClientHandler {
                             "Host '{hostname}' is known and matches the host certificate '{}'",
                             cert.key_id()
                         );
-                        *self
-                            .verified_server_key
-                            .lock()
-                            .map_err(|_| super::Error::ServerCheckFailed)? =
+                        trust.verified_key =
                             Some(russh::keys::PublicKey::new(cert.public_key().clone(), ""));
                         // OpenSSH skips UpdateHostKeys when the host proved
                         // itself with a certificate.
-                        self.rotation_allowed.store(false, Ordering::Release);
+                        trust.rotation_allowed = false;
                         return Ok(true);
                     }
                     super::host_certificate::CertificateVerdict::NoMatchingAuthority => {
@@ -4043,6 +4120,7 @@ impl ClientHandler {
                 .await?;
             (
                 verify_accept_new_host_and_address(
+                    trust,
                     method,
                     hostname,
                     port,
@@ -4059,9 +4137,9 @@ impl ClientHandler {
         } else {
             (
                 verify_primary_host_after_sshfp(
+                    trust,
                     method,
-                    hostname,
-                    port,
+                    (hostname, port),
                     server_public_key,
                     self.policy.hash_known_hosts,
                     sshfp,
@@ -4100,6 +4178,7 @@ impl ClientHandler {
             // An unknown address does not invalidate an otherwise trusted
             // hostname in strict mode, but a changed/revoked address does.
             let _ = verify_with_known_hosts_command(
+                trust,
                 method,
                 address,
                 self.host.port(),
@@ -4120,22 +4199,17 @@ impl ClientHandler {
                 .as_ref()
                 .and_then(|paths| paths.first())
                 .map(String::as_str);
-            super::host_verification::learn_accept_all_identities_files_with_hash(
+            trust.learn_accept_all(
                 &identities,
                 server_public_key,
                 &self.policy.known_hosts_paths,
                 write_path,
                 self.policy.hash_known_hosts,
-            )
-            .await?;
+            );
         }
 
-        *self
-            .verified_server_key
-            .lock()
-            .map_err(|_| super::Error::ServerCheckFailed)? = Some(server_public_key.clone());
-        self.rotation_allowed
-            .store(verification.eligible_for_rotation, Ordering::Release);
+        trust.verified_key = Some(server_public_key.clone());
+        trust.rotation_allowed = verification.eligible_for_rotation;
         Ok(true)
     }
 }
@@ -4534,10 +4608,11 @@ mod known_host_policy_tests {
         let lookup_called = Arc::new(AtomicBool::new(false));
         let called = Arc::clone(&lookup_called);
 
+        let mut trust = super::super::host_verification::HostKeyTrust::default();
         let accepted = verify_primary_host_after_sshfp(
+            &mut trust,
             &method,
-            "node.example",
-            22,
+            ("node.example", 22),
             &offered,
             false,
             super::super::sshfp::SshfpDecision::Accept,
@@ -4575,10 +4650,11 @@ mod known_host_policy_tests {
             let _ = std::fs::remove_file(&path);
             let lookup_called = Arc::new(AtomicBool::new(false));
             let called = Arc::clone(&lookup_called);
+            let mut trust = super::super::host_verification::HostKeyTrust::default();
             let fallback = verify_primary_host_after_sshfp(
+                &mut trust,
                 &method,
-                "node.example",
-                22,
+                ("node.example", 22),
                 &offered,
                 false,
                 super::super::sshfp::SshfpDecision::Continue,
@@ -4589,6 +4665,8 @@ mod known_host_policy_tests {
             )
             .await
             .unwrap();
+            assert!(!path.exists(), "preflight must not persist TOFU");
+            trust.commit().await.unwrap();
             assert!(fallback.accepted, "{reason}");
             assert!(!fallback.skip_address_check, "{reason}");
             assert!(lookup_called.load(Ordering::Acquire), "{reason}");
@@ -4609,6 +4687,7 @@ mod known_host_policy_tests {
             ServerCheckMethod::AcceptNewKnownHostsFile(path.to_string_lossy().into_owned());
 
         let result = verify_accept_new_host_and_address(
+            &mut super::super::host_verification::HostKeyTrust::default(),
             &method,
             "node.example",
             22,
@@ -4639,7 +4718,9 @@ mod known_host_policy_tests {
             let method =
                 ServerCheckMethod::AcceptNewKnownHostsFile(path.to_string_lossy().into_owned());
 
+            let mut trust = super::super::host_verification::HostKeyTrust::default();
             let verification = verify_accept_new_host_and_address(
+                &mut trust,
                 &method,
                 "node.example",
                 22,
@@ -4653,6 +4734,8 @@ mod known_host_policy_tests {
             .await
             .unwrap();
             assert!(verification.accepted);
+            assert!(!path.exists());
+            trust.commit().await.unwrap();
             let contents = std::fs::read_to_string(&path).unwrap();
             assert_eq!(contents.lines().count(), 2);
             if hash_known_hosts {
@@ -5183,15 +5266,13 @@ mod negotiated_host_key_type_tests {
     use russh::keys::ssh_key::certificate::{Builder, CertType};
     use russh::keys::{Algorithm, PrivateKey, PublicKeyOrCertificate};
 
-    fn handler(negotiated: Option<Algorithm>) -> ClientHandler {
-        let mut handler = ClientHandler::new_with_policy(
+    fn handler() -> ClientHandler {
+        ClientHandler::new_with_policy(
             "node1.example.com".into(),
             "127.0.0.1:22".parse().unwrap(),
             ServerCheckMethod::NoCheck,
             KnownHostRuntimePolicy::unconfigured("user", "node1.example.com", 22),
-        );
-        handler.negotiated_host_key = negotiated;
-        handler
+        )
     }
 
     fn ed25519() -> PrivateKey {
@@ -5199,8 +5280,7 @@ mod negotiated_host_key_type_tests {
     }
 
     /// Even with StrictHostKeyChecking off, a key of a type the exchange did
-    /// not negotiate is refused, as `kex_verify_host_key` refuses it before
-    /// any host-key policy runs.
+    /// not negotiate is refused before persistence or authentication.
     #[tokio::test]
     async fn check_server_key_refuses_a_key_of_another_type_than_negotiated() {
         let _home_lock = crate::test_helpers::EnvGuard::lock_home();
@@ -5208,8 +5288,10 @@ mod negotiated_host_key_type_tests {
         let p256 = Algorithm::Ecdsa {
             curve: EcdsaCurve::NistP256,
         };
-        let error = handler(Some(p256))
-            .check_server_key(&offered)
+        let mut mismatched = handler();
+        assert!(mismatched.check_server_key(&offered).await.unwrap());
+        let error = mismatched
+            .finish_host_key_verification(&p256)
             .await
             .unwrap_err();
         assert!(
@@ -5221,13 +5303,18 @@ mod negotiated_host_key_type_tests {
             "{error:?}"
         );
 
+        let mut matching = handler();
+        assert!(matching.check_server_key(&offered).await.unwrap());
+        matching
+            .finish_host_key_verification(&Algorithm::Ed25519)
+            .await
+            .unwrap();
         assert!(
-            handler(Some(Algorithm::Ed25519))
-                .check_server_key(&offered)
+            handler()
+                .finish_host_key_verification(&Algorithm::Ed25519)
                 .await
-                .unwrap()
+                .is_err()
         );
-        assert!(handler(None).check_server_key(&offered).await.is_err());
     }
 
     #[tokio::test]
@@ -5242,8 +5329,10 @@ mod negotiated_host_key_type_tests {
         let rsa = Algorithm::Rsa {
             hash: Some(russh::keys::HashAlg::Sha512),
         };
-        let error = handler(Some(rsa))
-            .check_server_key(&certificate)
+        let mut mismatched = handler();
+        assert!(mismatched.check_server_key(&certificate).await.unwrap());
+        let error = mismatched
+            .finish_host_key_verification(&rsa)
             .await
             .unwrap_err();
         assert!(
@@ -5255,11 +5344,215 @@ mod negotiated_host_key_type_tests {
             ),
             "{error:?}"
         );
+        let mut matching = handler();
+        assert!(matching.check_server_key(&certificate).await.unwrap());
+        matching
+            .finish_host_key_verification(&Algorithm::Ed25519)
+            .await
+            .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod staged_host_key_tests {
+    use super::*;
+    use russh::keys::{Algorithm, PrivateKey, PublicKeyBase64, PublicKeyOrCertificate};
+
+    fn key() -> russh::keys::PublicKey {
+        PrivateKey::random(&mut rand::rng(), Algorithm::Ed25519)
+            .unwrap()
+            .public_key()
+            .clone()
+    }
+
+    fn handler(method: ServerCheckMethod) -> ClientHandler {
+        ClientHandler::new(
+            "staged.example".into(),
+            "127.0.0.1:22".parse().unwrap(),
+            method,
+        )
+    }
+
+    fn wrong_algorithm() -> Algorithm {
+        Algorithm::Ecdsa {
+            curve: russh::keys::ssh_key::EcdsaCurve::NistP256,
+        }
+    }
+
+    #[tokio::test]
+    async fn mismatch_never_persists_tofu_or_a_process_pin() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("not-created/known_hosts");
+        let method =
+            ServerCheckMethod::AcceptNewKnownHostsFile(path.to_string_lossy().into_owned());
+        let rejected = key();
+        let mut first = handler(method.clone());
+        assert!(first.check_server_key(&rejected.into()).await.unwrap());
         assert!(
-            handler(Some(Algorithm::Ed25519))
-                .check_server_key(&certificate)
+            !path.parent().unwrap().exists(),
+            "preflight must not create even a lock directory"
+        );
+        assert!(first.verified_server_key.lock().unwrap().is_none());
+        assert!(!first.rotation_allowed.load(Ordering::Acquire));
+        assert!(matches!(
+            first.finish_host_key_verification(&wrong_algorithm()).await,
+            Err(super::super::Error::HostKeyTypeMismatch { .. })
+        ));
+        assert!(!path.parent().unwrap().exists());
+        assert!(!first.initial_host_key_verified);
+        assert!(
+            first
+                .finish_host_key_verification(&Algorithm::Ed25519)
+                .await
+                .is_err()
+        );
+
+        // A failed negotiation must not pin its key in memory either.
+        let accepted = key();
+        let mut second = handler(method);
+        assert!(
+            second
+                .check_server_key(&accepted.clone().into())
                 .await
                 .unwrap()
         );
+        assert!(!path.exists());
+        second
+            .finish_host_key_verification(&Algorithm::Ed25519)
+            .await
+            .unwrap();
+        assert!(path.exists());
+        assert_eq!(
+            second.verified_server_key.lock().unwrap().as_ref(),
+            Some(&accepted)
+        );
+        assert!(second.initial_host_key_verified);
+        // A later rekey has no new check_server_key callback in russh 0.65.1.
+        // Its algorithm must not be compared with the previous epoch's key.
+        second
+            .finish_host_key_verification(&wrong_algorithm())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn commit_rechecks_concurrent_known_hosts_changes() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("known_hosts");
+        let mut handler = handler(ServerCheckMethod::AcceptNewKnownHostsFile(
+            path.to_string_lossy().into_owned(),
+        ));
+        assert!(handler.check_server_key(&key().into()).await.unwrap());
+        let conflicting = format!("staged.example {}\n", key().to_openssh().unwrap());
+        std::fs::write(&path, &conflicting).unwrap();
+        assert!(matches!(
+            handler
+                .finish_host_key_verification(&Algorithm::Ed25519)
+                .await,
+            Err(super::super::Error::HostKeyChanged { .. })
+        ));
+        assert_eq!(std::fs::read_to_string(path).unwrap(), conflicting);
+        assert!(handler.verified_server_key.lock().unwrap().is_none());
+        assert!(!handler.initial_host_key_verified);
+    }
+
+    #[tokio::test]
+    async fn untrusted_key_is_rejected_before_kex_done() {
+        let pinned = key();
+        let mut handler = handler(ServerCheckMethod::PublicKey(pinned.public_key_base64()));
+        assert!(!handler.check_server_key(&key().into()).await.unwrap());
+        assert!(handler.pending_host_key.is_none());
+        assert!(
+            handler
+                .finish_host_key_verification(&Algorithm::Ed25519)
+                .await
+                .is_err()
+        );
+        assert!(handler.verified_server_key.lock().unwrap().is_none());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn known_hosts_command_runs_once_across_both_callbacks() {
+        let directory = tempfile::tempdir().unwrap();
+        let calls = directory.path().join("calls");
+        let offered = key();
+        let mut handler = handler(ServerCheckMethod::KnownHostsFiles(Vec::new()));
+        use std::os::unix::fs::PermissionsExt;
+        let script = directory.path().join("known-hosts-command");
+        std::fs::write(
+            &script,
+            format!(
+                "#!/bin/sh\nprintf x >> '{}'\nprintf '%s\\n' 'staged.example {}'\n",
+                calls.display(),
+                offered.to_openssh().unwrap(),
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        handler.policy.known_hosts_command = Some(script.to_string_lossy().into_owned());
+        assert!(handler.check_server_key(&offered.into()).await.unwrap());
+        assert_eq!(std::fs::read_to_string(&calls).unwrap(), "x");
+        assert!(handler.verified_server_key.lock().unwrap().is_none());
+        handler
+            .finish_host_key_verification(&Algorithm::Ed25519)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read_to_string(&calls).unwrap(), "x");
+        assert!(handler.verified_server_key.lock().unwrap().is_some());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn staged_tofu_preserves_a_configured_symlink() {
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("shared_hosts");
+        let link = directory.path().join("known_hosts");
+        std::fs::write(&target, "# existing\n").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let mut handler = handler(ServerCheckMethod::AcceptNewKnownHostsFile(
+            link.to_string_lossy().into_owned(),
+        ));
+        assert!(handler.check_server_key(&key().into()).await.unwrap());
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "# existing\n");
+        handler
+            .finish_host_key_verification(&Algorithm::Ed25519)
+            .await
+            .unwrap();
+        assert!(
+            std::fs::symlink_metadata(&link)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        assert!(
+            std::fs::read_to_string(target)
+                .unwrap()
+                .contains("staged.example ssh-ed25519")
+        );
+    }
+
+    #[tokio::test]
+    async fn accept_all_does_not_record_a_mismatched_key() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("known_hosts");
+        let mut handler = handler(ServerCheckMethod::NoCheck);
+        handler.policy.known_hosts_paths = vec![path.to_string_lossy().into_owned()];
+        handler.policy.rotation_paths = Some(handler.policy.known_hosts_paths.clone());
+        assert!(
+            handler
+                .check_server_key(&PublicKeyOrCertificate::from(key()))
+                .await
+                .unwrap()
+        );
+        assert!(!path.exists());
+        assert!(
+            handler
+                .finish_host_key_verification(&wrong_algorithm())
+                .await
+                .is_err()
+        );
+        assert!(!path.exists());
+        assert!(handler.verified_server_key.lock().unwrap().is_none());
     }
 }

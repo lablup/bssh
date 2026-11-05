@@ -32,7 +32,7 @@ tokio = { version = "1.54.1", features = ["full"] }
 # empty, so it never negotiates one; the handler in
 # src/ssh/tokio_client/connection.rs refuses certificates because bssh
 # verifies no CA signatures.
-russh = "0.65.0"
+russh = "0.65.1"
 # Upstream russh-sftp. bssh's pipelined client transfers live in
 # src/ssh/tokio_client/sftp_client.rs and its read-ahead / write-coalescing
 # server loop in src/server/sftp_loop.rs, both on russh-sftp's public API.
