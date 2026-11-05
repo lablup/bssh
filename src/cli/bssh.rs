@@ -792,6 +792,13 @@ impl Cli {
 
     /// Parse destination string into components while preserving parse errors.
     pub fn parse_destination_result(&self) -> Result<Option<crate::node::NodeSpec<'_>>> {
+        // In multi-server mode the positional value is the first remote
+        // command argument, not an SSH destination. Parsing it here would
+        // subject valid shell syntax to hostname validation.
+        if !self.is_ssh_mode() {
+            return Ok(None);
+        }
+
         let Some(destination) = self.destination.as_ref() else {
             return Ok(None);
         };
@@ -1362,6 +1369,44 @@ mod tests {
             .parse_destination_result()
             .expect_err("non-empty SSH URI path must be rejected");
         assert!(error.to_string().contains("paths are not supported"));
+    }
+
+    #[test]
+    fn multi_server_commands_are_not_parsed_as_ssh_destinations() {
+        for arguments in [
+            vec!["bssh", "--cluster", "production", "hostname; uptime"],
+            vec!["bssh", "-H", "node1", "echo user@host:2200 | cat"],
+            vec![
+                "bssh",
+                "--cluster",
+                "production",
+                "ssh://user@host:2200/command",
+            ],
+        ] {
+            let cli = Cli::try_parse_from(arguments).unwrap();
+            assert!(!cli.is_ssh_mode());
+            assert!(cli.parse_destination_result().unwrap().is_none());
+            assert_eq!(cli.get_effective_user(), None);
+            assert_eq!(cli.get_effective_port(), None);
+        }
+
+        let cli = Cli::try_parse_from([
+            "bssh",
+            "--cluster",
+            "production",
+            "-l",
+            "operator",
+            "-p",
+            "2200",
+            "hostname; uptime",
+        ])
+        .unwrap();
+        assert_eq!(cli.get_effective_user().as_deref(), Some("operator"));
+        assert_eq!(cli.get_effective_port(), Some(2200));
+        assert_eq!(
+            cli.ssh_config_overrides().unwrap(),
+            ["User=operator", "Port=2200"]
+        );
     }
 
     #[test]
