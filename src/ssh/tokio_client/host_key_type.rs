@@ -19,7 +19,7 @@
 //! (`sshkey_type_from_name`), and, for plain ECDSA, whose curve differs, with
 //! `SSH_ERR_KEY_TYPE_MISMATCH`. Signature-algorithm names map to their key
 //! type: `rsa-sha2-256` and `rsa-sha2-512` select an RSA key, and
-//! `rsa-sha2-512-cert-v01@openssh.com` an RSA certificate. russh 0.65.0
+//! `rsa-sha2-512-cert-v01@openssh.com` an RSA certificate. russh 0.65.1
 //! verifies the exchange signature with whatever key the server sends, so
 //! without this check a `HostKeyAlgorithms` restriction would not limit which
 //! trusted key type the server may use.
@@ -32,6 +32,12 @@
 //! exactly when a certificate algorithm was negotiated. The certificate half
 //! of the negotiated type is therefore taken from that variant, and a plain
 //! key slot that carries certificate key data is refused.
+//!
+//! Since russh 0.65.1, `check_server_key` runs before `kex_done`. bssh first
+//! preflights host trust without persistence, retains only this key type, and
+//! compares it with `Names::key` in `kex_done` before committing TOFU records
+//! or allowing the connected handle to reach authentication. The raw shared
+//! secret passed to that callback is never used.
 
 use russh::keys::{Algorithm, PublicKeyOrCertificate};
 
@@ -100,9 +106,9 @@ fn key_type_of(algorithm: &Algorithm) -> Algorithm {
     }
 }
 
-/// The negotiated host-key algorithm for `check_server_key`, built from
-/// what `kex_done` recorded and the form russh parsed the key in.
-#[must_use]
+// Helpers for the key/certificate fixtures below. Runtime compares the
+// compact type retained by check_server_key when kex_done supplies Names.
+#[cfg(test)]
 fn negotiated_for(recorded: &Algorithm, server_key: &PublicKeyOrCertificate) -> HostKeyType {
     HostKeyType::negotiated(
         recorded,
@@ -110,36 +116,24 @@ fn negotiated_for(recorded: &Algorithm, server_key: &PublicKeyOrCertificate) -> 
     )
 }
 
-/// [`ensure_negotiated_host_key_type`] against the algorithm `kex_done`
-/// recorded. russh calls `kex_done` with the negotiated names before it hands
-/// the host key to `check_server_key` (`client/mod.rs`), so a missing record
-/// means that order changed, and the key is refused rather than trusted.
-pub(crate) fn ensure_recorded_host_key_type(
-    recorded: Option<&Algorithm>,
-    server_key: &PublicKeyOrCertificate,
-) -> Result<(), super::Error> {
-    match recorded {
-        Some(recorded) => {
-            ensure_negotiated_host_key_type(&negotiated_for(recorded, server_key), server_key)
-        }
-        None => Err(super::Error::HostKeyTypeMismatch {
-            negotiated: "(none negotiated)".to_string(),
-            received: HostKeyType::presented(server_key).name(),
-        }),
-    }
-}
-
 /// Refuse a host key whose type differs from the negotiated one, failing
 /// closed. ECDSA curves are compared for certificates as well as plain keys:
 /// each curve has its own certificate algorithm name, so a server that
 /// answers `ecdsa-sha2-nistp256-cert-v01@openssh.com` with a P-384
 /// certificate is not presenting what was negotiated.
-pub(crate) fn ensure_negotiated_host_key_type(
+#[cfg(test)]
+fn ensure_negotiated_host_key_type(
     negotiated: &HostKeyType,
     server_key: &PublicKeyOrCertificate,
 ) -> Result<(), super::Error> {
-    let presented = HostKeyType::presented(server_key);
-    if presented == *negotiated {
+    ensure_host_key_types_match(negotiated, &HostKeyType::presented(server_key))
+}
+
+pub(crate) fn ensure_host_key_types_match(
+    negotiated: &HostKeyType,
+    presented: &HostKeyType,
+) -> Result<(), super::Error> {
+    if presented == negotiated {
         return Ok(());
     }
     tracing::debug!(
@@ -335,25 +329,6 @@ mod tests {
         check("sk-ssh-ed25519-cert-v01@openssh.com", &sk_certificate).unwrap();
         assert!(check("ssh-ed25519-cert-v01@openssh.com", &sk_certificate).is_err());
         assert!(check("sk-ssh-ed25519@openssh.com", &sk_certificate).is_err());
-    }
-
-    #[test]
-    fn a_key_received_before_negotiation_is_refused() {
-        let key = plain(Algorithm::Ed25519);
-        assert!(matches!(
-            ensure_recorded_host_key_type(None, &key),
-            Err(super::super::Error::HostKeyTypeMismatch { .. })
-        ));
-        ensure_recorded_host_key_type(Some(&Algorithm::Ed25519), &key).unwrap();
-        assert!(
-            ensure_recorded_host_key_type(
-                Some(&Algorithm::Ecdsa {
-                    curve: EcdsaCurve::NistP256
-                }),
-                &key
-            )
-            .is_err()
-        );
     }
 
     #[test]

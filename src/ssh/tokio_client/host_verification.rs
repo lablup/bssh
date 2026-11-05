@@ -18,12 +18,11 @@
 //! matches any key recorded for the host is accepted, an unknown host is
 //! recorded in the known_hosts file and accepted, and a key offered for a host
 //! that has recorded keys, none of which match, is rejected with an
-//! OpenSSH-style warning. The recording itself is delegated to
-//! `russh::keys::known_hosts::learn_known_hosts_path`, which handles entry
-//! formatting (including the `[host]:port` form for non-22 ports) and file
-//! creation; this module adds the trust decision, restrictive permissions
-//! created up front rather than tightened after the fact, and serialization
-//! of concurrent first-time connections.
+//! OpenSSH-style warning. Host trust is checked without writes during the
+//! initial server-key callback; after the negotiated key type is verified,
+//! staged updates recheck trust under the process/file locks and replace the
+//! known_hosts file atomically. New files are private, existing permissions
+//! are preserved, and failed negotiations cannot create TOFU records.
 //!
 //! The known_hosts lookup itself ([`lookup_known_host`]) also backs strict
 //! (`yes`) mode through [`verify_known_hosts_file`], so both modes agree on
@@ -44,7 +43,7 @@ use std::sync::Mutex as StdMutex;
 use std::{
     collections::HashMap,
     fs::{File, OpenOptions},
-    io::{self, Read, Seek, SeekFrom, Write},
+    io::{self, Write},
     path::{Path, PathBuf},
     sync::LazyLock,
 };
@@ -720,103 +719,130 @@ fn ensure_recordable_hostname(hostname: &str) -> Result<(), super::Error> {
 /// known_hosts `@revoked` marker line. A hostname that cannot be represented
 /// in a known_hosts entry is rejected outright, before anything is looked up
 /// or written.
-pub(super) async fn verify_accept_new_with_hash(
+#[cfg(test)]
+async fn verify_accept_new_with_hash(
     hostname: &str,
     port: u16,
-    server_public_key: &PublicKey,
-    known_hosts_path: &str,
-    hash_known_hosts: bool,
+    key: &PublicKey,
+    path: &str,
+    hash: bool,
 ) -> Result<bool, super::Error> {
-    // OpenSSH lowercases the hostname before every known_hosts comparison;
-    // russh's `match_hostname` is a plain byte compare. Normalizing once here
-    // and using the normalized value for both the lookup and the recorded
-    // entry keeps a later differently-cased connection hitting the same pin
-    // instead of bypassing it and re-recording, and matches what OpenSSH
-    // itself would have written to the file.
-    let hostname = hostname.to_ascii_lowercase();
-    let hostname = hostname.as_str();
+    let mut trust = HostKeyTrust::default();
+    trust
+        .accept_new(
+            &[(hostname, port)],
+            key,
+            &[path.to_string()],
+            Some(path),
+            hash,
+        )
+        .await?;
+    trust.commit().await?;
+    Ok(true)
+}
 
-    // Checked before the lock is taken: serializing a hostname that is already
-    // rejected would only make every other connection wait on it.
-    ensure_recordable_hostname(hostname)?;
+/// Host-key trust changes staged until the negotiated key type is checked.
+/// Dropping this value has no persistent or process-pin side effects.
+#[derive(Debug, Clone, Default)]
+pub(super) struct HostKeyTrust {
+    updates: Vec<HostKeyUpdate>,
+    pub verified_key: Option<PublicKey>,
+    pub rotation_allowed: bool,
+}
 
-    probe_known_hosts_path(known_hosts_path)?;
-    check_marker_lines(hostname, port, server_public_key, known_hosts_path)?;
-    match lookup_known_host(hostname, port, server_public_key, known_hosts_path) {
-        Ok(KnownHostLookup::Match) => {
-            verify_process_pin(hostname, port, Some(known_hosts_path), server_public_key).await?;
-            return Ok(true);
+#[derive(Debug, Clone)]
+struct HostKeyUpdate {
+    identities: Vec<(String, u16)>,
+    key: PublicKey,
+    paths: Vec<String>,
+    write_path: Option<String>,
+    hash: bool,
+    accept_new: bool,
+}
+
+impl HostKeyTrust {
+    pub async fn accept_new(
+        &mut self,
+        identities: &[(&str, u16)],
+        key: &PublicKey,
+        paths: &[String],
+        write_path: Option<&str>,
+        hash: bool,
+    ) -> Result<(), super::Error> {
+        let scope = (!paths.is_empty()).then(|| paths.join("\0"));
+        // Do not acquire a file lock here: doing so may create a lock file or
+        // directory before the key's negotiated type has been checked.
+        for (hostname, port) in identities {
+            let hostname = hostname.to_ascii_lowercase();
+            ensure_recordable_hostname(&hostname)?;
+            reject_identity_conflict(&hostname, *port, key, paths)?;
+            verify_process_pin(&hostname, *port, scope.as_deref(), key).await?;
         }
-        Ok(KnownHostLookup::Conflict { line }) => {
-            return Err(map_known_hosts_error(
-                hostname,
-                port,
-                server_public_key,
-                known_hosts_path,
-                russh::keys::Error::KeyChanged { line },
-            ));
-        }
-        Ok(KnownHostLookup::Unknown) => {}
-        Err(e) => {
-            return Err(map_known_hosts_error(
-                hostname,
-                port,
-                server_public_key,
-                known_hosts_path,
-                e,
-            ));
-        }
+        self.updates.push(HostKeyUpdate {
+            identities: identities
+                .iter()
+                .map(|(h, p)| (h.to_string(), *p))
+                .collect(),
+            key: key.clone(),
+            paths: paths.to_vec(),
+            write_path: write_path.map(str::to_owned),
+            hash,
+            accept_new: true,
+        });
+        Ok(())
     }
 
-    let _guard = KNOWN_HOSTS_LOCK.lock().await;
-    let _file_lock = acquire_known_hosts_file_lock(known_hosts_path)?;
+    pub fn learn_accept_all(
+        &mut self,
+        identities: &[(&str, u16)],
+        key: &PublicKey,
+        paths: &[String],
+        write_path: Option<&str>,
+        hash: bool,
+    ) {
+        self.updates.push(HostKeyUpdate {
+            identities: identities
+                .iter()
+                .map(|(h, p)| (h.to_string(), *p))
+                .collect(),
+            key: key.clone(),
+            paths: paths.to_vec(),
+            write_path: write_path.map(str::to_owned),
+            hash,
+            accept_new: false,
+        });
+    }
 
-    probe_known_hosts_path(known_hosts_path)?;
-    check_marker_lines(hostname, port, server_public_key, known_hosts_path)?;
-
-    match lookup_known_host(hostname, port, server_public_key, known_hosts_path) {
-        Ok(KnownHostLookup::Match) => {
-            verify_process_pin(hostname, port, Some(known_hosts_path), server_public_key).await?;
-            Ok(true)
+    pub async fn commit(&self) -> Result<(), super::Error> {
+        for update in &self.updates {
+            let identities = update
+                .identities
+                .iter()
+                .map(|(h, p)| (h.as_str(), *p))
+                .collect::<Vec<_>>();
+            // Recheck files and process pins under the existing locks: another
+            // connection may have recorded a conflicting key since preflight.
+            if update.accept_new {
+                verify_accept_new_identities_files_with_hash(
+                    &identities,
+                    &update.key,
+                    &update.paths,
+                    update.write_path.as_deref(),
+                    update.hash,
+                )
+                .await?;
+            } else {
+                learn_accept_all_identities_files_with_hash(
+                    &identities,
+                    &update.key,
+                    &update.paths,
+                    update.write_path.as_deref(),
+                    update.hash,
+                )
+                .await?;
+            }
         }
-        // The host is pinned and the offered key is not one of its recorded
-        // keys. That covers both a genuine key change and a key offered under
-        // an algorithm the host has not used yet: recording the latter
-        // alongside the existing entry would hand an active man-in-the-middle a
-        // complete bypass of pinning, because SSH negotiation lets the server
-        // steer the choice of host key algorithm and OpenSSH's per-host
-        // reordering of that proposal (`order_hostkeyalgs`) is not available
-        // through russh.
-        Ok(KnownHostLookup::Conflict { line }) => Err(map_known_hosts_error(
-            hostname,
-            port,
-            server_public_key,
-            known_hosts_path,
-            russh::keys::Error::KeyChanged { line },
-        )),
-        // Genuinely unknown host: trust on first use. A missing known_hosts
-        // file also lands here because russh treats an unopenable file as
-        // empty; `learn_known_hosts_path` creates it on demand.
-        Ok(KnownHostLookup::Unknown) => {
-            verify_process_pin(hostname, port, Some(known_hosts_path), server_public_key).await?;
-            record_host_key_with_hash(
-                hostname,
-                port,
-                server_public_key,
-                known_hosts_path,
-                hash_known_hosts,
-            );
-            remember_process_pin(hostname, port, Some(known_hosts_path), server_public_key).await;
-            Ok(true)
-        }
-        // Unreadable or malformed known_hosts: fail closed rather than record.
-        Err(e) => Err(map_known_hosts_error(
-            hostname,
-            port,
-            server_public_key,
-            known_hosts_path,
-            e,
-        )),
+        Ok(())
     }
 }
 
@@ -828,18 +854,17 @@ pub(super) async fn verify_accept_new_with_hash(
 /// same run is rejected, so the default mode no longer degrades to
 /// unconditional `NoCheck` in service/container environments without a home
 /// directory.
-pub(super) async fn verify_accept_new_in_memory(
+#[cfg(test)]
+async fn verify_accept_new_in_memory(
     hostname: &str,
     port: u16,
-    server_public_key: &PublicKey,
+    key: &PublicKey,
 ) -> Result<bool, super::Error> {
-    let hostname = hostname.to_ascii_lowercase();
-    let hostname = hostname.as_str();
-    ensure_recordable_hostname(hostname)?;
-
-    let _guard = KNOWN_HOSTS_LOCK.lock().await;
-    verify_process_pin(hostname, port, None, server_public_key).await?;
-    remember_process_pin(hostname, port, None, server_public_key).await;
+    let mut trust = HostKeyTrust::default();
+    trust
+        .accept_new(&[(hostname, port)], key, &[], None, false)
+        .await?;
+    trust.commit().await?;
     Ok(true)
 }
 
@@ -959,73 +984,6 @@ pub(super) fn verify_known_hosts_files(
     }
 }
 
-/// Apply accept-new semantics across every configured read store and record a
-/// genuinely unknown key only into the explicitly selected user write store.
-pub(super) async fn verify_accept_new_files_with_hash(
-    hostname: &str,
-    port: u16,
-    server_public_key: &PublicKey,
-    known_hosts_paths: &[String],
-    write_path: Option<&str>,
-    hash_known_hosts: bool,
-) -> Result<bool, super::Error> {
-    let hostname = hostname.to_ascii_lowercase();
-    let hostname = hostname.as_str();
-    ensure_recordable_hostname(hostname)?;
-    let trust_scope = (!known_hosts_paths.is_empty()).then(|| known_hosts_paths.join("\0"));
-
-    match lookup_known_host_files(hostname, port, server_public_key, known_hosts_paths)? {
-        KnownHostsFilesLookup::Match => {
-            verify_process_pin(hostname, port, trust_scope.as_deref(), server_public_key).await?;
-            return Ok(true);
-        }
-        KnownHostsFilesLookup::Conflict { path, line } => {
-            return Err(map_known_hosts_error(
-                hostname,
-                port,
-                server_public_key,
-                &path,
-                russh::keys::Error::KeyChanged { line },
-            ));
-        }
-        KnownHostsFilesLookup::Unknown => {}
-    }
-
-    let _guard = KNOWN_HOSTS_LOCK.lock().await;
-    let _file_lock = match write_path {
-        Some(path) => Some(acquire_known_hosts_file_lock(path)?),
-        None => None,
-    };
-
-    match lookup_known_host_files(hostname, port, server_public_key, known_hosts_paths)? {
-        KnownHostsFilesLookup::Match => {
-            verify_process_pin(hostname, port, trust_scope.as_deref(), server_public_key).await?;
-            Ok(true)
-        }
-        KnownHostsFilesLookup::Conflict { path, line } => Err(map_known_hosts_error(
-            hostname,
-            port,
-            server_public_key,
-            &path,
-            russh::keys::Error::KeyChanged { line },
-        )),
-        KnownHostsFilesLookup::Unknown => {
-            verify_process_pin(hostname, port, trust_scope.as_deref(), server_public_key).await?;
-            if let Some(path) = write_path {
-                record_host_key_with_hash(
-                    hostname,
-                    port,
-                    server_public_key,
-                    path,
-                    hash_known_hosts,
-                );
-            }
-            remember_process_pin(hostname, port, trust_scope.as_deref(), server_public_key).await;
-            Ok(true)
-        }
-    }
-}
-
 /// Preflight and, when needed, record several accept-new identities as one transaction.
 ///
 /// This is used by CheckHostIP so a conflicting address can reject the connection
@@ -1047,9 +1005,14 @@ pub(super) async fn verify_accept_new_identities_files_with_hash(
     }
     let trust_scope = (!known_hosts_paths.is_empty()).then(|| known_hosts_paths.join("\0"));
 
+    let mut all_known = true;
     for (hostname, port) in &identities {
-        reject_identity_conflict(hostname, *port, server_public_key, known_hosts_paths)?;
+        all_known &=
+            reject_identity_conflict(hostname, *port, server_public_key, known_hosts_paths)?;
         verify_process_pin(hostname, *port, trust_scope.as_deref(), server_public_key).await?;
+    }
+    if all_known {
+        return Ok(());
     }
 
     let _guard = KNOWN_HOSTS_LOCK.lock().await;
@@ -1153,7 +1116,23 @@ fn record_host_identities_atomically(
     known_hosts_path: &str,
     hash_known_hosts: bool,
 ) -> Result<(), String> {
-    let path = Path::new(known_hosts_path);
+    let configured_path = Path::new(known_hosts_path);
+    let resolved_path = match std::fs::symlink_metadata(configured_path) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            Some(std::fs::canonicalize(configured_path).map_err(|error| {
+                format!("could not resolve {}: {error}", configured_path.display())
+            })?)
+        }
+        Ok(_) => None,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(format!(
+                "could not inspect {}: {error}",
+                configured_path.display()
+            ));
+        }
+    };
+    let path = resolved_path.as_deref().unwrap_or(configured_path);
     let mut contents = match std::fs::read(path) {
         Ok(contents) => contents,
         Err(error) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
@@ -1223,85 +1202,6 @@ pub(super) fn map_known_hosts_error(
     }
 }
 
-/// Record `server_public_key` in `known_hosts_path` and print the OpenSSH
-/// "Permanently added" notice.
-///
-/// Recording is best effort, matching OpenSSH: in accept-new mode an unknown
-/// host is accepted either way, so a failure to persist the key (read-only
-/// filesystem, permission problem) is reported as a warning instead of
-/// failing the connection.
-fn record_host_key_with_hash(
-    hostname: &str,
-    port: u16,
-    server_public_key: &PublicKey,
-    known_hosts_path: &str,
-    hash_known_hosts: bool,
-) {
-    let path = Path::new(known_hosts_path);
-    // Only files and directories created by this recording get their
-    // permissions tightened; pre-existing ones are left untouched.
-    let dir_preexisted = path.parent().is_none_or(Path::exists);
-    let file_preexisted = path.exists();
-
-    // Create with the final restrictive mode up front, before
-    // `learn_known_hosts_path` gets a chance to create either one with the
-    // process umask. See `precreate_with_restrictive_permissions` for why
-    // this closes the window that `restrict_created_permissions` below can
-    // only narrow after the fact.
-    #[cfg(unix)]
-    precreate_with_restrictive_permissions(path, dir_preexisted, file_preexisted);
-
-    let record_result = if hash_known_hosts {
-        append_hashed_host_key(hostname, port, server_public_key, path)
-    } else {
-        russh::keys::known_hosts::learn_known_hosts_path(hostname, port, server_public_key, path)
-            .map_err(|error| error.to_string())
-    };
-    if let Err(e) = record_result {
-        tracing::warn!("Failed to record host key for '{hostname}' in {known_hosts_path}: {e}");
-        eprintln!(
-            "Warning: failed to add '{}' to the list of known hosts ({known_hosts_path}): {e}",
-            known_hosts_entry_name(hostname, port)
-        );
-        return;
-    }
-
-    if !file_preexisted {
-        remove_leading_blank_line(path);
-    }
-
-    #[cfg(unix)]
-    restrict_created_permissions(path, dir_preexisted, file_preexisted);
-    #[cfg(not(unix))]
-    let _ = (dir_preexisted, file_preexisted);
-
-    eprintln!(
-        "Permanently added '{}' ({}) to the list of known hosts.",
-        known_hosts_entry_name(hostname, port),
-        algorithm_display_name(server_public_key)
-    );
-}
-
-fn remove_leading_blank_line(path: &Path) {
-    match std::fs::read_to_string(path) {
-        Ok(contents) if contents.starts_with('\n') => {
-            if let Err(e) = std::fs::write(path, contents.trim_start_matches('\n')) {
-                tracing::warn!(
-                    "Failed to remove leading blank line from {}: {e}",
-                    path.display()
-                );
-            }
-        }
-        Ok(_) => {}
-        Err(e) => {
-            tracing::warn!(
-                "Failed to inspect {} for leading blank line cleanup: {e}",
-                path.display()
-            );
-        }
-    }
-}
-
 /// The host as it appears in the known_hosts entry: `[host]:port` for
 /// non-standard ports, the bare hostname otherwise. Mirrors the convention
 /// `learn_known_hosts_path` writes and `check_known_hosts_path` matches.
@@ -1310,86 +1210,6 @@ pub(crate) fn known_hosts_entry_name(hostname: &str, port: u16) -> String {
         hostname.to_string()
     } else {
         format!("[{hostname}]:{port}")
-    }
-}
-
-/// Pre-create the `.ssh` directory (0700) and known_hosts file (0600) with
-/// their final permissions before `learn_known_hosts_path` touches either.
-///
-/// `learn_known_hosts_path` creates both with `std::fs::create_dir_all` and
-/// `OpenOptions::create(true)`, which apply the process umask, and the mode
-/// used to be tightened by [`restrict_created_permissions`] only *after*
-/// that call returned, leaving a window where a permissive umask could leave
-/// either one group- or world-writable. A `mkdir`/`open` syscall that
-/// requests 0o700/0o600 directly cannot be widened by any umask, because
-/// umask only ever clears requested bits and neither mode carries a group or
-/// other bit for a standard umask to clear, so creating with the final mode
-/// up front closes the window instead of narrowing it afterward.
-///
-/// Only whichever of the two does not already exist is touched, matching
-/// [`restrict_created_permissions`]'s preservation of pre-existing modes. An
-/// error other than "already exists" (a benign race with another creator,
-/// since this runs under `KNOWN_HOSTS_LOCK` only within this process) is
-/// logged and otherwise ignored: `learn_known_hosts_path` runs regardless,
-/// and its own error handling in [`record_host_key`] is what decides whether
-/// the connection fails.
-#[cfg(unix)]
-fn precreate_with_restrictive_permissions(
-    path: &Path,
-    dir_preexisted: bool,
-    file_preexisted: bool,
-) {
-    use std::fs::{DirBuilder, OpenOptions};
-    use std::io::ErrorKind;
-    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-
-    if !dir_preexisted
-        && let Some(parent) = path.parent()
-        && let Err(e) = DirBuilder::new().mode(0o700).create(parent)
-        && e.kind() != ErrorKind::AlreadyExists
-    {
-        tracing::warn!(
-            "Failed to pre-create {} with mode 0700: {e}",
-            parent.display()
-        );
-    }
-
-    if !file_preexisted
-        && let Err(e) = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(path)
-        && e.kind() != ErrorKind::AlreadyExists
-    {
-        tracing::warn!(
-            "Failed to pre-create {} with mode 0600: {e}",
-            path.display()
-        );
-    }
-}
-
-/// Tighten permissions on the `.ssh` directory (0700) and known_hosts file
-/// (0600), but only when this recording created them.
-/// `learn_known_hosts_path` creates both with the process umask, so a fresh
-/// directory could otherwise be group/world readable. Kept as a fallback for
-/// the rare case where [`precreate_with_restrictive_permissions`] could not
-/// pre-create one of them (for example a missing grandparent directory that
-/// only `learn_known_hosts_path`'s `create_dir_all` fills in).
-#[cfg(unix)]
-fn restrict_created_permissions(path: &Path, dir_preexisted: bool, file_preexisted: bool) {
-    use std::os::unix::fs::PermissionsExt;
-
-    if !dir_preexisted
-        && let Some(parent) = path.parent()
-        && let Err(e) = std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
-    {
-        tracing::warn!("Failed to set mode 0700 on {}: {e}", parent.display());
-    }
-    if !file_preexisted
-        && let Err(e) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-    {
-        tracing::warn!("Failed to set mode 0600 on {}: {e}", path.display());
     }
 }
 
@@ -3167,49 +2987,13 @@ fn record_host_key(
     server_public_key: &PublicKey,
     known_hosts_path: &str,
 ) {
-    record_host_key_with_hash(hostname, port, server_public_key, known_hosts_path, false);
-}
-
-fn append_hashed_host_key(
-    hostname: &str,
-    port: u16,
-    server_public_key: &PublicKey,
-    path: &Path,
-) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|error| format!("could not create {}: {error}", parent.display()))?;
-    }
-    let identity = known_hosts_entry_name(hostname, port);
-    let hashed = super::hostkey_rotation::hash_host_pattern(&identity)?;
-    let openssh = server_public_key
-        .to_openssh()
-        .map_err(|error| format!("could not format host key: {error}"))?;
-
-    let mut file = OpenOptions::new()
-        .read(true)
-        .append(true)
-        .create(true)
-        .open(path)
-        .map_err(|error| format!("could not open {}: {error}", path.display()))?;
-    let needs_newline = if file.seek(SeekFrom::End(-1)).is_ok() {
-        let mut last = [0_u8; 1];
-        file.read_exact(&mut last)
-            .map_err(|error| format!("could not inspect {}: {error}", path.display()))?;
-        last[0] != b'\n'
-    } else {
-        false
-    };
-    file.seek(SeekFrom::End(0))
-        .map_err(|error| format!("could not seek {}: {error}", path.display()))?;
-    if needs_newline {
-        file.write_all(b"\n")
-            .map_err(|error| format!("could not write {}: {error}", path.display()))?;
-    }
-    writeln!(file, "{hashed} {openssh}")
-        .map_err(|error| format!("could not write {}: {error}", path.display()))?;
-    file.flush()
-        .map_err(|error| format!("could not flush {}: {error}", path.display()))
+    record_host_identities_atomically(
+        &[(hostname, port)],
+        server_public_key,
+        known_hosts_path,
+        false,
+    )
+    .unwrap();
 }
 
 #[cfg(test)]

@@ -510,6 +510,25 @@ fn write_temporary(temporary: &Path, destination: &Path, contents: &[u8]) -> Res
         .map_err(|error| format!("could not create {}: {error}", temporary.display()))?;
     file.write_all(contents)
         .map_err(|error| format!("could not write {}: {error}", temporary.display()))?;
+    // Existing known_hosts permissions belong to the user. New files start
+    // private, and an atomic replacement inherits the existing file's mode.
+    match std::fs::metadata(destination) {
+        Ok(metadata) => file
+            .set_permissions(metadata.permissions())
+            .map_err(|error| {
+                format!(
+                    "could not preserve {} permissions: {error}",
+                    destination.display()
+                )
+            })?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(format!(
+                "could not inspect {}: {error}",
+                destination.display()
+            ));
+        }
+    }
     file.sync_all()
         .map_err(|error| format!("could not sync {}: {error}", temporary.display()))?;
     drop(file);
