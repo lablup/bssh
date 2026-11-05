@@ -124,13 +124,18 @@ fn empty_config() -> NamedTempFile {
     file
 }
 
-/// Run `bssh` to completion and return its exit code.
-fn run(args: &[&str], config: Option<&Path>) -> i32 {
+/// Run `bssh` to completion with an optional isolated configuration.
+fn run_output(args: &[&str], config: Option<&Path>) -> std::process::Output {
     let mut cmd = bssh();
     if let Some(path) = config {
         cmd.arg("--config").arg(path);
     }
-    let output = cmd.args(args).output().expect("failed to run bssh");
+    cmd.args(args).output().expect("failed to run bssh")
+}
+
+/// Run `bssh` to completion and return its exit code.
+fn run(args: &[&str], config: Option<&Path>) -> i32 {
+    let output = run_output(args, config);
 
     output
         .status
@@ -214,4 +219,56 @@ fn non_ping_subcommands_keep_the_generic_failure_exit_code() {
     );
 
     assert_eq!(code, 1, "non-ping paths keep the generic exit code 1");
+}
+
+#[test]
+fn multi_server_commands_bypass_ssh_destination_validation() {
+    let config = empty_config();
+    let cases: &[(&[&str], &str)] = &[
+        (
+            &["--cluster", "missing", "hostname; uptime"],
+            "Cluster 'missing' not found",
+        ),
+        (
+            &["--cluster", "missing", "exec", "hostname; uptime"],
+            "Cluster 'missing' not found",
+        ),
+        (
+            &[
+                "-H",
+                "node1",
+                "--filter",
+                "does-not-match",
+                "echo user@host:2200 | cat",
+            ],
+            "No hosts matched the filter pattern",
+        ),
+        (
+            &[
+                "-H",
+                "node1",
+                "--filter",
+                "does-not-match",
+                "ssh://user@host:2200/command",
+            ],
+            "No hosts matched the filter pattern",
+        ),
+    ];
+
+    for (args, expected_error) in cases {
+        let output = run_output(args, Some(config.path()));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            !output.status.success(),
+            "{args:?} must fail before execution"
+        );
+        assert!(
+            stderr.contains(expected_error),
+            "{args:?} reached the wrong failure: {stderr}"
+        );
+        assert!(
+            !stderr.contains("hostname contains invalid characters"),
+            "{args:?} was parsed as an SSH destination: {stderr}"
+        );
+    }
 }
