@@ -5,6 +5,51 @@ All notable changes to bssh will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.1] - 2026-11-05
+
+### New Features
+
+None
+
+### Improvements
+
+- Sent `session-bind@openssh.com` on direct-authentication agent connections and, with forwarding enabled, on relayed forwarded-agent connections, so the direct phases of OpenSSH's `agent-restrict` test pass (#350).
+- Moved on to the next identity when an agent or local signer fails instead of aborting authentication, matching OpenSSH (#350).
+- Reworked initial host-key verification into two stages: trust and revocation are checked before key exchange completes without writing anything, then the negotiated key type is checked and trust is committed before authentication starts (#353).
+- Ran `KnownHostsCommand` once per connection and recorded known hosts through atomic updates that keep existing permissions and configured symlinks (#353).
+
+### Bug Fixes
+
+- Fixed cluster and `--hosts` commands containing spaces or shell syntax being parsed as SSH destinations and rejected by hostname validation (#351, #352).
+- Fixed external security-key provider errors losing the file and symbol detail after the libloading 0.9 upgrade (#349).
+- Fixed localhost integration tests that passed the SSH probe but failed transfers on a stale `known_hosts` entry, and stopped them from writing host keys into the user's `known_hosts` (#349).
+
+### CI/CD Improvements
+
+None
+
+### Technical Details
+
+- Moved server public-key policy to `SshHandler::authenticate_publickey` because russh 0.65 `Handler::auth_publickey` takes a `VerifiedPublicKey` (#350).
+- Adapted password hashing to argon2 0.6 `phc::PasswordHash` and replaced deprecated `AsyncFd::new` with `AsyncFd::register` in the server PTY and process stdin (#349).
+- Deferred TOFU file writes, process pins and key-rotation permission to the commit stage and rechecked concurrent changes under the existing locks; mismatched algorithms, curves and certificate types stay fail-closed (#353).
+
+### Dependencies
+
+- Upgraded `russh` from 0.64.1 to 0.65.1, which includes the security fixes released in 0.65.0 and 0.65.1 (#350, #353).
+- Upgraded dirs 7, rustyline 19, lru 0.19, base64 0.23, libloading 0.9, argon2 0.6 and opentelemetry 0.33, and refreshed the remaining compatible dependencies (#349, #350, #353).
+- Kept `ssh-key` 0.7.0-rc.11, `rsa` 0.10.0-rc.18, `pkcs1` 0.8.0-rc.4 and `generic-array` 0.14.7 where russh and crypto-common pin them (#350, #353).
+
+### Breaking Changes
+
+None
+
+### Known Issues
+
+- Host keys presented during rekey were still not re-verified, pending upstream russh support (#336).
+- Multihop destination-constrained agent authentication remained blocked because russh cannot send `publickey-hostbound-v00@openssh.com` (#327).
+- `cargo deny` still reported RUSTSEC-2023-0071 (rsa) and RUSTSEC-2024-0449 (unsafe-libyaml via serde_yaml).
+
 ## [3.1.0] - 2026-10-23
 
 ### New Features
@@ -1138,6 +1183,7 @@ None
 - russh library for native SSH implementation
 - Cross-platform support (Linux and macOS)
 
+[3.1.1]: https://github.com/lablup/bssh/compare/v3.1.0...v3.1.1
 [3.1.0]: https://github.com/lablup/bssh/compare/v3.0.1...v3.1.0
 [3.0.1]: https://github.com/lablup/bssh/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/lablup/bssh/compare/v2.4.3...v3.0.0

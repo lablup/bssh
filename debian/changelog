@@ -1,3 +1,13 @@
+bssh (3.1.1-1~jammy1) jammy; urgency=medium
+
+  * Fixed cluster commands containing spaces or shell syntax being rejected.
+  * Upgraded to russh 0.65.1 and reworked host-key verification into stages.
+  * Sent session-bind@openssh.com on direct and forwarded agent connections.
+  * Moved to the next identity when an agent or local signer fails.
+  * Refreshed dependencies including argon2 0.6, rustyline 19 and dirs 7.
+
+ -- Jeongkyu Shin <inureyes@gmail.com>  Thu, 05 Nov 2026 18:00:00 +0900
+
 bssh (3.1.0-1~jammy1) jammy; urgency=medium
 
   * Added FIDO security-key authentication, enrollment and resident key download.
