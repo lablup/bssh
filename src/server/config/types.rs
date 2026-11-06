@@ -236,9 +236,9 @@ pub struct UserDefinition {
     /// Username.
     pub name: String,
 
-    /// Password hash (bcrypt or similar).
+    /// Password hash.
     ///
-    /// Generate with: `openssl passwd -6`
+    /// Argon2id is recommended; generate it with `bssh-server hash-password`. bcrypt (`$2a$`, `$2b$`, `$2y$`) is accepted for compatibility. SHA-crypt hashes (`openssl passwd -5` / `-6`, `$5$` / `$6$`) and values copied from `/etc/shadow` are not supported and are rejected, so such a user cannot log in with a password.
     pub password_hash: String,
 
     /// Override shell for this user.
@@ -847,7 +847,7 @@ auth:
   password:
     users:
       - name: testuser
-        password_hash: "$6$rounds=656000$..."
+        password_hash: "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHQ$aGFzaA"
         shell: /bin/bash
 
 shell:

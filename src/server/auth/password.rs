@@ -182,6 +182,17 @@ impl PasswordVerifier {
             users.insert(user.name.clone(), user.clone());
         }
 
+        // Flag users that can never log in. The auth path already fails closed,
+        // this only surfaces the misconfiguration at load time. Never log the hash.
+        for (name, user) in &users {
+            if !is_supported_hash_format(&user.password_hash) {
+                tracing::warn!(
+                    user = %name,
+                    "Unsupported password hash format; supported formats are Argon2id (bssh-server hash-password) and bcrypt ($2a$/$2b$/$2y$). This user cannot log in with a password."
+                );
+            }
+        }
+
         let user_count = users.len();
         *self.users.write().await = users;
 
@@ -483,6 +494,17 @@ pub fn verify_password_hash(password: &str, hash: &str) -> Result<bool> {
         Err(argon2::password_hash::Error::PasswordInvalid) => Ok(false),
         Err(e) => Err(anyhow::anyhow!("Verification error: {}", e)),
     }
+}
+
+/// Check whether a stored hash is in a format the verifier can handle.
+///
+/// Mirrors the formats accepted by `verify_internal` (Argon2 and bcrypt) without
+/// changing its dispatch. Used only to warn at load time.
+fn is_supported_hash_format(hash: &str) -> bool {
+    if hash.starts_with("$argon2") {
+        return PasswordHash::new(hash).is_ok();
+    }
+    hash.starts_with("$2a$") || hash.starts_with("$2b$") || hash.starts_with("$2y$")
 }
 
 #[cfg(test)]
@@ -787,5 +809,71 @@ mod tests {
         let hash = hash_password(&password).unwrap();
         assert!(verify_password_hash(&password, &hash).unwrap());
         assert!(!verify_password_hash(&"a".repeat(999), &hash).unwrap());
+    }
+
+    #[test]
+    fn test_is_supported_hash_format() {
+        assert!(is_supported_hash_format(&hash_password("pw").unwrap()));
+        assert!(is_supported_hash_format(&bcrypt::hash("pw", 4).unwrap()));
+        for bad in [
+            "$6$rounds=5000$salt$hash",
+            "$5$salt$hash",
+            "*",
+            "!",
+            "",
+            "$argon2id$v=19$",
+        ] {
+            assert!(!is_supported_hash_format(bad), "should reject {bad:?}");
+        }
+    }
+
+    fn user_with_hash(name: &str, hash: String) -> UserDefinition {
+        UserDefinition {
+            name: name.to_string(),
+            password_hash: hash,
+            shell: None,
+            home: None,
+            env: HashMap::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_verifier_builds_with_unsupported_hashes() {
+        let users = vec![
+            user_with_hash("locked", "*".to_string()),
+            user_with_hash("shacrypt", "$6$rounds=5000$saltsalt$abc".to_string()),
+        ];
+        let verifier = PasswordVerifier::new(PasswordAuthConfig::with_users(users)).await;
+        assert!(verifier.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_unsupported_hashes_reject_all_password_lengths() {
+        let users = vec![
+            user_with_hash("star", "*".to_string()),
+            user_with_hash("bang", "!".to_string()),
+            user_with_hash("empty", String::new()),
+            user_with_hash("shacrypt", "$6$rounds=5000$saltsalt$abc".to_string()),
+            user_with_hash("argonuser", hash_password("argon_pw").unwrap()),
+            user_with_hash("bcryptuser", bcrypt::hash("bcrypt_pw", 4).unwrap()),
+        ];
+        let verifier = PasswordVerifier::new(PasswordAuthConfig::with_users(users))
+            .await
+            .unwrap();
+
+        for user in ["star", "bang", "empty", "shacrypt"] {
+            for len in [0usize, 1, 72, 256, 257, 1024] {
+                let pw = "a".repeat(len);
+                assert!(
+                    !verifier.verify(user, &pw).await.unwrap(),
+                    "user {user} must not authenticate with a password of length {len}"
+                );
+            }
+        }
+
+        assert!(verifier.verify("argonuser", "argon_pw").await.unwrap());
+        assert!(!verifier.verify("argonuser", "wrong").await.unwrap());
+        assert!(verifier.verify("bcryptuser", "bcrypt_pw").await.unwrap());
+        assert!(!verifier.verify("bcryptuser", "wrong").await.unwrap());
     }
 }
