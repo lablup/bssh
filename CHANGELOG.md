@@ -5,6 +5,16 @@ All notable changes to bssh will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Improvements
+
+- Logged a warning at load time for each server user whose `password_hash` is not Argon2id or bcrypt, instead of only at login attempts (#354).
+
+### Bug Fixes
+
+- Fixed the `UserDefinition::password_hash` documentation recommending `openssl passwd -6`, which produces a hash the server rejects (#354).
+
 ## [3.1.1] - 2026-11-05
 
 ### New Features
