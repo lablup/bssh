@@ -488,7 +488,7 @@ The generated hash includes:
 - Time cost: 2 iterations
 - Parallelism: 1
 
-Note: bcrypt hashes are also supported for backward compatibility with existing configurations.
+Note: bcrypt hashes are also supported for backward compatibility with existing configurations. SHA-crypt hashes (`$5$`, `$6$`, such as the output of `openssl passwd -6`) and values copied from `/etc/shadow` are not supported. The server logs a warning for each such user when it loads the configuration, and that user cannot log in with a password.
 
 ### Validate Configuration
 
