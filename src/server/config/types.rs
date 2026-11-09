@@ -239,7 +239,7 @@ pub struct UserDefinition {
     /// Password hash.
     ///
     /// Argon2id is recommended; generate it with `bssh-server hash-password`.
-    /// bcrypt (`$2a$`, `$2b$`, `$2y$`) is accepted for compatibility.
+    /// bcrypt (`$2a$`, `$2b$`, `$2x$`, `$2y$`) is accepted for compatibility.
     /// SHA-crypt hashes (`openssl passwd -5` / `-6`, `$5$` / `$6$`) and values
     /// copied from `/etc/shadow` are not supported and are rejected, so such a
     /// user cannot log in with a password.

@@ -114,6 +114,11 @@ pub struct PasswordVerifier {
     /// Pre-computed dummy hash for timing attack mitigation.
     /// This hash is verified against when the user doesn't exist.
     dummy_hash: String,
+
+    /// Number of `verify_dummy_hash` calls, used by tests to check that every
+    /// failure path does the same hashing work without relying on wall-clock time.
+    #[cfg(test)]
+    dummy_hash_calls: std::sync::atomic::AtomicUsize,
 }
 
 impl PasswordVerifier {
@@ -136,6 +141,8 @@ impl PasswordVerifier {
             config,
             users: RwLock::new(HashMap::new()),
             dummy_hash,
+            #[cfg(test)]
+            dummy_hash_calls: std::sync::atomic::AtomicUsize::new(0),
         };
 
         verifier.reload_users().await?;
@@ -188,7 +195,7 @@ impl PasswordVerifier {
             if !is_supported_hash_format(&user.password_hash) {
                 tracing::warn!(
                     user = %name,
-                    "Unsupported password hash format; supported formats are Argon2id (bssh-server hash-password) and bcrypt ($2a$/$2b$/$2y$). This user cannot log in with a password."
+                    "Unsupported password hash format; supported formats are Argon2id (bssh-server hash-password) and bcrypt ($2a$/$2b$/$2x$/$2y$). This user cannot log in with a password."
                 );
             }
         }
@@ -274,15 +281,25 @@ impl PasswordVerifier {
 
         // Try Argon2id first, then fall back to bcrypt for compatibility
         let verified = if hash_str.starts_with("$argon2") {
-            self.verify_argon2(password.as_bytes(), hash_str)?
+            match self.verify_argon2(password.as_bytes(), hash_str) {
+                Ok(v) => v,
+                Err(e) => {
+                    // Malformed hash fails fast; do the dummy work so the
+                    // response time matches users with a usable hash.
+                    let _ = self.verify_dummy_hash(password);
+                    return Err(e);
+                }
+            }
         } else if hash_str.starts_with("$2") {
-            // bcrypt hash format ($2a$, $2b$, $2y$)
+            // bcrypt hash format ($2a$, $2b$, $2x$, $2y$)
             self.verify_bcrypt(password, hash_str)?
         } else {
             tracing::warn!(
                 user = %validated_username,
                 "Unknown password hash format"
             );
+            // No hash work happened for this user; match the other failure paths.
+            let _ = self.verify_dummy_hash(password);
             return Ok(false);
         };
 
@@ -321,6 +338,8 @@ impl PasswordVerifier {
             Ok(verified) => Ok(verified),
             Err(e) => {
                 tracing::warn!(error = %e, "bcrypt verification error");
+                // Malformed hash fails before any hashing; do the dummy work.
+                let _ = self.verify_dummy_hash(password);
                 Ok(false)
             }
         }
@@ -331,6 +350,9 @@ impl PasswordVerifier {
     /// This ensures that verification takes the same amount of time
     /// regardless of whether the user exists.
     fn verify_dummy_hash(&self, password: &Zeroizing<String>) -> bool {
+        #[cfg(test)]
+        self.dummy_hash_calls
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // Verify against the pre-computed dummy hash
         if let Ok(hash) = PasswordHash::new(&self.dummy_hash) {
             let argon2 = Argon2::default();
@@ -504,7 +526,10 @@ fn is_supported_hash_format(hash: &str) -> bool {
     if hash.starts_with("$argon2") {
         return PasswordHash::new(hash).is_ok();
     }
-    hash.starts_with("$2a$") || hash.starts_with("$2b$") || hash.starts_with("$2y$")
+    hash.starts_with("$2a$")
+        || hash.starts_with("$2b$")
+        || hash.starts_with("$2x$")
+        || hash.starts_with("$2y$")
 }
 
 #[cfg(test)]
@@ -815,6 +840,7 @@ mod tests {
     fn test_is_supported_hash_format() {
         assert!(is_supported_hash_format(&hash_password("pw").unwrap()));
         assert!(is_supported_hash_format(&bcrypt::hash("pw", 4).unwrap()));
+        assert!(is_supported_hash_format(&bcrypt_2x_hash("pw2x")));
         for bad in [
             "$6$rounds=5000$salt$hash",
             "$5$salt$hash",
@@ -825,6 +851,12 @@ mod tests {
         ] {
             assert!(!is_supported_hash_format(bad), "should reject {bad:?}");
         }
+    }
+
+    /// Build a `$2x$` hash from a cost-4 bcrypt hash by swapping the version.
+    fn bcrypt_2x_hash(password: &str) -> String {
+        let hash = bcrypt::hash(password, 4).unwrap();
+        format!("$2x{}", &hash[3..])
     }
 
     fn user_with_hash(name: &str, hash: String) -> UserDefinition {
@@ -875,5 +907,97 @@ mod tests {
         assert!(!verifier.verify("argonuser", "wrong").await.unwrap());
         assert!(verifier.verify("bcryptuser", "bcrypt_pw").await.unwrap());
         assert!(!verifier.verify("bcryptuser", "wrong").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_bcrypt_2x_hash_verifies() {
+        let hash = bcrypt_2x_hash("pw2x");
+        assert!(hash.starts_with("$2x$"));
+        let users = vec![user_with_hash("legacy", hash)];
+        let verifier = PasswordVerifier::new(PasswordAuthConfig::with_users(users))
+            .await
+            .unwrap();
+        assert!(verifier.verify("legacy", "pw2x").await.unwrap());
+        assert!(!verifier.verify("legacy", "wrong").await.unwrap());
+    }
+
+    async fn dummy_calls_for(
+        verifier: &PasswordVerifier,
+        user: &str,
+        password: &str,
+    ) -> (usize, Result<bool>) {
+        use std::sync::atomic::Ordering;
+        let before = verifier.dummy_hash_calls.load(Ordering::Relaxed);
+        let result = verifier
+            .verify_internal(user, &Zeroizing::new(password.to_string()))
+            .await;
+        let after = verifier.dummy_hash_calls.load(Ordering::Relaxed);
+        (after - before, result)
+    }
+
+    #[tokio::test]
+    async fn test_unusable_hashes_run_dummy_hash_once() {
+        let truncated_bcrypt = format!("$2z$04${}", "A".repeat(53));
+        assert_eq!(truncated_bcrypt.len(), 60);
+        let unusable = [
+            ("star", "*".to_string()),
+            ("bang", "!".to_string()),
+            ("empty", String::new()),
+            ("shacrypt", "$6$rounds=5000$saltsalt$abc".to_string()),
+            ("badargon", "$argon2id$v=19$".to_string()),
+            ("badbcrypt", truncated_bcrypt),
+        ];
+        let mut users: Vec<UserDefinition> = unusable
+            .iter()
+            .map(|(n, h)| user_with_hash(n, h.clone()))
+            .collect();
+        users.push(user_with_hash(
+            "argonuser",
+            hash_password("argon_pw").unwrap(),
+        ));
+        users.push(user_with_hash(
+            "bcryptuser",
+            bcrypt::hash("bcrypt_pw", 4).unwrap(),
+        ));
+        let verifier = PasswordVerifier::new(PasswordAuthConfig::with_users(users))
+            .await
+            .unwrap();
+
+        for (name, _) in &unusable {
+            let (calls, result) = dummy_calls_for(&verifier, name, "any_password").await;
+            assert_eq!(calls, 1, "user {name} should trigger one dummy hash");
+            if *name == "badargon" {
+                assert!(result.is_err(), "malformed Argon2 must stay an error");
+            } else {
+                assert!(!result.unwrap());
+            }
+        }
+
+        let (calls, result) = dummy_calls_for(&verifier, "nosuchuser", "any_password").await;
+        assert_eq!(calls, 1);
+        assert!(!result.unwrap());
+
+        for (name, good, bad) in [
+            ("argonuser", "argon_pw", "wrong"),
+            ("bcryptuser", "bcrypt_pw", "wrong"),
+        ] {
+            let (calls, result) = dummy_calls_for(&verifier, name, good).await;
+            assert_eq!(calls, 0, "valid {name} must not run the dummy hash");
+            assert!(result.unwrap());
+            let (calls, result) = dummy_calls_for(&verifier, name, bad).await;
+            assert_eq!(calls, 0, "valid {name} must not run the dummy hash");
+            assert!(!result.unwrap());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_malformed_argon2_user_is_rejected() {
+        let users = vec![user_with_hash("badargon", "$argon2id$v=19$".to_string())];
+        let verifier = PasswordVerifier::new(PasswordAuthConfig::with_users(users))
+            .await
+            .unwrap();
+        assert!(verifier.verify("badargon", "pw").await.is_err());
+        let result = verifier.verify_password("badargon", "pw").await.unwrap();
+        assert!(matches!(result, AuthResult::Reject));
     }
 }
