@@ -322,6 +322,11 @@ impl PasswordVerifier {
     fn verify_argon2(&self, password: &[u8], hash_str: &str) -> Result<bool> {
         let hash = PasswordHash::new(hash_str)
             .map_err(|e| anyhow::anyhow!("Invalid Argon2 hash format: {}", e))?;
+        if !is_complete_argon2(&hash) {
+            // argon2 reports PasswordInvalid for these without hashing anything,
+            // so surface them as malformed to keep the dummy-hash timing path.
+            anyhow::bail!("Invalid Argon2 hash format: missing salt or hash output");
+        }
 
         let argon2 = Argon2::default();
 
@@ -524,12 +529,18 @@ pub fn verify_password_hash(password: &str, hash: &str) -> Result<bool> {
 /// changing its dispatch. Used only to warn at load time.
 fn is_supported_hash_format(hash: &str) -> bool {
     if hash.starts_with("$argon2") {
-        return PasswordHash::new(hash).is_ok();
+        return PasswordHash::new(hash).is_ok_and(|h| is_complete_argon2(&h));
     }
     hash.starts_with("$2a$")
         || hash.starts_with("$2b$")
         || hash.starts_with("$2x$")
         || hash.starts_with("$2y$")
+}
+
+/// An Argon2 PHC string can parse without a salt or hash output (for example
+/// `$argon2id`), but such a hash can never verify a password.
+fn is_complete_argon2(hash: &PasswordHash) -> bool {
+    hash.salt.is_some() && hash.hash.is_some()
 }
 
 #[cfg(test)]
@@ -848,6 +859,9 @@ mod tests {
             "!",
             "",
             "$argon2id$v=19$",
+            "$argon2id",
+            "$argon2id$v=19$m=19456,t=2,p=1",
+            "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHRzYWx0",
         ] {
             assert!(!is_supported_hash_format(bad), "should reject {bad:?}");
         }
@@ -937,15 +951,20 @@ mod tests {
 
     #[tokio::test]
     async fn test_unusable_hashes_run_dummy_hash_once() {
-        let truncated_bcrypt = format!("$2z$04${}", "A".repeat(53));
-        assert_eq!(truncated_bcrypt.len(), 60);
+        let bad_version_bcrypt = format!("$2z$04${}", "A".repeat(53));
+        assert_eq!(bad_version_bcrypt.len(), 60);
         let unusable = [
             ("star", "*".to_string()),
             ("bang", "!".to_string()),
             ("empty", String::new()),
             ("shacrypt", "$6$rounds=5000$saltsalt$abc".to_string()),
             ("badargon", "$argon2id$v=19$".to_string()),
-            ("badbcrypt", truncated_bcrypt),
+            ("nosalt", "$argon2id$v=19$m=19456,t=2,p=1".to_string()),
+            (
+                "nooutput",
+                "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHRzYWx0".to_string(),
+            ),
+            ("badbcrypt", bad_version_bcrypt),
         ];
         let mut users: Vec<UserDefinition> = unusable
             .iter()
@@ -966,7 +985,7 @@ mod tests {
         for (name, _) in &unusable {
             let (calls, result) = dummy_calls_for(&verifier, name, "any_password").await;
             assert_eq!(calls, 1, "user {name} should trigger one dummy hash");
-            if *name == "badargon" {
+            if ["badargon", "nosalt", "nooutput"].contains(name) {
                 assert!(result.is_err(), "malformed Argon2 must stay an error");
             } else {
                 assert!(!result.unwrap());
