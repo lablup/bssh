@@ -161,7 +161,7 @@ impl PasswordVerifier {
             match tokio::fs::read_to_string(path).await {
                 Ok(content) => {
                     let file_users: UsersFile =
-                        serde_yaml::from_str(&content).with_context(|| {
+                        serde_saphyr::from_str(&content).with_context(|| {
                             format!("Failed to parse users file: {}", path.display())
                         })?;
 

@@ -102,7 +102,7 @@ clusters:
     user: staging_user
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_saphyr::from_str(yaml).unwrap();
     assert_eq!(config.defaults.user, Some("admin".to_string()));
     assert_eq!(config.clusters.len(), 2);
 
@@ -160,7 +160,7 @@ clusters:
       - host2
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_saphyr::from_str(yaml).unwrap();
 
     // Test cluster with override - merged config
     let with_override = config.get_interactive_config(Some("with_override"));
@@ -240,7 +240,7 @@ clusters:
         user: detailed-user
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_saphyr::from_str(yaml).unwrap();
     let nodes = config.resolve_nodes("ipv6").unwrap();
 
     assert_eq!(
@@ -271,7 +271,7 @@ clusters:
       - host: prod2.internal
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_saphyr::from_str(yaml).unwrap();
 
     // Both nodes should inherit global jump_host
     assert_eq!(
@@ -308,7 +308,7 @@ clusters:
       - host: staging1.internal
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_saphyr::from_str(yaml).unwrap();
 
     // production cluster nodes should use cluster jump_host
     assert_eq!(
@@ -354,7 +354,7 @@ clusters:
     jump_host: prod-bastion.example.com
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_saphyr::from_str(yaml).unwrap();
 
     // prod1 should use node-level jump_host
     assert_eq!(
@@ -395,7 +395,7 @@ clusters:
     jump_host: ""
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_saphyr::from_str(yaml).unwrap();
 
     // prod1 should use cluster jump_host
     assert_eq!(
@@ -425,7 +425,7 @@ clusters:
       - host: prod1.internal
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_saphyr::from_str(yaml).unwrap();
 
     // No jump_host configured anywhere
     assert_eq!(config.get_jump_host("production", 0), None);
@@ -445,7 +445,7 @@ clusters:
       - host: prod1.internal
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_saphyr::from_str(yaml).unwrap();
 
     // Nonexistent cluster should return global default from get_cluster_jump_host
     assert_eq!(
@@ -473,7 +473,7 @@ clusters:
     jump_host: prod-bastion.example.com
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_saphyr::from_str(yaml).unwrap();
 
     // Simple node (string) should inherit cluster jump_host
     // Simple nodes cannot have node-level jump_host override
@@ -503,7 +503,7 @@ clusters:
     jump_host: ${TEST_BASTION_HOST}:${TEST_BASTION_PORT}
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_saphyr::from_str(yaml).unwrap();
 
     // Node-level with $VAR syntax
     assert_eq!(
@@ -537,7 +537,7 @@ clusters:
     jump_host: prod-bastion.example.com
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_saphyr::from_str(yaml).unwrap();
 
     // Node at index 0 exists - should use cluster jump_host
     assert_eq!(
@@ -575,7 +575,7 @@ clusters:
     jump_host: prod-bastion.example.com
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_saphyr::from_str(yaml).unwrap();
 
     // Simple node at index 0 - inherits cluster jump_host
     assert_eq!(
@@ -617,7 +617,7 @@ clusters:
     jump_host: cluster-bastion:4444
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_saphyr::from_str(yaml).unwrap();
 
     // Node with port in jump_host
     assert_eq!(
@@ -653,7 +653,7 @@ clusters:
     jump_host: bastion1,bastion2
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_saphyr::from_str(yaml).unwrap();
 
     // Node with multi-hop jump_host
     assert_eq!(

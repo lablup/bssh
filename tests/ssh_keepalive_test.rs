@@ -513,7 +513,7 @@ clusters:
       - host: dev1.example.com
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_saphyr::from_str(yaml).unwrap();
 
     // Production cluster has override (flattened into cluster level)
     let interval = config.get_server_alive_interval(Some("production"));
@@ -560,7 +560,7 @@ clusters:
       - host: dev1.example.com
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_saphyr::from_str(yaml).unwrap();
 
     // Production cluster has override (flattened into cluster level)
     let count = config.get_server_alive_count_max(Some("production"));
@@ -594,7 +594,7 @@ clusters:
       - host: node1.example.com
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_saphyr::from_str(yaml).unwrap();
 
     let interval = config.get_server_alive_interval(Some("minimal"));
     assert_eq!(interval, None, "Should return None when not configured");
