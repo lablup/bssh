@@ -145,7 +145,7 @@ pub fn generate_config_template() -> String {
     yaml.push_str("# 4. Default values\n\n");
 
     // Serialize config with defaults
-    yaml.push_str(&serde_yaml::to_string(&config).unwrap_or_default());
+    yaml.push_str(&serde_saphyr::to_string(&config).unwrap_or_default());
 
     yaml
 }
@@ -159,7 +159,7 @@ fn load_config_file(path: &Path) -> Result<ServerFileConfig> {
     let content =
         std::fs::read_to_string(path).context(format!("Failed to read {}", path.display()))?;
 
-    serde_yaml::from_str(&content).context(format!("Failed to parse {}", path.display()))
+    serde_saphyr::from_str(&content).context(format!("Failed to parse {}", path.display()))
 }
 
 /// Check configuration file permissions on Unix systems.
@@ -453,7 +453,7 @@ mod tests {
         assert!(template.contains("shell:"));
 
         // Template should be valid YAML
-        let parsed: Result<ServerFileConfig, _> = serde_yaml::from_str(&template);
+        let parsed: Result<ServerFileConfig, _> = serde_saphyr::from_str(&template);
         assert!(parsed.is_ok());
     }
 

@@ -749,12 +749,12 @@ mod tests {
             .with_env("LANG", "C.UTF-8");
 
         // Test serialization
-        let yaml = serde_yaml::to_string(&config).unwrap();
+        let yaml = serde_saphyr::to_string(&config).unwrap();
         assert!(yaml.contains("/bin/bash"));
         assert!(yaml.contains("1800"));
 
         // Test deserialization
-        let deserialized: ExecConfig = serde_yaml::from_str(&yaml).unwrap();
+        let deserialized: ExecConfig = serde_saphyr::from_str(&yaml).unwrap();
         assert_eq!(deserialized.default_shell, PathBuf::from("/bin/bash"));
         assert_eq!(deserialized.timeout_secs, 1800);
         assert_eq!(deserialized.env.get("LANG"), Some(&"C.UTF-8".to_string()));

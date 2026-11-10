@@ -50,7 +50,7 @@ clusters:
 "#;
 
     // This should not panic even with non-existent environment variables
-    let config: Result<Config, _> = serde_yaml::from_str(yaml);
+    let config: Result<Config, _> = serde_saphyr::from_str(yaml);
     assert!(
         config.is_ok(),
         "Config parsing should handle missing environment variables gracefully"

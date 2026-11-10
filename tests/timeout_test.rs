@@ -17,7 +17,7 @@ clusters:
       - host2.example.com
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_saphyr::from_str(yaml).unwrap();
 
     // Test default timeout
     assert_eq!(config.defaults.timeout, Some(120));
@@ -44,7 +44,7 @@ clusters:
       - host1.example.com
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_saphyr::from_str(yaml).unwrap();
 
     // Test no timeout configured anywhere
     assert_eq!(config.defaults.timeout, None);
@@ -63,7 +63,7 @@ clusters:
       - host1.example.com
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_saphyr::from_str(yaml).unwrap();
 
     // Test timeout 0 (unlimited)
     assert_eq!(config.defaults.timeout, Some(0));

@@ -779,40 +779,40 @@ server:
   port: 2222
   compression: true
 "#;
-        let config: ServerFileConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: ServerFileConfig = serde_saphyr::from_str(yaml).unwrap();
         assert!(config.server.compression);
 
         let yaml = r#"
 server:
   port: 2222
 "#;
-        let config: ServerFileConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: ServerFileConfig = serde_saphyr::from_str(yaml).unwrap();
         assert!(!config.server.compression);
     }
 
     #[test]
     fn test_auth_method_serialization() {
         let yaml = "publickey";
-        let method: AuthMethod = serde_yaml::from_str(yaml).unwrap();
+        let method: AuthMethod = serde_saphyr::from_str(yaml).unwrap();
         assert_eq!(method, AuthMethod::PublicKey);
 
         let yaml = "password";
-        let method: AuthMethod = serde_yaml::from_str(yaml).unwrap();
+        let method: AuthMethod = serde_saphyr::from_str(yaml).unwrap();
         assert_eq!(method, AuthMethod::Password);
     }
 
     #[test]
     fn test_filter_action_serialization() {
         let yaml = "allow";
-        let action: FilterAction = serde_yaml::from_str(yaml).unwrap();
+        let action: FilterAction = serde_saphyr::from_str(yaml).unwrap();
         matches!(action, FilterAction::Allow);
 
         let yaml = "deny";
-        let action: FilterAction = serde_yaml::from_str(yaml).unwrap();
+        let action: FilterAction = serde_saphyr::from_str(yaml).unwrap();
         matches!(action, FilterAction::Deny);
 
         let yaml = "log";
-        let action: FilterAction = serde_yaml::from_str(yaml).unwrap();
+        let action: FilterAction = serde_saphyr::from_str(yaml).unwrap();
         matches!(action, FilterAction::Log);
     }
 
@@ -824,7 +824,7 @@ server:
   host_keys:
     - /etc/bssh/host_key
 "#;
-        let config: ServerFileConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: ServerFileConfig = serde_saphyr::from_str(yaml).unwrap();
         assert_eq!(config.server.port, 2222);
         assert_eq!(config.server.host_keys.len(), 1);
     }
@@ -866,7 +866,7 @@ security:
   allowed_ips:
     - "192.168.1.0/24"
 "#;
-        let config: ServerFileConfig = serde_yaml::from_str(yaml).unwrap();
+        let config: ServerFileConfig = serde_saphyr::from_str(yaml).unwrap();
         assert_eq!(config.server.bind_address, "127.0.0.1");
         assert_eq!(config.server.port, 2223);
         assert_eq!(config.server.host_keys.len(), 2);

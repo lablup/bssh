@@ -47,7 +47,7 @@ clusters:
       - host: b1.internal
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_saphyr::from_str(yaml).unwrap();
 
     // All clusters should inherit global jump_host
     assert_eq!(
@@ -78,7 +78,7 @@ clusters:
       - host: node2.internal
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_saphyr::from_str(yaml).unwrap();
 
     // Cluster with override should use cluster jump_host
     assert_eq!(
@@ -111,7 +111,7 @@ clusters:
     jump_host: cluster-bastion.example.com
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_saphyr::from_str(yaml).unwrap();
 
     // Node 0 has override
     assert_eq!(
@@ -153,7 +153,7 @@ clusters:
     jump_host: cluster-bastion.example.com
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_saphyr::from_str(yaml).unwrap();
 
     // Cluster with empty jump_host should have no jump_host
     assert_eq!(config.get_cluster_jump_host(Some("direct_access")), None);
@@ -188,7 +188,7 @@ clusters:
     jump_host: $BSSH_TEST_BASTION:$BSSH_TEST_PORT
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_saphyr::from_str(yaml).unwrap();
 
     // Global default with env var
     assert_eq!(
@@ -222,7 +222,7 @@ clusters:
       - host: node1.internal
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_saphyr::from_str(yaml).unwrap();
 
     // Should preserve full user@host:port format
     assert_eq!(
@@ -244,7 +244,7 @@ clusters:
       - host: node1.internal
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_saphyr::from_str(yaml).unwrap();
 
     // Should preserve multi-hop chain
     assert_eq!(
@@ -270,7 +270,7 @@ clusters:
     ssh_key: ~/.ssh/prod_key
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_saphyr::from_str(yaml).unwrap();
 
     // Should work without jump_host configured
     assert_eq!(config.get_cluster_jump_host(Some("production")), None);
@@ -302,7 +302,7 @@ clusters:
     jump_host: cluster-level.example.com
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_saphyr::from_str(yaml).unwrap();
 
     // Node 0: node-level takes priority
     assert_eq!(
@@ -338,7 +338,7 @@ clusters:
     jump_host: cluster-bastion.example.com
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).unwrap();
+    let config: Config = serde_saphyr::from_str(yaml).unwrap();
 
     // Both simple nodes should inherit cluster jump_host
     assert_eq!(
@@ -364,7 +364,7 @@ clusters:
     jump_host: bastion.example.com
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).expect("Failed to parse config");
+    let config: Config = serde_saphyr::from_str(yaml).expect("Failed to parse config");
     let cluster = config.get_cluster("test").expect("Cluster not found");
 
     match &cluster.defaults.jump_host {
@@ -390,7 +390,7 @@ clusters:
       ssh_key: ~/.ssh/bastion_key
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).expect("Failed to parse config");
+    let config: Config = serde_saphyr::from_str(yaml).expect("Failed to parse config");
     let cluster = config.get_cluster("test").expect("Cluster not found");
 
     match &cluster.defaults.jump_host {
@@ -421,7 +421,7 @@ clusters:
       host: bastion.example.com
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).expect("Failed to parse config");
+    let config: Config = serde_saphyr::from_str(yaml).expect("Failed to parse config");
     let cluster = config.get_cluster("test").expect("Cluster not found");
 
     match &cluster.defaults.jump_host {
@@ -454,7 +454,7 @@ clusters:
       ssh_key: ~/.ssh/jump_key
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).expect("Failed to parse config");
+    let config: Config = serde_saphyr::from_str(yaml).expect("Failed to parse config");
     let (conn_str, ssh_key) = config
         .get_cluster_jump_host_with_key(Some("test"))
         .expect("Jump host not found");
@@ -475,7 +475,7 @@ clusters:
     jump_host: bastion.example.com
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).expect("Failed to parse config");
+    let config: Config = serde_saphyr::from_str(yaml).expect("Failed to parse config");
     let (conn_str, ssh_key) = config
         .get_cluster_jump_host_with_key(Some("test"))
         .expect("Jump host not found");
@@ -498,7 +498,7 @@ clusters:
     jump_host: default-bastion.example.com
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).expect("Failed to parse config");
+    let config: Config = serde_saphyr::from_str(yaml).expect("Failed to parse config");
     let (conn_str, ssh_key) = config
         .get_jump_host_with_key("test", 0)
         .expect("Jump host not found");
@@ -525,7 +525,7 @@ clusters:
       ssh_key: ${TEST_JUMP_KEY}
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).expect("Failed to parse config");
+    let config: Config = serde_saphyr::from_str(yaml).expect("Failed to parse config");
     let (conn_str, ssh_key) = config
         .get_cluster_jump_host_with_key(Some("test"))
         .expect("Jump host not found");
@@ -554,7 +554,7 @@ clusters:
       ssh_key: ~/.ssh/bastion2_key
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).expect("Failed to parse config");
+    let config: Config = serde_saphyr::from_str(yaml).expect("Failed to parse config");
 
     // Test legacy format
     let (conn_str1, ssh_key1) = config
@@ -650,7 +650,7 @@ clusters:
       ssh_config_host: bastion
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).expect("Failed to parse config");
+    let config: Config = serde_saphyr::from_str(yaml).expect("Failed to parse config");
     let cluster = config.get_cluster("test").expect("Cluster not found");
 
     match &cluster.defaults.jump_host {
@@ -672,7 +672,7 @@ clusters:
     jump_host: "@bastion"
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).expect("Failed to parse config");
+    let config: Config = serde_saphyr::from_str(yaml).expect("Failed to parse config");
     let cluster = config.get_cluster("test").expect("Cluster not found");
 
     match &cluster.defaults.jump_host {
@@ -868,7 +868,7 @@ clusters:
     jump_host: "@bastion"
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).expect("Failed to parse config");
+    let config: Config = serde_saphyr::from_str(yaml).expect("Failed to parse config");
 
     let ssh_config_content = r#"
 Host bastion
@@ -907,7 +907,7 @@ clusters:
       ssh_config_host: gateway
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).expect("Failed to parse config");
+    let config: Config = serde_saphyr::from_str(yaml).expect("Failed to parse config");
 
     let ssh_config_content = r#"
 Host gateway
@@ -939,7 +939,7 @@ clusters:
     jump_host: "@default-bastion"
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).expect("Failed to parse config");
+    let config: Config = serde_saphyr::from_str(yaml).expect("Failed to parse config");
 
     let ssh_config_content = r#"
 Host default-bastion
@@ -985,7 +985,7 @@ clusters:
     jump_host: direct-bastion.example.com
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).expect("Failed to parse config");
+    let config: Config = serde_saphyr::from_str(yaml).expect("Failed to parse config");
 
     let ssh_config_content = r#"
 Host global-bastion
@@ -1018,7 +1018,7 @@ clusters:
     jump_host: "@nonexistent-bastion"
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).expect("Failed to parse config");
+    let config: Config = serde_saphyr::from_str(yaml).expect("Failed to parse config");
 
     let ssh_config_content = r#"
 Host some-other-host
@@ -1064,7 +1064,7 @@ clusters:
       ssh_config_host: gateway
 "#;
 
-    let config: Config = serde_yaml::from_str(yaml).expect("Failed to parse config");
+    let config: Config = serde_saphyr::from_str(yaml).expect("Failed to parse config");
 
     let ssh_config_content = r#"
 Host bastion

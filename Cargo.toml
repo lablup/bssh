@@ -43,7 +43,7 @@ thiserror = "2.0.21"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 serde = { version = "1.0.229", features = ["derive"] }
-serde_yaml = "0.9"
+serde-saphyr = "2.1.1"
 futures = "0.3.34"
 async-trait = "0.1.92"
 indicatif = "0.18.6"

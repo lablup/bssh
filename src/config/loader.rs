@@ -41,7 +41,7 @@ impl Config {
             .with_context(|| format!("Failed to read configuration file at {}. Please check file permissions and ensure the file is accessible.", expanded_path.display()))?;
 
         let config: Config =
-            serde_yaml::from_str(&content).with_context(|| format!("Failed to parse YAML configuration file at {}. Please check the YAML syntax is valid.\nCommon issues:\n  - Incorrect indentation (use spaces, not tabs)\n  - Missing colons after keys\n  - Unquoted special characters", expanded_path.display()))?;
+            serde_saphyr::from_str(&content).with_context(|| format!("Failed to parse YAML configuration file at {}. Please check the YAML syntax is valid.\nCommon issues:\n  - Incorrect indentation (use spaces, not tabs)\n  - Missing colons after keys\n  - Unquoted special characters", expanded_path.display()))?;
 
         Ok(config)
     }
@@ -194,7 +194,7 @@ impl Config {
         }
 
         let yaml =
-            serde_yaml::to_string(self).context("Failed to serialize configuration to YAML")?;
+            serde_saphyr::to_string(self).context("Failed to serialize configuration to YAML")?;
 
         fs::write(&expanded_path, yaml)
             .await

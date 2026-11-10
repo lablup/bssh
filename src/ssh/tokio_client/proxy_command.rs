@@ -550,7 +550,7 @@ mod tests {
             } else {
                 yaml.replace("        user: alice\n", "")
             };
-            let inventory: crate::config::Config = serde_yaml::from_str(&yaml).unwrap();
+            let inventory: crate::config::Config = serde_saphyr::from_str(&yaml).unwrap();
             let nodes = inventory.resolve_nodes("test").unwrap();
             let node = &nodes[0];
             let proxy = ProxyCommandConfig::new("cat %h %r", "inventory-alias");
@@ -576,7 +576,7 @@ mod tests {
                         "clusters:\n  test:\n    nodes:\n      - host: target\n        user: '${{{PAYLOAD_ENV}}}'\n"
                     )
                 };
-                let inventory: crate::config::Config = serde_yaml::from_str(&yaml).unwrap();
+                let inventory: crate::config::Config = serde_saphyr::from_str(&yaml).unwrap();
                 let nodes = inventory.resolve_nodes("test").unwrap();
                 let node = &nodes[0];
                 assert_eq!(
