@@ -73,7 +73,7 @@ jobs:
 
           # macOS ARM64
           - target: aarch64-apple-darwin
-            os: macos-14
+            os: macos-26
             artifact_name: bssh
             asset_name: bssh-macos-aarch64
             asset_suffix: macos-aarch64
