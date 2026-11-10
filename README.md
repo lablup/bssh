@@ -12,6 +12,7 @@ A high-performance SSH client with **SSH-compatible syntax** for both single-hos
 
 ## Recent Updates
 
+- **v3.1.2 (2026/11/10):** Fixed the server password verifier so unusable or malformed stored hashes take the same dummy-hash path as unknown users, and added a load-time warning for users whose hash format cannot log in (SHA-crypt, `/etc/shadow` values).
 - **v3.1.1 (2026/11/05):** Fixed cluster and `--hosts` commands containing spaces or shell syntax being parsed as SSH destinations, upgraded to russh 0.65.1 with its security fixes and staged host-key verification, and sent `session-bind@openssh.com` on agent connections.
 - **v3.1.0 (2026/10/23):** Added FIDO security-key authentication and enrollment, direct ICMP network ping, host-certificate verification and Unix-socket forwarding; fixed upload backpressure, enabled macOS Keychain support, and hardened SSH command expansion.
 

@@ -5,6 +5,46 @@ All notable changes to bssh will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.2] - 2026-11-10
+
+### New Features
+
+None
+
+### Improvements
+
+- Warned at server configuration load time, once per user and without logging the hash, when a user's `password_hash` uses a format the verifier rejects, such as SHA-crypt (`$5$`, `$6$`) or `/etc/shadow` placeholders (`*`, `!`, empty). Loading continues and those users still cannot log in (#354, #355).
+- Documented that server password hashes must be Argon2id (`bssh-server hash-password`) or bcrypt (`$2a$`, `$2b$`, `$2x$`, `$2y$`) in the `UserDefinition::password_hash` rustdoc and `docs/architecture/server-configuration.md` (#355, #357).
+
+### Bug Fixes
+
+- Fixed password authentication returning faster for users with an unusable stored hash (unsupported format, malformed Argon2 or malformed bcrypt) than for users with a real hash; these attempts now run the same dummy hash as unknown users. Login outcomes are unchanged (#356, #357).
+- Fixed Argon2 PHC strings without a salt or hash output (for example `$argon2id$v=19$m=19456,t=2,p=1`) being reported as a wrong password without hashing; they are now treated as malformed, warned at load time and take the dummy-hash path (#357).
+- Fixed the load-time warning flagging `$2x$` bcrypt hashes, which log in successfully (#357).
+
+### CI/CD Improvements
+
+None
+
+### Technical Details
+
+- Added a private `is_supported_hash_format` check in `src/server/auth/password.rs`, called by `reload_users` after inline overrides are applied (#355).
+- Added regression tests for the Alpine OpenSSH bypass attack shape over `*`, `!`, empty and `$6$` hashes with password lengths from 0 to 1024, and a test-only call counter on `PasswordVerifier` that asserts exactly one dummy hash per unusable-hash or unknown-user attempt without wall-clock assertions (#355, #357).
+
+### Dependencies
+
+None
+
+### Breaking Changes
+
+None
+
+### Known Issues
+
+- Host keys presented during rekey were still not re-verified, pending upstream russh support (#336).
+- Multihop destination-constrained agent authentication remained blocked because russh cannot send `publickey-hostbound-v00@openssh.com` (#327).
+- `cargo deny` still reported RUSTSEC-2023-0071 (rsa) and RUSTSEC-2024-0449 (unsafe-libyaml via serde_yaml).
+
 ## [3.1.1] - 2026-11-05
 
 ### New Features
@@ -1183,6 +1223,7 @@ None
 - russh library for native SSH implementation
 - Cross-platform support (Linux and macOS)
 
+[3.1.2]: https://github.com/lablup/bssh/compare/v3.1.1...v3.1.2
 [3.1.1]: https://github.com/lablup/bssh/compare/v3.1.0...v3.1.1
 [3.1.0]: https://github.com/lablup/bssh/compare/v3.0.1...v3.1.0
 [3.0.1]: https://github.com/lablup/bssh/compare/v3.0.0...v3.0.1

@@ -1,3 +1,12 @@
+bssh (3.1.2-1~jammy1) jammy; urgency=medium
+
+  * Warned at load time about server users whose password hash cannot log in.
+  * Ran a dummy hash for unusable and malformed stored password hashes.
+  * Treated Argon2 hashes without a salt or hash output as malformed.
+  * Documented the supported server password hash formats.
+
+ -- Jeongkyu Shin <inureyes@gmail.com>  Tue, 10 Nov 2026 18:00:00 +0900
+
 bssh (3.1.1-1~jammy1) jammy; urgency=medium
 
   * Fixed cluster commands containing spaces or shell syntax being rejected.
