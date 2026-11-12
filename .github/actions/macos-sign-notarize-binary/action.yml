@@ -208,7 +208,7 @@ runs:
 
         KEY_FILE="$RUNNER_TEMP/AuthKey.p8"
         # Wipe the key on every exit path, not only the success one.
-        cleanup() { rm -f "$KEY_FILE"; }
+        cleanup() { rm -f "$KEY_FILE" "$KEY_FILE.pem"; }
         trap cleanup EXIT
 
         # The secret holds the .p8 base64-encoded. A raw .p8 pasted verbatim is
@@ -222,10 +222,42 @@ runs:
         fi
         chmod 600 "$KEY_FILE"
 
+        # notarytool on macOS 26 fails with "invalidPEMDocument" unless the key
+        # file is well-formed PEM; the macOS 14 one also took a PEM whose line
+        # breaks were lost (spaces or CRLF) and a DER key. Rebuild a canonical
+        # PKCS#8 PEM from either form: the body between the markers with all
+        # whitespace removed and wrapped at 64 columns, or the DER converted.
+        if grep -q 'BEGIN PRIVATE KEY' "$KEY_FILE"; then
+          # Only the text between the markers is the key; anything around them
+          # is ignored (RFC 7468), such as the "%" zsh prints after a file
+          # with no trailing newline when the key was copied from `cat`.
+          # Literal "\n" / "\r" escapes (a key copied out of JSON) are dropped
+          # too; a backslash never occurs in base64.
+          PEM_BODY=$(cat "$KEY_FILE")
+          PEM_BODY=${PEM_BODY#*-----BEGIN PRIVATE KEY-----}
+          PEM_BODY=${PEM_BODY%%-----END PRIVATE KEY-----*}
+          PEM_BODY=$(printf '%s' "$PEM_BODY" | sed -e 's/\\[nr]//g' | tr -d '[:space:]')
+          # Shape only, never key material: characters outside the base64
+          # alphabet, the body length, and whether it opens with the fixed
+          # PKCS#8 prefix every App Store Connect P-256 key shares.
+          BAD_CHARS=$(printf '%s' "$PEM_BODY" | tr -d 'A-Za-z0-9+/=' | fold -w1 | sort -u | tr -d '\n')
+          case "$PEM_BODY" in MIGTAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBHkwdwIBAQQg*) P256_PREFIX=yes ;; *) P256_PREFIX=no ;; esac
+          echo "AC_API_PRIVATE_KEY_P8 PEM body: ${#PEM_BODY} base64 chars, non-base64 chars: '${BAD_CHARS}', P-256 PKCS#8 prefix: $P256_PREFIX"
+          (umask 077; { echo '-----BEGIN PRIVATE KEY-----'; printf '%s' "$PEM_BODY" | fold -w 64; echo; echo '-----END PRIVATE KEY-----'; } > "$KEY_FILE.pem")
+          unset PEM_BODY
+          mv "$KEY_FILE.pem" "$KEY_FILE"
+        elif command -v openssl >/dev/null 2>&1 && openssl pkey -inform DER -in "$KEY_FILE" -noout 2>/dev/null; then
+          (umask 077; openssl pkey -inform DER -in "$KEY_FILE" -out "$KEY_FILE.pem")
+          mv "$KEY_FILE.pem" "$KEY_FILE"
+          echo "AC_API_PRIVATE_KEY_P8 decoded to a DER key; converted it to PEM for notarytool"
+        fi
+
         # Say so here rather than letting notarytool report "invalidAsn1" much
-        # later, which names neither the secret nor the encoding.
+        # later, which names neither the secret nor the encoding. The details
+        # describe the shape of the decoded secret without revealing it.
         if command -v openssl >/dev/null 2>&1 && ! openssl pkey -in "$KEY_FILE" -noout 2>/dev/null; then
-          echo "::warning::AC_API_PRIVATE_KEY_P8 did not parse as a PKCS#8 private key after decoding; notarization will likely fail. Re-store it as base64 of the .p8 file (base64 -i AuthKey_XXXX.p8 | pbcopy)."
+          if grep -q 'BEGIN PRIVATE KEY' "$KEY_FILE"; then HAS_MARKER=yes; else HAS_MARKER=no; fi
+          echo "::warning::AC_API_PRIVATE_KEY_P8 did not parse as a PKCS#8 private key after decoding (decoded to $(wc -c < "$KEY_FILE" | tr -d ' ') bytes of $(file -b "$KEY_FILE" | cut -d, -f1), PEM marker: $HAS_MARKER); notarization will likely fail. Re-store it as base64 of the .p8 file (base64 -i AuthKey_XXXX.p8 | pbcopy)."
         fi
 
         # `--issuer` belongs to a Team key and must be omitted for an
