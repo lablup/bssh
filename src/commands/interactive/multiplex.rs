@@ -16,7 +16,6 @@
 
 use crate::ui::Colorize;
 use anyhow::Result;
-use chrono;
 use rustyline::DefaultEditor;
 use rustyline::config::Configurer;
 use rustyline::error::ReadlineError;
@@ -262,7 +261,7 @@ impl InteractiveCommand {
                                             // Print output with node prefix and optional timestamp
                                             for line in output.lines() {
                                                 if self.interactive_config.show_timestamps {
-                                                    let timestamp = chrono::Local::now().format("%H:%M:%S");
+                                                    let timestamp = jiff::ZonedDateTime::now().strftime("%H:%M:%S");
                                                     println!(
                                                         "[{} {}] {}",
                                                         timestamp.to_string().dimmed(),

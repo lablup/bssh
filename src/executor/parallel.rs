@@ -1769,7 +1769,7 @@ impl ParallelExecutor {
             output_dir.display()
         );
 
-        let timestamp = chrono::Utc::now().format("%Y%m%d_%H%M%S");
+        let timestamp = jiff::Timestamp::now().strftime("%Y%m%d_%H%M%S");
 
         let mut pending_handles = handles;
         let mut first_ctrl_c = false;

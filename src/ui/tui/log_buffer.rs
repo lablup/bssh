@@ -17,7 +17,7 @@
 //! This module provides a thread-safe buffer for capturing log entries
 //! during TUI mode, preventing logs from breaking the ratatui alternate screen.
 
-use chrono::{DateTime, Local};
+use jiff::ZonedDateTime;
 use std::collections::VecDeque;
 use tracing::Level;
 
@@ -40,7 +40,7 @@ pub struct LogEntry {
     /// Log message content
     pub message: String,
     /// Timestamp when the log was captured
-    pub timestamp: DateTime<Local>,
+    pub timestamp: ZonedDateTime,
 }
 
 impl LogEntry {
@@ -50,7 +50,7 @@ impl LogEntry {
             level,
             target,
             message,
-            timestamp: Local::now(),
+            timestamp: ZonedDateTime::now(),
         }
     }
 
@@ -82,7 +82,7 @@ impl LogEntry {
         };
         format!(
             "{} [{}] {}: {}",
-            self.timestamp.format("%H:%M:%S"),
+            self.timestamp.strftime("%H:%M:%S"),
             level_str,
             self.target.rsplit("::").next().unwrap_or(&self.target),
             self.message
