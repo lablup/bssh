@@ -18,7 +18,7 @@
 //! and 0, 3, 6, or 9 fractional-second digits: the shortest of those widths
 //! that represents the instant exactly. This is the format bssh has always
 //! written, so downstream log consumers see no change. Deserialization accepts
-//! any RFC 3339 timestamp, with any number of fractional digits and any offset.
+//! any RFC 3339 timestamp with up to 9 fractional digits and any offset.
 
 use jiff::Timestamp;
 use jiff::fmt::temporal::DateTimePrinter;
