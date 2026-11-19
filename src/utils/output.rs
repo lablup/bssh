@@ -31,7 +31,7 @@ pub async fn save_outputs_to_files(
         .with_context(|| format!("Failed to create output directory: {output_dir:?}"))?;
 
     // Get timestamp for unique file naming
-    let timestamp = chrono::Local::now().format("%Y%m%d_%H%M%S");
+    let timestamp = jiff::ZonedDateTime::now().strftime("%Y%m%d_%H%M%S");
 
     println!(
         "\n{} {} {:?}\n",

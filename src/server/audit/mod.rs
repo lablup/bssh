@@ -51,6 +51,7 @@ pub mod exporter;
 pub mod file;
 pub mod logstash;
 pub mod otel;
+mod timestamp;
 
 use anyhow::Result;
 use std::sync::Arc;

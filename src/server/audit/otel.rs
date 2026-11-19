@@ -141,7 +141,10 @@ impl OtelExporter {
             event.event_type, event.user, event.result
         );
 
-        record.set_timestamp(event.timestamp.into());
+        record.set_timestamp(
+            std::time::SystemTime::try_from(event.timestamp)
+                .unwrap_or_else(|_| std::time::SystemTime::now()),
+        );
         record.set_observed_timestamp(std::time::SystemTime::now());
         record.set_severity_number(severity);
         record.set_severity_text(severity_to_str(severity));

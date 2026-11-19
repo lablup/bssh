@@ -17,7 +17,7 @@
 //! This module defines the core audit event types used throughout the SSH server
 //! to track authentication, file operations, and other security-relevant activities.
 
-use chrono::{DateTime, Utc};
+use jiff::Timestamp;
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 use std::path::PathBuf;
@@ -31,8 +31,9 @@ pub struct AuditEvent {
     /// Unique event identifier
     pub id: String,
 
-    /// Timestamp when the event occurred
-    pub timestamp: DateTime<Utc>,
+    /// Timestamp when the event occurred (serialized as RFC 3339 UTC with `Z`)
+    #[serde(with = "super::timestamp")]
+    pub timestamp: Timestamp,
 
     /// Type of event
     pub event_type: EventType,
@@ -185,7 +186,7 @@ impl AuditEvent {
     pub fn new(event_type: EventType, user: String, session_id: String) -> Self {
         Self {
             id: uuid::Uuid::new_v4().to_string(),
-            timestamp: Utc::now(),
+            timestamp: Timestamp::now(),
             event_type,
             session_id,
             user,
@@ -333,6 +334,51 @@ mod tests {
         assert_eq!(deserialized.session_id, event.session_id);
         assert_eq!(deserialized.client_ip, event.client_ip);
         assert_eq!(deserialized.protocol, event.protocol);
+        assert_eq!(deserialized.timestamp, event.timestamp);
+    }
+
+    #[test]
+    fn test_timestamp_serializes_as_rfc3339_utc() {
+        let mut event = AuditEvent::new(
+            EventType::SessionStart,
+            "erin".to_string(),
+            "session-202".to_string(),
+        );
+
+        let value = serde_json::to_value(&event).unwrap();
+        let ts = value["timestamp"].as_str().unwrap();
+        assert!(ts.ends_with('Z'), "timestamp must use Z suffix: {ts}");
+        assert_eq!(ts.parse::<Timestamp>().unwrap(), event.timestamp);
+
+        event.timestamp = "2026-11-20T01:02:03.123456789Z".parse().unwrap();
+        let value = serde_json::to_value(&event).unwrap();
+        assert_eq!(value["timestamp"], "2026-11-20T01:02:03.123456789Z");
+
+        event.timestamp = "2026-11-20T01:02:03Z".parse().unwrap();
+        let value = serde_json::to_value(&event).unwrap();
+        assert_eq!(value["timestamp"], "2026-11-20T01:02:03Z");
+    }
+
+    #[test]
+    fn test_deserializes_chrono_written_json() {
+        // Records in the exact shape the previous chrono-based code wrote.
+        for (raw, nanos) in [
+            ("2026-11-20T01:02:03.123456789Z", 123_456_789),
+            ("2026-11-20T01:02:03.123456Z", 123_456_000),
+            ("2026-11-20T01:02:03.123Z", 123_000_000),
+            ("2026-11-20T01:02:03Z", 0),
+        ] {
+            let json = format!(
+                r#"{{"id":"e1","timestamp":"{raw}","event_type":"session_start","session_id":"s1","user":"frank","client_ip":"10.0.0.1","path":null,"dest_path":null,"bytes":null,"result":"success","details":null,"protocol":"ssh"}}"#
+            );
+            let event: AuditEvent = serde_json::from_str(&json).unwrap();
+            assert_eq!(event.timestamp.as_second(), 1_795_136_523);
+            assert_eq!(event.timestamp.subsec_nanosecond(), nanos);
+
+            // Re-serializing yields the identical string chrono produced.
+            let value = serde_json::to_value(&event).unwrap();
+            assert_eq!(value["timestamp"], raw);
+        }
     }
 
     #[test]

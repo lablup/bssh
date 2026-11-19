@@ -101,7 +101,7 @@ Each audit event contains:
 ```json
 {
   "id": "550e8400-e29b-41d4-a716-446655440000",
-  "timestamp": "2026-01-24T12:00:00.000Z",
+  "timestamp": "2026-01-24T12:00:00.123456Z",
   "event_type": "AuthSuccess",
   "session_id": "session-123",
   "user": "johndoe",
@@ -114,6 +114,8 @@ Each audit event contains:
   }
 }
 ```
+
+The `timestamp` field is an RFC 3339 UTC string with a `Z` suffix. It carries 0, 3, 6, or 9 fractional-second digits, whichever is the shortest exact representation (for example `2026-01-24T12:00:00Z`, `2026-01-24T12:00:00.123Z`, or `2026-01-24T12:00:00.123456789Z`), so parsers should accept any of these widths.
 
 ## Exporters
 

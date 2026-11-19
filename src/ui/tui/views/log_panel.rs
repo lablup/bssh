@@ -104,7 +104,7 @@ pub fn render(
             // Add timestamp if enabled
             if show_timestamps {
                 spans.push(Span::styled(
-                    format!("{} ", entry.timestamp.format("%H:%M:%S")),
+                    format!("{} ", entry.timestamp.strftime("%H:%M:%S")),
                     Style::default().fg(Color::DarkGray),
                 ));
             }
