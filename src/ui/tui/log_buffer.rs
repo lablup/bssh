@@ -289,6 +289,21 @@ mod tests {
     }
 
     #[test]
+    fn test_log_entry_format_with_time() {
+        let mut entry = LogEntry::new(
+            Level::WARN,
+            "bssh::ssh::client".to_string(),
+            "slow".to_string(),
+        );
+        entry.timestamp = jiff::Timestamp::from_second(1_795_136_523)
+            .unwrap()
+            .in_tz("UTC")
+            .unwrap();
+
+        assert_eq!(entry.format_with_time(), "01:02:03 [WARN] client: slow");
+    }
+
+    #[test]
     fn test_log_entry_format() {
         let entry = LogEntry::new(
             Level::ERROR,
