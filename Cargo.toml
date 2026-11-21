@@ -63,7 +63,7 @@ crossterm = "0.29"
 ratatui = "0.30"
 regex = "1.13.1"
 signal-hook = "0.4"
-nix = { version = "0.31", features = ["fs", "poll", "process", "signal", "term"] }
+nix = { version = "0.32", features = ["fs", "poll", "process", "signal", "term"] }
 smallvec = "1.16.4"
 lru = "0.19.0"
 uuid = { version = "1.29.0", features = ["v4"] }
