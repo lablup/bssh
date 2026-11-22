@@ -5,6 +5,49 @@ All notable changes to bssh will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.3] - 2026-11-23
+
+### New Features
+
+None
+
+### Improvements
+
+- Replaced the deprecated `serde_yaml` with `serde-saphyr` 2.1.1, a YAML parser written in safe Rust, which removed `unsafe-libyaml` (RUSTSEC-2024-0449) from the dependency tree (#358).
+- Replaced the unmaintained `chrono` with `jiff` for audit log timestamps, TUI and interactive clock display, and output file names. Audit JSON timestamps are byte-identical to before (RFC 3339 UTC with a `Z` suffix and 0, 3, 6 or 9 fractional digits), and records written by earlier versions still deserialize (#363, #364).
+
+### Bug Fixes
+
+None
+
+### CI/CD Improvements
+
+- Moved the aarch64-apple-darwin release build from the retired macos-14 runner to macos-26, which had left the v3.1.2 macOS leg, publish and Homebrew jobs unscheduled. The binaries still target macOS 11.0 (#359).
+- Normalized the App Store Connect notarization key to canonical PKCS#8 PEM before submitting it, since the macOS 26 `notarytool` rejected the stored secret with `invalidPEMDocument`. Failures now report the key's shape without printing key material (#360).
+
+### Technical Details
+
+- Added a serde helper in `src/server/audit/timestamp.rs` that writes audit timestamps with chrono's shortest exact fractional width, and documented the format in `docs/audit-logging.md` (#364).
+- The OpenTelemetry exporter converts timestamps with `SystemTime::try_from` and falls back to the current time (#364).
+
+### Dependencies
+
+- Bumped russh to 0.65.2 and pinned ssh-key to `=0.7.0-rc.12`, which resolves rsa 0.10.0 and pkcs1 0.8.0 stable and cleared RUSTSEC-2023-0071; the suppression was removed from `.cargo/audit.toml` (#361, #362).
+- Replaced `serde_yaml` 0.9 with `serde-saphyr` 2.1.1 (#358).
+- Replaced `chrono` 0.4 with `jiff` 1.0.1 (#364).
+- Bumped nix to 0.32 with no code changes, and refreshed the lockfile within existing requirements, including russh 0.65.3, clap 4.6.9, serde-saphyr 2.2.0, prost 0.14.6 and jiff 1.0.2 (#365).
+
+### Breaking Changes
+
+- YAML configuration files that use merge keys (`<<`) now have them applied; `serde_yaml` ignored them. Some inputs `serde_yaml` rejected now load, including YAML 1.1 booleans such as `yes`, quoted numbers and underscored integers. Other configurations parse to the same values (#358).
+
+### Known Issues
+
+- Host keys presented during rekey were still not re-verified, pending upstream russh support (#336).
+- Multihop destination-constrained agent authentication remained blocked because russh cannot send `publickey-hostbound-v00@openssh.com` (#327).
+- `cargo deny` still reported RUSTSEC-2026-0543 (chrono) through `russh-sftp` 3.0.1, which needs an upstream change.
+- nix 0.31.4 remained in the tree through russh-cryptovec 0.62.0 and rustyline 19.0.0 (#365).
+
 ## [3.1.2] - 2026-11-10
 
 ### New Features
@@ -1223,6 +1266,7 @@ None
 - russh library for native SSH implementation
 - Cross-platform support (Linux and macOS)
 
+[3.1.3]: https://github.com/lablup/bssh/compare/v3.1.2...v3.1.3
 [3.1.2]: https://github.com/lablup/bssh/compare/v3.1.1...v3.1.2
 [3.1.1]: https://github.com/lablup/bssh/compare/v3.1.0...v3.1.1
 [3.1.0]: https://github.com/lablup/bssh/compare/v3.0.1...v3.1.0

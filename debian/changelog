@@ -1,3 +1,12 @@
+bssh (3.1.3-1~jammy1) jammy; urgency=medium
+
+  * Replaced serde_yaml with serde-saphyr; YAML merge keys are now applied.
+  * Replaced chrono with jiff; audit log timestamps are unchanged.
+  * Upgraded russh to 0.65.2 and ssh-key to 0.7.0-rc.12 (RUSTSEC-2023-0071).
+  * Upgraded nix to 0.32 and refreshed the lockfile.
+
+ -- Jeongkyu Shin <inureyes@gmail.com>  Mon, 23 Nov 2026 18:00:00 +0900
+
 bssh (3.1.2-1~jammy1) jammy; urgency=medium
 
   * Warned at load time about server users whose password hash cannot log in.
