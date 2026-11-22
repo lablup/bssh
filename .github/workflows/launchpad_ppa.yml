@@ -220,6 +220,10 @@ jobs:
         chmod +x debian/rules
         export GNUPGHOME=/home/runner/.gnupg
 
+        # Pin the OpenPGP backend. dpkg picks it automatically, and on the
+        # ubuntu-26.04 runner it chose a Sequoia-style one that called the
+        # wrapper with `--cleartext --signer --output`, which gpg rejects
+        # ("key is not signature-capable"). The key is only in gpg's keyring.
         if [ -n "${{ secrets.GPG_PASSPHRASE }}" ]; then
           echo "Building and signing source package with passphrase..."
           cat > /tmp/gpg-sign.sh << 'EOSCRIPT'
@@ -228,10 +232,10 @@ jobs:
         EOSCRIPT
           chmod +x /tmp/gpg-sign.sh
           export GPG_PASSPHRASE="${{ secrets.GPG_PASSPHRASE }}"
-          dpkg-buildpackage -S -sa -k"$GPG_FINGERPRINT" -d --sign-command="/tmp/gpg-sign.sh"
+          dpkg-buildpackage -S -sa -k"$GPG_FINGERPRINT" -d --sign-backend=gpg --sign-command="/tmp/gpg-sign.sh"
         else
           echo "Building and signing source package without passphrase..."
-          dpkg-buildpackage -S -sa -k"$GPG_FINGERPRINT" -d
+          dpkg-buildpackage -S -sa -k"$GPG_FINGERPRINT" -d --sign-backend=gpg
         fi
         echo "Source package built and signed successfully"
 
