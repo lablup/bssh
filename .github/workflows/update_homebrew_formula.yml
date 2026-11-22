@@ -135,14 +135,25 @@ jobs:
           # (lablup/homebrew-tap 9969ec4). Nothing here depends on layout now,
           # and the guards abort instead of editing the wrong line.
 
-          set_version() {  # file version
-            local file="$1" version="$2" n
-            n=$(grep -c "^[[:space:]]*version " "$file" || true)
-            if [ "$n" -ne 1 ]; then
-              echo "::error::${file}: expected exactly one version stanza, found ${n}."
+          # The formula carries a `version` stanza only when Homebrew cannot
+          # read the version from the release url. `brew audit` rejects one that
+          # repeats the scanned version (lablup/homebrew-tap#5), but a tag such
+          # as v3.2.0-rc.1 is scanned as a different number, and there the
+          # stanza is what keeps the formula's version right. Asking Homebrew's
+          # own Version.detect decides it, rather than guessing from the tag.
+          sync_version() {  # file version url
+            local file="$1" version="$2" url="$3" n detected
+            n=$(grep -c '^  version "' "$file" || true)
+            if [ "$n" -gt 1 ]; then
+              echo "::error::${file}: expected at most one version stanza, found ${n}."
               exit 1
             fi
-            gsed -i "s|^\([[:space:]]*\)version .*|\1version \"${version}\"|" "$file"
+            gsed -i '/^  version "/d' "$file"
+            detected=$(brew ruby -e 'puts Version.detect(ARGV.first)' "$url")
+            if [ "$detected" != "$version" ]; then
+              echo "::notice::${file}: Homebrew reads ${url} as ${detected}, so the formula pins version ${version}."
+              gsed -i "/^  homepage /a\  version \"${version}\"" "$file"
+            fi
           }
 
           # Rewrites the url stanza whose value contains ARTIFACT, then the
@@ -177,13 +188,13 @@ jobs:
             mv "${file}.new" "$file"
           }
 
-          set_version  Formula/bssh.rb "$VERSION"
+          sync_version Formula/bssh.rb "$VERSION" "$mac_url"
           set_artifact Formula/bssh.rb bssh-macos-aarch64.zip    "$mac_url"       "$mac_sha"
           set_artifact Formula/bssh.rb bssh-linux-aarch64.tar.gz "$linux_arm_url" "$linux_arm_sha"
           set_artifact Formula/bssh.rb bssh-linux-x86_64.tar.gz  "$linux_x86_url" "$linux_x86_sha"
 
           if [ -f Formula/bssh-server.rb ]; then
-            set_version  Formula/bssh-server.rb "$VERSION"
+            sync_version Formula/bssh-server.rb "$VERSION" "$server_mac_url"
             set_artifact Formula/bssh-server.rb bssh-server-macos-aarch64.zip    "$server_mac_url"       "$server_mac_sha"
             set_artifact Formula/bssh-server.rb bssh-server-linux-aarch64.tar.gz "$server_linux_arm_url" "$server_linux_arm_sha"
             set_artifact Formula/bssh-server.rb bssh-server-linux-x86_64.tar.gz  "$server_linux_x86_url" "$server_linux_x86_sha"
@@ -192,7 +203,7 @@ jobs:
           fi
 
           if [ -f Formula/bssh-keygen.rb ]; then
-            set_version  Formula/bssh-keygen.rb "$VERSION"
+            sync_version Formula/bssh-keygen.rb "$VERSION" "$keygen_mac_url"
             set_artifact Formula/bssh-keygen.rb bssh-keygen-macos-aarch64.zip    "$keygen_mac_url"       "$keygen_mac_sha"
             set_artifact Formula/bssh-keygen.rb bssh-keygen-linux-aarch64.tar.gz "$keygen_linux_arm_url" "$keygen_linux_arm_sha"
             set_artifact Formula/bssh-keygen.rb bssh-keygen-linux-x86_64.tar.gz  "$keygen_linux_x86_url" "$keygen_linux_x86_sha"
@@ -221,8 +232,25 @@ jobs:
             ruby -c "$file"
             brew style "$file"
 
-            if ! grep -q "^[[:space:]]*version \"${VERSION}\"$" "$file"; then
-              echo "::error::${file}: version stanza is not ${VERSION}."
+            # The formula's version comes from its urls unless it pins one,
+            # so every release url has to name this release, and a pinned
+            # version has to be both this release and one the url misreads.
+            local url detected urls tagged version_re="${VERSION//./\\.}"
+            urls=$(grep -c "^[[:space:]]*url \".*/releases/download/" "$file" || true)
+            tagged=$(grep -c "^[[:space:]]*url \".*/releases/download/v${version_re}/" "$file" || true)
+            if [ "$urls" -eq 0 ] || [ "$urls" -ne "$tagged" ]; then
+              echo "::error::${file}: ${urls} release urls but only ${tagged} point at v${VERSION}."
+              exit 1
+            fi
+            url=$(grep -m1 -o "https://[^\"]*/releases/download/[^\"]*" "$file")
+            detected=$(brew ruby -e 'puts Version.detect(ARGV.first)' "$url")
+            n=$(grep -c '^  version "' "$file" || true)
+            if [ "$detected" = "$VERSION" ] && [ "$n" -ne 0 ]; then
+              echo "::error::${file}: carries a version stanza that repeats the one Homebrew reads from the url."
+              exit 1
+            fi
+            if [ "$detected" != "$VERSION" ] && ! grep -qx "  version \"${VERSION}\"" "$file"; then
+              echo "::error::${file}: Homebrew reads the url as ${detected}, and the formula does not pin version ${VERSION}."
               exit 1
             fi
 
